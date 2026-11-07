@@ -5,7 +5,8 @@ description: >-
   쪼개줘 / 작업 계획 세워줘 / 변경사항 태스크로 만들어줘" 일 때 사용. STATE의 rev/tasked 차이와 SSOT
   chg로 무엇이 새로 생겼고 어디가 바뀌었는지 스스로 파악한다. review-code가 뽑아 사용자가 채택한
   리팩토링 finding(spec/review/, st:ready)도 같은 방식으로 태스크화한다. self-improve의 사전 위임으로
-  채택한 finding은 위임 근거를 확인한 뒤 같은 경로로 처리한다. 개발 관점 질문만 한다(데이터
+  채택한 finding과 self-improve-local 오케스트레이터가 호출 범위에서 승인한 finding은 위임 근거를
+  확인한 뒤 같은 경로로 처리한다. 개발 관점 질문만 한다(데이터
   모델·API·엣지·마이그레이션). 구현은 implement-task.
 ---
 
@@ -26,7 +27,7 @@ description: >-
 작업 묶음의 기획 공간에서는 `npx haeram-spec-creator work board --work <group> --json`의 attempt도 함께 확인한다. STATE에 todo로 남아 있어도 doing/blocked/ready/verifying/integrating 실행이 있으면 계약은 불변이다. 재분해가 필요하면 기존 작업자를 중단·해제한 뒤 처리한다.
 
 ## 1. 스코프와 델타
-입력은 두 종류다 — **SSOT 델타**(기획 변경)와 **리뷰 finding**(사용자가 채택했거나 self-improve가 명시적 사전 위임 범위에서 채택한 개선). 사용자가 지정하지 않으면 둘 다 처리한다. 자율 채택은 review notes의 정책 참조·허용 범위·동작 보존 근거를 확인하며, 큰 변화나 근거 없는 [o]는 태스크화하지 않고 [?]로 돌려 인계한다.
+입력은 두 종류다 — **SSOT 델타**(기획 변경)와 **리뷰 finding**(사용자가 채택했거나 명시적 위임 범위에서 self-improve/self-improve-local 오케스트레이터가 채택한 개선). 사용자가 지정하지 않으면 둘 다 처리한다. 자율 채택은 review notes의 정책 참조 또는 로컬 호출 위임·승인 범위·동작 보존 근거를 확인하며, 큰 변화나 근거 없는 [o]는 태스크화하지 않고 [?]로 돌려 인계한다.
 - SSOT: 사용자가 지정한 도메인, 없으면 STATE ssot에서 pending 있는(= tasked < rev) 전부. log에 `- YYMMDD create-task <IDs> start`.
   - 델타 파악: `vibe brief <ID>@<tasked>`가 chg의 tasked+1..rev 줄과 바뀐 결정 원문·필수 의존·flow·constraints를 준다. tasked=0이면 도메인 전체가 신규(`vibe brief <ID>`). ARCH의 관련 결정도 읽는다(태스크가 따를 기준). 태스크 인용줄 ssot에는 구현이 지켜야 하는 결정을 빠짐없이 넣는다 — 같은 도메인의 제약·예외·금지를 담은 결정도. 인용 결정이 `→!`·`→=`로 가리키는 결정은 brief가 함께 싣지만, 연결되지 않은 결정은 cfg brief가 `cited`일 때 brief에 들어가지 않는다.
   - 델타가 코드에 영향이 없으면(문구 정리, 컨벤션 서술 변경 등) 태스크 없이 소화한다: ssot `tasked=rev`·pending `-`, log에 `- YYMMDD <ID> rN..rM no-op (no code impact)` 1줄. 영향 여부가 확실하지 않으면 태스크를 만든다.

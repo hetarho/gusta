@@ -2,6 +2,8 @@
 
 ## 0.8.2
 
+- Add `self-improve-local`: the invoking session remains the orchestrator, read-only child sessions propose improvements before implementation, and only coordinator-approved tasks receive workers. Independent reviews and verification precede integration into the invoking branch; PR creation is not required and remote code push retains its separate authorization.
+- Add optional `work start/configure --tasks` scoping across claims, boards, final gates and portable history. Preserve external dependencies and complete lanes, reject removal of running/integrated tasks, and leave unrelated todo unchanged while finishing the approved scope.
 - Separate periodic problem discovery from bounded iterative improvement of one frozen metric. Preserve the initial baseline, best candidate and rejected attempts; test a shared premise after repeated failures instead of retrying the same assumption. Vet measurement sensitivity, work/error counts and correctness before trusting speedups.
 - Bundle a dependency-free experiment comparator and append-only JSONL journal with contract fingerprints, conservative noise thresholds, semantic exit codes, duplicate-ID protection and exclusive writes. Local keep decisions remain provisional until independent review and final verification.
 - Add `self-improve`: discover recurring performance, test-cost and workflow problems without per-candidate instructions under a standing delegation; iterate one bounded hypothesis at a time, reuse the existing review/task/report workflow, require a separate-session review for every autonomous improvement, and prepare a PR. Large or behavior-changing proposals remain for owner judgment; automatic merge requires separate delegation.

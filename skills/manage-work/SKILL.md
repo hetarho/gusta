@@ -23,4 +23,5 @@ description: >-
 - 기본 검증 매핑: ARCH task → `--task-verify`, 빠른 통합 검사 → `--verify`, 통합/e2e·전체 스위트 → `--group-verify`, CI → 최종 코드 push 뒤 한 번. 사용자 별도 명시가 없으면 조정자 소유 [최종 검증 절차](../start-vibe/references/verification.md)를 따른다. 기존 묶음도 저장된 명령을 확인하고 관문이 실행 중이 아닐 때 configure로 맞춘다. 기본은 로컬 작업 브랜치에 모으고 단위별 push를 켜지 않는다.
 - 기획·SSOT·채번은 group.path에서만, cfg plan 브랜치(기본 `main`) 기준으로: 기획 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`. 워커는 자기 코드·acceptance 체크·result만 수정한다. doing/done 계약은 바꾸지 않는다.
 - 통합은 CLI의 잠금·검증·원격 판정을 따른다. 실패·충돌·미커밋 변경을 보존하며 선점을 임의로 회수하지 않는다.
+- 오케스트레이터가 승인한 일부 태스크만 실행할 때는 start/configure `--tasks 'T### T###'`로 범위를 저장한다. lane은 전체를 포함하고 미승인 선행 작업을 자동 채택하지 않는다. self-improve-local은 `--workspace current --review all --push -`로 현재 브랜치에 통합하며 범위 밖 todo를 소비하지 않는다.
 - headless runner는 `work run`; 직렬 단독 맡김은 `vibe loop`. 긴 명령은 완료 이벤트까지 CLI가 기다리며 모델 폴링을 하지 않는다.

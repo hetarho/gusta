@@ -8,7 +8,7 @@ import { SkillPackageError } from './errors.mjs'
 const HELP = `작업 묶음 (Orca 등 외부 도구 없이도 사용 가능)
   work start <name> [--workspace auto|current|new] [--base <ref>] [--branch <branch>] [--path <path>]
     [--task-verify <command>] [--verify <command>] [--group-verify <command>]
-    [--push <branch>|-] [--remote <name>] [--review risky|all] [--review-path <path> ...] [--review-lines <n>] [--allow-tool <rule> ...]
+    [--tasks <approved task IDs>] [--push <branch>|-] [--remote <name>] [--review risky|all] [--review-path <path> ...] [--review-lines <n>] [--allow-tool <rule> ...]
   work configure --work <name> [start의 검증·push·review·allow-tool 옵션]
   work claim <T###> --work <name> [--workspace auto|current|new] [--path <path>] [--owner <label>]
   work claim-next --work <name> --owner <label> [--workspace auto|current|new]
@@ -60,8 +60,8 @@ release/recover: 기존 작업자·명령이 종료됐음을 확인한 뒤 실�
 const POLICY = ['push', 'remote', 'review', 'review-path', 'review-lines', 'allow-tool']
 const LISTS = ['verify', 'task-verify', 'group-verify', 'review-path', 'allow-tool']
 const allowed = {
-  start: ['workspace', 'base', 'branch', 'path', 'workers', 'reviewers', 'max-pending', 'task-verify', 'verify', 'group-verify', ...POLICY],
-  configure: ['work', 'task-verify', 'verify', 'group-verify', ...POLICY], claim: ['work', 'workspace', 'path', 'owner'],
+  start: ['workspace', 'base', 'branch', 'path', 'workers', 'reviewers', 'max-pending', 'tasks', 'task-verify', 'verify', 'group-verify', ...POLICY],
+  configure: ['work', 'tasks', 'task-verify', 'verify', 'group-verify', ...POLICY], claim: ['work', 'workspace', 'path', 'owner'],
   'claim-next': ['work', 'owner', 'workspace', 'path'], next: ['work', 'owner', 'workspace', 'path', 'wait', 'workers', 'reviewers', 'max-pending', 'task-verify', 'verify', 'group-verify', ...POLICY], resume: ['work', 'owner', 'attempt'],
   'review-claim': ['work', 'owner', 'attempt', 'wait'], 'review-finish': ['review', 'result-file'],
   'review-update': ['review'], 'review-release': ['review', 'reason'],

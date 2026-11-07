@@ -5,7 +5,7 @@
 Claude Code와 Codex가 바로 코드를 작성하기 전에 목표, 범위, 제약, 결정 사항, 완료 조건을 먼저 명확히 하고 각 단계의 결과를 다음 단계의 입력으로 이어 가도록 돕습니다. 이 저장소의 핵심은 라이브러리 API가 아니라 AI 에이전트가 필요할 때 불러 쓰는 스킬이며, npm 패키지는 여러 프로젝트에 그 스킬을 안전하게 설치하고 동기화하기 위한 배포 수단입니다.
 
 > [!TIP]
-> [npm에 배포되어 있어](https://www.npmjs.com/package/haeram-spec-creator) 바로 설치할 수 있습니다 — `npm install --save-dev haeram-spec-creator && npx haeram-spec-creator install`. 사용자가 부르는 스킬은 넷입니다 — **`/start-vibe`**(작업 시작), **`/start-design`**(화면 보며 디자인), **`/ideation`**(아이디어), **`/self-improve`**(지속 개선). 나머지 10종(`create-architecture` · `create-ssot` · `update-ssot` · `create-task` · `implement-task` · `review-code` · `doc-review` · `review-task` · `manage-work` · `create-narrative`)은 start-vibe가 골라 쓰며, 이름을 대고 직접 부를 수도 있습니다.
+> [npm에 배포되어 있어](https://www.npmjs.com/package/haeram-spec-creator) 바로 설치할 수 있습니다 — `npm install --save-dev haeram-spec-creator && npx haeram-spec-creator install`. 사용자가 부르는 스킬은 다섯입니다 — **`/start-vibe`**(작업 시작), **`/start-design`**(화면 보며 디자인), **`/ideation`**(아이디어), **`/self-improve`**(PR 중심 지속 개선), **`/self-improve-local`**(제안 승인 후 로컬 통합). 나머지 10종(`create-architecture` · `create-ssot` · `update-ssot` · `create-task` · `implement-task` · `review-code` · `doc-review` · `review-task` · `manage-work` · `create-narrative`)은 start-vibe가 골라 쓰며, 이름을 대고 직접 부를 수도 있습니다.
 
 ## 핵심 개념
 
@@ -25,6 +25,7 @@ Claude Code와 Codex가 바로 코드를 작성하기 전에 목표, 범위, 제
 | 디자인 | `start-design` | 디자인 진행자 | 이 checkout만 디자인 중으로 표시하고 말하는 대로 코드만 즉시 수정(테스트·커밋·push 없음) → 디자인 끝이면 전체 테스트 후 커밋 하나. 커밋·push 전엔 항상 디자인이 끝났는지 묻는다 | checkout 로컬 디자인 상태, 디자인 커밋 |
 | 아이디어 | `ideation` | 기획 전문가 | 흐릿한 아이디어를 발산·수렴 루프로 함께 구체화, SSOT 전환용 도메인 분할까지 | `spec/ideation/<slug>.md` |
 | 지속 개선 | `self-improve` | 개선 조정자 | 실행 기록·코드·업무 흐름에서 문제 발견 → 제한된 측정·구현 → 별도 세션 검토 → PR. 큰 변화는 사람 판단 | 기존 review/task/report + 개선 PR |
+| 로컬 개선 | `self-improve-local` | 호출 세션이 오케스트레이터 | 하위 탐색의 제안 → 오케스트레이터 승인 → 승인 범위 구현·독립 리뷰 → 현재 브랜치 통합 | 승인 기록 + 로컬 커밋·검증·보고서 |
 | 0 | `create-architecture` | 엔지니어 | `spec/` 초기화 + 사용자 수준 캘리브레이션 + 아키텍처 인터뷰 | `spec/STATE.md` `spec/FORMAT.md` `spec/ssot/ARCH.md` |
 | 1 | `create-ssot` | 기획자 | 기획 인터뷰로 도메인 SSOT 작성 | `spec/ssot/<ID>.md` |
 | 수시 | `update-ssot` | 기획자 | 기획 변경 반영 — rev+1, 변경 로그, 파급 표시 | 갱신된 SSOT + STATE pending |
@@ -158,6 +159,21 @@ SSOT 변경사항 태스크로 쪼개줘.                        → create-task
 ```text
 THEME SSOT가 너무 길어. 의미 바꾸지 말고 정리해줘.      → doc-review
 ```
+
+## PR 없이 현재 브랜치에서 개선하기
+
+`/self-improve-local`을 실행한 세션이 오케스트레이터가 됩니다. 하위 세션이 먼저 근거·수정 범위·비용·위험을 제안하고, 오케스트레이터가 승인한 작업만 다른 worktree에서 구현합니다. 별도 세션의 코드 리뷰와 단위 검사를 통과한 변경은 호출한 현재 브랜치에 통합하고, 마지막 전체 관문까지 통과해야 완료로 보고합니다. 제안 승인과 코드 리뷰 승인은 별개입니다.
+
+```text
+/self-improve-local
+성능·테스트 비용·반복 작업의 문제를 하위 세션이 찾아 제안하게 해줘.
+네가 검토해 동작을 보존하는 작은 개선만 승인하고 현재 브랜치에 통합해줘.
+큰 변화는 근거와 대안을 보고하고, 원격 push는 하지 마.
+```
+
+PR이나 GitHub CLI가 없어도 로컬 구현·리뷰·통합을 할 수 있습니다. 실제 하위 세션 실행 수단과 Git은 필요합니다. 기존 작업 묶음의 `--workspace current --tasks '<approved IDs>' --review all --push -`를 사용해 승인 범위 밖 todo를 소비하지 않으며, 그 todo가 남아 있어도 승인 범위를 마칠 수 있습니다. 실행 도구가 없으면 하위 세션을 가장하지 않고 제안 패킷과 필요한 연결을 보고합니다.
+
+기본은 현재 브랜치의 로컬 커밋까지입니다. 원격 코드 반영은 별도 요청 또는 사용자가 지정한 cfg push가 있을 때 조정자가 최종 검증 후 한 번 수행합니다. 기획 문서의 cfg plan 정책은 유지합니다. 실제 origin/main이 갱신됐는지와 로컬에만 반영됐는지를 구분해 보고합니다. [실행 절차](skills/self-improve-local/SKILL.md)에 역할·승인·통합 경계가 있습니다.
 
 ## 지시 없이 문제를 찾는 지속 개선
 

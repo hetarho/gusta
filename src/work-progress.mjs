@@ -20,7 +20,7 @@ export function progressAttempt(value) {
   }
 }
 
-const progressGroup = (value) => ({ ...pick(value, ['id', 'branch', 'status', 'createdAt', 'limits', 'verified', 'push', 'review', 'pushed']),
+const progressGroup = (value) => ({ ...pick(value, ['id', 'branch', 'status', 'createdAt', 'limits', 'verified', 'push', 'review', 'pushed', 'taskScope']),
   ...(value.runner ? { runner: run(value.runner) } : {}), ...(value.lastRun ? { lastRun: run(value.lastRun) } : {}) })
 
 // History and the latest state are committed by the same atomic runtime rename.

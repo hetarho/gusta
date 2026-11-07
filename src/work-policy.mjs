@@ -1,4 +1,23 @@
 import { SkillPackageError } from './errors.mjs'
+import { TASK_ID } from './spec-format.mjs'
+
+export function approvedTasks(value) {
+  const ids = typeof value === 'string' ? value.trim().split(/\s+/) : value
+  if (!Array.isArray(ids) || !ids.length || ids.some((id) => typeof id !== 'string' || !TASK_ID.test(id)) || new Set(ids).size !== ids.length) throw new SkillPackageError('tasks: 중복 없는 태스크 ID 목록이 필요합니다.')
+  return [...ids]
+}
+
+export function scopedBoard(board, group) {
+  if (group.taskScope === undefined) return board
+  const ids = new Set(approvedTasks(group.taskScope))
+  const known = new Set([...board.tasks.map((task) => task.id), ...board.doneIds])
+  const missing = [...ids].filter((id) => !known.has(id))
+  if (missing.length) throw new SkillPackageError('승인 범위의 태스크가 없습니다.', missing)
+  const lanes = new Set(board.tasks.filter((task) => ids.has(task.id) && task.lane).map((task) => task.lane))
+  if (board.tasks.some((task) => lanes.has(task.lane) && !ids.has(task.id))) throw new SkillPackageError('같은 lane의 태스크는 함께 승인 범위에 포함해야 합니다.')
+  return { ...board, tasks: board.tasks.filter((task) => ids.has(task.id)),
+    excludedTasks: [...new Set([...(board.excludedTasks ?? []), ...board.tasks.filter((task) => !ids.has(task.id)).map((task) => task.id)])] }
+}
 
 export const activeAttempt = (attempt) => !['released', 'failed', 'integrated'].includes(attempt.status)
 export const workerBusy = (attempt) => ['preparing', 'doing', 'committing', 'verifying'].includes(attempt.status)

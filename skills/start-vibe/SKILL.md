@@ -37,6 +37,7 @@ hostManaged 실행기에서는 초기화·active·보고서 생성/종료·묶�
 | spec 없음 | create-architecture 초안, 스캐폴딩 parked |
 | route design(이 checkout이 디자인 중) | 함께: 디자인이 끝났는지 묻는다 → 끝: start-design 마감 / 아직: start-design 이어서. 맡김: 디자인 변경을 건드리지 않고 inbox parked 후 마감 |
 | 화면을 보며 디자인·스타일 다듬기 | start-design(함께 전용) |
+| self-improve-local·PR 없이 로컬 개선·하위 제안을 승인 후 통합 | self-improve-local(호출한 세션이 오케스트레이터, 승인 범위만 현재 브랜치에 반영) |
 | 자가 개선·지속 개선 설정/실행 요청 | self-improve(저장된 범위·예산·검토·발행 정책 확인) |
 | 작은 버그·문구·스타일 수정 | 아래 경량 경로 |
 | 새 기능·기획 변경 | create-ssot/update-ssot → create-task 한 조각 |

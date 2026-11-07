@@ -1,0 +1,4 @@
+interface:
+  display_name: "Self Improve Local"
+  short_description: "하위 세션이 제안하고 실행 세션이 승인·검토해 현재 브랜치에 개선 통합"
+  default_prompt: "Use $self-improve-local to coordinate proposal-first improvements, approve bounded work, and integrate independently reviewed changes into this local branch."
