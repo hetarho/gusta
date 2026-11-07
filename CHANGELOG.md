@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.3
+
+- Pin the publishing npm CLI and enable its bundled Sigstore client's existing Rekor conflict recovery. A retry-after-success 409 fetches the recorded entry while preserving signing, transparency-log evidence and provenance; unsupported tool versions or configuration shapes fail closed. Exercise recovery and unrecoverable failures against the real publishing tools before release. Consumer dependencies and installation are unchanged.
+
 ## 0.8.2
 
 - Add `self-improve-local`: the invoking session remains the orchestrator, read-only child sessions propose improvements before implementation, and only coordinator-approved tasks receive workers. Independent reviews and verification precede integration into the invoking branch; PR creation is not required and remote code push retains its separate authorization.

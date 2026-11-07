@@ -44,3 +44,4 @@
 ## 배포
 - main 푸시 시 release.yml이 자동 publish — 단 package.json 버전이 npm에 아직 없을 때만(가드 스텝이 건너뜀). 릴리스는 `npm version patch` 후 푸시.
 - npm 인증은 Trusted Publishing(OIDC) — 토큰 시크릿 없음. npmjs.com 패키지 설정에 GitHub Actions(hetarho/haeram-spec-creator, release.yml)가 등록돼 있어야 한다.
+- 배포 전용 npm은 11.21.2로 고정한다. npm/cli#10078의 임시 대응으로 `scripts/prepare-publish.mjs`가 해당 CLI의 bundled sigstore 4.1.1에서 기존 Rekor 항목 조회만 켠다. 예상 버전·구조가 다르면 실패하며, 실제 도구의 409 복구·증거 보존·다른 오류 거절을 배포 전에 검사한다. 서명/provenance는 유지하며 npm에서 복구를 기본 제공하면 이 임시 수정을 제거한다. 소비자 의존성·설치에는 적용하지 않는다.

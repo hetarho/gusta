@@ -34,6 +34,14 @@ jobs:
           fi
       - if: steps.guard.outputs.publish == 'true'
         run: npm run release:check
+      - name: Prepare provenance conflict recovery
+        if: steps.guard.outputs.publish == 'true'
+        # npm/cli#10078: keep provenance enabled and fetch an existing Rekor
+        # entry after a retry-after-success 409, using Sigstore's recovery path.
+        run: |
+          npm install --global npm@11.21.2 --ignore-scripts --no-audit --no-fund
+          node scripts/prepare-publish.mjs "$(npm root -g)/npm"
+          HAERAM_PUBLISH_NPM_ROOT="$(npm root -g)/npm" node --test test/publish-tools.test.mjs
       - if: steps.guard.outputs.publish == 'true'
         # release:check above already ran the prepublishOnly validation.
-        run: npm publish --ignore-scripts
+        run: npm publish --ignore-scripts --provenance
