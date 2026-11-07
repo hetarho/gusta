@@ -5,7 +5,7 @@ description: >-
   STATE와 원격을 읽어 다른 기기의 진행을 확인하고, 시작할 때 한 번에 묻는다(모드: 함께=내가 결정 / 맡김=묻지 않고
   추천안으로 진행). 그 뒤 기획(create-ssot·update-ssot·create-task)과 구현(implement-task)을 스스로 골라 진행하고
   태스크별로 커밋한다(push는 기본으로 하지 않는다). 맡김이면 결정함(STATE inbox)과 보고서를 남긴다. 아이디어를 쏟아내는 일은 ideation,
-  화면을 보며 디자인을 다듬는 일은 start-design.
+  화면을 보며 디자인을 다듬는 일은 start-design. 사전 위임 범위에서 문제를 찾아 지속 개선하는 일은 self-improve.
 ---
 
 # start-vibe — 작업 진행자
@@ -37,6 +37,7 @@ hostManaged 실행기에서는 초기화·active·보고서 생성/종료·묶�
 | spec 없음 | create-architecture 초안, 스캐폴딩 parked |
 | route design(이 checkout이 디자인 중) | 함께: 디자인이 끝났는지 묻는다 → 끝: start-design 마감 / 아직: start-design 이어서. 맡김: 디자인 변경을 건드리지 않고 inbox parked 후 마감 |
 | 화면을 보며 디자인·스타일 다듬기 | start-design(함께 전용) |
+| 자가 개선·지속 개선 설정/실행 요청 | self-improve(저장된 범위·예산·검토·발행 정책 확인) |
 | 작은 버그·문구·스타일 수정 | 아래 경량 경로 |
 | 새 기능·기획 변경 | create-ssot/update-ssot → create-task 한 조각 |
 | pending·채택 review | create-task 한 조각 |
@@ -44,11 +45,12 @@ hostManaged 실행기에서는 초기화·active·보고서 생성/종료·묶�
 | dep 충족 todo·자기 doing | vibe brief T### → implement-task 1개 |
 | inbox 정리 요청 | status --section inbox로 해당 항목만 반영·log |
 | 기획·기술 판단으로 blocked | 맡김은 추천안으로 기획 한 조각을 끝내고 해당 태스크를 재개 가능하게 복구 |
-| 일 없음·parked만 남음 | 미반영 CI 수정·해결 가능한 blocked가 없는지 확인 후 마감; 맡김에서 새 아이디어를 만들지 않는다 |
+| 일 없음·parked만 남음 | 미반영 CI 수정·해결 가능한 blocked부터 확인. 일반 조정자 세션에서 활성·기한 도래한 지속 개선 위임이 있으면 self-improve 한 사이클, 아니면 마감; 위임 없이 새 일을 만들지 않는다 |
 
 경량 경로는 모두 만족할 때만: SSOT 규칙·계약·저장 형식·마이그레이션 변경 없음, 새 결정 없음, 버그/문구/스타일 수정, 코드+테스트 3파일·추가+삭제 100줄 이하(STATE 제외). 태스크·rev 없이 구현 → 영향 테스트+빠른 검사 → 커밋 하나에 STATE log `- YYMMDD fix <area>: <what>`. 조건이 깨지거나 결정·기획 공백이 나오면 즉시 create-task/update-ssot로 올린다.
 ideation/done/은 라우팅 후보가 아니다. 기획 조각의 전환 완료 처리는 고른 SSOT 스킬이 맡는다. 기존 converted 문서가 활성 위치에 남아 lint 경고가 나면 create-ssot의 전환 마감 절차로 확인·이관한다.
 작업 묶음은 단위1에서 만들지 않는다. 사용자의 병렬 요청 또는 독립 단위 2개 이상·각 태스크 3개 이상·touches 분리·explore 제외일 때만 [조정자 절차](references/coordinator.md)를 읽는다.
+지속 개선 자동 진입은 저장된 ARCH 정책과 대상 프로젝트의 에이전트 지침이 연결된 일반 조정자 세션에만 적용한다. hostManaged·단위1은 배정된 한 단위만 끝내며 자체 개선 사이클·리뷰·push를 시작하지 않는다. `vibe loop`의 no-work 종료는 그대로다. 세션 밖 반복은 self-improve의 실행기 연결 절차로 설정한다.
 
 ## 3. 모드
 맡김은 질문 0회이며 **되돌릴 수 있는 기획·기술 판단도 위임받은 것**이다. "사용자 의사결정 필요"만으로 blocked·parked·마감하지 않는다. 스킬이 만든 질문은 해당 스킬에서 추천안으로 결정하고 inbox decided에 질문·선택·대안·이유를 남긴다. SSOT에는 일반 [o]만 쓴다. 공백·모순은 update-ssot+create-task 한 조각으로 해소하고 태스크·STATE의 base·dep·st를 맞춰 다음 단위에서 재개한다.

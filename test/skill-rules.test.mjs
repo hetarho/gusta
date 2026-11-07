@@ -26,9 +26,9 @@ async function commonRules() {
   return result
 }
 
-test('스킬은 start-vibe·start-design을 포함해 13종이고 모두 공통 규칙 5줄을 가진다', async () => {
+test('스킬은 self-improve를 포함해 14종이고 모두 공통 규칙 5줄을 가진다', async () => {
   const rules = await commonRules()
-  assert.deepEqual([...rules.keys()].sort(), ['create-architecture', 'create-narrative', 'create-ssot', 'create-task', 'doc-review', 'ideation', 'implement-task', 'manage-work', 'review-code', 'review-task', 'start-design', 'start-vibe', 'update-ssot'])
+  assert.deepEqual([...rules.keys()].sort(), ['create-architecture', 'create-narrative', 'create-ssot', 'create-task', 'doc-review', 'ideation', 'implement-task', 'manage-work', 'review-code', 'review-task', 'self-improve', 'start-design', 'start-vibe', 'update-ssot'])
 })
 
 test('공통 규칙 2번은 디자인 중 커밋·push 전에 디자인이 끝났는지 묻게 한다', async () => {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Self Improve"
+  short_description: "성능·테스트·작업 흐름의 문제를 찾아 독립 검토한 개선 PR 작성"
+  default_prompt: "Use $self-improve to find recurring performance and workflow problems, measure one bounded improvement, and prepare an independently reviewed PR."

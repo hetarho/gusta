@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "<unique attempt id>",
+  "hypothesis": "<mechanism expected to improve the metric>",
+  "premise": "<falsifiable assumption shared by related attempts>",
+  "baseline": {
+    "commit": "<measured best candidate commit>",
+    "contractHash": "<hash command output>",
+    "evidence": ["<raw measurement artifact>"],
+    "samples": [
+      { "value": 100, "workCount": 100, "errorCount": 0, "correct": true },
+      { "value": 101, "workCount": 100, "errorCount": 0, "correct": true },
+      { "value": 99, "workCount": 100, "errorCount": 0, "correct": true }
+    ]
+  },
+  "candidate": {
+    "commit": "<measured attempt commit>",
+    "contractHash": "<hash command output>",
+    "evidence": ["<raw measurement artifact>"],
+    "samples": [
+      { "value": 90, "workCount": 100, "errorCount": 0, "correct": true },
+      { "value": 91, "workCount": 100, "errorCount": 0, "correct": true },
+      { "value": 89, "workCount": 100, "errorCount": 0, "correct": true }
+    ]
+  },
+  "gate": { "passed": null, "evidence": [] }
+}

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.2
+
+- Separate periodic problem discovery from bounded iterative improvement of one frozen metric. Preserve the initial baseline, best candidate and rejected attempts; test a shared premise after repeated failures instead of retrying the same assumption. Vet measurement sensitivity, work/error counts and correctness before trusting speedups.
+- Bundle a dependency-free experiment comparator and append-only JSONL journal with contract fingerprints, conservative noise thresholds, semantic exit codes, duplicate-ID protection and exclusive writes. Local keep decisions remain provisional until independent review and final verification.
+- Add `self-improve`: discover recurring performance, test-cost and workflow problems without per-candidate instructions under a standing delegation; iterate one bounded hypothesis at a time, reuse the existing review/task/report workflow, require a separate-session review for every autonomous improvement, and prepare a PR. Large or behavior-changing proposals remain for owner judgment; automatic merge requires separate delegation.
+- Add operating, measurement and review procedures plus reviewer/PR templates. Preserve verification scope, record raw comparable evidence and cumulative budgets, avoid repeated long simulations, and distinguish local benchmarks from full-run results. Missing review, execution budget or final checks remain explicit.
+- Route explicit continuous-improvement requests and due, enabled idle coordinator sessions to the skill. Activation connects project agent instructions and, when available, a real external scheduler; installation alone does not run a background service. The built-in unit loop and its no-work termination are unchanged.
+
 ## 0.8.1
 
 - Keep the open design out of STATE. A design is now checkout-local interactive state in the checkout's own Git directory (`haeram-interactive.json`, written by `vibe design start|end`): STATE travels with every planning commit and `vibe plan-push` to the planning branch and into every worktree, so a `## design` line there could reach unrelated worktrees and stop their push, preflight and loop. `vibe status`, `vibe push`, preflight and `vibe loop` read the local state, so only the designing checkout is held. Starting a design leaves the working tree clean.

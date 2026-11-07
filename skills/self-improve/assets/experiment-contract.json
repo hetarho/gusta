@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "metric": { "name": "elapsed", "unit": "ms", "direction": "lower" },
+  "minImprovementPct": 5,
+  "minSamples": 3,
+  "expectedWork": 100,
+  "harness": "<measurement code fingerprint>",
+  "workload": "<input, seed and options fingerprint>",
+  "environment": "<runtime, hardware, build and cache conditions fingerprint>",
+  "regressionGate": "<behavior contract and fast check recipe fingerprint>"
+}
