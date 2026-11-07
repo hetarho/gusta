@@ -211,8 +211,11 @@ export async function nextWork(options) {
     if (result.action !== 'wait' || result.final || timedOut) {
       const { final, state, ...rest } = result
       const key = result.reason === 'needs-reviewer' ? 'needs-reviewer' : result.action
+      const group = result.action === 'complete' ? groupOf(await readRuntime(context.root), work) : null
+      const integrationTarget = group?.managed === false ? { branch: group.branch, path: group.path } : null
       return { schemaVersion: 1, work, owner: options.owner, ...rest, ...(timedOut && seconds ? { reason: 'timeout', detail: result.reason } : {}),
-        instruction: (options.autopilot ? UNATTENDED[key] : null) ?? INSTRUCTION[key] }
+        ...(integrationTarget ? { integrationTarget } : {}),
+        instruction: integrationTarget ? '지정한 기존 로컬 브랜치에 통합과 최종 검증이 끝났다. integrationTarget과 검증 커밋을 보고한다. 이미 위임된 로컬 통합을 다시 묻지 않으며, 원격 반영은 별도 push 정책을 따른다.' : (options.autopilot ? UNATTENDED[key] : null) ?? INSTRUCTION[key] }
     }
     await sleep(Math.min(options.pollMs ?? 5000, deadline - Date.now()))
   }

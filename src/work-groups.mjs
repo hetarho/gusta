@@ -921,7 +921,7 @@ export async function workBoard(options) {
 async function groupVerification(context, group) {
   if (!group.verified) return null
   const target = await head(context.cwd, `refs/heads/${group.branch}`)
-  const changed = (await git(context.cwd, ['diff', '--name-only', group.verified.commit, target, '--', '.', ':(exclude)spec/STATE.md', `:(exclude)spec/work/${group.id}.json`], [128]))
+  const changed = (await git(context.cwd, ['diff', '--name-only', group.verified.commit, target, '--', '.', ':(exclude)spec/STATE.md', ':(exclude)spec/reports/', `:(exclude)spec/work/${group.id}.json`], [128]))
   return { ...group.verified, current: changed !== null && !changed.trim() }
 }
 

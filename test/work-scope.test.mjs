@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFile, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -19,7 +19,8 @@ async function setup(t) {
 
 test('approved task scope prevents unrelated claims and finishes on the invoking branch', async (t) => {
   const local = await setup(t)
-  const created = await execute(process.execPath, [cli, 'work', 'start', 'approved-local', '--workspace', 'current', '--tasks', 'T001', '--review', 'all', '--push', '-', '--verify', checks[0], '--group-verify', checks[0], '--target', local.root, '--json'])
+  const finalCheck = `node -e "require('fs').appendFileSync('.git/final-count', 'run'+String.fromCharCode(10))"`
+  const created = await execute(process.execPath, [cli, 'work', 'start', 'approved-local', '--workspace', 'current', '--tasks', 'T001', '--review', 'all', '--push', '-', '--verify', checks[0], '--group-verify', finalCheck, '--target', local.root, '--json'])
   const group = JSON.parse(created.stdout)
   assert.equal(group.branch, 'main')
   assert.equal(group.path, local.root)
@@ -39,12 +40,20 @@ test('approved task scope prevents unrelated claims and finishes on the invoking
   const review = await claimReview({ ...local, work: group.id, owner: 'independent' })
   await finishReview({ ...local, review: review.id, result: { verdict: 'approved', summary: 'Synthetic fixture reviewed', findings: [] } })
   await integrateWork({ ...local, attempt: attempt.id, verify: checks })
-  await finishWork({ ...local, work: group.id, verify: checks })
+  await finishWork({ ...local, work: group.id, verify: [finalCheck] })
+  await mkdir(path.join(local.root, 'spec/reports'))
+  await writeFile(path.join(local.root, 'spec/reports/261107-scp1.md'), '# REPORT 261107-scp1\n> mode:autopilot | host:fixture | from:2026-11-07T00:00Z | to:2026-11-07T00:01Z | push:-\n\n## done\n- approved fixture\n\n## decided\n- -\n\n## parked\n- -\n\n## checks\n- final gate passed\n\n## next\n- -\n')
+  await git(local.root, 'add', 'spec/reports')
+  await git(local.root, 'commit', '-q', '-m', 'record completion report')
   const board = await workBoard({ ...local, work: group.id })
   assert.deepEqual(board.tasks, [])
   assert.deepEqual(board.excludedTasks, ['T002', 'T003'])
   assert.equal(board.summary.completed, 1)
-  assert.equal((await nextWork({ ...local, work: group.id, owner: 'idle' })).action, 'complete')
+  assert.equal(board.verified.current, true)
+  const completed = await nextWork({ ...local, work: group.id, owner: 'idle' })
+  assert.equal(completed.action, 'complete')
+  assert.deepEqual(completed.integrationTarget, { branch: 'main', path: local.root })
+  assert.equal(await readFile(path.join(local.root, '.git/final-count'), 'utf8'), 'run\n')
   assert.equal(await readFile(path.join(local.root, 'result.txt'), 'utf8'), 'approved change\n')
   const state = await readFile(path.join(local.root, 'spec/STATE.md'), 'utf8')
   assert.ok(state.includes('| T002 |'))
@@ -53,6 +62,10 @@ test('approved task scope prevents unrelated claims and finishes on the invoking
   assert.deepEqual(snapshot.group.taskScope, ['T001'])
   await configureWork({ ...local, work: group.id, tasks: 'T001 T002' })
   assert.deepEqual((await workBoard({ ...local, work: group.id })).tasks.map((task) => task.id), ['T002'])
+  await writeFile(path.join(local.root, 'result.txt'), 'changed code\n')
+  await git(local.root, 'add', 'result.txt')
+  await git(local.root, 'commit', '-q', '-m', 'change verified input')
+  assert.equal((await workBoard({ ...local, work: group.id })).verified.current, false)
 })
 
 test('approval scope preserves external dependencies and refuses split lanes or unknown tasks', async (t) => {
