@@ -10,8 +10,13 @@ import { SkillPackageError } from './errors.mjs'
 const HELP = `세션 도구 (start-vibe·start-design이 사용)
   vibe loop --tag <tag> --provider claude|codex [--model <name>] [--max-units 100] [--max-hours 8]
     [--batch-size 3] [--permission-mode acceptEdits|bypass] [--allow-tool <rule> ...]
-    [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--json]
+    [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
   vibe loop --tag <tag> --stop                  정지 파일 기록; 실행 중인 단위도 종료
+  vibe loop --tag <tag> --stop-after-unit       현재 단위·마감 검증 완료 후 정지
+  vibe loop --tag <tag> --configure --push-each-unit|--no-push-each-unit [--wait-ms <ms>]
+                                                현재 단위 완료 후 같은 호스트에 설정 적용; receipt로 적용 확인
+  vibe loop --tag <tag> --status               heartbeat·요청/적용 설정·운영 오류 확인
+  vibe loop --tag <tag> --recover-metadata     종료된 호스트의 정확히 소유한 메타데이터만 복구; 작업 재시작 없음
   vibe ci wait [--commit HEAD] [--branch <branch>] [--repo owner/repo]
     [--diff-base <sha>] [--timeout-ms 3600000] [--no-run-ms 120000] [--poll-ms 15000]
   vibe brief <T###|ID-n|ID|ID@rev ...> [--ref <commit>] [--deep] [--diff-base <task-start-sha>] [--json]
@@ -42,14 +47,14 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
 `
 
 const allowed = {
-  loop: ['tag', 'provider', 'model', 'max-units', 'max-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'remote'],
+  loop: ['tag', 'provider', 'model', 'max-units', 'max-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'remote', 'wait-ms', 'notify-command'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref'], format: ['section'],
   status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], beat: ['tag', 'mode', 'doing', 'host'],
   claim: ['tag', 'task', 'remote'],
   checkpoint: ['tag', 'message', 'remote'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
   awake: ['hours', 'remote'], check: ['tier', 'diff-base', 'task', 'timeout-ms'], design: ['tag', 'scope', 'verify', 'timeout-ms'],
 }
-const flags = { loop: ['dry-run', 'detach', 'stop', 'push-each-unit'], push: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep'] }
+const flags = { loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep'] }
 const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, claim: vibeClaim, beat: vibeBeat, checkpoint: vibeCheckpoint, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign }
 
 export async function runVibeCLI(args) {
@@ -73,6 +78,7 @@ export async function runVibeCLI(args) {
     if (argument === '--json') { options.json = true; continue }
     const key = argument.slice(2)
     if (argument.startsWith('--') && flags[action]?.includes(key)) {
+      if (key === 'no-push-each-unit') { options.pushEachUnit = false; continue }
       options[key === 'no-fetch' ? 'fetch' : key === 'no-cache' ? 'noCache' : key.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = key === 'no-fetch' ? false : true
       continue
     }

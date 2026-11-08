@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, writeFile, rm, readFile, realpath } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { executeAgentAdapter, claudeResult, providerArguments } from '../src/agent-adapter.mjs'
 import { builtInAdapter, inspectProviders, inspectOrca } from '../src/work-providers.mjs'
 
 async function stub(t, name, body) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'haeram-provider-test-'))
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-provider-test-')))
   t.after(() => rm(root, { recursive: true, force: true }))
   await writeFile(path.join(root, name), `#!${process.execPath}\n${body}`, { mode: 0o755 })
   return { root, env: { ...process.env, PATH: root } }

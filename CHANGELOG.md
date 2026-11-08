@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.4
+
+- Reproduce and fix cancelled loop finalization: immediate stop/signals/time limits never start closing checks with an aborted signal, interrupted verification is recorded separately from test failure, and every exit attempts a journaled host-metadata close. A local replacement runner treating any dirty report as unfinished implementation was a separate caller error.
+- Add in-place `vibe loop --configure --push-each-unit|--no-push-each-unit`, durable applied receipts, `--wait-ms`, and `--stop-after-unit`. Configuration applies after the current unit and owned metadata commit, preserves the same host/deadline/unit budget, and keeps the verified-code push and post-push CI gates. Existing `--stop` remains immediate; cancellation intentionally skips new final verification/publication.
+- Limit host ownership to the exact report and its own active row. Preserve unknown source/SSOT/task/STATE/report/index edits and stop publication instead of launching an implementation recovery session. Retry metadata operations once, record operational errors separately, and provide explicit metadata-only recovery without worker restart or clearing user stops. Host report commits now also occur at each unit boundary.
+- Add atomic status, heartbeat, terminal-write fallback, independent supervisor readiness/lost-host detection, durable failure events/outbox, and an optional tested notification command. Only an actual successful hook invocation is acknowledged; external user delivery is never assumed. OS-wide restart supervision and external messaging integration remain separate operations work.
+- Exercise complete unit-to-metadata-to-config-to-next-unit flows with fake workers, isolated Git publication, write/commit/configuration/status faults, real isolated host termination, cancellation, ownership isolation, budget preservation, unknown edits, notification acknowledgements, and verified SHA/CI protections.
+
 ## 0.8.3
 
 - Pin the publishing npm CLI and enable its bundled Sigstore client's existing Rekor conflict recovery. A retry-after-success 409 fetches the recorded entry while preserving signing, transparency-log evidence and provenance; unsupported tool versions or configuration shapes fail closed. Exercise recovery and unrecoverable failures against the real publishing tools before release. Consumer dependencies and installation are unchanged.

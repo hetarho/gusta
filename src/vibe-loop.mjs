@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import path from 'node:path'
-import { vibeStatus, vibeSession, vibePreflight, vibeBeat, vibePush, vibeAwake, vibeCheckpoint, vibeSync, vibeClaim } from './vibe.mjs'
+import { vibeStatus, vibeSession, vibePreflight, vibePush, vibeAwake, vibeCheckpoint, vibeSync, vibeClaim } from './vibe.mjs'
 import { readVerification, vibeBrief } from './vibe-brief.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { vibeCIWait } from './vibe-ci.mjs'
@@ -14,10 +14,11 @@ import { SESSION_TAG } from './spec-format.mjs'
 import { sections, tableRows } from './spec-format.mjs'
 import { validateAgentResult } from './agent-adapter.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, startLoopMonitor, controlTransaction, processAlive } from './loop-control.mjs'
+import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 
 const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
 const adapter = fileURLToPath(new URL('../bin/haeram-agent-adapter.mjs', import.meta.url))
-const alive = (pid) => { try { process.kill(pid, 0); return true } catch (error) { return error.code === 'EPERM' } }
 const present = (file) => access(file).then(() => true, () => false)
 const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
 const positive = (value, fallback, label, integer = false) => {
@@ -90,82 +91,144 @@ export async function executeVibeUnit(options, job, directory, limits = {}) {
 
 export async function vibeLoop(options = {}, injected = {}) {
   if (!SESSION_TAG.test(options.tag ?? '')) throw new SkillPackageError('--tag에는 영숫자 2-8자가 필요합니다.')
-  if (!options.stop && !options.adapter && !['claude', 'codex'].includes(options.provider)) throw new SkillPackageError('--provider claude|codex가 필요합니다.')
+  const control = ['stop', 'stopAfterUnit', 'configure', 'status', 'recoverMetadata'].filter((name) => options[name])
+  if (control.length > 1) throw new SkillPackageError('loop 제어 동작은 하나만 지정하세요.')
+  if (control.length && (options.dryRun || options.detach)) throw new SkillPackageError('실행 중 제어에는 --dry-run 또는 --detach를 함께 쓰지 않습니다.')
+  if (!control.length && !options.adapter && !['claude', 'codex'].includes(options.provider)) throw new SkillPackageError('--provider claude|codex가 필요합니다.')
   if (!['acceptEdits', 'bypass'].includes(options.permissionMode ?? 'acceptEdits')) throw new SkillPackageError('--permission-mode는 acceptEdits 또는 bypass입니다.')
+  if (options.notifyCommand !== undefined && (typeof options.notifyCommand !== 'string' || !options.notifyCommand.trim())) throw new SkillPackageError('--notify-command에는 실행 가능한 명령이 필요합니다.')
   const maxUnits = positive(options.maxUnits, 100, 'max-units', true), hours = positive(options.maxHours, 8, 'max-hours')
   const batchSize = positive(options.batchSize, 3, 'batch-size', true), timeoutMs = positive(options.timeoutMs, 3600000, 'timeout-ms')
   const context = await vibeSession(options), root = context.root
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
-  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, now: Date.now, ...injected }
-  if (options.stop) { await mkdir(directory, { recursive: true }); await writeFile(stopFile, 'stop\n'); return { schemaVersion: 1, ok: true, stopFile } }
+  const lock = path.join(context.workspace.git.gitDir, 'haeram-vibe-loop.lock')
+  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, now: Date.now, monitor: startLoopMonitor, fault: async () => {}, ...injected }
+  const previous = await readJSON(manifest)
+  if (previous && previous.cwd !== root) throw new SkillPackageError('이 tag는 다른 checkout 소유입니다.', [previous.cwd])
+  if (options.stop) { await bindLoopDirectory(directory, root); await writeFile(stopFile, 'stop\n'); return { schemaVersion: 1, ok: true, stopFile, action: 'cancel' } }
+  if (options.status || options.configure || options.stopAfterUnit) return requestControl(directory, root, options)
+  if (options.recoverMetadata) {
+    const owner = { pid: process.pid, host: os.hostname(), tag: options.tag, runId: randomUUID() }
+    await acquireLoop(lock, owner)
+    try {
+      const state = await inspectLoop(directory, root)
+      if (state.running) throw new SkillPackageError('실행 중인 loop의 메타데이터는 복구하지 않습니다.')
+      try {
+        const result = await recoverLoopMetadata(root, directory, state)
+        await controlTransaction(path.join(directory, 'state'), () => atomicJSON(manifest, { ...state, running: false, ...(state.health === 'host-lost' ? { status: 'failed', reason: 'host-lost', error: state.error ?? 'loop host exited without finalization' } : {}), metadataRecoveredAt: new Date().toISOString(), recoveredErrors: state.operationalErrors, operationalErrors: [] }))
+        const terminal = path.join(directory, 'terminal.json')
+        if ((await readJSON(terminal))?.runId === state.runId) await rm(terminal, { force: true })
+        await loopEvent(directory, state, 'metadata-recovered')
+        return result
+      } catch (caught) {
+        await loopEvent(directory, state, 'metadata-error', { error: caught.message })
+        throw caught
+      }
+    } finally { await releaseLoop(lock, owner.runId) }
+  }
   const state = await deps.status({ ...options, tag: options.tag })
   const verify = await readVerification(root)
   const batchVerify = options.verify ?? verify.batch
   if (!Array.isArray(batchVerify) || batchVerify.some((command) => typeof command !== 'string' || !command.trim())) throw new SkillPackageError('--verify에는 실행 가능한 명령이 필요합니다.')
-  const plan = { schemaVersion: 1, tag: options.tag, provider: options.provider ?? 'command', permissionMode: options.permissionMode ?? 'acceptEdits',
+  const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? 'command', permissionMode: options.permissionMode ?? 'acceptEdits',
     cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs }, verify, batchVerify,
-    directory, stopFile, manifest, freshSessionPerUnit: true, pushEachUnit: Boolean(options.pushEachUnit) }
+    directory, stopFile, manifest, freshSessionPerUnit: true, pushEachUnit: Boolean(options.pushEachUnit), notifyCommand: options.notifyCommand ?? null }
   if (options.dryRun) return { ...plan, dryRun: true, modelRequests: 0 }
   if ((await inspectWork({ targetRoot: root })).mode !== 'single') throw new SkillPackageError('vibe loop는 단독 checkout에서 실행하세요. 활성 work 공간은 work run을 사용합니다.')
   await mkdir(directory, { recursive: true })
+  await bindLoopDirectory(directory, root)
   if (options.detach) {
+    const runId = randomUUID()
     const config = path.join(directory, `config-${randomUUID()}.json`)
-    await writeFile(config, JSON.stringify({ ...options, targetRoot: root, detach: false }), { mode: 0o600 })
+    await writeFile(config, JSON.stringify({ ...options, targetRoot: root, detach: false, runId }), { mode: 0o600 })
     const logPath = path.join(directory, 'host.log'), log = await open(logPath, 'a')
     try {
       const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/haeram-vibe-loop.mjs', import.meta.url)), config], { cwd: root, detached: true, stdio: ['ignore', log.fd, log.fd], env: options.env ?? process.env })
       await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
       child.unref()
-      return { ...plan, ok: true, detached: true, pid: child.pid, status: 'starting; inspect manifest/host log for preflight result', log: logPath }
+      const readyUntil = Date.now() + 10000
+      while (Date.now() < readyUntil) {
+        const ready = await readJSON(manifest)
+        if (ready?.runId === runId) return { ...plan, ok: true, detached: true, runId, pid: child.pid, ready: true, status: ready.status, log: logPath }
+        if (child.exitCode !== null) throw new SkillPackageError('loop host failed before ownership acknowledgement', [logPath])
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      throw new SkillPackageError('loop host ownership acknowledgement timed out; inspect status before retry', [logPath])
     } finally { await log.close() }
   }
-  const lock = path.join(context.workspace.git.gitDir, 'haeram-vibe-loop.lock')
-  try { await writeFile(lock, JSON.stringify({ pid: process.pid, host: os.hostname(), tag: options.tag }), { flag: 'wx' }) }
-  catch (error) {
-    if (error.code !== 'EEXIST') throw error
-    const owner = JSON.parse(await readFile(lock, 'utf8'))
-    if (owner.host !== os.hostname() || alive(owner.pid)) throw new SkillPackageError('이 checkout에서 vibe loop가 실행 중입니다.', [JSON.stringify(owner)])
-    await rm(lock)
-    return vibeLoop(options, injected)
-  }
+  const runId = options.runId ?? randomUUID()
+  await acquireLoop(lock, { pid: process.pid, host: os.hostname(), tag: options.tag, runId })
   const start = deps.now(), deadline = start + hours * 3600000
   const report = `spec/reports/${new Date(start).toISOString().slice(2, 10).replaceAll('-', '')}-${options.tag}.md`
   const reportPath = path.join(root, report)
   let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false
-  const previous = await readFile(manifest, 'utf8').then(JSON.parse).catch(() => null)
   let priorityTask = /^T\d+$/.test(previous?.priorityTask ?? '') ? previous.priorityTask : null
   let recovery = previous?.recovery?.reason === 'blocked-task' && /^T\d+$/.test(previous.recovery.taskId ?? '') ? previous.recovery : null
   const dispatches = [], batches = []
+  const operationalErrors = [], configHistory = []
+  const appliedConfig = { pushEachUnit: Boolean(options.pushEachUnit) }
+  let requestedConfig = { ...appliedConfig }, phase = 'preflight', heartbeatAt = new Date().toISOString(), supervisor = null, closing = false
+  const metadata = new LoopMetadata(root, directory, report, options.tag, runId, { fault: deps.fault })
   const controller = new AbortController()
-  let stopReason = null, watching = false, checkpointAt = start
+  let stopReason = null, watching = null, checkpointAt = start
+  const event = async (type, detail = {}) => {
+    try { await loopEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, type, detail) }
+    catch (caught) { operationalErrors.push({ operation: 'event-write', error: caught.message }); process.stderr.write(`loop event-write failed: ${caught.message}\n`) }
+  }
+  const metadataStep = async (operation, run) => {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try { await metadata.applyOperation(); return await run() }
+      catch (caught) {
+        await event('metadata-retry', { operation, attempt, error: caught.message })
+        if (attempt === 2) { operationalErrors.push({ operation, error: caught.message }); await event('metadata-error', { operation, error: caught.message }); throw caught }
+      }
+    }
+  }
   const checkpoint = async () => {
     if (initialized && !stopped && deps.now() - checkpointAt >= 3600000) {
       checkpointAt = deps.now()
-      await deps.checkpoint({ ...options, targetRoot: root, tag: options.tag }).catch(() => {})
+      await deps.checkpoint({ ...options, targetRoot: root, tag: options.tag }).catch(async (caught) => {
+        operationalErrors.push({ operation: 'checkpoint', error: caught.message })
+        await event('metadata-error', { operation: 'checkpoint', error: caught.message })
+      })
     }
   }
   const stop = (why) => { stopped = true; stopReason ??= why; controller.abort(stopReason) }
   const interrupted = () => stop('signal')
-  const watcher = setInterval(async () => {
-    if (watching) return
-    watching = true
-    try {
-      if (await present(stopFile)) stop('stop-file')
-      if (deps.now() >= deadline) stop('max-hours')
-      await checkpoint()
-    } finally { watching = false }
-  }, 1000)
-  const save = async () => writeFile(manifest, JSON.stringify({ ...plan, pid: process.pid, startedAt: new Date(start).toISOString(), report, units: count, dispatches, batches, priorityTask, recovery, reason, error, running: !reason }, null, 2))
-  const metadataCommit = async (message) => {
-    const changed = (await git(root, ['status', '--porcelain', '--', 'spec/STATE.md', report])).trim()
-    if (!changed) return
-    await git(root, ['add', '--', 'spec/STATE.md', report])
-    await git(root, ['commit', '--quiet', '--only', '-m', message, '--', 'spec/STATE.md', report])
+  const snapshot = () => ({ ...plan, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), heartbeatAt,
+    status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
+    ...(closing ? { endedAt: new Date().toISOString() } : {}),
+    report, units: count, dispatches, batches, priorityTask, recovery, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+  let saving = Promise.resolve()
+  const save = () => {
+    saving = saving.catch(() => {}).then(async () => {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          await deps.fault('manifest-write')
+          await controlTransaction(path.join(directory, 'state'), () => atomicJSON(manifest, snapshot()))
+          return
+        } catch (caught) {
+          if (attempt === 2) { operationalErrors.push({ operation: 'manifest-write', error: caught.message }); await event('metadata-error', { operation: 'manifest-write', error: caught.message }); throw caught }
+        }
+      }
+    })
+    return saving
   }
+  const watcher = setInterval(() => {
+    if (watching) return
+    watching = (async () => {
+      if (await present(stopFile) && (await readFile(stopFile, 'utf8')).trim() !== 'stop-after-unit') stop('stop-file')
+      if (deps.now() >= deadline) stop('max-hours')
+      if (supervisor?.pid && !processAlive(supervisor.pid)) throw new Error('independent loop supervisor exited')
+      heartbeatAt = new Date().toISOString()
+      await save()
+    })().catch(async (caught) => { operationalErrors.push({ operation: 'heartbeat', error: caught.message }); stop('operational-error'); await event('failed', { error: caught.message }) }).finally(() => { watching = null })
+  }, 1000)
+  const metadataCommit = (message) => metadataStep('metadata-commit', () => metadata.commit(message))
   const updateReport = async (closing = false) => {
     let text = await readFile(reportPath, 'utf8')
     if (closing) text = text.replace(/\bto:-/, `to:${new Date(deps.now()).toISOString()}`)
-    const lines = pending.map((entry) => `- ${entry.result?.kind ?? 'session'} ${entry.result?.id ?? '-'}: ${entry.result?.outcome ?? 'failed'} (${entry.head.slice(0, 12)})`).filter((line) => !text.includes(line))
+    const lines = pending.map((entry) => `- ${entry.result?.kind ?? 'session'} ${entry.result?.id ?? '-'}: ${entry.result?.outcome ?? (entry.stopped ? `cancelled (${entry.stopped})` : 'failed')} (${entry.head.slice(0, 12)})`).filter((line) => !text.includes(line))
     if (lines.length) text = text.replace('\n## decided', `${lines.join('\n')}\n\n## decided`)
     const current = await deps.status({ ...options, targetRoot: root, section: 'inbox', fetch: false })
     for (const kind of ['decided', 'parked']) {
@@ -174,17 +237,48 @@ export async function vibeLoop(options = {}, injected = {}) {
       const fresh = entries.filter((line) => !text.includes(line))
       if (fresh.length) text = text.replace(`\n## ${next}`, `${fresh.join('\n')}\n\n## ${next}`)
     }
-    const checks = batches.map((entry) => entry.ci ? `- CI ${entry.ci.commit ?? '-'}: ${entry.ci.outcome} ${entry.ci.runUrl ?? ''}` : `- ${entry.command}: ${entry.ok ? 'pass' : 'fail'} (${entry.log ?? '-'})`)
+    const checks = batches.map((entry) => entry.ci ? `- CI ${entry.ci.commit ?? '-'}: ${entry.ci.outcome} ${entry.ci.runUrl ?? ''}` : `- ${entry.command}: ${entry.cancelled ? 'cancelled' : entry.ok ? 'pass' : 'fail'} (${entry.log ?? '-'})`)
       .filter((line) => !text.includes(line))
     if (checks.length) text = text.replace('\n## next', `${checks.join('\n')}\n\n## next`)
     if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}`)
-    await writeFile(reportPath, text)
+    await metadata.writeReport(text)
+  }
+  const recordReport = (closing) => metadataStep('report-write', () => updateReport(closing))
+  const ensureActive = async () => {
+    if (await present(stopFile) && (await readFile(stopFile, 'utf8')).trim() !== 'stop-after-unit') stop('stop-file')
+    if (controller.signal.aborted || deps.now() >= deadline) { stopReason ??= deps.now() >= deadline ? 'max-hours' : 'cancelled'; throw new Error('loop publication cancelled') }
+  }
+  const applyRequests = async () => {
+    for (const request of await readRequests(directory, runId)) {
+      if (request.status !== 'pending') continue
+      if (request.type === 'stop-after-unit') {
+        // Like STOP, a graceful user stop persists across explicit invocations.
+        await writeFile(stopFile, 'stop-after-unit\n')
+        await atomicJSON(requestPath(directory, request), { ...request, status: 'applied', appliedAt: new Date().toISOString(), afterUnit: count })
+        reason = 'stop-after-unit'
+        return
+      }
+      if (request.type !== 'configure' || typeof request.requested?.pushEachUnit !== 'boolean') throw new Error('invalid loop configuration request')
+      requestedConfig = { ...request.requested }
+      await save()
+      // Faults before/after mutation remain in this same host; no worker handoff.
+      await deps.fault('config-before-apply')
+      Object.assign(appliedConfig, requestedConfig)
+      const acknowledgement = { ...request, status: 'applied', actual: { ...appliedConfig }, appliedAt: new Date().toISOString(), afterUnit: count }
+      configHistory.push(acknowledgement)
+      await save()
+      await deps.fault('config-after-apply')
+      await atomicJSON(requestPath(directory, request), acknowledgement)
+      await event('configuration-applied', { requestId: request.id, actual: appliedConfig, afterUnit: count })
+    }
   }
   // A batch boundary only records the report. Batch suites, the push and the CI wait run when
   // the work runs out or at the end. Per-unit publication requires an explicit option.
   const flush = async (closing = false, publish = closing) => {
-    await updateReport(closing)
+    if (publish) await ensureActive()
+    await recordReport(closing)
     await metadataCommit(`vibe ${options.tag}: ${closing ? 'close report' : 'batch report'}`)
+    await metadata.assertClean()
     if (publish && context.target) await deps.sync({ ...options, targetRoot: root })
     const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
     const files = (await git(root, ['diff', '--name-only', base, head])).trim().split('\n').filter(Boolean)
@@ -192,15 +286,21 @@ export async function vibeLoop(options = {}, injected = {}) {
     if (code && publish) {
       if (!batchVerify.length) throw new SkillPackageError('코드 push 전 묶음 검증이 없습니다. ARCH batch 단계 또는 --verify를 지정하세요.')
       for (const command of batchVerify) {
-        const checked = await deps.check({ targetRoot: root, tier: 'batch', diffBase: base, heavy: true, signal: controller.signal, timeoutMs: Math.min(timeoutMs, Math.max(1, deadline - deps.now())) }, command)
-        batches.push({ command, ...checked })
+        await ensureActive()
+        let checked
+        try { checked = await deps.check({ targetRoot: root, tier: 'batch', diffBase: base, heavy: true, signal: controller.signal, timeoutMs: Math.min(timeoutMs, Math.max(1, deadline - deps.now())) }, command) }
+        catch (caught) { batches.push({ command, ok: false, cancelled: controller.signal.aborted, error: caught.message }); throw caught }
+        batches.push({ command, ...checked, ...(!checked.ok && controller.signal.aborted ? { cancelled: true } : {}) })
+        await ensureActive()
         if (!checked.ok) throw new SkillPackageError(`묶음 검증 실패: ${command}`, [checked.log ?? ''])
       }
     }
-    await updateReport(closing)
+    await recordReport(closing)
     await metadataCommit(`vibe ${options.tag}: record checks`)
     // base stays at the last published commit, so the next publish still sees this code.
     if (!publish) { pending = []; await save(); return }
+    await ensureActive()
+    await metadata.assertClean()
     const pushed = await deps.push({ ...options, targetRoot: root, ...(code ? { verifiedCommit: head } : {}) })
     if (pushed.ok === false) throw new SkillPackageError('묶음 push 실패')
     if (pushed.pushed && code) {
@@ -232,8 +332,10 @@ export async function vibeLoop(options = {}, injected = {}) {
     // The last CI result (and any repair queued at a limit) arrives after the
     // code push. Persist it in the closing report and publish that metadata too.
     if (closing && pushed.pushed && code) {
-      await updateReport(true)
+      await recordReport(true)
       await metadataCommit(`vibe ${options.tag}: final CI result`)
+      await ensureActive()
+      await metadata.assertClean()
       const final = await deps.push({ ...options, targetRoot: root, verifiedCommit: head })
       if (final.ok === false) throw new SkillPackageError('마감 보고서 push 실패')
     }
@@ -243,7 +345,12 @@ export async function vibeLoop(options = {}, injected = {}) {
   process.on('SIGINT', interrupted); process.on('SIGTERM', interrupted)
   try {
     await save()
-    if (await present(stopFile)) { reason = 'stop-file'; return { ...plan, ok: true, reason, units: 0 } }
+    if (await present(stopFile)) { stop('stop-file'); throw new Error('loop stopped before preflight') }
+    try { supervisor = await deps.monitor(directory, runId) }
+    catch (caught) { await event('supervisor-error', { error: caught.message }); throw caught }
+    await event('started')
+    // Never adopt pre-existing source, SSOT, STATE, report or index changes.
+    if ((await git(root, ['status', '--porcelain'])).trim()) throw new SkillPackageError('loop 시작 전 미커밋 변경을 보존합니다. 먼저 정리하세요.')
     const allowTool = [...new Set(['Bash(git *)', `Bash(${process.execPath} ${cli} *)`, ...(options.allowTool ?? [])])]
     const probe = options.probe ?? `git status --porcelain${context.target ? ` && git push --dry-run ${quote(context.remote)} ${quote(`HEAD:refs/heads/${context.target}`)}` : ''}`
     const preflight = await deps.preflight({ ...options, targetRoot: root, signal: controller.signal, probe, allowTool, probeWorkspace: 'current', probeTimeoutMs: Math.min(Number(options.probeTimeoutMs ?? 900000), Math.max(1, deadline - deps.now())) })
@@ -251,19 +358,24 @@ export async function vibeLoop(options = {}, injected = {}) {
     if (!preflight.ok) throw new SkillPackageError('맡김 preflight 실패', preflight.checks.filter((check) => !check.ok).map((check) => `${check.name}: ${check.detail}`))
     if (state.git?.behind) await vibeSync({ ...options, targetRoot: root })
     base = (await git(root, ['rev-parse', 'HEAD'])).trim()
-    await vibeBeat({ targetRoot: root, tag: options.tag, mode: 'autopilot' })
     await mkdir(path.dirname(reportPath), { recursive: true })
+    await metadata.initialize()
+    initialized = true
+    await metadataStep('active-start', () => metadata.beat())
     if (await present(reportPath)) {
       const previous = await readFile(reportPath, 'utf8')
-      await writeFile(reportPath, previous.replace(/\bto:[^|\n]+/, 'to:- '))
-    } else await writeFile(reportPath, `# REPORT ${path.basename(report, '.md')}\n> mode:autopilot | host:${os.hostname()} | from:${new Date(start).toISOString()} | to:- | push:${context.push}\n\n## done\n\n## decided\n\n## parked\n\n## checks\n\n## next\n- continue remaining work\n`)
-    initialized = true
+      await metadataStep('report-open', () => metadata.writeReport(previous.replace(/\bto:[^|\n]+/, 'to:- ')))
+    } else await metadataStep('report-open', () => metadata.writeReport(`# REPORT ${path.basename(report, '.md')}\n> mode:autopilot | host:${os.hostname()} | from:${new Date(start).toISOString()} | to:- | push:${context.push}\n\n## done\n\n## decided\n\n## parked\n\n## checks\n\n## next\n- continue remaining work\n`))
+    await metadataCommit(`vibe ${options.tag}: session presence`)
     if (process.platform === 'darwin') { const receipt = await vibeAwake({ targetRoot: root, hours: Math.min(hours, 72) }); awake = receipt.ok && !receipt.reused }
     for (;;) {
       if (stopped) { reason = stopReason; break }
       if (await present(stopFile)) { reason = 'stop-file'; break }
       if (deps.now() >= deadline) { reason = 'max-hours'; break }
       if (count >= maxUnits) { reason = 'max-units'; break }
+      phase = 'boundary'
+      await applyRequests()
+      if (reason) break
       let status = await deps.status({ ...options, targetRoot: root, tag: options.tag })
       if (status.git?.fetchError) throw new SkillPackageError('원격 판정 실패', [status.git.fetchError])
       // A design opened in this checkout meanwhile: its edits wait for the user, not for units.
@@ -290,11 +402,13 @@ export async function vibeLoop(options = {}, injected = {}) {
         status = await deps.status({ ...options, targetRoot: root, tag: options.tag })
       }
       const before = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
+      await metadata.assertClean()
       const brief = selected ? await vibeBrief({ targetRoot: root, task: selected, diffBase: before.head }) : null
       const job = { schemaVersion: 1, role: 'unit', mode: 'autopilot', workspaceMode: 'single', workspace: root, tag: options.tag, report, status, brief,
         cliCommand: [process.execPath, cli], allowTools: allowTool, permissionMode: options.permissionMode ?? 'acceptEdits', diffBase: before.head, hostManaged: true,
         ...(recovery ? { recovery } : {}) }
-      const receipt = await deps.execute(options, job, directory, { stopFile, deadline, signal: controller.signal, timeoutMs: Math.min(timeoutMs, Math.max(1, deadline - deps.now())) })
+      phase = 'unit'; await save()
+      const receipt = await deps.execute({ ...options, ...appliedConfig }, job, directory, { stopFile, deadline, signal: controller.signal, timeoutMs: Math.min(timeoutMs, Math.max(1, deadline - deps.now())) })
       count++
       const after = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
       const entry = { ...receipt, unit: count, head: after.head, at: new Date(deps.now()).toISOString() }
@@ -313,7 +427,21 @@ export async function vibeLoop(options = {}, injected = {}) {
       failureStreak = failed ? failureStreak + 1 : 0
       noProgress = before.head === after.head && before.state === after.state ? noProgress + 1 : 0
       await save()
-      if (receipt.stopped) { reason = receipt.stopped; break }
+      if (receipt.stopped) {
+        reason = receipt.stopped
+        if (['stop-file', 'signal', 'max-hours'].includes(reason)) stop(reason)
+        else { error = receipt.error ?? `unit stopped: ${reason}`; await event('failed', { reason, error }) }
+        break
+      }
+      if (await present(stopFile)) stop('stop-file')
+      if (stopped) { reason = stopReason; break }
+      // The full boundary is host-owned: receipt -> metadata -> config -> next unit.
+      phase = 'boundary'
+      await recordReport(false)
+      await metadataCommit(`vibe ${options.tag}: unit report`)
+      await metadata.assertClean()
+      await applyRequests()
+      if (reason) break
       if (failureStreak >= 2) { reason = 'session-failures'; break }
       if (noProgress >= 2) { reason = 'no-progress'; break }
       if (failed) continue
@@ -321,22 +449,50 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (priorityTask && afterStatus.remaining && !afterStatus.remaining.some((task) => task.id === priorityTask)) priorityTask = null
       if (count >= maxUnits) { reason = 'max-units'; break }
       const completed = pending.filter((entry) => ['task', 'fix'].includes(entry.result?.kind) && entry.result.outcome === 'completed').length
-      if (options.pushEachUnit || completed >= batchSize || !afterStatus.runnable?.length) await flush(false, Boolean(options.pushEachUnit && context.target))
+      if (appliedConfig.pushEachUnit || completed >= batchSize || !afterStatus.runnable?.length) await flush(false, Boolean(appliedConfig.pushEachUnit && context.target))
     }
-  } catch (caught) { reason = 'failed'; error = caught.message }
+  } catch (caught) {
+    if (controller.signal.aborted || stopReason) reason = stopReason ?? 'cancelled'
+    else { reason = 'failed'; error = caught.message; await event('failed', { error }) }
+  }
   finally {
-    clearInterval(watcher)
-    process.off('SIGINT', interrupted); process.off('SIGTERM', interrupted)
     if (initialized) {
       try {
-        await vibeBeat({ targetRoot: root, tag: options.tag, end: true })
-        if (!error && failureStreak === 0) await flush(true)
-        else { await updateReport(true); await metadataCommit(`vibe ${options.tag}: stopped (${reason})`) }
-      } catch (caught) { error ??= caught.message; reason = 'failed'; await updateReport(true).catch(() => {}) }
+        phase = 'finalizing'
+        await metadataStep('active-end', () => metadata.beat(true))
+        if (!error && failureStreak === 0 && !controller.signal.aborted && deps.now() < deadline) await flush(true)
+      } catch (caught) {
+        if (controller.signal.aborted || stopReason) reason = stopReason ?? reason
+        else { error ??= caught.message; reason = 'failed'; await event('failed', { error: caught.message }) }
+      }
+      // Always persist the final reason and commit the owned report, including failures.
+      try { await recordReport(true); await metadataCommit(`vibe ${options.tag}: stopped (${reason})`) }
+      catch { /* metadataStep recorded a separate operational error and durable journal */ }
     }
-    if (awake) await vibeAwake({ targetRoot: root, stop: true }).catch(() => {})
-    await save()
-    await rm(lock, { force: true })
+    if (awake) await vibeAwake({ targetRoot: root, stop: true }).catch(async (caught) => {
+      operationalErrors.push({ operation: 'awake-end', error: caught.message })
+      await event('metadata-error', { operation: 'awake-end', error: caught.message })
+    })
+    clearInterval(watcher)
+    if (watching) await watching
+    closing = true
+    try {
+      await controlTransaction(path.join(directory, 'requests-control'), async () => {
+        for (const request of await readRequests(directory, runId)) {
+          if (request.status !== 'pending') continue
+          const applied = configHistory.find((entry) => entry.id === request.id)
+          await atomicJSON(requestPath(directory, request), applied ?? { ...request, status: 'cancelled', reason })
+        }
+        await save()
+      })
+      if (reason === 'session-failures') await event('failed', { reason })
+      await event('stopped', { reason, error })
+    } catch (caught) {
+      operationalErrors.push({ operation: 'final-state', error: caught.message })
+      await event('failed', { operation: 'final-state', error: caught.message })
+      // Separate fallback lets status/supervision recognize a failed final manifest write.
+      await atomicJSON(path.join(directory, 'terminal.json'), { ...snapshot(), running: false, status: 'failed', error: error ?? caught.message })
+    } finally { process.off('SIGINT', interrupted); process.off('SIGTERM', interrupted); await releaseLoop(lock, runId) }
   }
-  return { ...plan, ok: !error && reason !== 'session-failures', reason, error, units: count, report, codePushed, priorityTask, recovery, manifest }
+  return { ...plan, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, codePushed, priorityTask, recovery, manifest }
 }

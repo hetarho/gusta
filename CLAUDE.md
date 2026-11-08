@@ -7,6 +7,7 @@
 - `skills/<name>/agents/openai.yaml` — Codex 전용 메타 (Claude 설치 시 제외됨)
 - `skills/create-architecture/assets/{STATE,FORMAT}.md` — 타겟 프로젝트 `spec/`에 복사되는 템플릿 (부트스트랩 정본)
 - `skills/start-vibe/assets/report.md` — 맡김 세션 보고서 템플릿, `skills/start-vibe/references/coordinator.md` — 작업 묶음 조정자 절차
+- `src/loop-control.mjs`·`src/loop-metadata.mjs` — 단위 경계 설정 요청/receipt·소유권·독립 감시·정확한 호스트 메타데이터 journal. `skills/start-vibe/references/loop-control.md`가 제어/복구/알림 계약이다. 즉시 취소·단위 완료 정지·설정 변경을 분리하고 취소된 signal로 마감 검증하지 않는다. 보고서와 자기 active 행 밖 변경은 자동 커밋·무시하지 않는다.
 - `skills/self-improve/references/experiments.md`·`scripts/experiment.mjs` — 고정 측정 계약의 반복 실험·비교·JSONL 기록. 최초 기준선/최선 후보·실패 이력을 보존하며, 국소 keep는 독립 리뷰·최종 검증 승인이 아니다. 실행기/스케줄러·일일 예산 관리는 별도다.
 - 스킬 15종: start-vibe · start-design · ideation · self-improve · self-improve-local(사용자 진입점) · review-task · manage-work · create-architecture · create-ssot · update-ssot · create-task · implement-task · review-code · doc-review · create-narrative. 나머지도 숨기지 않는다(이름으로 부를 수 있다) — 평소에는 start-vibe가 고른다.
 
@@ -36,6 +37,7 @@
 
 ## 검증
 - `npm run check` — 테스트 + 스킬 frontmatter/구조 검증 + 패키징 검증. 스킬 수정 후 항상 실행.
+- loop 종료/설정 회귀는 `test/vibe-loop-control.test.mjs`: 가짜 단위·격리 bare Git·실제 호스트 강제 종료·실제 알림 자식 명령. 모델 호출과 운영 브랜치 push 없이 전체 단위 경계를 검증한다.
 - 로컬 설치 테스트: `node ./bin/haeram-spec-creator.mjs install --target <경로>` 후 `check --target <경로>`.
 - `lint --target <경로>` — 타겟 프로젝트 spec/의 FORMAT 불변식 검사(ID·st 형식, rev/tasked 정합, 참조 무결성, chg 연속성, 고아 파일, SSOT 골격 밖 섹션·산문, inbox 참조·active 행·explore exit·보고서 골격, 옛 STATE `## design` 경고). `--hints`로 검토 후보 전체 출력(기본 10건).
 - `vibe brief <T###|ID-n|ID|ID@rev>` — 태스크·결정 브리핑(마크다운, `--json`·`--ref`·`--deep`). 대표 태스크 전달량은 `node scripts/measure-brief.mjs --target <경로> [--tokens]`(읽기 전용).

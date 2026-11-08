@@ -199,13 +199,26 @@ PR이나 GitHub CLI가 없어도 로컬 구현·리뷰·통합을 할 수 있습
 ## 단위마다 새 세션으로 맡기기 (0.6.0)
 
 ```bash
-npx haeram-spec-creator@0.6.0 vibe loop --tag k3f9 --provider claude --dry-run --json
-npx haeram-spec-creator@0.6.0 vibe loop --tag k3f9 --provider claude --max-units 30 --max-hours 8 --detach --json
+npx haeram-spec-creator@0.8.4 vibe loop --tag k3f9 --provider claude --dry-run --json
+npx haeram-spec-creator@0.8.4 vibe loop --tag k3f9 --provider codex --max-units 30 --max-hours 8 --detach --json
+# 실행 중 변경: 현재 단위를 끝낸 같은 호스트가 적용합니다. pending은 적용 완료가 아닙니다.
+npx haeram-spec-creator@0.8.4 vibe loop --tag k3f9 --configure --push-each-unit --wait-ms 30000 --json
+npx haeram-spec-creator@0.8.4 vibe loop --tag k3f9 --status --json
+# 현재 단위와 마감 검증을 끝낸 뒤 정지
+npx haeram-spec-creator@0.8.4 vibe loop --tag k3f9 --stop-after-unit --json
 # Codex도 --provider codex로 동일하게 실행
-npx haeram-spec-creator@0.6.0 vibe loop --tag k3f9 --stop --json
+npx haeram-spec-creator@0.8.4 vibe loop --tag k3f9 --stop --json
 ```
 
 반복기는 preflight·active·보고서를 한 번 준비한 뒤 태스크 하나, 기획 한 조각(SSOT+create-task), inbox 정리마다 새 세션을 시작합니다. `.git/haeram/v1/loops/<tag>/loop.json`에 상태·로그·세션 ID·정지 파일 경로를 남깁니다. `--detach`는 부모 터미널과 분리하고 macOS에서는 caffeinate를 사용합니다. STOP 표식은 재시작 전에 직접 지웁니다. headless 세션은 프로젝트 설정을 사용할 수 있는 메인 checkout에서 권한을 실측하며 기본은 Claude acceptEdits+허용 목록, Codex workspace-write입니다. 필요한 명령은 `--allow-tool 'Bash(pnpm *)'`처럼 추가합니다. 사용자가 명시한 `--permission-mode bypass`만 권한 우회를 켭니다.
+
+0.8.4부터 실행 중 `pushEachUnit`은 `--configure --push-each-unit` 또는 `--configure --no-push-each-unit`으로 바꿉니다. 현재 단위 완료 → 호스트 보고서 정리·커밋 → 설정 적용·receipt → 필요한 검증/push/CI → 다음 단위 순서이며, 호스트·시작 시간·마감 시간·누적 단위 수는 유지됩니다. cfg push가 `-`이면 이 옵션도 원격 게시를 켜지 않습니다. 응답의 `applied:true` 또는 receipt의 `status:applied`와 `actual`을 확인합니다. `--wait-ms`가 끝나도 pending이면 아직 대기 중입니다. 중단·재시작 전환기는 필요 없습니다.
+
+`--stop`·SIGINT·SIGTERM은 즉시 취소 호환성을 유지합니다. 취소·시간 초과 후에는 새 마감 검증이나 push를 시작하지 않고 보고서·자기 active 행만 정리합니다. 검증 중 취소는 `cancelled`로 기록하며 검증 실패와 구분합니다. `--stop-after-unit`은 현재 단위와 마감 관문을 취소하지 않습니다(원래 시간 한도는 유지). 두 사용자 정지는 STOP을 보존하므로 메타데이터 복구가 작업을 다시 시작하지 않습니다. 0.8.4 이전 호스트는 새 제어 요청을 지원하지 않으며 실행 중 프로세스가 설치 업데이트로 교체되지는 않습니다.
+
+호스트는 단위 경계와 정상·실패·취소 종료에서 **자신이 쓴 정확한 보고서 내용과 STATE의 자기 active 행만** 정리합니다. 소스·SSOT·태스크 계약·기타 STATE·알 수 없는 보고서/사용자/스테이징 변경이 남으면 보존하고 다음 단위와 게시를 멈춥니다. 일반 구현 복구 세션으로 보고서 정리를 넘기지 않습니다. 호스트 메타데이터 쓰기·커밋은 한 번만 자동 재시도하며 실패는 `operationalErrors`와 journal에 남깁니다. 종료된 호스트의 안전한 정리는 `vibe loop --tag k3f9 --recover-metadata --json`으로 수행합니다. 이 명령은 모델·push·작업 재시작 없이 알려진 변경만 처리하고 충돌은 보존합니다.
+
+각 호스트는 준비 확인을 받은 독립 감시 프로세스를 둡니다. 1초 heartbeat, 호스트 사망 시 `host-lost`·`running:false`, 60초 heartbeat 지연 시 `heartbeat-stale` 이벤트를 기록합니다. `--status`는 실제 생존 여부와 최종 상태 파일 쓰기 실패의 `terminal.json`도 확인합니다. 실패 이벤트는 `events.jsonl`, 알림은 `notifications/*.json`에 보존됩니다. 선택적 `--notify-command '<command>'`는 실패 이벤트 JSON을 stdin으로 받아 최대 10초 안에 종료해야 합니다. exit 0일 때만 `hook-acknowledged`이며 외부 수신 완료를 뜻하지 않습니다. 미설정은 `pending`, 훅 실패는 `failed`이고 `externalDelivered:false`를 유지합니다. 외부 메신저·메일 연결은 이 명령에 연결하는 운영 측 기능입니다. 감시자는 작업을 자동 재시작하지 않습니다. 재부팅·전체 프로세스 종료 후에는 별도 OS 서비스가 없으면 새 알림을 보낼 수 없지만 `--status`로 오래된 상태를 판별할 수 있습니다. [상세 제어·복구 계약](skills/start-vibe/references/loop-control.md)을 참고하세요.
 
 맡김은 되돌릴 수 있는 기획·기술 판단을 추천안으로 결정하고 STATE inbox decided에 근거를 남깁니다. 구현이 판단 문제로 막히면 새 기획 단위로 해소하고 재개하며, 이미 승인된 작업을 앞당겨야 할 때도 실제 의존성을 확인해 순서를 조정합니다. CI 실패는 근거가 담긴 수정 태스크를 만들고 다음 단위로 우선 실행합니다. 실제 권한 부재나 과금·데이터 삭제·개인정보·보안 정책·되돌리기 어려운 외부 작업은 해당 건만 주차하고 다른 작업을 계속합니다. 시간·단위·반복 실패 제한은 그대로 적용하며, 한도에 닿으면 `loop.json`과 보고서에 우선 재개할 태스크를 남깁니다.
 

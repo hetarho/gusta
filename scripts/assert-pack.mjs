@@ -20,6 +20,11 @@ const packedFiles = new Set(report[0].files.map((file) => file.path))
 const requiredCoreFiles = [
   'bin/haeram-spec-creator.mjs',
   'bin/haeram-agent-adapter.mjs',
+  'bin/haeram-vibe-loop.mjs',
+  'bin/haeram-vibe-watch.mjs',
+  'src/vibe-loop.mjs',
+  'src/loop-control.mjs',
+  'src/loop-metadata.mjs',
   'src/agent-adapter.mjs',
   'src/work-providers.mjs',
   'src/work-progress.mjs',

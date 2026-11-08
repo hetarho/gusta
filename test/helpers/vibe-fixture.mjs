@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, rm, realpath } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
@@ -6,7 +6,7 @@ import path from 'node:path'
 export const execute = promisify(execFile)
 export const git = async (root, ...args) => (await execute('git', ['-C', root, ...args], { encoding: 'utf8' })).stdout.trim()
 export async function fixture(t, count = 3) {
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-v060-'))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-v060-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'project')
   await mkdir(root)
