@@ -17,6 +17,7 @@ export { vibeDesign } from './vibe-design.mjs'
 
 export { vibePlanSync, vibePlanPush } from './vibe-plan.mjs'
 export { vibeLoop, executeVibeUnit } from './vibe-loop.mjs'
+export { abStart, abRun, abServe, abExec, abStatus, abPick, abStop } from './vibe-ab.mjs'
 export { vibeCIWait } from './vibe-ci.mjs'
 export { vibeBrief, vibeFormat, verificationTiers } from './vibe-brief.mjs'
 export { assembleBrief, renderBrief, specSource, commitSource } from './spec-context.mjs'

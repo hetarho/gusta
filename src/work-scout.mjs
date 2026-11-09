@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
-import { inspectProviders } from './work-providers.mjs'
+import { inspectProviders, availableProvider } from './work-providers.mjs'
 import { SkillPackageError } from './errors.mjs'
 
 // One read-only headless session that returns proposals only. Orchestrators that cannot
@@ -13,11 +13,7 @@ export async function workScout(options = {}, injected = {}) {
   const prompt = await readFile(path.resolve(options.promptFile), 'utf8')
   const timeoutMs = Number(options.timeoutMs ?? 900000)
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new SkillPackageError('timeout-ms는 양의 정수입니다.')
-  const requested = options.provider ?? 'auto'
-  if (!['auto', 'codex', 'claude'].includes(requested)) throw new SkillPackageError(`지원하지 않는 실행기: ${requested}. auto, codex, claude 중 선택하세요.`)
-  const inspection = await deps.inspect(options)
-  const provider = requested === 'auto' ? inspection.autoProvider : requested
-  if (!inspection.providers.some((entry) => entry.provider === provider && entry.compatible)) throw new SkillPackageError(`사용 가능한 ${requested} CLI가 없습니다. work doctor로 설치/호환성을 확인하세요.`)
+  const provider = await availableProvider(options, deps.inspect)
   const started = deps.now()
   const job = { schemaVersion: 1, role: 'scout', workspace: path.resolve(options.targetRoot ?? process.cwd()), prompt, timeoutMs }
   let result

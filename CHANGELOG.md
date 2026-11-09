@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.0
+
+- Add `/show-ab` and `vibe ab`: build 2–6 variants of one change in parallel and compare them side by side. `vibe ab start` creates a branch (`ab/<slug>/<v>`), a sibling worktree and a free port per variant and runs the dependency setup in all of them at once; `vibe ab run` launches one write-capable headless session (Claude or Codex, new `variant` adapter role) in a variant's worktree and commits its changes on the variant branch, returning only a summary and where to look; `vibe ab serve` starts each variant's dev server on its own `$PORT` and waits until it listens (a server that never listens is reported with its log tail); `vibe ab exec` runs one measurement in every variant, alternating them per repetition, and reports median/min/max and exit codes; `vibe ab pick` merges only the chosen variant into the current branch and cleans up, `vibe ab stop --remove` discards. Variants never edit spec/; adoption is recorded like a design ending (STATE log, then update-ssot if a rule changed). Pair mode only.
+- Prompt-cache-aware waiting and returning. The bundle coordinator waits `work next --wait 3300`: it returns just before the 1-hour prompt cache expires, so waking reads its context at the cache price instead of rewriting all of it at 2× (0.10.0 used 3600, which landed just past the TTL). An autopilot launcher tells the user to come back in a new conversation — its state lives in the report, inbox and loop.json — instead of reviving an expired one. The loop's `- time:` line adds the input-token total and its cache-read share, so per-unit fresh sessions can be checked to still reuse the shared prompt prefix.
+- `availableProvider` resolves the provider for one-off headless sessions and is shared by `work scout` and `vibe ab run`.
+- Decisions, measurements and open questions: [docs/0.11.0.md](docs/0.11.0.md).
+
 ## 0.10.1
 
 - `vibe loop` records where the time went, so the next speed-up is chosen from numbers. Each unit session gets its own check ledger (`HAERAM_CHECK_LOG`): `vibe check` appends every run, and the host reads it back with the unit's wall time and compact token usage. `loop.json` and the loop result carry `time` (implementation/planning/inbox/failed units with model and task-check time, closing gate, CI wait, host overhead, the three slowest units, token totals), and the closing report adds one `- time:` line under checks. Commands run outside `vibe check` count as model time.

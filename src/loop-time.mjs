@@ -34,5 +34,8 @@ export function timeLine(time) {
   const parts = Object.entries(time.units).map(([kind, group]) => `${kind} ${duration(group.ms)}/${group.units}${group.checkMs ? ` (model ${duration(group.modelMs)}, task checks ${duration(group.checkMs)})` : ''}`)
   parts.push(`gate ${duration(time.gateMs)}`, `CI ${duration(time.ciMs)}`, `host ${duration(time.hostMs)}`)
   const slow = time.slowest[0]
-  return `- time: ${duration(time.totalMs)} — ${parts.join(', ')}${slow ? `; slowest ${slow.id || slow.kind} ${duration(slow.ms)}` : ''}`
+  // The cache-read share shows whether fresh unit sessions still reuse the shared prompt prefix.
+  const input = time.tokens ? time.tokens.input + time.tokens.cacheWrite + time.tokens.cacheRead : 0
+  const tokens = input ? `; input ${(input / 1e6).toFixed(1)}M tokens, cache read ${Math.round(time.tokens.cacheRead / input * 100)}%` : ''
+  return `- time: ${duration(time.totalMs)} — ${parts.join(', ')}${slow ? `; slowest ${slow.id || slow.kind} ${duration(slow.ms)}` : ''}${tokens}`
 }

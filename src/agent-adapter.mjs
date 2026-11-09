@@ -20,6 +20,8 @@ export const RESULT_SCHEMAS = {
   // A scout reads and proposes; its whole return is what reaches the orchestrator's context.
   scout: object({ summary: string, proposals: { type: 'array', items: object({ title: string, where: string, problem: string, evidence: string,
     change: string, touches: { type: 'array', items: string }, preserves: string, checks: string, cost: string, risk: string }) } }),
+  // One A/B variant: what was built and where a person should look at it.
+  variant: object({ outcome: { type: 'string', enum: ['completed', 'blocked'] }, summary: string, view: string }),
 }
 const PROPOSAL = ['title', 'where', 'problem', 'evidence', 'change', 'preserves', 'checks', 'cost', 'risk']
 
@@ -36,6 +38,10 @@ export function validateAgentResult(role, result) {
       return Object.fromEntries([...PROPOSAL, 'touches'].map((key) => [key, entry[key]]))
     })
     return { summary: result.summary, proposals }
+  }
+  if (role === 'variant') {
+    if (!['completed', 'blocked'].includes(result.outcome) || typeof result.view !== 'string') fail('변형 결과의 outcome/view가 올바르지 않습니다.')
+    return { outcome: result.outcome, summary: result.summary, view: result.view }
   }
   if (role === 'worker') {
     if (!['completed', 'blocked'].includes(result.outcome)) fail('워커 결과의 outcome이 올바르지 않습니다.')
@@ -102,6 +108,10 @@ async function promptFor(job) {
     if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('탐색은 workspace·prompt와 새 세션이 필요합니다.')
     return `You are a read-only scout started by an orchestrator. Do NOT edit files, change Git or runtime, run long or full checks, or spawn subagents. Read scoped code with rg and line ranges, not whole large files. Label inference and unknowns; cite file:line or log paths as evidence. An empty proposals array is a valid answer when nothing is worth changing. Return only the final JSON matching the output schema.\n\n${job.prompt}`
   }
+  if (job.role === 'variant') {
+    if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('변형은 workspace·prompt와 새 세션이 필요합니다.')
+    return `You build one variant of an A/B comparison started by an orchestrator. Work only in this workspace (your own git worktree and branch) and implement this variant fully enough for a person to compare it. Do NOT edit spec/ (nothing is decided yet), run git add/commit/push/merge (the host commits your changes), start long-running servers (the host serves each variant on its own port as $PORT), or spawn subagents. ${TASK_CHECKS} Return outcome, summary (what you changed and its trade-offs) and view (where a person should look: URL path, screen or command); outcome blocked only when the variant cannot be built, with the reason in summary.\n\n${job.prompt}`
+  }
   if (!['worker', 'reviewer'].includes(job.role) || !job.workspace || !job.attempt || !job.taskId) fail('실행기 작업 입력이 올바르지 않습니다.')
   const unattended = job.mode === 'autopilot' ? ' Nobody is available to answer questions: never wait for one.' : ''
   const override = job.role === 'worker'
@@ -125,7 +135,7 @@ const WORKER_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep']
 // allowTools extends what a worker runs without a prompt: new worktrees are never-trusted
 // folders, so the project's own permission allowlist does not apply to them.
 export function providerArguments(provider, role, files, model, { allowTools = [], resume = null, session = null, permissionMode = 'acceptEdits' } = {}) {
-  const writes = role === 'worker' || role === 'unit'
+  const writes = ['worker', 'unit', 'variant'].includes(role)
   const sandbox = writes ? 'workspace-write' : 'read-only'
   if (!['acceptEdits', 'bypass'].includes(permissionMode) || (!writes && permissionMode === 'bypass')) fail('지원하지 않는 permission mode입니다.')
   if (provider === 'codex') {
@@ -152,7 +162,7 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     const session = provider === 'claude' ? job.resume ?? randomUUID() : job.resume ?? null
     const remember = (id) => job.sessionFile && id ? writeFile(job.sessionFile, id).catch(() => {}) : null
     await remember(session)
-    const args = providerArguments(provider, job.role, files, model, { allowTools: job.role === 'worker' || job.role === 'unit' ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits' })
+    const args = providerArguments(provider, job.role, files, model, { allowTools: ['worker', 'unit', 'variant'].includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits' })
     const childEnv = { ...env }
     // The provider is an independent foreground run, not a nested interactive session.
     delete childEnv.CLAUDECODE

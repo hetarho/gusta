@@ -37,6 +37,7 @@ hostManaged 실행기에서는 초기화·active·보고서 생성/종료·묶�
 | spec 없음 | create-architecture 초안, 스캐폴딩 parked |
 | route design(이 checkout이 디자인 중) | 함께: 디자인이 끝났는지 묻는다 → 끝: start-design 마감 / 아직: start-design 이어서. 맡김: 디자인 변경을 건드리지 않고 inbox parked 후 마감 |
 | 화면을 보며 디자인·스타일 다듬기 | start-design(함께 전용) |
+| 여러 안을 만들어 비교·A/B | show-ab(함께 전용, 맡김은 inbox parked) |
 | self-improve-local·PR 없이 로컬 개선·하위 제안을 승인 후 통합 | self-improve-local(호출한 세션이 오케스트레이터, 승인 범위만 현재 브랜치에 반영) |
 | 자가 개선·지속 개선 설정/실행 요청 | self-improve(저장된 범위·예산·검토·발행 정책 확인) |
 | 작은 버그·문구·스타일 수정 | 아래 경량 경로 |
@@ -76,4 +77,4 @@ ideation/done/은 라우팅 후보가 아니다. 기획 조각의 전환 완료 
 ## 5. 마감
 단위1은 다음 단위로 넘어가지 않고 JSON 한 줄(호스트가 요구하면 스키마 결과):
 `{"kind":"task","id":"T001","outcome":"completed","pushed":false,"next":"implementation"}`
-kind=task|planning|inbox|fix|none, outcome=completed|parked|blocked|no_work. pushed는 실제 여부. 함께는 단위 완료 시 “다음 단위는 새 대화에서 이어가면 빠르다”고 안내한다.
+kind=task|planning|inbox|fix|none, outcome=completed|parked|blocked|no_work. pushed는 실제 여부. 함께는 단위 완료 시 “다음 단위는 새 대화에서 이어가면 빠르다”고 안내한다. 맡김을 띄운 대화는 실행 핸들과 함께 “돌아오면 새 대화에서 `/start-vibe`”를 안내한다 — 상태는 보고서·결정함·loop.json에 있고, 캐시가 만료된 이 대화를 이어 쓰면 쌓인 맥락 전체를 다시 캐시에 쓴다.

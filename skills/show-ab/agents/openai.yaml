@@ -1,0 +1,4 @@
+interface:
+  display_name: "Show A/B"
+  short_description: "변형 여러 개를 병렬로 만들어 포트별로 비교"
+  default_prompt: "Use $show-ab to build 2-n variants of this change in parallel, serve or measure them side by side, and let me pick one."

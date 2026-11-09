@@ -53,6 +53,17 @@ export async function inspectOrca(options = {}) {
   return { available: false, reachable: false, error: 'cli-not-found', registration: 'Settings → General → Orca CLI' }
 }
 
+// One provider name for a one-off headless session (scout, A/B variant): the requested one if
+// its CLI is compatible, else the auto choice. No model call.
+export async function availableProvider(options = {}, inspect = inspectProviders) {
+  const requested = options.provider ?? 'auto'
+  if (!['auto', ...supported].includes(requested)) throw new SkillPackageError(`지원하지 않는 실행기: ${requested}. auto, codex, claude 중 선택하세요.`)
+  const inspection = await inspect(options)
+  const provider = requested === 'auto' ? inspection.autoProvider : requested
+  if (!inspection.providers.some((entry) => entry.provider === provider && entry.compatible)) throw new SkillPackageError(`사용 가능한 ${requested} CLI가 없습니다. work doctor로 설치/호환성을 확인하세요.`)
+  return provider
+}
+
 export async function workDoctor(options = {}) {
   const [providers, orca] = await Promise.all([inspectProviders(options), inspectOrca(options)])
   return { ...providers, orca }

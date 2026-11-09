@@ -33,9 +33,9 @@ test('메타 스킬 haeram-report는 읽기 전용 회고이며 공통 규칙 �
   assert.ok(!text.includes(HEADING)); assert.match(text, /읽기 전용/); assert.match(text, /````markdown/); assert.match(text, /익명화/)
 })
 
-test('spec 스킬은 self-improve-local을 포함해 15종이고 모두 공통 규칙 5줄을 가진다', async () => {
+test('spec 스킬은 self-improve-local·show-ab를 포함해 16종이고 모두 공통 규칙 5줄을 가진다', async () => {
   const rules = await commonRules()
-  assert.deepEqual([...rules.keys()].sort(), ['create-architecture', 'create-narrative', 'create-ssot', 'create-task', 'doc-review', 'ideation', 'implement-task', 'manage-work', 'review-code', 'review-task', 'self-improve', 'self-improve-local', 'start-design', 'start-vibe', 'update-ssot'])
+  assert.deepEqual([...rules.keys()].sort(), ['create-architecture', 'create-narrative', 'create-ssot', 'create-task', 'doc-review', 'ideation', 'implement-task', 'manage-work', 'review-code', 'review-task', 'self-improve', 'self-improve-local', 'show-ab', 'start-design', 'start-vibe', 'update-ssot'])
 })
 
 test('공통 규칙 2번은 디자인 중 커밋·push 전에 디자인이 끝났는지 묻게 한다', async () => {

@@ -175,3 +175,13 @@ test('탐색 세션은 timeout에 끝나고 work scout는 실행기 확인·프�
   await assert.rejects(workScout({ promptFile, provider: 'claude' }, { inspect: async () => ({ autoProvider: 'codex', providers }) }), /사용 가능한 claude/)
   await assert.rejects(workScout({}), /prompt-file/)
 })
+
+test('A/B 변형 세션은 쓰기 권한·허용 명령으로 실행되고 커밋·서버는 호스트 몫으로 둔다', async (t) => {
+  const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('received.json',JSON.stringify({args:process.argv.slice(2),text}));console.log(JSON.stringify({type:'result',is_error:false,structured_output:{outcome:'completed',summary:'card layout',view:'/pricing'}}));});`)
+  const result = await executeAgentAdapter({ provider: 'claude', job: { schemaVersion: 1, role: 'variant', workspace: fixture.root, prompt: 'Variant a: cards', allowTools: ['Bash(npm test *)'] }, env: fixture.env, log: () => {} })
+  assert.deepEqual({ outcome: result.outcome, view: result.view }, { outcome: 'completed', view: '/pricing' })
+  const { args, text } = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
+  assert.equal(flag(args, '--permission-mode'), 'acceptEdits'); assert.ok(flag(args, '--allowedTools').includes('Bash(npm test *)'))
+  assert.match(text, /host commits your changes/); assert.match(text, /\$PORT/); assert.match(text, /Variant a: cards/)
+  assert.throws(() => claudeResult(JSON.stringify({ structured_output: { outcome: 'completed', summary: 'x' } }), 'variant'), /view/)
+})

@@ -16,7 +16,7 @@ SKILL.md 2절의 조건일 때만 쓴다. 아래 `work ...`·`vibe ...`는 `npx 
   - 맡김에서 결정 요청만 남으면 모델 호출 없이 결정을 기다린다(기본 15분, `--decision-wait-ms`로 변경). 대기할 attempt와 질문을 stderr·runtime 이력에 남긴다. 통합 실패 후 새로 제출·승인된 제출물은 같은 run에서 다시 통합한다. 같은 제출물의 통합 실패로 승인된 단위가 남으면 결정 대기 없이 `needs-attention`으로 끝낸다. 함께 모드는 결정 대기 없이 반환한다.
 
 ## 3. 조정자 루프
-`work next --work <slug> --owner <tag> --coordinator [--autopilot] --wait 3600 --json`을 반복하고 `action`대로 한다. 결정 요청이 생기면 바로 반환하므로 대기를 길게 잡는다 — Claude는 셸 백그라운드 실행+완료 알림, Codex는 긴 timeout의 단일 블로킹 호출. 짧은 대기를 반복하면 돌아올 때마다 모델 턴과 쌓인 맥락을 쓴다.
+`work next --work <slug> --owner <tag> --coordinator [--autopilot] --wait 3300 --json`을 반복하고 `action`대로 한다. 결정 요청이 생기면 바로 반환한다 — Claude는 셸 백그라운드 실행+완료 알림, Codex는 긴 timeout의 단일 블로킹 호출. 55분은 1시간 프롬프트 캐시가 식기 직전에 돌아와 맥락을 싸게 읽는 길이다: 더 짧으면 깨어날 때마다 모델 턴을 쓰고, 1시간을 넘기면 쌓인 맥락 전체를 2배 값으로 다시 캐시에 쓴다.
 - `decide`: 워커가 기획 결정을 요청했다(`attempt.decision`: question·options·recommendation).
   - 함께: 사용자에게 선택지형으로 묻는다(여러 건이면 모아서).
   - 맡김: 추천안으로 update-ssot를 진행한다(잠정). inbox `decided`·보고서 decided에 질문·선택·대안을 남긴다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 inbox `parked`, 그 attempt는 `work release --attempt <id> --reason parked`로 내려놓는다.

@@ -108,6 +108,7 @@
   - while it is open: code edits only — no tests, e2e, task files, SSOT or STATE edits, commits or pushes; `vibe checkpoint` is the only snapshot. `vibe status` reports it as `design` and routes `design` first.
   - every session asks the user whether the design is finished before any commit or push. Meanwhile `vibe push` refuses, autopilot preflight fails and `vibe loop` stops on this checkout; autopilot never touches the design edits.
   - ending: `vibe design verify` (every ARCH task and batch command once, on the uncommitted working tree) passes → `vibe design end` → one commit with the design, its test updates and STATE log `- YYMMDD design <area>: <what>`. A design that changed a SSOT rule goes to update-ssot after that commit.
+- A/B comparison (show-ab, pair only): variants are experiments on `ab/<slug>/<v>` branches in sibling worktrees and never edit spec/. `vibe ab pick` merges the chosen one; then one commit with STATE log `- YYMMDD ab <slug>: adopt <v> — <approach>`, and update-ssot if it changed a SSOT rule.
 - STATE merges by section: log and inbox lines are unioned, tasks·active·work·ssot rows merge by ID, and two different edits of one row stop the merge for a person or agent to resolve.
 - self-improve and self-improve-local run one bounded cycle per explicit request or due standing policy, after foreground work and design; sessionless recurrence needs a real scheduler (vibe loop is not one). Their review, publication, budget and experiment rules live in those skills; they reuse existing document skeletons.
 

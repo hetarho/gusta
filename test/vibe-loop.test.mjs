@@ -400,7 +400,8 @@ test('time breakdown separates model, task-check, gate, CI and host time and nam
   assert.equal(time.gateMs, 30 * 60000); assert.equal(time.ciMs, 6 * 60000); assert.equal(time.hostMs, (300 - 195 - 36) * 60000)
   assert.deepEqual(time.tokens, { input: 3, cacheWrite: 30, cacheRead: 300, output: 15 })
   assert.equal(time.slowest[0].id, 'T001')
-  assert.equal(timeLine(time), '- time: 5h00m — implementation 2h30m/2 (model 2h00m, task checks 30m), planning 40m/1, failed 5m/1, gate 30m, CI 6m, host 1h09m; slowest T001 1h30m')
+  assert.equal(timeLine(time), '- time: 5h00m — implementation 2h30m/2 (model 2h00m, task checks 30m), planning 40m/1, failed 5m/1, gate 30m, CI 6m, host 1h09m; slowest T001 1h30m; input 0.0M tokens, cache read 90%')
+  assert.doesNotMatch(timeLine({ ...time, tokens: null }), /cache read/)
 })
 
 test('the loop result, manifest and closing report carry the time breakdown', async (t) => {
