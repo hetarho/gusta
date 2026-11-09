@@ -1,4 +1,4 @@
-import { mkdir, open, readFile } from 'node:fs/promises'
+import { appendFile, mkdir, open, readFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { writeSync } from 'node:fs'
@@ -97,5 +97,9 @@ export async function runVibeCheck(options = {}, command) {
   }
   // Read the tree and cache only after acquiring the lock: a second caller reuses
   // the first caller's receipt instead of queuing a duplicate browser run.
-  return final || options.heavy ? withHeavyLock(runtime, command, perform, { timeoutMs: timeout, signal: options.signal }) : perform()
+  const result = final || options.heavy ? await withHeavyLock(runtime, command, perform, { timeoutMs: timeout, signal: options.signal }) : await perform()
+  // Inside a loop unit the host hands each session its own ledger, so the unit's time
+  // breakdown separates check time from model time.
+  if (process.env.HAERAM_CHECK_LOG) await appendFile(process.env.HAERAM_CHECK_LOG, `${JSON.stringify({ tier: scope.TIER, command, ms: result.ms ?? 0, cached: result.cached, ok: result.ok })}\n`).catch(() => {})
+  return result
 }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Haeram Report"
+  short_description: "이 세션의 haeram 스킬 동작 개선점 보고"
+  default_prompt: "Use $haeram-report to review how haeram-spec-creator skills behaved in this session and return improvement findings as one markdown code block."

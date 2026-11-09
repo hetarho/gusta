@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1
+
+- `vibe loop` records where the time went, so the next speed-up is chosen from numbers. Each unit session gets its own check ledger (`HAERAM_CHECK_LOG`): `vibe check` appends every run, and the host reads it back with the unit's wall time and compact token usage. `loop.json` and the loop result carry `time` (implementation/planning/inbox/failed units with model and task-check time, closing gate, CI wait, host overhead, the three slowest units, token totals), and the closing report adds one `- time:` line under checks. Commands run outside `vibe check` count as model time.
+- Add the meta skill `/haeram-report`: run it in a session that used haeram skills and it returns one markdown code block of evidence-backed improvements to the skills and CLI themselves (bugs, ambiguous or conflicting instructions, token and time waste, human time spent on non-decisions, missing capabilities), anonymized so it can move to this repository unchanged. It is read-only and carries no common spec rules.
+- Token usage compaction moves to the agent adapter and is shared by `work scout` and loop units.
+
 ## 0.10.0
 
 - Orchestrators delegate instead of reading and editing in their own context, whose every later turn re-sends what they read. Add `work scout --prompt-file <file> [--provider] [--model] [--timeout-ms]`: one read-only headless session (Claude plan mode, Codex read-only sandbox, 15-minute default) that returns only `summary`, structured `proposals[]` and compact token usage, so autopilot, headless and Codex orchestrators can hand off exploration like they hand off implementation and review to `work run`. self-improve-local and self-improve discover through scouts (native sub-sessions or `work scout`), and self-improve no longer implements in the coordinator session. The scout prompt's fields match the result schema.

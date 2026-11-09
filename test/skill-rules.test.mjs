@@ -7,11 +7,13 @@ const HEADING = '## 공통 규칙 (모든 spec 스킬)'
 const MODE = '맡김 모드(start-vibe)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(start-vibe 3절). 모드가 정해지지 않았으면 함께 모드다.'
 // CLAUDE.md principle 2: the same five rules everywhere, except these documented wordings.
 const EXCEPTIONS = { 1: ['create-architecture', 'ideation', 'start-vibe'], 3: ['create-narrative', 'ideation'], 4: ['create-narrative', 'ideation'] }
+// Meta skills review this skill set itself; they write no spec documents and carry no common rules.
+const META = ['haeram-report']
 
 async function commonRules() {
   const result = new Map()
   for (const entry of await readdir(skillsRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
+    if (!entry.isDirectory() || META.includes(entry.name)) continue
     const lines = (await readFile(new URL(`${entry.name}/SKILL.md`, skillsRoot), 'utf8')).split('\n')
     const start = lines.indexOf(HEADING)
     assert.notEqual(start, -1, `${entry.name}: ${HEADING} 없음`)
@@ -26,7 +28,12 @@ async function commonRules() {
   return result
 }
 
-test('스킬은 self-improve-local을 포함해 15종이고 모두 공통 규칙 5줄을 가진다', async () => {
+test('메타 스킬 haeram-report는 읽기 전용 회고이며 공통 규칙 없이 코드 블록 하나를 돌려준다', async () => {
+  const text = await readFile(new URL('haeram-report/SKILL.md', skillsRoot), 'utf8')
+  assert.ok(!text.includes(HEADING)); assert.match(text, /읽기 전용/); assert.match(text, /````markdown/); assert.match(text, /익명화/)
+})
+
+test('spec 스킬은 self-improve-local을 포함해 15종이고 모두 공통 규칙 5줄을 가진다', async () => {
   const rules = await commonRules()
   assert.deepEqual([...rules.keys()].sort(), ['create-architecture', 'create-narrative', 'create-ssot', 'create-task', 'doc-review', 'ideation', 'implement-task', 'manage-work', 'review-code', 'review-task', 'self-improve', 'self-improve-local', 'start-design', 'start-vibe', 'update-ssot'])
 })

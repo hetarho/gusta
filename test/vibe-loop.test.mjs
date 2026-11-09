@@ -389,3 +389,44 @@ test('hourly snapshots span fresh unit sessions instead of resetting at each lau
   })
   assert.equal(result.ok, true, result.error); assert.equal(result.units, 4); assert.equal(snapshots, 2)
 })
+
+test('time breakdown separates model, task-check, gate, CI and host time and names the slowest unit', async () => {
+  const { timeBreakdown, timeLine } = await import('../src/loop-time.mjs')
+  const task = (id, ms, checkMs, kind = 'task') => ({ unit: Number(id.slice(1)), ms, checks: { runs: 2, cached: 0, ms: checkMs }, usage: { input: 1, cacheWrite: 10, cacheRead: 100, output: 5 }, result: { kind, id, outcome: 'completed' } })
+  const time = timeBreakdown({ totalMs: 300 * 60000, batches: [{ command: 'npm test', ok: true, ms: 30 * 60000 }, { command: 'npm test', ok: true, cached: true }, { ci: { outcome: 'success', ms: 6 * 60000 } }],
+    dispatches: [task('T001', 90 * 60000, 20 * 60000), task('T002', 60 * 60000, 10 * 60000), task('P1', 40 * 60000, 0, 'planning'), { unit: 4, ms: 5 * 60000, exitCode: 1, result: null }] })
+  assert.deepEqual(time.units.implementation, { units: 2, ms: 150 * 60000, checkMs: 30 * 60000, modelMs: 120 * 60000 })
+  assert.equal(time.units.planning.units, 1); assert.equal(time.units.failed.ms, 5 * 60000)
+  assert.equal(time.gateMs, 30 * 60000); assert.equal(time.ciMs, 6 * 60000); assert.equal(time.hostMs, (300 - 195 - 36) * 60000)
+  assert.deepEqual(time.tokens, { input: 3, cacheWrite: 30, cacheRead: 300, output: 15 })
+  assert.equal(time.slowest[0].id, 'T001')
+  assert.equal(timeLine(time), '- time: 5h00m — implementation 2h30m/2 (model 2h00m, task checks 30m), planning 40m/1, failed 5m/1, gate 30m, CI 6m, host 1h09m; slowest T001 1h30m')
+})
+
+test('the loop result, manifest and closing report carry the time breakdown', async (t) => {
+  const { root } = await fixture(t)
+  let calls = 0
+  const result = await vibeLoop({ ...opts(root), maxUnits: 2 }, { preflight: passed,
+    execute: async () => { calls++; await writeFile(path.join(root, 'app.js'), `// ${calls}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task')
+      return { ...unit(), checks: { runs: 1, cached: 0, ms: 1000 }, usage: { input: 1, cacheWrite: 2, cacheRead: 3, output: 4 } } },
+    check: async () => ({ ok: true, ms: 120000 }),
+  })
+  assert.equal(result.ok, true, result.error)
+  assert.equal(result.time.units.implementation.units, 2); assert.equal(result.time.units.implementation.checkMs, 2000)
+  assert.equal(result.time.gateMs, 120000); assert.deepEqual(result.time.tokens, { input: 2, cacheWrite: 4, cacheRead: 6, output: 8 })
+  assert.equal(JSON.parse(await readFile(result.manifest, 'utf8')).time.units.implementation.units, 2)
+  const report = await readFile(path.join(root, result.report), 'utf8')
+  assert.equal(report.match(/^- time: /gm)?.length, 1); assert.match(report, /- time: .*implementation \d+m\/2.*gate 2m/)
+})
+
+test('a unit session records its vibe check runs and token usage for the breakdown', async (t) => {
+  const { root, temporary, initial } = await fixture(t)
+  const cli = path.resolve('bin/haeram-spec-creator.mjs')
+  const adapter = await fakeAdapter(temporary, `
+    cp.execFileSync(process.execPath,[${JSON.stringify(cli)},'vibe','check','--tier','task','--','node -e "setTimeout(()=>{},50)"'],{stdio:'ignore'});
+    console.log(JSON.stringify({kind:'task',id:'T001',outcome:'completed',pushed:false,next:'implementation',usage:{input_tokens:3,cache_creation_input_tokens:4,cache_read_input_tokens:5,output_tokens:6,iterations:[]}}));`)
+  const directory = path.join(temporary, 'logs'); await mkdir(directory)
+  const r = await executeVibeUnit({ adapter, tag: 't060' }, { workspace: root, role: 'unit', diffBase: initial }, directory, { stopFile: path.join(directory, 'STOP'), deadline: Date.now() + 60000, timeoutMs: 60000 })
+  assert.equal(r.result.id, 'T001'); assert.deepEqual(r.usage, { input: 3, cacheWrite: 4, cacheRead: 5, output: 6 })
+  assert.equal(r.checks.runs, 1); assert.equal(r.checks.cached, 0); assert.ok(r.checks.ms >= 50)
+})

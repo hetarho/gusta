@@ -59,6 +59,7 @@ Claude Code와 Codex가 바로 코드를 작성하기 전에 목표, 범위, 제
 | 제출물 리뷰 | `review-task` | 리뷰어 | 제출 커밋 검토 → 승인 또는 수정 요청 | 커밋·상위 기준에 고정된 리뷰 기록 |
 | 병렬 작업 | `manage-work` | 작업 조정자 | 상위 브랜치·태스크 worktree 배정 → 검증·통합 → 정리 | 작업 묶음 + 공유 실행 기록 |
 | 필요시 | `create-narrative` | 작가 | spec 전체를 사람이 읽기 좋은 한국어 이야기로 엮음 | `spec/NARRATIVE.md` |
+| 세션 끝 | `haeram-report` | 회고자 | 이 세션에서 haeram 스킬·CLI가 어떻게 동작했는지 돌아보고 개선 사항을 근거와 함께 보고(읽기 전용·익명화) | markdown 코드 블록 하나 |
 
 설치된 프로젝트에는 다음 구조가 생깁니다.
 
@@ -183,6 +184,12 @@ SSOT 변경사항 태스크로 쪼개줘.                        → create-task
 THEME SSOT가 너무 길어. 의미 바꾸지 말고 정리해줘.      → doc-review
 ```
 
+```text
+/haeram-report                                     → haeram-report
+```
+
+haeram 스킬을 쓴 세션 끝에 부르면, 그 세션에서 스킬·CLI가 어떻게 동작했는지 돌아보고 개선 사항(오류·모호한 지시·토큰/시간 낭비·사람이 판단 아닌 일에 쓴 시간)을 근거와 함께 markdown 코드 블록 하나로 돌려줍니다. 파일은 바꾸지 않고, 대상 프로젝트 이름·도메인·ID는 익명화하므로 그대로 이 저장소의 이슈로 옮길 수 있습니다.
+
 ## PR 없이 현재 브랜치에서 개선하기
 
 `/self-improve-local`을 실행한 세션이 오케스트레이터가 됩니다. 하위 세션이 먼저 근거·수정 범위·비용·위험을 제안하고, 오케스트레이터가 승인한 작업만 다른 worktree에서 구현합니다. 별도 세션의 코드 리뷰와 단위 검사를 통과한 변경은 호출한 현재 브랜치에 통합하고, 마지막 전체 관문까지 통과해야 완료로 보고합니다. 제안 승인과 코드 리뷰 승인은 별개입니다.
@@ -243,6 +250,8 @@ npx haeram-spec-creator vibe loop --tag k3f9 --stop --json
 ```
 
 반복기는 preflight·active·보고서를 한 번 준비한 뒤 태스크 하나, 기획 한 조각(SSOT+create-task), inbox 정리마다 새 세션을 시작합니다. 시간 한도의 마지막 구간은 **마감 관문 전용**입니다 — 그 구간에 들어서면 새 단위를 시작하지 않고(`reason: final-window`, 실행 중이던 단위는 마칩니다) 모은 코드 전체를 한 번 검증한 뒤 push·CI까지 진행합니다. 관문이 실패하면 근거를 담은 수정 태스크를 만들어 그 구간 안에서 한 번 고치고 다시 검증합니다(두 번째 실패는 push 없이 보고). 구간 길이는 실측입니다: `vibe check --tier batch`·`work finish`·`vibe design verify`가 기록한 전체 검증 시간×2 + 최근 단위 시간 + (push 브랜치가 있으면) CI 대기 시간. 아직 한 번도 측정되지 않았을 때만 max-hours의 20%를 쓰고, 측정은 단위 경계마다 다시 읽습니다. `--final-reserve-hours`로 직접 정할 수 있습니다.
+
+어디서 시간이 갔는지도 남깁니다. 단위마다 걸린 시간·그 안의 `vibe check` 시간·토큰 수를 기록하고, `loop.json`·결과 JSON의 `time`과 마감 보고서 checks의 한 줄(`- time: 5h00m — implementation 2h30m/2 (model 2h00m, task checks 30m), planning 40m/1, gate 30m, CI 6m, host 9m; slowest T### 1h30m`)로 구현·기획·태스크 검사·마감 관문·CI·호스트 몫을 나눠 보여 줍니다. 다음 속도 개선은 이 숫자에서 고릅니다(`vibe check`를 거치지 않은 명령은 모델 시간에 포함됩니다).
 
 `.git/haeram/v1/loops/<tag>/loop.json`에 상태·로그·세션 ID·정지 파일 경로를 남깁니다. `--detach`는 부모 터미널과 분리하고 macOS에서는 caffeinate를 사용합니다. STOP 표식은 재시작 전에 직접 지웁니다. headless 세션은 프로젝트 설정을 사용할 수 있는 메인 checkout에서 권한을 실측하며 기본은 Claude acceptEdits+허용 목록, Codex workspace-write입니다. 필요한 명령은 `--allow-tool 'Bash(pnpm *)'`처럼 추가합니다. 사용자가 명시한 `--permission-mode bypass`만 권한 우회를 켭니다.
 

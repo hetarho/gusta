@@ -53,6 +53,12 @@ export function validateAgentResult(role, result) {
   return { verdict: result.verdict, summary: result.summary, findings }
 }
 
+// Four token counts are all a caller needs; the provider's full usage block stays out of context.
+export function compactUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null
+  return { input: usage.input_tokens ?? 0, cacheWrite: usage.cache_creation_input_tokens ?? 0, cacheRead: usage.cache_read_input_tokens ?? 0, output: usage.output_tokens ?? 0 }
+}
+
 export function claudeResult(text, role) {
   const envelope = JSON.parse(text)
   if (envelope.is_error || envelope.subtype?.startsWith('error')) fail(`Claude 실행 실패: ${envelope.subtype ?? 'error'}`)

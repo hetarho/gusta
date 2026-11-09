@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { executeAgentAdapter } from './agent-adapter.mjs'
+import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
 import { inspectProviders } from './work-providers.mjs'
 import { SkillPackageError } from './errors.mjs'
 
@@ -25,7 +25,5 @@ export async function workScout(options = {}, injected = {}) {
   try { result = await deps.execute({ provider, model: options.model, job, log: () => {} }) } catch (error) {
     throw new SkillPackageError(error.message, (error.details ?? []).map((detail) => String(detail).slice(-2000)))
   }
-  const usage = result.usage ? { input: result.usage.input_tokens ?? 0, cacheWrite: result.usage.cache_creation_input_tokens ?? 0,
-    cacheRead: result.usage.cache_read_input_tokens ?? 0, output: result.usage.output_tokens ?? 0 } : null
-  return { schemaVersion: 1, ok: true, provider, model: options.model ?? null, ms: deps.now() - started, summary: result.summary, proposals: result.proposals, usage }
+  return { schemaVersion: 1, ok: true, provider, model: options.model ?? null, ms: deps.now() - started, summary: result.summary, proposals: result.proposals, usage: compactUsage(result.usage) }
 }

@@ -13,10 +13,11 @@ import { readTimings, recordTiming, timingKey, measured } from './check-cache.mj
 import { inspectWork } from './work-groups.mjs'
 import { SESSION_TAG } from './spec-format.mjs'
 import { sections, tableRows } from './spec-format.mjs'
-import { validateAgentResult } from './agent-adapter.mjs'
+import { validateAgentResult, compactUsage } from './agent-adapter.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, startLoopMonitor, controlTransaction, processAlive } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
+import { timeBreakdown, timeLine } from './loop-time.mjs'
 
 const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
 const adapter = fileURLToPath(new URL('../bin/haeram-agent-adapter.mjs', import.meta.url))
@@ -44,7 +45,7 @@ const positive = (value, fallback, label, integer = false) => {
 // One adapter invocation is one new provider process. Logs and session IDs are
 // persisted before parsing a result; retries never resume a previous context.
 export async function executeVibeUnit(options, job, directory, limits = {}) {
-  const id = randomUUID(), logPath = path.join(directory, `${id}.log`), sessionFile = path.join(directory, `${id}.session`)
+  const id = randomUUID(), logPath = path.join(directory, `${id}.log`), sessionFile = path.join(directory, `${id}.session`), checkLog = path.join(directory, `${id}.checks.jsonl`)
   let config = { command: process.execPath, args: [adapter, '--provider', options.provider, ...(options.model ? ['--model', options.model] : [])] }
   if (options.adapter) {
     const file = path.resolve(options.adapter)
@@ -58,7 +59,7 @@ export async function executeVibeUnit(options, job, directory, limits = {}) {
   try {
     return await new Promise((resolve) => {
       const child = spawn(config.command, config.args, { cwd: job.workspace, env: { ...process.env, ...options.env,
-        HAERAM_VIBE_UNIT: '1', HAERAM_VIBE_TAG: options.tag, HAERAM_DIFF_BASE: job.diffBase, HAERAM_TIER: 'task' },
+        HAERAM_VIBE_UNIT: '1', HAERAM_VIBE_TAG: options.tag, HAERAM_DIFF_BASE: job.diffBase, HAERAM_TIER: 'task', HAERAM_CHECK_LOG: checkLog },
         detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', log.fd] })
       const kill = (signal) => { try { process.platform === 'win32' ? child.kill(signal) : process.kill(-child.pid, signal) } catch {} }
       const stop = (reason) => { stopped ??= reason; kill('SIGTERM'); forced ??= setTimeout(() => kill('SIGKILL'), 2000) }
@@ -83,13 +84,15 @@ export async function executeVibeUnit(options, job, directory, limits = {}) {
         clearInterval(timer); clearTimeout(timeout); clearTimeout(forced)
         process.off('SIGINT', signal); process.off('SIGTERM', signal)
         limits.signal?.removeEventListener('abort', abort)
-        let result = null
+        let result = null, usage = null
         if (code === 0 && !stopped) {
-          try { result = validateAgentResult('unit', JSON.parse(output.trim().split('\n').at(-1))) }
+          try { const parsed = JSON.parse(output.trim().split('\n').at(-1)); result = validateAgentResult('unit', parsed); usage = compactUsage(parsed.usage) }
           catch (parseError) { error = parseError.message }
         }
         const session = await readFile(sessionFile, 'utf8').catch(() => null)
-        resolve({ dispatch: id, exitCode: code, stopped, error: error ?? null, result, session: session?.trim() ?? null, log: logPath })
+        const ran = (await readFile(checkLog, 'utf8').catch(() => '')).split('\n').flatMap((line) => { try { return line ? [JSON.parse(line)] : [] } catch { return [] } })
+        const checks = { runs: ran.length, cached: ran.filter((entry) => entry.cached).length, ms: ran.reduce((total, entry) => total + (Number(entry.ms) || 0), 0) }
+        resolve({ dispatch: id, exitCode: code, stopped, error: error ?? null, result, usage, checks, session: session?.trim() ?? null, log: logPath })
       }
       child.stdout.on('data', (chunk) => { output += chunk; if (output.length > 1024 * 1024) stop('output-limit') })
       child.on('error', (error) => finish(127, error.message))
@@ -221,7 +224,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const snapshot = () => ({ ...plan, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, units: count, dispatches, batches, priorityTask, recovery, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -263,6 +266,8 @@ export async function vibeLoop(options = {}, injected = {}) {
     const checks = batches.map((entry) => entry.ci ? `- CI ${entry.ci.commit ?? '-'}: ${entry.ci.outcome} ${entry.ci.runUrl ?? ''}` : `- ${entry.command}: ${entry.cancelled ? 'cancelled' : entry.ok ? 'pass' : 'fail'} (${entry.log ?? '-'})`)
       .filter((line) => !text.includes(line))
     if (checks.length) text = text.replace('\n## next', `${checks.join('\n')}\n\n## next`)
+    // Where the run's time went, once, when the run closes (a reopened report gets a fresh line).
+    if (closing) text = text.replace(/^- time: .*\n/m, '').replace('\n## next', `${timeLine(timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }))}\n\n## next`)
     if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}`)
     await metadata.writeReport(text)
   }
@@ -466,7 +471,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       const receipt = await deps.execute({ ...options, ...appliedConfig }, job, directory, { stopFile, deadline, signal: controller.signal, timeoutMs: Math.min(timeoutMs, Math.max(1, repairMs ?? deadline - deps.now())) })
       count++
       const after = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
-      const entry = { ...receipt, unit: count, head: after.head, at: new Date(deps.now()).toISOString() }
+      const entry = { ...receipt, unit: count, head: after.head, at: new Date(deps.now()).toISOString(), ms: deps.now() - unitStart }
       dispatches.push(entry); pending.push(entry)
       await checkpoint()
       const failed = receipt.exitCode !== 0 || !receipt.result
@@ -551,5 +556,6 @@ export async function vibeLoop(options = {}, injected = {}) {
       await atomicJSON(path.join(directory, 'terminal.json'), { ...snapshot(), running: false, status: 'failed', error: error ?? caught.message })
     } finally { process.off('SIGINT', interrupted); process.off('SIGTERM', interrupted); await releaseLoop(lock, runId) }
   }
-  return { ...plan, reserve, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, codePushed, priorityTask, recovery, manifest }
+  return { ...plan, reserve, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, codePushed, priorityTask, recovery, manifest,
+    time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }) }
 }
