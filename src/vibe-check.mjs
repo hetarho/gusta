@@ -5,9 +5,14 @@ import { writeSync } from 'node:fs'
 import path from 'node:path'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { runtimeRoot, readRuntime } from './work-runtime.mjs'
-import { workingTree, commitTree, checkKey, cachedPass, recordPass, withHeavyLock } from './check-cache.mjs'
+import { workingTree, commitTree, checkKey, cachedPass, recordPass, withHeavyLock, recordTiming, timingKey } from './check-cache.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { sections, tableRows } from './spec-format.mjs'
+import { readVerification } from './vibe-brief.mjs'
+
+// A task check is the affected unit tests: minutes, not the suite. Longer runs are flagged.
+export const TASK_SLOW_MS = 5 * 60000
+const normalized = (command) => command.trim().replace(/\s+/g, ' ')
 
 export async function runVibeCheck(options = {}, command) {
   if (!command?.trim()) throw new SkillPackageError('vibe check -- <command>')
@@ -27,6 +32,11 @@ export async function runVibeCheck(options = {}, command) {
     const delegated = (options.env?.HAERAM_VIBE_UNIT ?? process.env.HAERAM_VIBE_UNIT) === '1' || Object.values(state.attempts).some((entry) =>
       (entry.workspace === root && !entry.cleanedAt) || [entry.review, ...(entry.reviewHistory ?? [])].some((review) => review?.workspace === root))
     if (delegated) throw new SkillPackageError('최종 검증은 조정자/호스트가 실행합니다. 워커·리뷰어는 태스크 검사만 실행하세요. 사용자가 별도 실행을 명시한 경우만 --allow-final을 사용하세요.')
+  }
+  // The full suite at every task is what turns ten tasks into hours of waiting.
+  if (scope.TIER === 'task' && !options.allowFinal) {
+    const verify = await readVerification(root), same = (entry) => normalized(entry) === normalized(command)
+    if (verify.batch.some(same) && !verify.task.some(same)) throw new SkillPackageError('ARCH batch(최종 관문) 명령은 태스크 단계에서 실행하지 않습니다. 변경 영향 단위 테스트($HAERAM_DIFF_BASE 기준)와 빠른 검사만 실행하세요. 전체 스위트는 조정자가 push 직전 --tier batch로 한 번 실행합니다. 사용자가 별도 실행을 명시한 경우만 --allow-final.', [command])
   }
   await git(root, ['rev-parse', '--verify', `${scope.DIFF_BASE}^{commit}`])
   const timeout = Number(options.timeoutMs ?? 3600000)
@@ -77,9 +87,13 @@ export async function runVibeCheck(options = {}, command) {
     const { code, timedOut } = await run()
     const unchanged = await workingTree(root) === tree && (!final || (await git(root, ['rev-parse', 'HEAD'])).trim() === commit)
     if (code === 0 && unchanged) await recordPass(runtime, key, { command, tree, scope, log, ms: Date.now() - start })
-    const stale = final && !unchanged
-    return { schemaVersion: 1, ok: code === 0 && !stale, exitCode: stale ? 1 : code, cached: false, timedOut, stale, ms: Date.now() - start, scope, commit, tree, log,
-      failedTests: [...failedTests], tail: tail.trimEnd().split('\n').slice(-8) }
+    const stale = final && !unchanged, ms = Date.now() - start
+    // A closing gate's real duration sizes the next timed run's reserve. A stopped run measured nothing.
+    if (final && !options.signal?.aborted) await recordTiming(runtime, timingKey('final', command), ms)
+    const slow = scope.TIER === 'task' && ms > TASK_SLOW_MS
+    return { schemaVersion: 1, ok: code === 0 && !stale, exitCode: stale ? 1 : code, cached: false, timedOut, stale, ms, scope, commit, tree, log,
+      failedTests: [...failedTests], tail: tail.trimEnd().split('\n').slice(-8),
+      ...(slow ? { slow: true, hint: 'task check exceeded 5 min: run only the unit tests affected since HAERAM_DIFF_BASE; move integration/e2e/full suites to the batch gate.' } : {}) }
   }
   // Read the tree and cache only after acquiring the lock: a second caller reuses
   // the first caller's receipt instead of queuing a duplicate browser run.

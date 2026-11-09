@@ -17,7 +17,7 @@ description: >-
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(start-vibe)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(start-vibe 3절). 모드가 정해지지 않았으면 함께 모드다.
 5. **읽기**: brief·status 요약을 먼저 쓰고 부족한 ID·섹션만 읽는다. 결정은 `vibe brief <T###|ID-n|ID@rev>`로 원문 블록째 받는다 — 끝의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
-작업 묶음의 워커에서 호출됐다면 이 스킬의 문서 쓰기 절차는 기획 공간으로 인계한다. `manage-work`가 반환한 group.path가 기획·채번·문서 정리 위치이며, 워커 checkout의 STATE·SSOT를 변경하지 않는다. 기획 문서의 정본은 cfg plan 브랜치(기본 `main`)다 — 어느 checkout·worktree에서 기획하든 쓰기·채번 전에 `vibe plan-sync`로 그 브랜치의 최신을 합치고, spec/만 담은 기획 커밋 직후 `vibe plan-push`로 그 브랜치에 올린다(태스크 ID 충돌로 거절되면 미발행 태스크를 다시 채번해 커밋을 고친 뒤 다시 올린다).
+작업 묶음 워커에서 불렸으면 문서 쓰기는 `manage-work`가 반환한 group.path(기획·채번·문서 정리 위치)로 인계하고 워커 checkout의 STATE·SSOT는 바꾸지 않는다. 어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 FORMAT cfg `plan`).
 
 작업 묶음의 기획 공간에서는 공유 보드의 실행 상태와 참조 도메인으로 영향받는 워커를 확인한다. STATE의 todo 표기만으로 미착수라고 판단하지 않는다. 정책 변경을 커밋한 뒤 affected task/attempt를 보고하고, 해당 워커가 동기화·재검증하거나 재분해 후 다시 배정되게 한다.
 
@@ -34,7 +34,7 @@ ideation에서 넘겨받은 변경이면 원본 활성 문서의 domains·vision
 
 ## 3. 적용
 - 수정(✎)은 결정 라인 교체, 추가(+)는 새 번호, 철회는 지우지 말고 [x]로 상태만 변경.
-- rev+1, chg에 `- rN YYMMDD <ID>-n✎ 요약` 1줄 — ✎(수정)는 요약에 이전 값을 반드시 `old→new`로 남기고(예: `BM-11✎ limit 100→50`), -(삭제)는 무엇이 없어졌는지 남긴다. 인용줄·플로우·제약도 동기화.
+- rev+1, chg 1줄(FORMAT rev 표기: ✎는 이전 값을 `old→new`로, -는 없어진 것을 남긴다). 인용줄·플로우·제약도 동기화.
 
 **최종 점검** — 확인 요청 전에 한 줄씩 통과시킨다. SSOT에는 지금 지켜야 하는 규칙만 남는다. 요청·대화의 흔적은 태스크 파일(1회용)에는 있어도 되지만 SSOT에는 절대 남기지 않는다.
 - 한 결정이 독립적으로 이해·검증되는 정책 단위인가 — 따로 바뀔 수 있는 정책이 섞였으면 쪼갠다. 신호: ` ← ` 두 개 이상, ` · ` 세 덩어리 이상, 한 줄 700자 초과.
@@ -49,5 +49,5 @@ ideation에서 넘겨받은 변경이면 원본 활성 문서의 domains·vision
 
 ## 4. 마감
 - STATE: ssot rev 갱신 + pending에 델타 추가(`AUTH-2✎ AUTH-5+` — 단 tasked=0이면 `all` 유지) + [?] 수 갱신, 영향권에 doing 태스크가 있으면 log에 경고 1줄, next에 `create-task <ID>` / log 1줄.
-- ideation에서 시작했다면 [전환 마감 절차](../create-ssot/references/ideation.md)를 수행한다 — 일부 반영은 ready 유지, 전체 반영은 converted로 바꾸고 ideation/done/으로 이동·STATE 행 제거. SSOT·ideation·STATE 변경은 같은 기획 커밋에 담는다.
+- ideation에서 시작했다면 [전환 마감 절차](../create-ssot/references/ideation.md)를 수행한다.
 - 보고(level별): 바뀐 결정, 파급 범위, 다음 단계.

@@ -24,7 +24,7 @@ npx haeram-spec-creator work run --work feature --provider codex --reviewer-prov
 - 명령에는 `HAERAM_TIER`(task|unit|group), `HAERAM_DIFF_BASE`(태스크=이전 단계 커밋, 재제출=고친 대상 커밋, 단위=통합 전 상위 커밋, 묶음=묶음 시작 커밋), `HAERAM_TASK`·`HAERAM_TASKS`가 전달된다. 예: `pnpm vitest related --run $(git diff --name-only "$HAERAM_DIFF_BASE" HEAD)`로 호스트가 영향받는 테스트를 직접 실행한다. 빈 선택이 통과로 끝나지 않게 명령을 구성한다.
 
 ### lane
-lane 단위는 한 worker 슬롯과 한 작업 공간을 끝까지 사용한다. 실행기는 태스크 하나씩 에이전트를 실행하고, 제출이 다음 `taskId`를 돌려주면 같은 슬롯·공간에 이어서 배정한다. 다음 태스크·수정 요청·답을 받은 결정 요청은 같은 세션을 이어서(resume) 실행한다 — 연속 4회까지, 그 뒤에는 새 세션. 세션 ID는 실행이 끝나기 전에 기록되므로(Claude는 `--session-id`로 미리 정하고, Codex는 첫 이벤트의 thread ID) timeout으로 끊긴 실행도 이어 갈 수 있다. 워커에게는 태스크 파일, 결정 블록(인용 도메인의 현재 규칙 또는 cfg brief `cited`면 인용 결정만, 필수 의존·정본, 인용 결정을 가리키는 결정), 전역 규칙(cfg always), 관련 flow·constraints, stale base 이후 chg, 검증 명령을 묶은 `brief`를 넘긴다(`work brief --attempt <id>`와 같은 내용, 묶음 브랜치의 고정 커밋 기준) — STATE·FORMAT·ARCH 전체를 다시 읽지 않게 한다. 기본 어댑터는 brief를 JSON 대신 마크다운으로 프롬프트에 싣는다. 세션 루프의 세션은 lane 전체를 구현한 뒤 한 번 제출한다. 리뷰와 통합은 lane 전체에 한 번이다. stdin의 `tasks`는 단위 전체, `taskId`는 이번에 구현할 태스크다. worker/review 작업 공간과 통합 후보는 필요한 환경이 설치되지 않았을 수 있다. 작업자가 환경 준비를 할 수 있도록 지시하고 검증 명령에도 필요한 준비를 포함한다.
+lane 단위는 한 worker 슬롯과 한 작업 공간을 끝까지 사용한다. 실행기는 태스크 하나씩 에이전트를 실행하고, 제출이 다음 `taskId`를 돌려주면 같은 슬롯·공간에 이어서 배정한다. 다음 태스크·수정 요청·답을 받은 결정 요청은 같은 세션을 이어서(resume) 실행한다 — 연속 4회까지, 그 뒤에는 새 세션. 세션 ID는 실행이 끝나기 전에 기록되므로(Claude는 `--session-id`로 미리 정하고, Codex는 첫 이벤트의 thread ID) timeout으로 끊긴 실행도 이어 갈 수 있다. 워커에게는 `work brief --attempt <id>`와 같은 `brief`(묶음 브랜치의 고정 커밋 기준, 내용은 stdin `brief` 항목)를 넘긴다 — STATE·FORMAT·ARCH 전체를 다시 읽지 않게 한다. 기본 어댑터는 brief를 JSON 대신 마크다운으로 프롬프트에 싣는다. 세션 루프의 세션은 lane 전체를 구현한 뒤 한 번 제출한다. 리뷰와 통합은 lane 전체에 한 번이다. stdin의 `tasks`는 단위 전체, `taskId`는 이번에 구현할 태스크다. worker/review 작업 공간과 통합 후보는 필요한 환경이 설치되지 않았을 수 있다. 작업자가 환경 준비를 할 수 있도록 지시하고 검증 명령에도 필요한 준비를 포함한다.
 
 `--provider auto`가 기본이며 호환되는 Codex, Claude 순으로 선택한다. Orca 설치 여부로 실행 방식을 바꾸지 않는다. reviewer-provider를 생략하면 worker와 같은 도구를 사용한다. `--model`·`--reviewer-model`을 생략하면 각 CLI의 설정을 사용한다. 같은 도구의 리뷰어는 명시한 worker 모델을 상속하고, 다른 도구의 리뷰어는 모델을 따로 지정하지 않으면 그 CLI 기본값을 사용한다. 임의로 모델을 추정하거나 설치·로그인하지 않는다.
 
@@ -102,7 +102,7 @@ runner는 빈 슬롯을 채우고 수정 요청을 우선 배정하며 리뷰 �
 `work run --autopilot`은 사람이 없다는 전제로 돈다.
 - 결정 요청만 남으면 조정자의 답을 기다린다(모델 호출 없음, 기본 15분=900000ms, 명시적인 `--decision-wait-ms` 우선, 지나면 `decision-wait`로 끝남). 대기를 시작하거나 대상이 바뀌면 attempt ID·태스크·질문·요청 시각·대기 시작·기한을 stderr와 runtime 이력에 남긴다. 함께 모드는 사용자가 결정하도록 대기 없이 반환한다.
 - 승인됐지만 통합하지 못한 제출물이 남으면 결정 대기로 숨기지 않는다. 새 제출물은 다시 통합하고, 같은 제출물이 이미 실패해 더 진행할 수 없으면 즉시 `needs-attention`으로 끝내고 `remaining`에 그 attempt를 남긴다.
-- 조정자 세션은 `work next --coordinator --autopilot` 루프에서 `decide`를 받아 잠정 update-ssot(그 태스크의 base 갱신 포함)를 커밋한 직후 바로 `work update --attempt <id> --status doing --note '<결정·rev·순서 조건>'`으로 재개한다. 선행 통합을 기다리며 재개를 미루지 않는다. 순서 의존은 태스크 deps(`dep:`)에 반영하고 메모로 넘기며 실행기와 runtime이 순서를 맞춘다. 실행기는 기획 브랜치를 그 워커 공간에 합치고 같은 세션을 이어 실행한다. 조정자는 단위·리뷰를 맡지 않는다.
+- 조정자의 `decide` 처리는 start-vibe [조정자 절차](../../start-vibe/references/coordinator.md) 3절을 따른다. 조정자는 단위·리뷰를 맡지 않는다.
 - timeout이면 끊기 전에 작업 공간을 `refs/haeram/checkpoints/<attempt>`로 스냅샷하고(30분마다도, `--checkpoint-ms`) 진행분을 `WIP` 커밋으로 남긴 뒤, 같은 세션으로 한 번 더 이어 간다(태스크 실행 횟수 한도 안에서). `--push`가 있는 묶음은 스냅샷을 `wip/<attempt 8자>`로도 push한다.
 - 계획 커밋이나 다른 통합이 검증 도중 상위 브랜치를 옮긴 통합은 제출물마다 최대 3회 시도한다. 재제출하면 이 횟수도 새로 센다.
 - macOS에서는 실행기 수명 동안 `caffeinate -w`로 절전을 막는다(`HAERAM_NO_AWAKE=1`이면 끔).

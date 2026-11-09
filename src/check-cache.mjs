@@ -97,3 +97,32 @@ export async function withHeavyLock(runtime, label, run, { timeoutMs = 4 * 60 * 
   }
   try { return await run() } finally { await rm(lock, { recursive: true, force: true }) }
 }
+
+// Measured wall-clock of the closing gate's commands and of loop phases (`unit`, `ci`).
+// A timed run sizes its closing reserve from these instead of a fixed share. The last
+// few samples are kept and the largest is used, so one quick run does not shrink it.
+const TIMING_SAMPLES = 3
+export const timingKey = (kind, command = '') => `${kind}\u0000${command.trim().replace(/\s+/g, ' ')}`
+
+export async function readTimings(runtime) {
+  try {
+    const store = JSON.parse(await readFile(path.join(runtime, 'timings.json'), 'utf8'))
+    return store?.schemaVersion === 1 && store.entries && typeof store.entries === 'object' ? store : { schemaVersion: 1, entries: {} }
+  } catch { return { schemaVersion: 1, entries: {} } }
+}
+
+export function measured(store, key) {
+  const samples = store.entries[key]?.samples ?? []
+  return samples.length ? Math.max(...samples) : null
+}
+
+// Advisory like the pass cache: losing a concurrent write costs one sample.
+export async function recordTiming(runtime, key, ms) {
+  if (!Number.isFinite(ms) || ms < 0) return
+  await mkdir(runtime, { recursive: true })
+  const store = await readTimings(runtime)
+  store.entries[key] = { samples: [...(store.entries[key]?.samples ?? []), Math.round(ms)].slice(-TIMING_SAMPLES), at: new Date().toISOString() }
+  const temporary = path.join(runtime, `timings.${randomUUID()}.tmp`)
+  await writeFile(temporary, `${JSON.stringify(store)}\n`)
+  await rename(temporary, path.join(runtime, 'timings.json'))
+}

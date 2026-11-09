@@ -20,7 +20,7 @@ description: >-
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(start-vibe)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(start-vibe 3절). 모드가 정해지지 않았으면 함께 모드다.
 5. **읽기**: brief·status 요약을 먼저 쓰고 부족한 ID·섹션만 읽는다. 결정은 `vibe brief <T###|ID-n|ID@rev>`로 원문 블록째 받는다 — 끝의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
-작업 묶음의 워커에서 호출됐다면 이 스킬의 문서 쓰기 절차는 기획 공간으로 인계한다. `manage-work`가 반환한 group.path가 기획·채번·문서 정리 위치이며, 워커 checkout의 STATE·SSOT를 변경하지 않는다. 기획 문서의 정본은 cfg plan 브랜치(기본 `main`)다 — 어느 checkout·worktree에서 기획하든 쓰기·채번 전에 `vibe plan-sync`로 그 브랜치의 최신을 합치고, spec/만 담은 기획 커밋 직후 `vibe plan-push`로 그 브랜치에 올린다(태스크 ID 충돌로 거절되면 미발행 태스크를 다시 채번해 커밋을 고친 뒤 다시 올린다).
+작업 묶음 워커에서 불렸으면 문서 쓰기는 `manage-work`가 반환한 group.path(기획·채번·문서 정리 위치)로 인계하고 워커 checkout의 STATE·SSOT는 바꾸지 않는다. 어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 FORMAT cfg `plan`).
 
 작업 묶음의 진행 상황은 공유 보드의 doing/blocked/ready/integrated를 사용한다. STATE에 todo로 남은 워커를 미착수로 서술하지 않는다.
 
@@ -42,11 +42,7 @@ STATE 읽기 → log에 `- YYMMDD create-narrative start` → 재료 읽기: sso
 
 ## 4. 한국어로 쓰기
 변환 순서: ① 스펙에서 핵심 발췌 → ② 독자의 언어로 요약 → ③ 이야기로 연결(살 붙이기). 이 순서가 원문 왜곡을 막는다.
-references/korean-style.md의 규칙집을 적용해 쓰고, 완성 후 반드시 두 번 퇴고한다:
-- **1차(내용 보존)**: 수치·날짜·고유명사·인과관계·부정 표현이 spec 원문과 일치하는지 확인. 다르면 고치는 쪽은 내러티브다.
-- **2차(문장)**: korean-style.md 체크리스트로 훑고, 소리 내어 읽듯 검토 — 입으로 읽기 어색한 문장은 말하듯 다시 쓴다.
-섹션당 핵심 메시지는 하나만 — 스펙을 다 아는 작성자는 전부 담고 싶어진다. 욕심을 빼고, 상세가 필요한 독자는 spec/ 원문으로 안내한다.
-핵심만 요약하면: 결론 먼저(두괄식) · 한 문장에 하나의 생각 · 능동형으로 · 번역투·AI투 금지 · 독자가 아는 말로.
+references/korean-style.md 규칙집을 적용해 쓰고, 완성 후 그 '퇴고' 절차대로 반드시 두 번 퇴고한다(1차 내용 보존 — 다르면 고치는 쪽은 내러티브).
 
 ## 5. 작성·마감
 - `spec/NARRATIVE.md` 작성. 첫 줄에 낡음 감지용 스탬프: `> as of ARCH@2 BM@3 | 260905 | 독자: 팀 동료`

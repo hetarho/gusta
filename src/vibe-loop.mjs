@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, rm, open, access } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rm, open, access, readdir } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -9,6 +9,7 @@ import { readVerification, vibeBrief } from './vibe-brief.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { vibeCIWait } from './vibe-ci.mjs'
 import { git } from './workspace.mjs'
+import { readTimings, recordTiming, timingKey, measured } from './check-cache.mjs'
 import { inspectWork } from './work-groups.mjs'
 import { SESSION_TAG } from './spec-format.mjs'
 import { sections, tableRows } from './spec-format.mjs'
@@ -21,6 +22,19 @@ const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.
 const adapter = fileURLToPath(new URL('../bin/haeram-agent-adapter.mjs', import.meta.url))
 const present = (file) => access(file).then(() => true, () => false)
 const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
+// The closing reserve is what the last gate really costs: the measured suite, one repair
+// unit and the suite's re-run, plus the measured CI wait when code is pushed. Only before
+// the gate has ever been measured does a run fall back to a share of max-hours.
+export const UNMEASURED_RESERVE_SHARE = 0.2
+export function closingReserve({ timings, commands, push = false, hours, timeoutMs, optionHours }) {
+  if (optionHours !== undefined) return { ms: optionHours * 3600000, source: 'option' }
+  const gates = commands.map((command) => measured(timings, timingKey('final', command)))
+  if (!commands.length || gates.includes(null)) return { ms: Math.round(hours * 60 * UNMEASURED_RESERVE_SHARE) * 60000, source: 'unmeasured' }
+  const gateMs = gates.reduce((sum, ms) => sum + ms, 0)
+  const fixMs = measured(timings, timingKey('unit')) ?? timeoutMs
+  const ciMs = push ? measured(timings, timingKey('ci')) ?? 0 : 0
+  return { ms: 2 * gateMs + fixMs + ciMs, source: 'measured', gateMs, fixMs, ciMs }
+}
 const positive = (value, fallback, label, integer = false) => {
   const n = Number(value ?? fallback)
   if (!Number.isFinite(n) || n <= 0 || (integer && !Number.isSafeInteger(n))) throw new SkillPackageError(`${label}: 양수가 필요합니다.`)
@@ -99,6 +113,8 @@ export async function vibeLoop(options = {}, injected = {}) {
   if (options.notifyCommand !== undefined && (typeof options.notifyCommand !== 'string' || !options.notifyCommand.trim())) throw new SkillPackageError('--notify-command에는 실행 가능한 명령이 필요합니다.')
   const maxUnits = positive(options.maxUnits, 100, 'max-units', true), hours = positive(options.maxHours, 8, 'max-hours')
   const batchSize = positive(options.batchSize, 3, 'batch-size', true), timeoutMs = positive(options.timeoutMs, 3600000, 'timeout-ms')
+  const optionHours = options.finalReserveHours === undefined ? undefined : Number(options.finalReserveHours)
+  if (optionHours !== undefined && (!Number.isFinite(optionHours) || optionHours < 0 || optionHours >= hours)) throw new SkillPackageError('final-reserve-hours: 0 이상 max-hours 미만이 필요합니다.')
   const context = await vibeSession(options), root = context.root
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'haeram-vibe-loop.lock')
@@ -130,8 +146,13 @@ export async function vibeLoop(options = {}, injected = {}) {
   const verify = await readVerification(root)
   const batchVerify = options.verify ?? verify.batch
   if (!Array.isArray(batchVerify) || batchVerify.some((command) => typeof command !== 'string' || !command.trim())) throw new SkillPackageError('--verify에는 실행 가능한 명령이 필요합니다.')
+  // The tail of a timed run belongs to the closing gate (full suites, push, CI): no new work
+  // starts inside it, so implementation time never eats the verification.
+  const estimateReserve = async () => closingReserve({ timings: await readTimings(context.runtime), commands: batchVerify, push: Boolean(context.target), hours, timeoutMs, optionHours })
+  let reserve = await estimateReserve()
+  if (reserve.ms >= hours * 3600000) throw new SkillPackageError(`마감 관문 실측(전체 검증 2회+수정 1회+CI)이 ${(reserve.ms / 3600000).toFixed(2)}시간이라 max-hours 안에 구현 시간이 없습니다. --max-hours를 늘리거나 --final-reserve-hours를 지정하세요.`)
   const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? 'command', permissionMode: options.permissionMode ?? 'acceptEdits',
-    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs }, verify, batchVerify,
+    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs }, reserve, verify, batchVerify,
     directory, stopFile, manifest, freshSessionPerUnit: true, pushEachUnit: Boolean(options.pushEachUnit), notifyCommand: options.notifyCommand ?? null }
   if (options.dryRun) return { ...plan, dryRun: true, modelRequests: 0 }
   if ((await inspectWork({ targetRoot: root })).mode !== 'single') throw new SkillPackageError('vibe loop는 단독 checkout에서 실행하세요. 활성 work 공간은 work run을 사용합니다.')
@@ -163,6 +184,8 @@ export async function vibeLoop(options = {}, injected = {}) {
   const reportPath = path.join(root, report)
   let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false
   let priorityTask = /^T\d+$/.test(previous?.priorityTask ?? '') ? previous.priorityTask : null
+  // repairTask: the gate/CI repair this run queued. failedGate: the code a gate last failed on.
+  let repairTask = null, failedGate = null, gateFailures = 0
   let recovery = previous?.recovery?.reason === 'blocked-task' && /^T\d+$/.test(previous.recovery.taskId ?? '') ? previous.recovery : null
   const dispatches = [], batches = []
   const operationalErrors = [], configHistory = []
@@ -195,7 +218,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   }
   const stop = (why) => { stopped = true; stopReason ??= why; controller.abort(stopReason) }
   const interrupted = () => stop('signal')
-  const snapshot = () => ({ ...plan, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), heartbeatAt,
+  const snapshot = () => ({ ...plan, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
     report, units: count, dispatches, batches, priorityTask, recovery, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
@@ -272,8 +295,28 @@ export async function vibeLoop(options = {}, injected = {}) {
       await event('configuration-applied', { requestId: request.id, actual: appliedConfig, afterUnit: count })
     }
   }
+  const codeChanged = async (from, to) => (await git(root, ['diff', '--name-only', from, to])).trim().split('\n').filter(Boolean).some((file) => !/^(spec\/|docs\/)|\.md$/i.test(file))
+  // A failed gate or CI run is work for the next unit, not a request for a person: persist a
+  // concrete repair task with its evidence and keep it ahead of the normal queue, even though
+  // its ID was allocated last. The fresh session needs no output from this conversation.
+  const queueRepair = async (slug, title, goal, notes) => {
+    const file = path.join(root, 'spec/STATE.md')
+    let text = await readFile(file, 'utf8')
+    const names = [...await readdir(path.join(root, 'spec/tasks')).catch(() => []), ...await readdir(path.join(root, 'spec/tasks/done')).catch(() => [])]
+    const id = `T${String(Math.max(0, ...names.map((name) => Number(name.match(/^T(\d+)\./)?.[1] ?? 0))) + 1).padStart(3, '0')}`
+    const rev = tableRows(sections(text).get('ssot')).find(([id]) => id === 'ARCH')?.[1] ?? '1'
+    const taskPath = `spec/tasks/${id}.${slug}.md`
+    await writeFile(path.join(root, taskPath), `# ${id} ${title}\n> st:todo | ssot:- | base:ARCH@${rev} | dep:-\n\n## goal\n${goal}\n\n## acceptance\n- [ ] The failed checks pass with a regression test where appropriate.\n\n## impl notes\n${notes.map((note) => `- ${note}`).join('\n')}\n\n## result\n`)
+    text = text.replace(/(## tasks\n[\s\S]*?)(?=\n## |$)/, (section) => `${section.trimEnd()}\n| ${id} | ${title} | ARCH | - | todo |\n`)
+    text = text.replace(/## next\n[\s\S]*?(?=\n## |$)/, `## next\n- implement-task ${id}\n`)
+    await writeFile(file, text)
+    await git(root, ['add', '--', file, taskPath])
+    await git(root, ['commit', '--quiet', '--only', '-m', `create-task ${id}: ${title}`, '--', file, taskPath])
+    priorityTask = repairTask = id
+  }
   // A batch boundary only records the report. Batch suites, the push and the CI wait run when
-  // the work runs out or at the end. Per-unit publication requires an explicit option.
+  // the work runs out or in the closing window. Per-unit publication requires an explicit option.
+  // Returns false when the gate failed and a repair was queued (closing throws instead).
   const flush = async (closing = false, publish = closing) => {
     if (publish) await ensureActive()
     await recordReport(closing)
@@ -281,24 +324,38 @@ export async function vibeLoop(options = {}, injected = {}) {
     await metadata.assertClean()
     if (publish && context.target) await deps.sync({ ...options, targetRoot: root })
     const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
-    const files = (await git(root, ['diff', '--name-only', base, head])).trim().split('\n').filter(Boolean)
-    const code = files.some((file) => !/^(spec\/|docs\/)|\.md$/i.test(file))
+    const code = await codeChanged(base, head)
     if (code && publish) {
       if (!batchVerify.length) throw new SkillPackageError('코드 push 전 묶음 검증이 없습니다. ARCH batch 단계 또는 --verify를 지정하세요.')
+      // The same code already failed: re-running the suite cannot pass.
+      if (failedGate && !(await codeChanged(failedGate.head, head))) {
+        if (closing) throw new SkillPackageError(`묶음 검증 실패: ${failedGate.command}`, [failedGate.log ?? ''])
+        return false
+      }
       for (const command of batchVerify) {
         await ensureActive()
         let checked
-        try { checked = await deps.check({ targetRoot: root, tier: 'batch', diffBase: base, heavy: true, signal: controller.signal, timeoutMs: Math.min(timeoutMs, Math.max(1, deadline - deps.now())) }, command) }
+        // The gate may use its whole reserve even when a unit's timeout is shorter.
+        try { checked = await deps.check({ targetRoot: root, tier: 'batch', diffBase: base, heavy: true, signal: controller.signal, timeoutMs: Math.min(Math.max(timeoutMs, reserve.ms), Math.max(1, deadline - deps.now())) }, command) }
         catch (caught) { batches.push({ command, ok: false, cancelled: controller.signal.aborted, error: caught.message }); throw caught }
         batches.push({ command, ...checked, ...(!checked.ok && controller.signal.aborted ? { cancelled: true } : {}) })
         await ensureActive()
-        if (!checked.ok) throw new SkillPackageError(`묶음 검증 실패: ${command}`, [checked.log ?? ''])
+        if (!checked.ok) {
+          failedGate = { head, command, log: checked.log ?? null }; gateFailures++
+          await queueRepair('fix-gate', 'Fix final gate failure', `Make \`${command}\` pass on ${head}; preserve existing contracts.`,
+            [`Log: ${checked.log ?? '-'}`, `Failed tests: ${JSON.stringify(checked.failedTests ?? [])}`, `Tail: ${JSON.stringify(checked.tail ?? [])}`])
+          await recordReport(closing)
+          await metadataCommit(`vibe ${options.tag}: record checks`)
+          if (closing) throw new SkillPackageError(`묶음 검증 실패: ${command}`, [checked.log ?? ''])
+          return false
+        }
       }
+      failedGate = null; gateFailures = 0
     }
     await recordReport(closing)
     await metadataCommit(`vibe ${options.tag}: record checks`)
     // base stays at the last published commit, so the next publish still sees this code.
-    if (!publish) { pending = []; await save(); return }
+    if (!publish) { pending = []; await save(); return true }
     await ensureActive()
     await metadata.assertClean()
     const pushed = await deps.push({ ...options, targetRoot: root, ...(code ? { verifiedCommit: head } : {}) })
@@ -308,26 +365,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       const ci = await deps.ci({ ...options, targetRoot: root, signal: controller.signal, timeoutMs: Math.max(1, deadline - deps.now()), commit: pushed.pushed, branch: context.target, diffBase: base })
       batches.push({ ci })
       if (!ci.ok && ci.outcome === 'cancelled') throw new SkillPackageError('CI 대기가 중지됐습니다.')
-      if (!ci.ok) {
-        // Persist a concrete fix task. The next fresh session can implement it
-        // without recovering CI output from the previous conversation.
-        const file = path.join(root, 'spec/STATE.md')
-        let text = await readFile(file, 'utf8')
-        const { readdir } = await import('node:fs/promises')
-        const names = [...await readdir(path.join(root, 'spec/tasks')).catch(() => []), ...await readdir(path.join(root, 'spec/tasks/done')).catch(() => [])]
-        const id = `T${String(Math.max(0, ...names.map((name) => Number(name.match(/^T(\d+)\./)?.[1] ?? 0))) + 1).padStart(3, '0')}`
-        const rev = tableRows(sections(text).get('ssot')).find(([id]) => id === 'ARCH')?.[1] ?? '1'
-        const taskPath = `spec/tasks/${id}.fix-ci.md`
-        await writeFile(path.join(root, taskPath), `# ${id} Fix CI failure\n> st:todo | ssot:- | base:ARCH@${rev} | dep:-\n\n## goal\nFix the failing checks for ${pushed.pushed}; preserve existing contracts.\n\n## acceptance\n- [ ] The failed checks pass with a regression test where appropriate.\n\n## impl notes\n- CI: ${ci.runUrl ?? '-'}\n- Jobs: ${JSON.stringify(ci.jobs ?? [])}\n\n## result\n`)
-        text = text.replace(/(## tasks\n[\s\S]*?)(?=\n## |$)/, (section) => `${section.trimEnd()}\n| ${id} | Fix CI failure | ARCH | - | todo |\n`)
-        text = text.replace(/## next\n[\s\S]*?(?=\n## |$)/, `## next\n- implement-task ${id}\n`)
-        await writeFile(file, text)
-        await git(root, ['add', '--', file, taskPath])
-        await git(root, ['commit', '--quiet', '--only', '-m', `create-task ${id}: CI failure`, '--', file, taskPath])
-        // A failed check is work for the next unit, not a request for a person.
-        // Keep it ahead of the normal queue even though its ID was allocated last.
-        priorityTask = id
-      }
+      if (!['skipped', 'cancelled'].includes(ci.outcome) && Number.isFinite(ci.ms)) await recordTiming(context.runtime, timingKey('ci'), ci.ms)
+      if (!ci.ok) await queueRepair('fix-ci', 'Fix CI failure', `Fix the failing checks for ${pushed.pushed}; preserve existing contracts.`, [`CI: ${ci.runUrl ?? '-'}`, `Jobs: ${JSON.stringify(ci.jobs ?? [])}`])
     }
     // The last CI result (and any repair queued at a limit) arrives after the
     // code push. Persist it in the closing report and publish that metadata too.
@@ -341,6 +380,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     }
     base = (await git(root, ['rev-parse', 'HEAD'])).trim(); pending = []
     await save()
+    return true
   }
   process.on('SIGINT', interrupted); process.on('SIGTERM', interrupted)
   try {
@@ -373,6 +413,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (await present(stopFile)) { reason = 'stop-file'; break }
       if (deps.now() >= deadline) { reason = 'max-hours'; break }
       if (count >= maxUnits) { reason = 'max-units'; break }
+      // The gate failed again after its repair: the closing flush reports it, nothing re-runs.
+      if (gateFailures >= 2) { reason = 'gate-failures'; break }
       phase = 'boundary'
       await applyRequests()
       if (reason) break
@@ -381,12 +423,24 @@ export async function vibeLoop(options = {}, injected = {}) {
       // A design opened in this checkout meanwhile: its edits wait for the user, not for units.
       if (status.route === 'design') { reason = 'design'; break }
       if (priorityTask && status.remaining && !status.remaining.some((task) => task.id === priorityTask)) priorityTask = null
+      if (repairTask && status.remaining && !status.remaining.some((task) => task.id === repairTask)) repairTask = null
       if (recovery && status.remaining && !status.remaining.some((task) => task.id === recovery.taskId)) recovery = null
       if (!recovery && status.implementation?.blocked?.length) {
         const inbox = await deps.status({ ...options, targetRoot: root, section: 'inbox', fetch: false })
         const parked = new Set((inbox.inbox ?? []).filter((entry) => entry.kind === 'parked').flatMap((entry) => entry.refs))
         const taskId = status.implementation.blocked.find((id) => !parked.has(id))
         if (taskId) { recovery = { reason: 'blocked-task', taskId }; priorityTask = taskId }
+      }
+      // The closing window, re-measured at every boundary. Not a cancellation: nothing new starts,
+      // unpublished code goes through the gate, push and CI now, and a failure queues one repair
+      // whose unit must leave room for the gate's re-run.
+      reserve = await estimateReserve()
+      let repairMs = null
+      if (deps.now() >= deadline - reserve.ms) {
+        const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
+        if (head !== base && !(failedGate && !(await codeChanged(failedGate.head, head)))) { await flush(false, true); continue }
+        repairMs = deadline - deps.now() - (reserve.gateMs ?? 0)
+        if (!repairTask || !status.runnable?.includes(repairTask) || repairMs <= 0) { reason = 'final-window'; break }
       }
       const finished = status.parkedOnly ? 'parked-only' : status.settled || status.route === 'ideation-first' ? 'no-work' : null
       if (finished && !recovery) {
@@ -395,7 +449,7 @@ export async function vibeLoop(options = {}, injected = {}) {
         reason = finished; break
       }
       const nextTask = status.next?.[0]?.match(/^- implement-task (T\d+)\b/)?.[1]
-      const selected = recovery?.taskId ?? (status.runnable?.includes(priorityTask) ? priorityTask : null) ?? status.implementation?.resume?.find((id) => status.runnable?.includes(id)) ?? (status.runnable?.includes(nextTask) ? nextTask : null) ?? status.runnable?.[0]
+      const selected = repairMs !== null ? repairTask : recovery?.taskId ?? (status.runnable?.includes(priorityTask) ? priorityTask : null) ?? status.implementation?.resume?.find((id) => status.runnable?.includes(id)) ?? (status.runnable?.includes(nextTask) ? nextTask : null) ?? status.runnable?.[0]
       if (status.concurrency === 'strict' && context.target) {
         await metadataCommit(`vibe ${options.tag}: session presence`)
         await deps.claim({ ...options, targetRoot: root, task: selected })
@@ -408,13 +462,16 @@ export async function vibeLoop(options = {}, injected = {}) {
         cliCommand: [process.execPath, cli], allowTools: allowTool, permissionMode: options.permissionMode ?? 'acceptEdits', diffBase: before.head, hostManaged: true,
         ...(recovery ? { recovery } : {}) }
       phase = 'unit'; await save()
-      const receipt = await deps.execute({ ...options, ...appliedConfig }, job, directory, { stopFile, deadline, signal: controller.signal, timeoutMs: Math.min(timeoutMs, Math.max(1, deadline - deps.now())) })
+      const unitStart = deps.now()
+      const receipt = await deps.execute({ ...options, ...appliedConfig }, job, directory, { stopFile, deadline, signal: controller.signal, timeoutMs: Math.min(timeoutMs, Math.max(1, repairMs ?? deadline - deps.now())) })
       count++
       const after = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
       const entry = { ...receipt, unit: count, head: after.head, at: new Date(deps.now()).toISOString() }
       dispatches.push(entry); pending.push(entry)
       await checkpoint()
       const failed = receipt.exitCode !== 0 || !receipt.result
+      // A real unit's duration sizes the repair buffer of the closing reserve.
+      if (!failed) await recordTiming(context.runtime, timingKey('unit'), deps.now() - unitStart)
       if (!failed) {
         const taskId = receipt.result.id || selected
         // A unit owns planning as well as implementation. Give a blocked task a
@@ -494,5 +551,5 @@ export async function vibeLoop(options = {}, injected = {}) {
       await atomicJSON(path.join(directory, 'terminal.json'), { ...snapshot(), running: false, status: 'failed', error: error ?? caught.message })
     } finally { process.off('SIGINT', interrupted); process.off('SIGTERM', interrupted); await releaseLoop(lock, runId) }
   }
-  return { ...plan, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, codePushed, priorityTask, recovery, manifest }
+  return { ...plan, reserve, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, codePushed, priorityTask, recovery, manifest }
 }

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { readFile, writeFile, readdir, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fixture, git } from './helpers/vibe-fixture.mjs'
-import { vibeLoop, executeVibeUnit } from '../src/vibe-loop.mjs'
+import { vibeLoop, executeVibeUnit, closingReserve } from '../src/vibe-loop.mjs'
+import { timingKey } from '../src/check-cache.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
 import { activeRows } from '../src/state-doc.mjs'
 
@@ -89,6 +90,65 @@ test('no-work and max-hours routes terminate, closing report once', async (t) =>
   let now = 0
   const timed = await vibeLoop({ ...opts(root), tag: 't062', maxHours: 1 }, { preflight: async () => { now = 3600001; return passed() }, now: () => now, execute: () => assert.fail('time limit') })
   assert.equal(timed.reason, 'max-hours')
+})
+
+test('closing reserve is the measured gate twice, one repair unit and CI; unmeasured runs fall back once', () => {
+  const store = (entries) => ({ schemaVersion: 1, entries: Object.fromEntries(Object.entries(entries).map(([key, samples]) => [key, { samples }])) })
+  const min = 60000, base = { commands: ['npm test', 'npm run e2e'], hours: 10, timeoutMs: 3600000 }
+  const timings = store({ [timingKey('final', 'npm  test')]: [20 * min, 25 * min], [timingKey('final', 'npm run e2e')]: [5 * min], [timingKey('unit')]: [15 * min], [timingKey('ci')]: [10 * min] })
+  // gate = max of recent samples per command: 25 + 5 = 30 min; reserve = 30 + 15 (repair) + 30 (re-run) + 10 (CI)
+  assert.deepEqual(closingReserve({ ...base, timings, push: true }), { ms: 85 * min, source: 'measured', gateMs: 30 * min, fixMs: 15 * min, ciMs: 10 * min })
+  assert.equal(closingReserve({ ...base, timings }).ms, 75 * min)
+  assert.deepEqual(closingReserve({ ...base, timings: store({ [timingKey('final', 'npm test')]: [min] }) }), { ms: 120 * min, source: 'unmeasured' })
+  assert.deepEqual(closingReserve({ ...base, timings, optionHours: 1 }), { ms: 60 * min, source: 'option' })
+})
+
+test('the closing window starts no new work and still runs the one gate and push', async (t) => {
+  const { root } = await fixture(t)
+  const start = Date.now()
+  let now = start, calls = 0, checks = 0, pushes = 0
+  // Nothing measured yet: the first run reserves 20% of 10 hours.
+  const result = await vibeLoop({ ...opts(root), maxUnits: 10, maxHours: 10 }, { preflight: passed, now: () => now,
+    execute: async () => { calls++; now += 3 * 3600000; await writeFile(path.join(root, 'app.js'), `// ${calls}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit() },
+    check: async (options) => { checks++; assert.equal(options.tier, 'batch'); assert.ok(options.timeoutMs <= 3600000); return { ok: true } },
+    push: async () => { pushes++; return { ok: true, pushed: null } },
+  })
+  assert.equal(result.ok, true, result.error)
+  assert.equal(result.reason, 'final-window'); assert.equal(calls, 3)
+  assert.equal(checks, 1); assert.ok(pushes >= 1)
+  assert.equal(result.reserve.source, 'unmeasured')
+  const manifest = JSON.parse(await readFile(result.manifest, 'utf8'))
+  assert.equal(Date.parse(manifest.workDeadline), start + 8 * 3600000)
+  assert.match(await readFile(path.join(root, result.report), 'utf8'), /node --version: pass/)
+  await assert.rejects(vibeLoop({ ...opts(root), tag: 't063', maxHours: 2, finalReserveHours: 2, dryRun: true }), /final-reserve-hours/)
+  // The unit durations of this run are now measured; the gate is not (the check was injected).
+  assert.equal((await vibeLoop({ ...opts(root), tag: 't063', maxHours: 8, dryRun: true })).reserve.ms, 96 * 60000)
+})
+
+for (const fixed of [true, false]) test(`a failed closing gate queues one repair inside the reserve, then re-runs the gate (fixed=${fixed})`, async (t) => {
+  const { root } = await fixture(t)
+  let now = Date.now(), checks = 0, pushes = 0
+  const jobs = []
+  const result = await vibeLoop({ ...opts(root), maxUnits: 10, maxHours: 10 }, { preflight: passed, now: () => now,
+    execute: async (options, job, directory, limits) => {
+      jobs.push({ task: job.brief?.taskId, timeoutMs: limits.timeoutMs })
+      if (job.brief?.taskId === 'T004') { now += 30 * 60000; return completeTask(root, 'T004') }
+      now += 3 * 3600000; await writeFile(path.join(root, 'app.js'), `// ${jobs.length}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit()
+    },
+    check: async () => { checks++; return checks === 1 || !fixed ? { ok: false, log: '/test/log', failedTests: ['FAIL checkout total'], tail: ['1 failed'] } : { ok: true } },
+    push: async () => { pushes++; return { ok: true, pushed: null } },
+  })
+  // Units at 0h, 3h, 6h; the window opens at 8h; the repair gets the time left before the deadline.
+  assert.deepEqual(jobs.map((job) => job.task), ['T001', 'T001', 'T001', 'T004'])
+  assert.ok(jobs[3].timeoutMs <= 3600000)
+  assert.match(await readFile(path.join(root, 'spec/tasks/done/T004.fix-gate.md'), 'utf8'), /FAIL checkout total/)
+  if (fixed) {
+    assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'final-window'); assert.equal(checks, 2); assert.ok(pushes >= 1)
+  } else {
+    // The repair did not help: no third run, no code push, the next repair waits for the next run.
+    assert.equal(result.ok, false); assert.match(result.error, /묶음 검증 실패/); assert.equal(checks, 2)
+    assert.equal(result.priorityTask, 'T005')
+  }
 })
 
 test('batch gate and CI run once for multiple task commits, entirely outside model dispatch', async (t) => {
@@ -297,6 +357,10 @@ test('detached host survives parent return and writes its final manifest with on
   assert.equal(state?.reason, 'no-progress', await readFile(result.log, 'utf8'))
   assert.equal(state.units, 2)
   assert.doesNotMatch(await readFile(path.join(root, state.report), 'utf8'), /to:-/)
+  // The reason is written before the host and its supervisor finish their last event
+  // writes; removing the fixture under them races (ENOTEMPTY). Wait for both to exit.
+  const alive = (pid) => { try { process.kill(pid, 0); return true } catch { return false } }
+  for (let i = 0; i < 200 && [result.pid, state.supervisor?.pid].some((pid) => pid && alive(pid)); i++) await new Promise((resolve) => setTimeout(resolve, 50))
 })
 
 for (const pushEachUnit of [false, true]) test(`strict concurrency runs one final gate by default; per-unit push=${pushEachUnit}`, async (t) => {

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { fixture, git, execute } from './helpers/vibe-fixture.mjs'
 import { vibeBrief, vibeFormat, verificationTiers } from '../src/vibe-brief.mjs'
 import { runVibeCheck } from '../src/vibe-check.mjs'
+import { readTimings, measured, timingKey } from '../src/check-cache.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
@@ -119,6 +120,20 @@ test('final verification rejects delegated sessions unless explicitly overridden
   }
   await writeFile(path.join(runtime, 'state.json'), JSON.stringify({ schemaVersion: 1, groups: {}, attempts: {} }))
   await assert.rejects(runVibeCheck({ targetRoot: root, tier: 'group', env: { HAERAM_VIBE_UNIT: '1' } }, 'node --version'), /조정자\/호스트/)
+})
+
+test('the task tier refuses the ARCH batch suite; the coordinator runs it once at the batch tier', async (t) => {
+  const { root, arch } = await fixture(t)
+  // A tier-aware command declared for both tiers stays allowed (the fixture's node --version).
+  await writeFile(path.join(root, 'spec/ssot/ARCH.md'), arch.replace('  - batch, before code push: `node --version`.', '  - batch, before code push: `node -e "0"`.'))
+  await git(root, 'commit', '-qam', 'split tiers')
+  await assert.rejects(runVibeCheck({ targetRoot: root, tier: 'task' }, '  node  -e "0" '), /최종 관문/)
+  await assert.rejects(runVibeCheck({ targetRoot: root }, 'node -e "0"'), /최종 관문/)
+  assert.equal((await runVibeCheck({ targetRoot: root, tier: 'task' }, 'node --version')).ok, true)
+  assert.equal((await runVibeCheck({ targetRoot: root, tier: 'task', allowFinal: true }, 'node -e "0"')).ok, true)
+  assert.equal((await runVibeCheck({ targetRoot: root, tier: 'batch' }, 'node -e "0"')).ok, true)
+  // The real duration of a final-tier run sizes the next timed loop's closing reserve.
+  assert.ok(measured(await readTimings(path.join(root, '.git/haeram/v1')), timingKey('final', 'node -e "0"')) >= 0)
 })
 
 test('a final check cannot pass on dirty input or code changed while it ran', async (t) => {

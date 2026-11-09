@@ -20,7 +20,7 @@
 
 ## 비교·기록 도구
 
-이 스킬 폴더의 `scripts/experiment.mjs`는 JSON 표본을 평가하고 선택적으로 JSONL 기록을 추가한다. Node 이외 의존성, 명령 실행, 스케줄링, Git 변경은 없다. `<skill-dir>`는 현재 읽은 SKILL.md의 디렉터리이며 실제 경로로 치환한다.
+이 스킬 폴더의 `scripts/experiment.mjs`는 JSON 표본을 평가하고 선택적으로 JSONL 기록을 추가한다. Node 이외 의존성, 명령 실행, 스케줄링, Git 변경은 없다. `<skill-dir>`는 이 문서가 속한 self-improve 스킬 디렉터리(`references/`의 상위)이며 실제 경로로 치환한다(self-improve-local에서 읽어도 같다).
 
 ```sh
 node <skill-dir>/scripts/experiment.mjs hash <contract.json>
@@ -29,7 +29,7 @@ node <skill-dir>/scripts/experiment.mjs evaluate <contract.json> <attempt.json> 
 
 [attempt 템플릿](../assets/experiment-attempt.json)의 지문은 hash 결과로, commit·samples·evidence는 실제 실행 근거로 채운다. `contractHash`는 해당 조건으로 실행했다는 계측기의 기록이다. 도구가 실제 환경이나 코드 동등성을 인증하는 것은 아니다. `correct`와 gate `passed`는 확인됨이면 true/false, 미확인이면 null이다. 증거 파일 경로 또는 허용된 artifact 링크를 함께 남긴다.
 
-비교는 비음수 단일 지표를 지원한다. 각 표본의 `workCount`는 고정된 논리 작업 단위이며 분모를 바꿔 처리량을 부풀리지 않는다. 중앙값의 개선율이 최소 개선율과 양쪽 범위/중앙값으로 계산한 편차를 모두 초과해야 `keep`다. 이는 보수적인 선별 규칙이며 통계적 유의성 검정은 아니다. 기준선/후보 조건 불일치·표본/근거 부족은 `inconclusive`, 후보 오류·일부 작업 생략·잘못된 출력·빠른 회귀 실패·명확한 악화는 `discard`다. exit code는 keep=0, discard=2, inconclusive=3, 잘못된 입력/기록 충돌=1이며 JSON verdict도 확인한다.
+비교는 비음수 단일 지표를 지원한다. 각 표본의 `workCount`는 고정된 논리 작업 단위이며 분모를 바꿔 처리량을 부풀리지 않는다. 중앙값의 개선율이 최소 개선율과 양쪽 범위/중앙값으로 계산한 편차를 모두 초과해야 `keep`다. 이는 보수적인 선별 규칙이며 통계적 유의성 검정은 아니다. 계약 불일치·같은 commit·기준선 작업 불완전·표본/정확성/근거 부족·비교 불가 중앙값·문턱 이하 개선은 `inconclusive`, 후보 오류·일부 작업 생략·잘못된 출력·빠른 회귀 실패·개선 없음(0% 이하)은 `discard`다. exit code는 keep=0, discard=2, inconclusive=3, 잘못된 입력/기록 충돌=1이며 JSON verdict도 확인한다.
 
 기록은 이번 문제의 실행기 artifact 위치에 둔다. `spec/`에 새 문서 골격이나 STATE 표를 만들지 말고 기존 review notes·task result·report checks에서 기록과 원시 근거를 가리킨다. JSONL에는 시도 ID·가설·전제·계약 지문·커밋·전체 입력·판정·시각이 남는다. 같은 ID·같은 입력은 중복 기록하지 않고, 다른 입력으로 ID를 재사용하면 거절한다. 실패·미확정도 남긴다. 긴 원시 로그는 별도 artifact에 두고 포인터만 기록한다.
 
@@ -39,7 +39,7 @@ node <skill-dir>/scripts/experiment.mjs evaluate <contract.json> <attempt.json> 
 
 ## 검토와 다음 실행
 
-최종 후보만 조정자 소유의 필수 전체 관문을 거친다. 장기 실행은 여러 짧은 실험마다 반복하지 않으며, 예산이 없으면 국소 성과와 미실행을 분리해 남긴다. 독립 검토자는 최초 기준선·최선 후보·채택/폐기 이력·측정 계약과 최종 통합/발행 후보의 연결을 확인한다. PR 발행 모드는 한 문제의 확인된 개선을 관련 PR로 모으고, self-improve-local은 호출 브랜치에 통합한다. 실험마다 PR을 열지 않는다.
+독립 검토자는 최초 기준선·최선 후보·채택/폐기 이력·측정 계약과 최종 통합/발행 후보의 연결을 확인한다. PR 발행 모드는 한 문제의 확인된 개선을 관련 PR로 모으고, self-improve-local은 호출 브랜치에 통합한다. 실험마다 PR을 열지 않는다.
 
 후행 관문이 잠정 keep를 기각하면 그 결과와 영향을 review notes·보고서에 기록하고 해당 후보를 발행하지 않는다. 마지막으로 행동이 확인된 후보로 돌아갈 때는 새 기록 구간에서 이전 이력과 기각 이유를 연결한다. 과거 keep 행을 지우거나 최종 승인으로 바꿔 쓰지 않는다.
 

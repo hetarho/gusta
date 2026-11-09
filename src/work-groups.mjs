@@ -14,7 +14,7 @@ import { SkillPackageError } from './errors.mjs'
 import { lintSpec } from './spec-lint.mjs'
 import { progressSnapshot, progressState, workSummary, progressChecks } from './work-progress.mjs'
 import { planUnits, mainSessionTasks } from './task-graph.mjs'
-import { checkKey, commitTree, cachedPass, recordPass, withHeavyLock } from './check-cache.mjs'
+import { checkKey, commitTree, cachedPass, recordPass, withHeavyLock, recordTiming, timingKey } from './check-cache.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 
 const execute = promisify(exec)
@@ -252,13 +252,17 @@ async function verify(root, checks, commit, signal, timeout = 60 * 60 * 1000, sc
         results.push({ command, startedAt: now(), finishedAt: now(), cached: hit.at, stdout: '', stderr: '' })
         continue
       }
-      const startedAt = now()
+      const startedAt = now(), began = Date.now()
+      // The group gate's real duration is the same measurement a timed vibe loop reserves for.
+      const measure = () => runtime && scope.TIER === 'group' && !signal?.aborted ? recordTiming(runtime, timingKey('final', command), Date.now() - began) : null
       try {
         const { stdout, stderr } = await execute(command, { cwd: root, maxBuffer: 8 * 1024 * 1024, timeout, signal, env })
         results.push({ command, startedAt, finishedAt: now(), stdout: stdout.slice(-16000), stderr: stderr.slice(-16000) })
       } catch (error) {
+        await measure()
         fail(`검증 실패: ${command}`, [(error.stderr || error.stdout || error.message).slice(-16000)])
       }
+      await measure()
       if (await head(root) !== commit) fail('검증 명령 실행 중 HEAD가 변경됐습니다. 새 커밋을 다시 검증하세요.')
       await requireClean(root)
       if (key) await recordPass(runtime, key, { command, tree, tier: scope.TIER ?? null })

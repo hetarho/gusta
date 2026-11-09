@@ -9,8 +9,9 @@ import { SkillPackageError } from './errors.mjs'
 
 const HELP = `세션 도구 (start-vibe·start-design이 사용)
   vibe loop --tag <tag> --provider claude|codex [--model <name>] [--max-units 100] [--max-hours 8]
-    [--batch-size 3] [--permission-mode acceptEdits|bypass] [--allow-tool <rule> ...]
+    [--final-reserve-hours <measured>] [--batch-size 3] [--permission-mode acceptEdits|bypass] [--allow-tool <rule> ...]
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
+                                                끝 예약(실측 전체 검증×2+수정 단위+CI)에는 새 단위 없이 마감 관문·수정 1회만
   vibe loop --tag <tag> --stop                  정지 파일 기록; 실행 중인 단위도 종료
   vibe loop --tag <tag> --stop-after-unit       현재 단위·마감 검증 완료 후 정지
   vibe loop --tag <tag> --configure --push-each-unit|--no-push-each-unit [--wait-ms <ms>]
@@ -47,7 +48,7 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
 `
 
 const allowed = {
-  loop: ['tag', 'provider', 'model', 'max-units', 'max-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'remote', 'wait-ms', 'notify-command'],
+  loop: ['tag', 'provider', 'model', 'max-units', 'max-hours', 'final-reserve-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'remote', 'wait-ms', 'notify-command'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref'], format: ['section'],
   status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], beat: ['tag', 'mode', 'doing', 'host'],
   claim: ['tag', 'task', 'remote'],

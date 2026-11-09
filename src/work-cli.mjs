@@ -39,7 +39,7 @@ const HELP = `작업 묶음 (Orca 등 외부 도구 없이도 사용 가능)
   work recover (--attempt <id> | --work <name>)
   work unlock --lock-id <id>
 
-start 배정 한도: --workers <n> (4), --reviewers <n> (1), --max-pending <n> (8).\n공통: --target <path>, --json. 생성·통합 명령은 로컬 Git을 변경하며 원격 push는 하지 않습니다.
+start 배정 한도: --workers <n> (4), --reviewers <n> (1), --max-pending <n> (8).\n공통: --target <path>, --json. 생성·통합 명령은 로컬 Git을 변경하며 원격 push는 --push <branch>가 있을 때만 통합 단위마다 합니다.
 auto: 배정 가능한 기존 linked worktree는 연결하고, 기획 공간에서는 새 worktree를 생성합니다.
 current: 현재 checkout을 사용합니다. new: 항상 별도 worktree를 만듭니다.
 lane: 같은 lane의 태스크는 한 작업 공간에서 순서대로 구현하고 함께 리뷰·통합합니다.

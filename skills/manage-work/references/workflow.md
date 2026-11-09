@@ -5,7 +5,7 @@
 ## 1. 작업 묶음 시작
 - 현재 `work status --json`에 활성 묶음이 있으면 이어 쓴다. 사용자가 작은 수정만 요청했다면 작업 묶음을 강제하지 않는다.
 - `work start <slug> --workspace auto --task-verify '<태스크 단계>' --verify '<단위 통합>' --group-verify '<묶음 완료>' --json`. 검증 명령은 ARCH의 단계별 verify 결정(task→task-verify, 빠른 통합 검사→verify, 통합/e2e·전체 스위트→group-verify, CI는 최종 코드 push 뒤 vibe ci wait 한 번)에서 가져와 묶음에 저장한다 — 이후 submit·integrate·finish·run과 세션 루프가 기본값으로 쓴다. 바꿀 때는 `work configure`. 명령에는 `HAERAM_TIER`·`HAERAM_DIFF_BASE`·`HAERAM_TASK(S)`가 전달되므로 태스크 단계는 `git diff --name-only "$HAERAM_DIFF_BASE" HEAD`로 영향받는 테스트만 고르는 명령으로 둘 수 있다. 기본 auto는 기존 linked worktree의 브랜치를 기획 공간으로 연결하고, 일반 checkout에서는 `work/<slug>` 브랜치와 별도 기획 worktree를 만든다. 경로·브랜치 접두사로 Orca를 추정하지 않는다.
-- `--push <branch>`는 사용자가 요청했을 때만 저장한다(통합마다 push·원격 CI가 돈다). 저장하면 통합된 단위마다 그 브랜치로 반영해 push한다 — 원격이 앞서 있으면 후보에서 먼저 합친다(STATE는 섹션 단위). 막힌 단위가 끝난 단위를 붙잡지 않고, 진행이 원격에 바로 보인다. `--review risky`(기본)는 위험한 단위만 리뷰로 보내고(`--review-path`·`--review-lines`로 조정, 기준은 start-vibe [조정자 절차](../start-vibe/references/coordinator.md)) `--review all`은 전부 리뷰한다. `--allow-tool`은 헤드리스 워커가 묻지 않고 실행할 명령 규칙이다 — 새 worktree에는 프로젝트 허용 목록이 적용되지 않는다.
+- `--push <branch>`는 사용자가 요청했을 때만 저장한다(통합마다 push·원격 CI가 돈다). 저장하면 통합된 단위마다 그 브랜치로 반영해 push한다 — 원격이 앞서 있으면 후보에서 먼저 합친다(STATE는 섹션 단위). 막힌 단위가 끝난 단위를 붙잡지 않고, 진행이 원격에 바로 보인다. `--review risky`(기본)는 위험한 단위만 리뷰로 보내고(`--review-path`·`--review-lines`로 조정, 기준은 start-vibe [조정자 절차](../../start-vibe/references/coordinator.md)) `--review all`은 전부 리뷰한다. `--allow-tool`은 헤드리스 워커가 묻지 않고 실행할 명령 규칙이다 — 새 worktree에는 프로젝트 허용 목록이 적용되지 않는다.
 - explore 태스크와 그 후속은 묶음에 배정하지 않는다. 다른 단위가 끝나면 next가 `main-session`을 돌려주고, 메인 세션에서 단독으로 진행한다.
 - 기존 일반 checkout의 feature branch를 연결하려면 `--workspace current`, 항상 분리하려면 `--workspace new`. 분기 기준·이름·경로가 지정됐다면 `--base`, `--branch`, `--path`를 사용한다. 사용자에게 매번 모드를 묻지 않는다.
 - 미커밋 변경은 새 worktree에 복사되지 않는다. 관련 기획을 먼저 정리하고 사용자가 허용한 범위로 커밋한다. 관련 없는 변경은 자동 stash·commit하지 않는다.
@@ -42,11 +42,9 @@
 - 보고: novice에게는 완료·진행·막힌 일과 다음 행동을 설명한다. expert에게는 묶음 브랜치, attempt, 검증 커밋, 통합 결과, 보존한 경로를 간결하게 보고한다.
 
 ## 5. 계속 작업하는 워커와 대기 리뷰어
-- 사용자가 자리를 비우는 맡김 모드면 `work run --autopilot`으로 실행하고 조정자는 `work next --coordinator --autopilot` 루프로 결정 요청(`decide`)을 처리한다 — 워커는 기획 결정을 요청하고 다음 일로 넘어가며, 조정자가 잠정 update-ssot 후 `work update --status doing --note`로 재개하면 실행기가 같은 세션을 이어 실행한다. 절차는 start-vibe의 [조정자 절차](../start-vibe/references/coordinator.md).
-- 여러 태스크를 계속 처리하도록 요청받았으면 [실행기 연결](references/runner.md)을 읽는다. `work doctor`와 `work run --dry-run`으로 도구·역할·한도를 확인한다. `work run`은 기본 Codex/Claude 또는 command 어댑터를 사용해 워커 보충, lane 다음 태스크 이어 배정, 수정 우선 재배정, 리뷰, 직렬 통합, 묶음 완료 검증을 진행한다. 실제 실행 전 단계별 검증 명령(`--task-verify` 선택, `--verify` 단위 통합, `--group-verify` 묶음 완료)을 지정하고, 검사·미리보기만으로 에이전트를 실행했다고 보고하지 않는다.
-- Orca·수동 세션처럼 실행기 없이 여러 세션을 띄우면 각 세션이 세션 루프를 돈다. 오케스트레이터는 "implement-task로 남은 태스크 구현" 에이전트 N개를 유지하고, `wait`·timeout으로 끝난 에이전트만 다시 띄우며, `complete`·`stalled`면 멈춘다. 배정·리뷰·통합 판단은 CLI runtime이 하므로 오케스트레이터가 따로 결정하지 않는다.
-- 승인은 상위 브랜치가 바뀌어도 바뀐 파일이 그 단위의 변경·SSOT와 겹치지 않으면 유지된다. 합친 결과는 통합 검증이 다시 확인한다.
+- 사용자가 자리를 비우는 맡김 모드면 `work run --autopilot`으로 실행하고 조정자는 `work next --coordinator --autopilot` 루프로 결정 요청(`decide`)을 처리한다. 절차는 start-vibe의 [조정자 절차](../../start-vibe/references/coordinator.md).
+- 여러 태스크를 계속 처리하도록 요청받았으면 [실행기 연결](runner.md)을 읽는다. `work doctor`와 `work run --dry-run`으로 도구·역할·한도를 확인한다. `work run`은 기본 Codex/Claude 또는 command 어댑터를 사용해 워커 보충, lane 다음 태스크 이어 배정, 수정 우선 재배정, 리뷰, 직렬 통합, 묶음 완료 검증을 진행한다. 실제 실행 전 단계별 검증 명령(`--task-verify` 선택, `--verify` 단위 통합, `--group-verify` 묶음 완료)을 지정하고, 검사·미리보기만으로 에이전트를 실행했다고 보고하지 않는다.
+- Orca·수동 세션 오케스트레이터 연결은 [runner.md](runner.md)의 'Orca 또는 다른 coordinator'.
 - Orca에서는 같은 CLI의 선점·리뷰 프로토콜을 사용하고 실행/완료 알림은 Orca가 맡게 할 수 있다. Orca coordinator와 로컬 runner가 같은 워커 슬롯을 동시에 관리하지 않게 한다.
 - STATE next는 사람의 재개 안내 1~3줄이다. 에이전트별 배정은 runtime, 작업 목록은 상위 브랜치 태스크가 기준이다. 빈 작업 슬롯은 의존성이나 리뷰 적체 때문에 정상일 수 있다. 줄기가 서로를 기다리는 구조는 lint가 막으므로, 장시간 빈 슬롯은 줄기 사이 dep(한 줄기 전체가 다른 줄기 통합을 기다림)이나 touches 겹침을 의심한다.
-- 단일 도구는 `work run --provider codex|claude`, 혼합은 `--providers codex,claude`. 목록은 worker 슬롯에 순환 배정하며 수는 start의 `--workers`로 정한다. 예를 들어 workers=6이면 두 도구가 3개씩 실행된다. 태스크는 미리 5개씩 고정 배분하지 않고 빈 슬롯이 다음 가능한 일을 가져간다. 도구별 모델은 [runner 설정](references/runner.md)의 workers 배열로 지정한다.
 - 실행 변화는 runtime 이력에 계속 누적된다. `work history --work <slug> [--task T###]`로 배정·실행·수정·완료 경위를 확인한다. 태스크 통합과 runner 종료 시 `spec/work/<slug>.json` 상세 기록과 STATE의 선택적 work 요약 표가 묶음 브랜치에 커밋된다. 실행 중 최신 상태는 `work board --work <slug>`로 확인한다. 수동 실행은 작업 명령이 멈춘 체크포인트에서 `work sync --work <slug>`로 저장한다. 워커가 STATE를 직접 쓰지 않는다.

@@ -143,7 +143,8 @@ const UNATTENDED = {
   decide: 'attempt.decision에 답한다(조정자). 기획 공간에서 recommendation으로 update-ssot를 진행하고(잠정) inbox decided·보고서에 질문·선택·대안을 남겨 커밋한 뒤, work update --attempt <id> --status doing --note <적용한 결정과 SSOT rev>로 재개한다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 inbox parked 후 work release --attempt <id> --reason parked. 그리고 work next를 다시 호출한다.',
   complete: '남은 일이 없다. push 브랜치 반영 결과와 검증 커밋을 보고서에 남기고 마감한다. push가 없는 묶음의 main 반영은 inbox parked로 남긴다.',
   stalled: '사람만 풀 수 있는 원인이다. 원인을 inbox parked와 보고서에 남기고 묶음 밖의 다른 일로 간다 — 기다리지 않는다.',
-  'needs-reviewer': '이 세션의 제출물만 남아 있어 독립 리뷰어가 필요하다. 새 컨텍스트의 서브에이전트에서 다른 owner로 review-task를 실행한 뒤 work next를 다시 호출한다. 서브에이전트가 없으면 inbox parked로 남기고 다른 일로 간다.',
+  // No subagent here: its permission prompt would stall an unattended session (start-vibe §3).
+  'needs-reviewer': '이 세션의 제출물만 남아 있어 독립 리뷰어가 필요하다. 맡김에서는 부하 에이전트를 띄우지 않는다 — 리뷰어 슬롯이 있는 헤드리스 실행기(work run)가 맡게 하고, 없으면 inbox parked로 남기고 다른 일로 간다.',
 }
 
 const INSTRUCTION = {

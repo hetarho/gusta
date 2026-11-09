@@ -20,7 +20,7 @@ description: >-
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(start-vibe)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(start-vibe 3절). 모드가 정해지지 않았으면 함께 모드다.
 5. **읽기**: brief·status 요약을 먼저 쓰고 부족한 ID·섹션만 읽는다. 결정은 `vibe brief <T###|ID-n|ID@rev>`로 원문 블록째 받는다 — 끝의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
-작업 묶음의 워커에서 호출됐다면 이 스킬의 문서 쓰기 절차는 기획 공간으로 인계한다. `manage-work`가 반환한 group.path가 기획·채번·문서 정리 위치이며, 워커 checkout의 STATE·SSOT를 변경하지 않는다. 기획 문서의 정본은 cfg plan 브랜치(기본 `main`)다 — 어느 checkout·worktree에서 기획하든 쓰기·채번 전에 `vibe plan-sync`로 그 브랜치의 최신을 합치고, spec/만 담은 기획 커밋 직후 `vibe plan-push`로 그 브랜치에 올린다(태스크 ID 충돌로 거절되면 미발행 태스크를 다시 채번해 커밋을 고친 뒤 다시 올린다).
+작업 묶음 워커에서 불렸으면 문서 쓰기는 `manage-work`가 반환한 group.path(기획·채번·문서 정리 위치)로 인계하고 워커 checkout의 STATE·SSOT는 바꾸지 않는다. 어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 FORMAT cfg `plan`).
 
 ## 1. 시작
 STATE 읽기 → log에 `- YYMMDD create-ssot <topic> start` → 기존 ssot/를 훑어 중복·연관 확인.
@@ -44,7 +44,7 @@ level별 질문법:
 
 ## 3. 작성
 도메인 ID 확정(기존과 충돌 금지) → 이 스킬 폴더의 assets/ssot.md를 `spec/ssot/<ID>.md`로 복사해 채운다. (opt) 섹션(flow·constraints)은 안 쓰면 삭제, `<...>` 자리표시는 전부 실제 내용으로 교체.
-품질 기준: **의사결정 요소(결정·근거·제약·미정)는 전부, 문장은 최소.** 단 최소화의 단위는 문장이지 정보가 아니다 — 조건·예외가 많으면 줄을 합치지 말고 결정 블록(2칸 들여쓴 하위 항목·표)으로 편다. 배경 서사 금지. 못 정한 것은 [?]로 남긴다.
+품질 기준: **의사결정 요소(결정·근거·제약·미정)는 전부, 문장은 최소.** 배경 서사 금지. 못 정한 것은 [?]로 남긴다.
 **기존 문서 이관**: 재료가 기존 문서(PRD·구 스펙·README·다른 저장소의 문서)면 붙여넣지 않는다. 한 문단씩 "지금 지켜야 하는 규칙인가"로 걸러 결정 라인으로 다시 쓰고, 아래 최종 점검을 똑같이 통과시킨다 — 이관 때 길게 들어온 문서는 계속 길다. 원문에 있으나 지금도 유효한지 모르는 항목은 추측으로 옮기지 말고 [?]로 등록한다.
 
 **최종 점검** — 확인 요청 전에 한 줄씩 통과시킨다. SSOT에는 지금 지켜야 하는 규칙만 남는다. 요청·대화의 흔적은 태스크 파일(1회용)에는 있어도 되지만 SSOT에는 절대 남기지 않는다.
@@ -62,4 +62,4 @@ level별 질문법:
 
 ## 4. 마감
 STATE: ssot 행 추가 `<ID> | 1 | 0 | all | <[?] 수>` / next에 `create-task <ID>` / log 1줄.
-ideation에서 시작했다면 [전환 마감 절차](references/ideation.md)를 수행한다 — 전체 범위를 SSOT와 대조하고, 일부 반영은 ready 유지, 전체 반영은 converted로 바꾸고 ideation/done/으로 이동·STATE 행 제거. SSOT·ideation·STATE 변경은 같은 기획 커밋에 담는다.
+ideation에서 시작했다면 [전환 마감 절차](references/ideation.md)를 수행한다.

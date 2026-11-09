@@ -1,6 +1,16 @@
 # haeram-spec-creator
 
-스펙 주도 개발 스킬셋을 npm으로 배포하는 저장소. **산출물은 `skills/`의 SKILL.md들**이고, `src/`·`bin/`은 Claude(.claude/skills)·Codex(.codex/skills) 설치/검증, 세션 도구(`vibe`: 진행 표시·단위별 push·체크포인트·검증 캐시), 선택적 작업 묶음·worktree 실행 기록을 제공하는 CLI다.
+> **AI가 만들고, 우리는 고른다 — 우리의 취향이 곧 제품이다.**
+
+## 철학 (모든 변경의 판단 기준)
+- **제품**: 사람은 큐레이터다. AI는 추천안·구현·검증을 만들고, 사람은 고른다(결정함·채택·큰 변화의 판단). 사람의 시간은 타이핑·대기가 아니라 판단에 쓰게 한다.
+- **구현** — 셋이 충돌하면 이 순서로 지키되, 앞의 것을 이유로 뒤의 것을 버리지 않는다:
+  1. 문서 먼저: spec이 1급 문서다. 코드보다 SSOT·STATE·태스크가 먼저 바뀐다.
+  2. 적은 토큰: 필요한 블록만 읽는다(brief·발췌·요약 출력·단위마다 새 세션·검증 캐시·대기 중 모델 호출 없음). 스킬 문장도 토큰이다 — 늘리기 전에 줄일 곳을 찾는다.
+  3. 빠른 구현: 시간은 구현에 쓴다. 태스크=영향 단위 테스트+빠른 검사, 전체 스위트·e2e·CI는 대상 브랜치 push 직전 조정자가 한 번. 시간 한도가 있는 맡김은 끝 구간을 마감 관문에 예약한다 — 고정 비율이 아니라 실측(전체 검증 2회+수정 단위 1회+CI)으로.
+- **코드**: 낮은 결합·높은 응집으로 단위 테스트가 쉬운 구조를 만든다(바깥 세계는 경계에서 주입). 테스트가 무거워지면 테스트가 아니라 구조를 고친다. 이 패키지의 `src/`도 같다 — 새 로직은 주입 가능한 의존성(`deps`·`injected`)으로 테스트한다.
+
+스펙 주도 개발 스킬셋을 npm으로 배포하는 저장소. **산출물은 `skills/`의 SKILL.md들**이고, `src/`·`bin/`은 Claude(.claude/skills)·Codex(.codex/skills) 설치/검증, 세션 도구(`vibe`: 진행 표시·마감 검증과 선택적 push·체크포인트·검증 캐시·`vibe loop`), 선택적 작업 묶음·worktree 실행 기록을 제공하는 CLI다.
 
 ## 구조
 - `skills/<name>/SKILL.md` — 스킬 본문 (frontmatter `name`=폴더명, `description` 필수)
@@ -15,22 +25,25 @@
 1. 역할 분리: start-vibe=진행자(다음 스킬 라우팅·모드·push·진행 표시·결정함·보고서만 맡고 기획·기술 판단은 고른 스킬이 한다), start-design=디자인 진행자(함께 전용: 사용자가 화면을 보며 말한 대로 코드만 즉시 고치고, 테스트·커밋·push는 사용자가 디자인 끝을 말한 뒤에만 — 기획·태스크·리팩토링 제안은 하지 않고 SSOT와 어긋난 변경은 마감 후 update-ssot로), manage-work=기획 배정·검증·통합을 조정하는 작업 조정자, ideation=기획 전문가(능동 제안, 결정은 사용자), create-ssot/update-ssot=기획자(기획 질문만), create-task/implement-task=엔지니어(개발 질문만), review-task=제출 커밋을 독립적으로 검토하고 승인·수정 요청을 기록하는 리뷰어, review-code=시니어 엔지니어 리뷰어(리팩토링을 능동 제안, 채택은 사용자, 코드는 안 고침), doc-review=편집자(의미 보존 편집만, 정책 변경은 update-ssot로), create-narrative=작가, self-improve=명시적 상시 위임 범위에서 문제 발견·측정·독립 리뷰·PR을 조정하는 개선 조정자(기획·태스크·구현은 기존 스킬). self-improve-local=호출한 세션이 하위 제안을 승인하고 현재 브랜치에 통합하는 로컬 개선 조정자(PR 없음, 승인 ID는 work --tasks로 제한). 서로의 영역을 침범하는 지시를 넣지 않는다. 제안→전환 대칭: ideation→create-ssot(기획), review-code→create-task(개발), doc-review→update-ssot(문서).
 2. 문서 먼저: 모든 스킬은 질문·추론·구현 전에 `spec/STATE.md`(checkout별 진행 기록)에 기록. 작업 묶음의 워커는 STATE를 쓰지 않고 CLI runtime에 기록한다. STATE 수정은 원자적 선점이나 worktree 간 조정 수단이 아니다(clone 간 선점은 원칙 12의 push가 판정). 사용자와 지금 상호작용 중인 상태(start-design의 디자인 중)는 STATE에 쓰지 않고 그 checkout의 Git 디렉터리에 둔다(`src/interactive-state.mjs`) — STATE는 기획 커밋·plan-push를 타고 main과 다른 worktree로 퍼지므로, 거기 두면 무관한 worktree의 push·맡김까지 막는다. 요약/brief 우선 읽기와 FORMAT 발췌를 포함한 이 공통 규칙 5줄은 15개 스킬에 동일하게 반복돼 있다 — 바꾸면 전부. 2번은 "`vibe status`에 `design`이 있으면 커밋·push 전에 디자인이 끝났는지 묻는다"로 끝난다(직접 불린 스킬도 디자인 중 커밋하지 않게). 4번은 모든 스킬이 같은 맡김 모드 문장으로 끝난다(질문하는 스킬이 직접 알아야 한다 — 라우터에만 두면 나중에 로드된 스킬의 "질문 도구 사용"과 충돌한다). 예외 문구: create-architecture·ideation·start-vibe는 1번(부트스트랩·라우팅), create-narrative·ideation은 3·4번 본문. `test/skill-rules.test.mjs`가 이 규칙을 강제한다.
 3. cfg.level(expert/mid/novice)별 질문 방식이 각 스킬에 명시돼 있다.
-4. 표기 규칙의 정본은 `assets/FORMAT.md`. 스킬이 새 표기를 쓰면 FORMAT에도 정의할 것. 문서 골격은 세 곳이 함께 움직인다 — FORMAT의 골격 줄, 각 스킬의 assets 템플릿(ssot/task/ideation/review/report, STATE), `src/spec-lint.mjs`의 검사 규칙. STATE의 `## active`·`## inbox`·cfg `push`·cfg `brief`·cfg `always`, 태스크 `explore:`, `reports/`, SSOT 참조 구분(`→!` 필수·`→=` 정본·`→~` 관련·`→` 미분류)도 이 셋이 함께 정의한다(참조 문법의 파서는 `src/spec-format.mjs`의 `references`). 하나를 바꾸면 셋 다 바꾼다. 결정은 한 줄이 아니라 **결정 블록**(머리줄 + 2칸 들여쓴 하위 항목·표)이다: lint가 하위 줄을 결정 라인으로 오해하면 복잡한 계약을 한 줄로 뭉개게 만든다(0.2.3까지의 실제 원인).
+4. 표기 규칙의 정본은 `assets/FORMAT.md`. 스킬이 새 표기를 쓰면 FORMAT에도 정의할 것. 문서 골격은 세 곳이 함께 움직인다 — FORMAT의 골격 줄, 각 스킬의 assets 템플릿(ssot/task/ideation/review/report, STATE), `src/spec-lint.mjs`의 검사 규칙. STATE의 `## active`·`## inbox`·cfg `push`·cfg `brief`·cfg `always`, 태스크 `explore:`, `reports/`, SSOT 참조 구분(`→!` 필수·`→=` 정본·`→~` 관련·`→` 미분류)도 이 셋이 함께 정의한다(참조 문법의 파서는 `src/spec-format.mjs`의 `references`). 하나를 바꾸면 셋 다 바꾼다. 결정은 한 줄이 아니라 **결정 블록**(머리줄 + 2칸 들여쓴 하위 항목·표)이다: lint가 하위 줄을 결정 라인으로 오해하면 복잡한 계약을 한 줄로 뭉개게 만든다.
 5. SSOT 순수성: ssot/에는 지금 지켜야 하는 규칙(결정·이유·제약·chg)만 남고 요청·대화 흔적은 남지 않는다(FORMAT 원칙 6이 정본). create-ssot·update-ssot §3의 "최종 점검" 체크리스트는 두 스킬에 동일하게 반복돼 있다 — 바꾸면 둘 다.
 6. lint의 세 층을 섞지 않는다: **오류**=구조 위반(형식·참조·골격) · **경고**=정합성 흔들림(rev/tasked, chg 연속성, 빈 result) · **검토 후보(reviewHints)**=의미 품질 신호로 종료 코드에 영향이 없고 doc-review가 판단한다. 검토 후보를 오류로 올리면 "경고를 없애려고 줄을 합치거나 기계적으로 쪼개는" 회피가 생긴다 — 길이 신호는 블록 전체가 아니라 **한 줄** 길이만 센다(합치면 더 걸리고, 펴면 사라진다).
-7. 브리핑(`src/spec-context.mjs`의 assembleBrief)은 `vibe brief`·`work brief`·실행기·`vibe loop`이 함께 쓰는 하나의 조립기다. 원칙: 결정은 다음 최상위 불릿·제목까지 원문 블록 전체. 기본 범위는 인용 도메인의 현재 규칙 전체(cfg brief `domain`) — 인용 결정만 싣는 `cited`는 태스크가 지킬 결정을 다 인용할 때만 안전하다. `→!`·`→=`는 끝까지, 인용 결정을 가리키는 결정(역참조)도 싣고, 미분류는 인용 블록에서 1단계(다른 이유로 들어온 블록에서는 목록만), 빠진 것은 이유와 함께 목록·issues로 남기고 **크기 때문에 잘라내지 않는다**. 출처는 한 기준(작업 트리 또는 커밋 하나)만 쓴다. 기존 `→`를 추측으로 분류하거나 선택 참조로 다루는 코드를 넣지 않는다. 공통 규칙 5번의 "끝 `end` 줄·complete" 확인이 옛 "`## chg`가 보여야 완독" 규칙을 대신한다(파일을 직접 읽을 때는 블록 경계).
+7. 브리핑(`src/spec-context.mjs`의 assembleBrief)은 `vibe brief`·`work brief`·실행기·`vibe loop`이 함께 쓰는 하나의 조립기다. 원칙: 결정은 다음 최상위 불릿·제목까지 원문 블록 전체. 기본 범위는 인용 도메인의 현재 규칙 전체(cfg brief `domain`) — 인용 결정만 싣는 `cited`는 태스크가 지킬 결정을 다 인용할 때만 안전하다. `→!`·`→=`는 끝까지, 인용 결정을 가리키는 결정(역참조)도 싣고, 미분류는 인용 블록에서 1단계(다른 이유로 들어온 블록에서는 목록만), 빠진 것은 이유와 함께 목록·issues로 남기고 **크기 때문에 잘라내지 않는다**. 출처는 한 기준(작업 트리 또는 커밋 하나)만 쓴다. 기존 `→`를 추측으로 분류하거나 선택 참조로 다루는 코드를 넣지 않는다. 완독 판단은 공통 규칙 5번의 `end` 줄·complete다(파일을 직접 읽을 때는 블록 경계).
 8. 완료 태스크(`tasks/done/`)는 보존 대상 역사 기록이다. 채번·dep 판정은 파일명만 보고, 내용은 선택 조회만. 현재 규칙의 근거로 쓰지 않는다.
    ideation도 전체 SSOT 반영 후 `ideation/done/`에 보존한다. STATE ideation은 open/ready만, 부분 반영은 ready 유지. create-ssot·update-ssot가 공통 전환 마감 절차로 반영 범위를 대조하고 converted·이동·STATE 행 제거를 같은 기획 커밋에 담는다. 완료 아이디어는 일반 기획·구현 입력이 아니다.
 9. 작업 묶음의 배정·리뷰·통합 단위는 **lane**(lane 없는 태스크는 단독 단위)이다. 단위는 바깥 dep이 모두 통합된 뒤에만 시작하고 안쪽 dep은 같은 worktree에서 순서대로 처리한다 — 서로 기다리는 줄기(단위 그래프 순환)는 lint/board 오류로 기획 단계에서 막는다. 세션·오케스트레이터 에이전트는 모두 같은 `work next` 루프를 돌며 구현·리뷰만 하고, 통합·묶음 검증 같은 기계적 관문은 CLI가 백그라운드 프로세스로 실행한다(모델 턴을 쓰지 않음). 검증은 태스크(변경 영향 테스트, `HAERAM_DIFF_BASE`)·단위(integrate 빠른 검사)·묶음(finish 최종 검사) 3단계로 묶음에 저장되며, 태스크 단계에 전체 스위트를 다시 넣지 않는다. 묶음의 선택적 taskScope(--tasks)는 배정·board·finish·저장 이력에 일관되게 적용되며 부분 lane과 범위 밖 선행 자동 배정은 금지한다. 그룹 브랜치를 움직이는 통합·sync·finish만 서로 배타적이고, 승인은 겹치지 않는 상위 변경에 유지된다.
-   0.5.0에서 바뀐 것(묶음 끝 일괄 반영, 겹겹의 재검증, 모든 단위 리뷰, 워커↔기획 핑퐁에 따른 지연 개선):
-   - 묶음에 `--push`(사용자가 요청한 경우만)가 있으면 통합된 단위는 그 브랜치로 **바로** 반영·push한다(원격이 앞서면 후보에서 먼저 합친다). 막힌 단위가 끝난 단위를 붙잡지 않는다. 묶음 finish는 group-verify가 있을 때만이고, 브라우저 e2e는 CI에 맡길 수 있다.
-   - 기본 소유권: 구현·리뷰 세션은 영향 단위 테스트+빠른 검사, 조정자 소유 CLI 하나만 최종 통합 후보의 통합/e2e·전체 스위트를 push 직전에 실행한다. 단위 verify는 빠른 검사, group-verify가 최종 관문이다. 과거 ARCH·활성 묶음도 범위를 보존해 이 매핑으로 정리한다. 별도 사용자 명시만 예외다.
-   - 같은 트리·같은 명령은 다시 검증하지 않는다(runtime의 검증 캐시). 단위·묶음 검증은 clone 단위 heavy 락으로 하나씩. vibe check의 batch/group은 자동 락·락 안 캐시 재확인·검증 중 변경 실패이며, 워커/리뷰어는 기본 거절된다. 검증 SHA를 받는 push는 sync로 달라진 코드를 거절한다. self-improve의 자율 개선은 위험도와 무관하게 별도 세션의 독립 검토가 필수이므로 묶음은 --review all을 쓴다. 재제출은 고친 커밋부터의 diff만 태스크 단계에 넘긴다.
-   - 리뷰는 위험한 단위만(기본 `--review risky`, 기준은 start-vibe/references/coordinator.md). 나머지는 정책 승인 후 통합 검증만.
-   - explore 태스크와 그 후속은 묶음에 배정하지 않는다(`main-session`) — 돌려 보고 정하는 일은 메인 세션에서 시간 제한과 exit로 끝낸다.
-   - 워커의 SSOT 쓰기 금지는 유지한다. 맡김에서는 워커가 결정 요청을 내고 다른 단위는 계속되며, 조정자가 잠정 update-ssot 후 `--note`로 재개하면 실행기가 기획 브랜치를 합치고 **같은 세션**을 resume한다(새 워커가 처음부터 다시 읽지 않는다).
+   - 묶음 `--push`(원칙 12: 사용자 명시 때만)면 통합된 단위를 그 브랜치로 바로 반영·push한다(원격이 앞서면 후보에서 먼저 합친다). 막힌 단위가 끝난 단위를 붙잡지 않는다. finish는 group-verify가 있을 때만이고 브라우저 e2e는 CI에 맡길 수 있다.
+   - 단위 verify=빠른 검사, group-verify=조정자 소유 최종 관문(소유권·과거 ARCH 이관은 원칙 12·`start-vibe/references/verification.md`).
+   - 같은 트리·같은 명령은 재검증하지 않는다(runtime 검증 캐시). 단위·묶음 검증은 clone 단위 heavy 락으로 하나씩, batch/group은 락 안 캐시 재확인·검증 중 변경 실패, 워커/리뷰어는 기본 거절. 검증 SHA를 받는 push는 sync로 달라진 코드를 거절한다. 재제출은 고친 커밋부터의 diff만 태스크 단계에 넘긴다. 최종 관문의 실측 시간은 runtime `timings.json`에 남아 시간 한도 맡김의 마감 예약이 된다.
+   - 리뷰는 위험한 단위만(기본 `--review risky`, 기준은 coordinator.md). self-improve 묶음은 `--review all`(자율 개선은 위험도와 무관하게 독립 검토 필수).
+   - explore 태스크와 그 후속은 묶음에 배정하지 않는다(`main-session`) — 메인 세션에서 시간 제한과 exit로 끝낸다.
+   - 워커는 SSOT를 쓰지 않는다. 맡김에서는 워커의 결정 요청 → 조정자 잠정 update-ssot → `--note` 재개 시 실행기가 기획 브랜치를 합치고 **같은 세션**을 resume한다.
 10. 언어: spec 산출 문서(FORMAT/STATE 템플릿 포함)는 영어, SKILL.md 본문은 한국어. 스킬이 인용하는 문서 리터럴(`all`, 섹션명, log 문구 등)은 반드시 FORMAT의 영어 값과 일치시킬 것. 예외는 사람용 산문인 NARRATIVE.md와 reports/(owner가 읽는 맡김 보고서, cfg.lang) — 섹션명·인용줄 키·ID는 FORMAT 값 그대로.
-11. 맡김(autopilot)에는 사람 입력을 기다리는 경로가 없다. 질문은 start-vibe 시작 때 한 번(모드·무엇부터·다른 기기)과 맡김 직전 preflight 실패 1회뿐이고, 그 뒤 모든 결정 지점은 추천안 채택 + inbox `decided` + 보고서다. 기획 스킬도 같은 질문을 만들어 결정함에 남긴다(돌아온 사용자가 받았어야 할 질문을 그대로 검토). 과금·데이터 삭제·개인정보·보안 정책은 `[?]`로 두고, 되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일과 함께 주차한다. 모드는 세션 범위라 cfg에 넣지 않는다. self-improve의 지속 개선 허용 범위·예산·발행 권한은 ARCH 결정에 보존하며 모드와 구별한다. 세션 밖 실행은 실제 스케줄러 연결이 필요하고, 내장 vibe loop의 no-work 종료는 유지한다. 큰 변화는 검토 가능한 제안 후 사람 판단까지 주차하며 기본 종료점은 PR(자동 merge는 별도 위임)이다. 권한 확인 창도 질문이다 — 사람이 없으면 세션이 멈추고 캐시가 식는다. 맡김에서는 창이 뜰 만한 호출(프로젝트 밖 쓰기·삭제, `cd`가 섞인 복합 명령, `rm -rf`·`kill`·`curl`·`sudo`, 부하 에이전트)을 하지 않고 주차한다(공통 규칙 4번 + start-vibe 3절). SSOT에는 잠정 결정도 일반 `[o]`로만 들어간다(원칙 5 — 잠정이라는 사실은 inbox가 ID로 가리킨다). 디자인 모드(checkout 로컬 상호작용 상태)는 사람이 화면을 봐야 하므로 맡김에 없다 — 그 checkout에서 열려 있으면 preflight가 실패하고 loop가 멈추며 `vibe push`가 거절하고(다른 worktree는 영향 없음), 맡김은 디자인 변경을 건드리지 않고 주차한다. 디자인 마감의 `vibe design verify`(ARCH task·batch 전부, 미커밋 트리)는 사용자가 명시한 최종 검증이다(원칙 9의 사용자 명시 예외).
+11. 맡김(autopilot)에는 사람 입력을 기다리는 경로가 없다. 질문은 start-vibe 시작 때 한 번(모드·무엇부터·다른 기기)과 맡김 직전 preflight 실패 1회뿐이고, 그 뒤 결정 지점은 추천안 채택 + inbox `decided` + 보고서다(기획 스킬도 받았어야 할 질문을 결정함에 남긴다).
+   - 과금·데이터 삭제·개인정보·보안 정책은 `[?]`로 두고, 되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일과 함께 주차한다. 모드는 세션 범위라 cfg에 넣지 않는다. SSOT에는 잠정 결정도 일반 `[o]`로만 들어간다(잠정 표시는 inbox가 ID로 가리킨다, 원칙 5).
+   - 권한 확인 창도 질문이다 — 사람이 없으면 세션이 멈추고 캐시가 식는다. 창이 뜰 만한 호출(프로젝트 밖 쓰기·삭제, `cd`가 섞인 복합 명령, `rm -rf`·`kill`·`curl`·`sudo`, 부하 에이전트)은 하지 않고 주차한다(공통 규칙 4번 + start-vibe 3절). CLI가 맡김에 돌려주는 지시문(`src/work-wait.mjs` UNATTENDED)도 이 목록을 어기지 않는다.
+   - 디자인 모드는 맡김에 없다: 그 checkout에서 열려 있으면 preflight 실패·loop 정지·`vibe push` 거절(다른 worktree 무관), 맡김은 디자인 변경을 주차한다. `vibe design verify`(ARCH task·batch 전부, 미커밋 트리)는 사용자가 명시한 최종 검증이다(원칙 9 예외).
+   - self-improve의 위임 범위·예산·발행 권한은 ARCH 결정에 두고 모드와 구별한다. 큰 변화는 제안 후 사람 판단까지 주차하고 기본 종료점은 PR(자동 merge는 별도 위임). 세션 밖 실행은 실제 스케줄러 연결이 필요하며 내장 vibe loop의 no-work 종료는 유지한다.
 12. 태스크마다 커밋한다. push는 기본으로 하지 않는다(cfg `push: -`) — push마다 원격 CI가 돌아 빌드 시간을 쓴다. 사용자가 cfg push에 브랜치를 적어 둔 경우에만 세션 끝·loop 멈춤에 조정자가 최종 검증 후 한 번 push한다(묶음 경계는 보고서만). strict는 선점 push·원격 판정을 유지하되 단위별 코드 push/e2e를 자동으로 켜지 않는다. loop `--push-each-unit`·묶음 `--push`는 사용자가 단위별 push를 명시했을 때만. 장기 맡김은 `vibe loop`로 단위마다 새 세션을 만들고 CI/긴 명령 대기는 CLI가 처리한다. 1시간 넘는 작업은 `vibe checkpoint`로 `wip/<tag>`에 스냅샷한다(push 브랜치를 WIP로 더럽히지 않는다). 다른 기기와의 선점은 doing tag와 active 행을 먼저 push하는 쪽이 이긴다. STATE는 `vibe merge-state` 드라이버로 섹션 단위 병합한다(사용자 git 설정에 쓰지 않고 호출마다 `-c`로).
    기획 문서는 예외: cfg `plan` 브랜치(기본 `main`)가 채번·기획의 정본이다. 어느 checkout·worktree에서든 `vibe plan-sync` 후 기획하고, spec/만 담은 기획 커밋을 `vibe plan-push`로 그 브랜치에 바로 올린다(cfg push와 무관, 코드는 실리지 않음, 원격에 브랜치가 없으면 깨끗한 로컬 브랜치만 fast-forward). 같은 T###는 먼저 올린 쪽이 이기고 진 쪽이 다시 채번한다. 올린 결과를 merge로 되가져와 이후 3-way 병합(태스크 아카이브·STATE 행 제거)이 todo를 되살리지 않게 한다. spec만 바뀐 push에서 CI·빌드를 건너뛰는 설정은 대상 프로젝트 몫이다.
 13. 프로젝트 독립성: 특정 대상 프로젝트의 이름·도메인·업무 규칙·실제 태스크/결정 ID를 이 패키지의 코드·스킬·템플릿·예시·테스트에 넣지 않는다. 사례에서 확인한 문제는 일반적인 실행·검증·배정 규칙으로만 반영한다. 문서의 외부 측정 자료도 대상 식별자와 도메인을 익명화하고 수치·측정 한계만 보존한다.
@@ -39,9 +52,9 @@
 - `npm run check` — 테스트 + 스킬 frontmatter/구조 검증 + 패키징 검증. 스킬 수정 후 항상 실행.
 - loop 종료/설정 회귀는 `test/vibe-loop-control.test.mjs`: 가짜 단위·격리 bare Git·실제 호스트 강제 종료·실제 알림 자식 명령. 모델 호출과 운영 브랜치 push 없이 전체 단위 경계를 검증한다.
 - 로컬 설치 테스트: `node ./bin/haeram-spec-creator.mjs install --target <경로>` 후 `check --target <경로>`.
-- `lint --target <경로>` — 타겟 프로젝트 spec/의 FORMAT 불변식 검사(ID·st 형식, rev/tasked 정합, 참조 무결성, chg 연속성, 고아 파일, SSOT 골격 밖 섹션·산문, inbox 참조·active 행·explore exit·보고서 골격, 옛 STATE `## design` 경고). `--hints`로 검토 후보 전체 출력(기본 10건).
+- `lint --target <경로>` — 타겟 spec/의 FORMAT 불변식 검사(규칙은 `src/spec-lint.mjs`). `--hints`로 검토 후보 전체(기본 10건).
 - `vibe brief <T###|ID-n|ID|ID@rev>` — 태스크·결정 브리핑(마크다운, `--json`·`--ref`·`--deep`). 대표 태스크 전달량은 `node scripts/measure-brief.mjs --target <경로> [--tokens]`(읽기 전용).
-- `vibe status|sync|plan-sync|plan-push|push|beat|checkpoint|design|preflight|awake|check` — start-vibe·start-design이 쓰는 세션 도구. 테스트는 bare 원격과 clone 둘로 다른 기기를 재현한다(`test/vibe.test.mjs`), 맡김 실행기는 가짜 provider로(`test/work-autopilot.test.mjs`).
+- `vibe` 하위 명령(`vibe --help`) — start-vibe·start-design의 세션 도구. 테스트는 bare 원격과 clone 둘로 다른 기기를 재현한다(`test/vibe.test.mjs`), 맡김 실행기는 가짜 provider로(`test/work-autopilot.test.mjs`).
 
 ## 배포
 - main 푸시 시 release.yml이 자동 publish — 단 package.json 버전이 npm에 아직 없을 때만(가드 스텝이 건너뜀). 릴리스는 `npm version patch` 후 푸시.

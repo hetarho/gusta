@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0
+
+- State the philosophy at the top of the README and repository instructions: we curate, our taste is the product; spec first, minimal tokens, fast implementation; low coupling and high cohesion so unit tests stay fast. ARCH, create-task, implement-task, review-code, review-task and self-improve treat module boundaries, dependency injection and unit testability as part of the work.
+- `vibe loop` reserves the tail of a timed run for the closing gate. Previously units could consume the whole budget and the time limit skipped final verification and publication entirely. The reserve is measured, not a fixed share: final-tier checks (`vibe check --tier batch|group`, `work finish`, `vibe design verify`), loop units and CI waits record their durations in the runtime `timings.json` (largest of the last 3 samples), and the reserve is the gate twice + one repair unit + CI. Only before the gate was ever measured does a run use 20% of max-hours; `--final-reserve-hours` overrides. No new unit starts inside it; the loop runs the gate, push and CI there (`final-window`). A failed gate queues a repair task with its log and failed tests, runs it inside the reserve and re-runs the gate once; a second failure stops without a push. Gate checks are bounded by the reserve rather than the unit timeout.
+- `vibe check --tier task` refuses a command that ARCH declares only for the batch tier (the full suite) unless `--allow-final` records an explicit request, and flags task checks over 5 minutes with `slow`/`hint`.
+- In autopilot, `work next` no longer tells a session to spawn a reviewer subagent for `needs-reviewer` (its permission prompt would stall an unattended session); a headless runner reviews, or the item is parked.
+- Documentation pass for tokens and correctness: each rule stated once by its owner (verification tiers in start-vibe/references/verification.md, loop control in loop-control.md, self-improve rules in their skills), shorter `vibe format` state/report excerpts, and fixes for stale text (chg line format, ideation plan-push and STATE section order, push wording in `/start-vibe` questions, claims and `work run`, experiment verdicts, broken reference links, unpinned CLI versions). The README groups verification and push in one section and moves release history to CHANGELOG/docs; `기존 프로젝트 이관` now exists for the lint pointer.
+- Stabilize the detached-host loop test, which removed its fixture while the host and supervisor were still writing their last events.
+
 ## 0.8.4
 
 - Reproduce and fix cancelled loop finalization: immediate stop/signals/time limits never start closing checks with an aborted signal, interrupted verification is recorded separately from test failure, and every exit attempts a journaled host-metadata close. A local replacement runner treating any dirty report as unfinished implementation was a separate caller error.
@@ -69,6 +78,7 @@
 
 ## 0.7.0
 
+- Report with measurements, limits and migration steps: [docs/0.7.0.md](docs/0.7.0.md).
 - One brief assembler for `vibe brief` (standalone) and `work brief` (work groups, runner, `vibe loop`): the task; the current rules of each cited domain (STATE cfg `brief: domain`, the default) or only the cited decisions (`brief: cited`); what they require (`→!`) or delegate to (`→=`), transitively; decisions that reference a cited one; the global rules (cfg `always`, default every ARCH decision); the flow·constraints of each domain it draws from; chg lines after a stale base; the inbox lines about it. Whole blocks, never cut to a size.
 - Reference kinds in FORMAT: `→!` requires, `→=` canonical, `→~` related, `→` unclassified (every existing reference). Unclassified references are followed one hop from a block the task depends on and listed beyond it; `/` lists, `–` ranges, whole-domain `→ID` and bare IDs are parsed. Existing SSOTs are not reclassified.
 - `vibe brief` takes `T###`, `ID-n` (with referrers), `ID` and `ID@rev` (history since rev), `--ref <commit>` and `--deep`; it prints markdown ending in an `end … chars:N` line (`--json` for data) and exits 1 when incomplete. Provenance: source (working tree with HEAD and dirty spec files, or one commit), domain path·rev·sha256, block path·lines·sha256.
@@ -79,6 +89,7 @@
 
 ## 0.6.0
 
+- Report with measurements and limits: [docs/0.6.0.md](docs/0.6.0.md).
 - Add `vibe loop`: serial fresh Claude/Codex sessions, single-unit results, one preflight/report/tag, bounded retries and work/time limits, stop markers, detached hosts and persistent logs/session IDs.
 - Add `vibe ci wait` and `vibe push --wait-ci`: CLI-owned waiting with backoff, authenticated gh/token API or public HTML, exact commit checks, bounded no-run handling and workflow path filters. No anonymous API polling.
 - Add standalone `vibe brief` and scoped FORMAT excerpts; summarize STATE and test output, retain full check logs and persist the task-start diff base.
