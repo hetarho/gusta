@@ -4,6 +4,6 @@
 
 함께는 `vibe status --section inbox --no-fetch --json`으로 결정함만 확인받는다. 승인 항목은 삭제+log, 수정은 update-ssot 후 삭제. 열린 보고서는 to를 채운다. 결정은 cfg.level에 맞춰 모아 묻는다.
 
-맡김으로 전환하면 preflight(push 브랜치가 있으면 push 권한·명령 가용성·실제 헤드리스 권한), active, 보고서, macOS awake를 시작 때 한 번 준비한다. 사람이 고쳐야 할 실패는 떠나기 전 한 번 확인한다.
+맡김으로 전환하면 preflight(push 브랜치가 있으면 push 권한·명령 가용성·실제 헤드리스 권한)를 한 번 돌려 사람이 고쳐야 할 실패를 떠나기 전 확인한다. 그 뒤 직렬은 `vibe loop --detach`가 active·보고서·절전 방지를 준비하고(SKILL 1절), 작업 묶음 조정자만 이 세션에서 active·보고서·awake를 준비한다.
 
 실행기 밖 조정자/단독 시작 세션만 마감 때 보고서 to/next와 STATE next를 채우고 beat --end, 최종 후보의 묶음 검증(push 브랜치가 있으면 검증 SHA로 push 한 번), awake --stop을 한다. 보고는 한 일·inbox/parked·다음 일·보고서 경로만 짧게 한다.

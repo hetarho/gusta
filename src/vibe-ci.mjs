@@ -81,7 +81,8 @@ export function publicJobs(html, repo) {
     const target = new URL(match[1], 'https://github.com')
     if (target.origin !== 'https://github.com' || !target.pathname.startsWith(`/${repo}/actions/runs/`)) continue
     const url = target.href.split('?')[0]
-    jobs.set(url, { url, name: decode(html.slice(match.index + match[0].length, match.index + match[0].length + 300).split('</a>')[0]) || url.split('/').at(-1) })
+    const label = html.slice(match.index + match[0].length, match.index + match[0].length + 300).replace(/^[^>]*>/, '').split('</a>')[0]
+    jobs.set(url, { url, name: decode(label) || url.split('/').at(-1) })
   }
   return [...jobs.values()]
 }
@@ -90,13 +91,21 @@ export function publicJobResult(html, job) {
   const header = html.match(/<[^>]*data-job-status=["'][^"']+["'][^>]*>/)?.[0] ?? ''
   const attr = (name) => header.match(new RegExp(`data-${name}=["']([^"']+)["']`))?.[1]?.toLowerCase()
   const status = attr('job-status') ?? 'unknown'
-  const value = attr('conclusion') ?? attr('job-conclusion') ?? (terminal.has(status) ? status : null)
+  // github.com puts the job result only in the job header text ("succeeded/failed
+  // <time> in 4m"), not as an attribute. Step conclusions alone are not evidence
+  // (continue-on-error), so an unrecognised header keeps the job pending.
+  const summary = decode(html.match(/data-url=["'][^"']*\/runs\/\d+\/header["'][^>]*>([\s\S]*?)<\/span>/)?.[1] ?? '').toLowerCase()
+  const word = summary.match(/\b(succeeded|failed|cancell?ed|skipped|timed out)\b/)?.[1]
+  const said = { succeeded: 'success', failed: 'failure', cancelled: 'cancelled', canceled: 'cancelled', skipped: 'skipped', 'timed out': 'timed_out' }[word]
+  const value = attr('conclusion') ?? attr('job-conclusion') ?? said ?? (terminal.has(status) ? status : null)
   const conclusion = (status === 'completed' || terminal.has(status)) && terminal.has(value) ? value : null
   const failedSteps = []
   for (const match of html.matchAll(/<[^>]+(?:data-conclusion=["']failure["']|aria-label=["'][^"']*(?:failed|failure)[^"']*["'])[^>]*>/gi)) {
     const tag = match[0]
     const name = tag.match(/(?:data-step-name|data-name|aria-label)=["']([^"']+)["']/)?.[1] ?? decode(html.slice(match.index + tag.length, match.index + tag.length + 350).split('</')[0])
-    if (name && !failedSteps.includes(decode(name))) failedSteps.push(decode(name))
+    // Page status icons are labelled "failed: " with no step name.
+    const step = decode(name ?? '').replace(/^(?:failed|failure):\s*/i, '')
+    if (step && !failedSteps.includes(step)) failedSteps.push(step)
   }
   return { ...job, status, conclusion, failedSteps }
 }

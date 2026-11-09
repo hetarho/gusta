@@ -88,3 +88,29 @@ test('a failing step inside an unfinished public job never marks that job comple
   const unknown = publicJobResult('<div data-job-status="completed"><span data-conclusion="success"></span><span data-conclusion="failure"></span></div>', {})
   assert.equal(unknown.conclusion, null)
 })
+
+test('github.com job pages carry the job result only in header text', async () => {
+  const { publicJobResult, publicJobs } = await import('../src/vibe-ci.mjs')
+  // Shape of the live markup: a multi-line <check-steps> without a job conclusion,
+  // status icons labelled "failed: ", and the result word in the job header span.
+  const page = (word, step) => `<svg class="octicon" aria-label="${word === 'failed' ? 'failed' : 'completed successfully'}: " role="img"></svg>
+<span class="d-block f6 js-updatable-content"
+  data-url="/owner/project/runs/2/header">
+    ${word}
+    <relative-time datetime="2026-01-01T00:00:00Z">Jan 1</relative-time> in 4m 5s
+</span>
+<check-steps
+  class="js-socket-channel"
+  data-job-status="completed"
+  data-use-actions-ux>
+  <check-step
+    data-name="Run tests"
+    data-conclusion="${step}"></check-step>
+</check-steps>`
+  const passed = publicJobResult(page('succeeded', 'success'), {})
+  assert.equal(passed.conclusion, 'success'); assert.deepEqual(passed.failedSteps, [])
+  const failed = publicJobResult(page('failed', 'failure'), {})
+  assert.equal(failed.conclusion, 'failure'); assert.deepEqual(failed.failedSteps, ['Run tests'])
+  assert.equal(publicJobResult(page('started', 'success').replace('"completed"', '"in_progress"'), {}).conclusion, null)
+  assert.equal(publicJobs('<a href="/owner/project/actions/runs/1/job/2" class="x">\n  check\n</a>', 'owner/project')[0].name, 'check')
+})

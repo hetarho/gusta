@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0
+
+- Orchestrators delegate instead of reading and editing in their own context, whose every later turn re-sends what they read. Add `work scout --prompt-file <file> [--provider] [--model] [--timeout-ms]`: one read-only headless session (Claude plan mode, Codex read-only sandbox, 15-minute default) that returns only `summary`, structured `proposals[]` and compact token usage, so autopilot, headless and Codex orchestrators can hand off exploration like they hand off implementation and review to `work run`. self-improve-local and self-improve discover through scouts (native sub-sessions or `work scout`), and self-improve no longer implements in the coordinator session. The scout prompt's fields match the result schema.
+- start-vibe autopilot always hands units to `vibe loop --detach` (fresh session per unit) instead of looping in the conversation; only a work-bundle coordinator stays, and it waits with `work next --wait 3600` in the background rather than waking every 9 minutes.
+- Fix `vibe ci wait` without `gh` or a token: github.com job pages carry the job result only in the header text, so every finished run stayed `in_progress` until the timeout. A run that succeeded in 4 minutes now resolves on the first poll instead of after 30 minutes. Page status icons no longer appear as a failed step named `failed:`, and job names drop the stray `>`.
+
 ## 0.9.0
 
 - State the philosophy at the top of the README and repository instructions: we curate, our taste is the product; spec first, minimal tokens, fast implementation; low coupling and high cohesion so unit tests stay fast. ARCH, create-task, implement-task, review-code, review-task and self-improve treat module boundaries, dependency injection and unit testability as part of the work.

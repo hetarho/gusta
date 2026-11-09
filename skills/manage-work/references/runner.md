@@ -59,6 +59,14 @@ providers 목록은 슬롯에 순환 배정한다. 6개 슬롯과 `codex,claude`
 
 기본값은 작업별 timeout 1시간, 전체 dispatch 200회, 태스크별·역할별 실행 3회다(lane은 태스크마다 센다). `--timeout-ms`·`--max-dispatches`·`--max-task-runs`로 지정할 수 있다. JSON 설정도 가능하다: `{"provider":"codex","reviewerProvider":"claude","maxTaskRuns":3}`를 파일에 저장하고 `--adapter <file>`로 전달한다. provider/model CLI 옵션과 adapter 파일은 함께 지정하지 않는다.
 
+## 읽기 전용 탐색: work scout
+
+네이티브 하위 세션이 없는 오케스트레이터(맡김·헤드리스·Codex)가 탐색을 맡길 때 쓴다. 채운 탐색 프롬프트 파일로 읽기 전용 세션 하나를 띄우고(Claude plan 모드·Codex read-only, 기본 15분) 제안 JSON(`summary`·`proposals[]`)과 토큰 사용량만 돌려준다. 실행기 진행 로그는 결과에 싣지 않는다. 묶음·runtime과 무관하며 배정·승인을 만들지 않는다.
+
+```bash
+npx haeram-spec-creator work scout --prompt-file <filled scout prompt> --provider claude --json
+```
+
 ## 다른 실행기의 command 어댑터
 
 다른 도구는 다음 JSON 파일을 `--adapter /absolute/path/adapter.json`으로 연결한다:

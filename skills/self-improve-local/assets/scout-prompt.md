@@ -7,17 +7,16 @@ Policy and contracts: <exact decision references or complete brief>
 Budget: <read/analysis limit; no long commands>
 Existing work to avoid: <active tasks, claims and prior proposals>
 
-Inspect the assigned code and existing execution evidence. Return a proposal with:
+Inspect the assigned code and existing execution evidence. Return proposals, each with:
 
-- Identity and base commit.
-- Location, observed problem and raw evidence pointers; label inference/unknowns.
-- One causal hypothesis and a bounded change, with explicit touches.
-- Preserved behavior, interfaces and validation coverage.
-- Measurement/fast regression recipe, final checks and expected cost.
-- Risks, rollback and any decision requiring the owner.
+- title, where (file:line), problem and evidence (raw pointers; label inference/unknowns).
+- change: one causal hypothesis and a bounded change; touches: explicit paths.
+- preserves: behavior, interfaces and validation coverage kept.
+- checks: measurement/fast regression recipe and final checks; cost: expected cost.
+- risk: risks, rollback and any decision requiring the owner.
 
 Do not edit source, spec, Git or runtime. Do not implement the proposal, create
 tasks/PRs, run expensive checks, change settings, or spawn more agents. Missing
 measurement is a proposed bounded experiment, not a reason to invent a speedup.
-Send the proposal to the calling orchestrator and wait for an explicit assignment.
+Return the proposals (none is a valid answer) to the calling orchestrator and stop.
 Being a scout grants no implementation approval.

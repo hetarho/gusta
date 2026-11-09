@@ -144,3 +144,34 @@ test('unit adapters use fresh sessions and permit bypass only when explicitly se
   assert.ok(!providerArguments('codex', 'unit', files).some((arg) => arg.includes('bypass')))
   await assert.rejects(executeAgentAdapter({ provider: 'claude', job: { role: 'unit', workspace: fixture.root, resume: first.session }, env: fixture.env }), /resume 금지/)
 })
+
+test('탐색 세션은 읽기 전용으로 실행되고 제안 JSON만 돌려준다', async (t) => {
+  const proposal = { title: 'Cache parsed config', where: 'src/a.mjs:10', problem: 'parsed per call', evidence: 'profile.log:3', change: 'memoize', touches: ['src/a.mjs'], preserves: 'same output', checks: 'unit a', cost: 'small', risk: 'stale cache' }
+  const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('received.json',JSON.stringify({args:process.argv.slice(2),text}));console.log(JSON.stringify({type:'result',is_error:false,usage:{output_tokens:7},structured_output:{summary:'one',proposals:[${JSON.stringify(proposal)}]}}));});`)
+  const result = await executeAgentAdapter({ provider: 'claude', job: { schemaVersion: 1, role: 'scout', workspace: fixture.root, prompt: 'Assigned area: src/' }, env: fixture.env, log: () => {} })
+  assert.deepEqual(result.proposals, [proposal]); assert.equal(result.usage.output_tokens, 7)
+  const { args, text } = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
+  assert.equal(flag(args, '--permission-mode'), 'plan')
+  assert.ok(!flag(args, '--tools').includes('Edit'))
+  assert.match(text, /read-only scout/); assert.match(text, /Assigned area: src\//)
+  assert.equal(flag(providerArguments('codex', 'scout', { schema: 'schema', result: 'result' }), '--sandbox'), 'read-only')
+  assert.throws(() => claudeResult(JSON.stringify({ structured_output: { summary: 'x', proposals: [{ title: 'only' }] } }), 'scout'), /탐색 제안/)
+  await assert.rejects(executeAgentAdapter({ provider: 'claude', job: { schemaVersion: 1, role: 'scout', workspace: fixture.root, prompt: ' ' }, env: fixture.env }), /prompt/)
+})
+
+test('탐색 세션은 timeout에 끝나고 work scout는 실행기 확인·프롬프트 파일만 다룬다', async (t) => {
+  const fixture = await stub(t, 'claude', `setInterval(() => {}, 1000)`)
+  await assert.rejects(executeAgentAdapter({ provider: 'claude', job: { schemaVersion: 1, role: 'scout', workspace: fixture.root, prompt: 'look', timeoutMs: 200 }, env: fixture.env, log: () => {} }), /timeout/)
+  const { workScout } = await import('../src/work-scout.mjs')
+  const promptFile = path.join(fixture.root, 'prompt.md')
+  await writeFile(promptFile, 'Assigned area: test/')
+  const providers = [{ provider: 'codex', compatible: true }, { provider: 'claude', compatible: false }]
+  let seen
+  const result = await workScout({ promptFile, targetRoot: fixture.root }, { inspect: async () => ({ autoProvider: 'codex', providers }),
+    execute: async (input) => { seen = input; return { summary: 'none', proposals: [], usage: { input_tokens: 2, cache_read_input_tokens: 9, output_tokens: 3, iterations: [] } } } })
+  assert.equal(result.provider, 'codex'); assert.deepEqual(result.proposals, [])
+  assert.deepEqual(result.usage, { input: 2, cacheWrite: 0, cacheRead: 9, output: 3 })
+  assert.equal(seen.job.role, 'scout'); assert.equal(seen.job.prompt, 'Assigned area: test/'); assert.equal(seen.job.timeoutMs, 900000)
+  await assert.rejects(workScout({ promptFile, provider: 'claude' }, { inspect: async () => ({ autoProvider: 'codex', providers }) }), /사용 가능한 claude/)
+  await assert.rejects(workScout({}), /prompt-file/)
+})

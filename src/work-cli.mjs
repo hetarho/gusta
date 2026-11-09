@@ -3,6 +3,7 @@ import { finishReview, releaseReview, updateReview, resumeWork } from './work-re
 import { nextWork, claimReviewWaiting } from './work-wait.mjs'
 import { runWork, recoverRunner } from './work-runner.mjs'
 import { workDoctor } from './work-providers.mjs'
+import { workScout } from './work-scout.mjs'
 import { SkillPackageError } from './errors.mjs'
 
 const HELP = `작업 묶음 (Orca 등 외부 도구 없이도 사용 가능)
@@ -25,6 +26,8 @@ const HELP = `작업 묶음 (Orca 등 외부 도구 없이도 사용 가능)
     [--timeout-ms <ms>] [--max-dispatches <n>] [--max-task-runs <n>]
     [--autopilot] [--decision-wait-ms <ms>] [--checkpoint-ms <ms>]
   work runner-recover --work <name>
+  work scout --prompt-file <file> [--provider auto|codex|claude] [--model <id>] [--timeout-ms 900000]
+                                    읽기 전용 헤드리스 탐색 세션 1개 — 제안 JSON만 반환(오케스트레이터는 코드를 직접 읽지 않는다)
   work status
   work board --work <name>
   work brief --attempt <id>
@@ -66,13 +69,14 @@ const allowed = {
   'review-claim': ['work', 'owner', 'attempt', 'wait'], 'review-finish': ['review', 'result-file'],
   'review-update': ['review'], 'review-release': ['review', 'reason'],
   doctor: [], run: ['work', 'adapter', 'verify', 'task-verify', 'group-verify', 'verify-timeout-ms', 'provider', 'providers', 'reviewer-provider', 'model', 'reviewer-model', 'timeout-ms', 'max-dispatches', 'max-task-runs', 'decision-wait-ms', 'checkpoint-ms'], 'runner-recover': ['work'],
+  scout: ['prompt-file', 'provider', 'model', 'timeout-ms'],
   history: ['work', 'task'], sync: ['work'],
   status: [], board: ['work'], brief: ['attempt'], update: ['attempt', 'status', 'reason', 'decision-file', 'note'],
   submit: ['attempt', 'verify', 'verify-timeout-ms'], integrate: ['attempt', 'verify', 'verify-timeout-ms'], finish: ['work', 'verify', 'verify-timeout-ms'], release: ['attempt', 'reason'],
   cleanup: ['attempt'], recover: ['attempt', 'work'], unlock: ['lock-id'],
 }
 const actions = { doctor: workDoctor, configure: configureWork, 'claim-next': claimNextWork, next: nextWork, resume: resumeWork, 'review-claim': claimReviewWaiting, 'review-finish': finishReview,
-  'review-update': updateReview, 'review-release': releaseReview, run: runWork, 'runner-recover': recoverRunner, start: startWork, claim: claimWork, status: inspectWork, board: workBoard,
+  'review-update': updateReview, 'review-release': releaseReview, run: runWork, 'runner-recover': recoverRunner, scout: workScout, start: startWork, claim: claimWork, status: inspectWork, board: workBoard,
   history: workHistory, sync: syncWork, brief: workBrief, update: updateWork, submit: submitWork, integrate: integrateWork, finish: finishWork, release: releaseWork,
   cleanup: cleanupWork, recover: recoverWork, unlock: unlockWork }
 

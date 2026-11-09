@@ -24,7 +24,7 @@ CLI는 `npx haeram-spec-creator` 뒤에 붙인다. 실행기의 cliCommand가 �
 
 ## 1. 시작·단위1
 `vibe status --tag <tag> --json`으로 cfg·active·inbox 수·next·남은 일만 본다. 원격 오류면 선점하지 않는다. 앞선 원격은 깨끗한 트리에서 sync한다. 함께(pair)와 실행기 밖 초기화는 필요할 때만 [세션 절차](references/session.md)를 읽는다.
-장기 맡김은 `vibe loop --tag <tag> --provider claude|codex --json`: 바깥 CLI가 단위마다 새 세션을 띄운다. 이 대화 안에서 남은 일을 끝까지 반복하지 않는다. 시간 한도의 끝 구간은 마감 관문 전용이라 새 단위를 시작하지 않는다(`final-window`). 길이는 CLI가 실측으로 정한다(전체 검증×2+수정 단위+CI). 사용자가 마감 시간을 정해 주면 `--final-reserve-hours`로 넘긴다.
+맡김(단위1·hostManaged 제외)은 `vibe loop --tag <tag> --provider claude|codex --detach --json`으로 넘긴다: 바깥 CLI가 단위마다 새 세션을 띄우고 active·보고서·마감 관문을 맡는다. 이 대화는 preflight와 실행 핸들 보고까지만 하고 단위를 직접 반복하지 않는다 — 대화가 길어지면 매 턴 쌓인 맥락 전체를 다시 보낸다. 작업 묶음 조건이면 [조정자 절차](references/coordinator.md), provider CLI가 없을 때만 이 대화가 단위1 규칙으로 하나씩 진행한다. 시간 한도의 끝 구간은 마감 관문 전용이라 새 단위를 시작하지 않는다(`final-window`). 길이는 CLI가 실측으로 정한다(전체 검증×2+수정 단위+CI). 사용자가 마감 시간을 정해 주면 `--final-reserve-hours`로 넘긴다.
 실행 중 단위별 push 변경은 `vibe loop --tag <tag> --configure --push-each-unit|--no-push-each-unit`으로 요청하고 applied receipt를 확인한다. 즉시 취소와 단위 완료 후 정지는 별개다. 중단·재시작 전환기를 만들지 않고 [실행 중 제어·복구 계약](references/loop-control.md)을 따른다.
 `/start-vibe 맡김 단위1` 또는 `HAERAM_VIBE_UNIT=1`이면 시작 질문 없이 정확히 **태스크 1개 done / 기획 한 조각 / inbox 정리 / 작은 수정** 중 하나만 끝낸다. 기획 조각은 update-ssot(필요하면 create-ssot)+create-task를 같은 세션에서 끝내고 읽은 결정을 재사용한다. 그 뒤 구현으로 넘어가지 않는다. 구현을 부하 에이전트에 분할하지 않는다.
 hostManaged 실행기에서는 초기화·active·보고서 생성/종료·묶음 검증·완료 push·CI를 호스트에 맡긴다. 같은 tag·보고서를 잇고 재초기화하지 않는다. 기본 권한은 acceptEdits+allow 목록, 사용자가 명시한 `--permission-mode bypass`만 우회한다. 메인 checkout의 프로젝트 settings와 실제 실행 권한은 시작 probe로 확인한다.

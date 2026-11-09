@@ -17,7 +17,11 @@ export const RESULT_SCHEMAS = {
     decision: object({ question: string, options: { type: 'array', items: string }, recommendation: string }) }),
   reviewer: object({ verdict: { type: 'string', enum: ['approved', 'changes_requested'] }, summary: string,
     findings: { type: 'array', items: object({ priority: { type: 'string', enum: ['P1', 'P2', 'P3'] }, where: string, message: string }) } }),
+  // A scout reads and proposes; its whole return is what reaches the orchestrator's context.
+  scout: object({ summary: string, proposals: { type: 'array', items: object({ title: string, where: string, problem: string, evidence: string,
+    change: string, touches: { type: 'array', items: string }, preserves: string, checks: string, cost: string, risk: string }) } }),
 }
+const PROPOSAL = ['title', 'where', 'problem', 'evidence', 'change', 'preserves', 'checks', 'cost', 'risk']
 
 export function validateAgentResult(role, result) {
   if (role === 'unit') {
@@ -25,6 +29,14 @@ export function validateAgentResult(role, result) {
     return { kind: result.kind, id: result.id, outcome: result.outcome, pushed: result.pushed, next: result.next }
   }
   if (!result || typeof result !== 'object' || Array.isArray(result) || typeof result.summary !== 'string' || !result.summary.trim()) fail('에이전트 결과에 summary가 없습니다.')
+  if (role === 'scout') {
+    if (!Array.isArray(result.proposals)) fail('탐색 결과에 proposals가 없습니다.')
+    const proposals = result.proposals.map((entry) => {
+      if (!entry || PROPOSAL.some((key) => typeof entry[key] !== 'string') || !entry.title.trim() || !Array.isArray(entry.touches) || entry.touches.some((value) => typeof value !== 'string')) fail('탐색 제안 형식이 올바르지 않습니다.')
+      return Object.fromEntries([...PROPOSAL, 'touches'].map((key) => [key, entry[key]]))
+    })
+    return { summary: result.summary, proposals }
+  }
   if (role === 'worker') {
     if (!['completed', 'blocked'].includes(result.outcome)) fail('워커 결과의 outcome이 올바르지 않습니다.')
     const decision = result.decision
@@ -79,6 +91,10 @@ async function promptFor(job) {
     const autonomy = 'Autopilot delegates reversible planning and technical decisions to you. Do not wait for a person or park work merely because a decision is needed. Apply the recommended option through update-ssot and create-task when needed, record question/choice/alternatives/reason in STATE inbox decided, and leave the task runnable for the next unit. You may reorder unstarted tasks to bring an already-approved prerequisite or CI fix forward after checking real dependencies and touches; update task and STATE deps together. Preserve acceptance criteria and verification gates. Park only the affected work when it needs unavailable access, explicit authorization for irreversible/external effects, or a billing, data-deletion, privacy or security-policy decision; continue other runnable work.'
     const recovery = job.recovery ? `\nRecovery unit for ${job.recovery.taskId}: read the blocker in its task result and relevant inbox entries. Resolve reversible planning/technical gaps as one planning slice, record the decision and restore todo with consistent deps/base in the task and STATE. If it is an implementation failure, make the scoped fix. If it truly needs the reserved authorization above, record parked for this task and return outcome parked. Do not repeat the same blocked implementation or wait for a user.` : ''
     return `Run /start-vibe 맡김 단위1. Exactly one task done, one planning slice (update-ssot + create-task together), or inbox cleanup. No questions, no subagents. ${autonomy}${recovery} ${TASK_CHECKS} Host owns preflight, active row lifecycle, report lifecycle, batch checks, push and CI wait. Do not run them again. Use the same tag/report. Commit each completed task, including only its related changes. In strict concurrency the host publishes your claim with vibe claim before dispatch; never publish claims or pending code yourself. Never push completed code here: host runs the batch gate first. Do not close the shared report or remove active. Use cliCommand to call this installed CLI; do not download a different CLI. Read vibe brief for a task, exact FORMAT sections only for writing, never whole STATE/FORMAT/ARCH or large code files. Read scoped code with rg and ranges. Long checks: one blocking call (Codex) or shell background completion notification (Claude), no model polling. Return only the unit JSON schema.\n\n${skill}\n\n${splitBrief(job).text}Assignment JSON:\n${JSON.stringify(splitBrief(job).data)}`
+  }
+  if (job.role === 'scout') {
+    if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('탐색은 workspace·prompt와 새 세션이 필요합니다.')
+    return `You are a read-only scout started by an orchestrator. Do NOT edit files, change Git or runtime, run long or full checks, or spawn subagents. Read scoped code with rg and line ranges, not whole large files. Label inference and unknowns; cite file:line or log paths as evidence. An empty proposals array is a valid answer when nothing is worth changing. Return only the final JSON matching the output schema.\n\n${job.prompt}`
   }
   if (!['worker', 'reviewer'].includes(job.role) || !job.workspace || !job.attempt || !job.taskId) fail('실행기 작업 입력이 올바르지 않습니다.')
   const unattended = job.mode === 'autopilot' ? ' Nobody is available to answer questions: never wait for one.' : ''
@@ -135,7 +151,7 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     // The provider is an independent foreground run, not a nested interactive session.
     delete childEnv.CLAUDECODE
     const child = spawn(provider, args, { cwd: job.workspace, env: childEnv, shell: false, stdio: ['pipe', 'pipe', 'pipe'] })
-    let output = '', events = '', errorOutput = '', tooLarge = false, interrupted = false, forced
+    let output = '', events = '', errorOutput = '', tooLarge = false, interrupted = false, timedOut = false, forced
     // In work run, both processes share the runner-owned process group. Direct adapter
     // invocations still forward termination to the provider.
     const stop = () => {
@@ -145,6 +161,7 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
       forced.unref()
     }
     process.on('SIGTERM', stop); process.on('SIGINT', stop)
+    const limit = job.timeoutMs ? setTimeout(() => { timedOut = true; stop() }, job.timeoutMs) : null
     try {
       await new Promise((resolve, reject) => {
         child.on('error', reject)
@@ -162,17 +179,17 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
           if (output.length > 8 * 1024 * 1024) { tooLarge = true; stop(); output = output.slice(0, 8 * 1024 * 1024) }
         })
         child.stderr.on('data', (chunk) => { errorOutput = (errorOutput + chunk).slice(-16000); log(chunk.toString()) })
-        child.on('close', (code, signal) => code === 0 && !interrupted ? resolve() : reject(new SkillPackageError(`${provider} 실행 실패 (${tooLarge ? 'output limit' : interrupted ? 'interrupted' : code ?? signal})`, [errorOutput])))
+        child.on('close', (code, signal) => code === 0 && !interrupted ? resolve() : reject(new SkillPackageError(`${provider} 실행 실패 (${tooLarge ? 'output limit' : timedOut ? 'timeout' : interrupted ? 'interrupted' : code ?? signal})`, [errorOutput])))
         child.stdin.on('error', () => {})
         child.stdin.end(prompt)
       })
     } finally {
-      clearTimeout(forced)
+      clearTimeout(forced); clearTimeout(limit)
       process.off('SIGTERM', stop); process.off('SIGINT', stop)
     }
     if (provider === 'claude') {
       if (job.role === 'unit') log(output)
-      return { ...claudeResult(output, job.role), session, ...(job.role === 'unit' ? { usage: JSON.parse(output).usage ?? null } : {}) }
+      return { ...claudeResult(output, job.role), session, ...(['unit', 'scout'].includes(job.role) ? { usage: JSON.parse(output).usage ?? null } : {}) }
     }
     return { ...validateAgentResult(job.role, JSON.parse(await readFile(files.result, 'utf8'))), session: codexSession(events) ?? job.resume ?? null }
   } finally { await rm(temporary, { recursive: true, force: true }) }
