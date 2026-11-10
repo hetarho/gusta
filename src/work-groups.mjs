@@ -3,8 +3,7 @@ import { constants } from 'node:fs'
 import { randomUUID, createHash } from 'node:crypto'
 import path from 'node:path'
 import os from 'node:os'
-import { exec } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { readTaskBoard } from './task-board.mjs'
 import { quoteLine, quoteFields, sections, splitRefs, TASK_ID, INBOX_LINE } from './spec-format.mjs'
@@ -18,7 +17,36 @@ import { planUnits, mainSessionTasks } from './task-graph.mjs'
 import { checkKey, commitTree, cachedPass, recordPass, withHeavyLock, recordTiming, timingKey } from './check-cache.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 
-const execute = promisify(exec)
+// A check runs as its own process group, so a stop or timeout ends everything it started
+// (`npm test` → node workers), not only the shell: exec signals /bin/sh alone, and a shell that
+// forks its command (dash does) leaves that command running. Settles once every output holder
+// has exited; only bounded tails stay in memory.
+export function runCheckCommand(command, { cwd, env, timeout = 0, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, { cwd, env, shell: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] })
+    const out = { stdout: '', stderr: '' }
+    const keep = (name) => (chunk) => { out[name] = (out[name] + chunk).slice(-16000) }
+    child.stdout.setEncoding('utf8').on('data', keep('stdout'))
+    child.stderr.setEncoding('utf8').on('data', keep('stderr'))
+    let reason = null, forced = null, settled = false
+    const kill = (sig) => { try { process.platform === 'win32' ? child.kill(sig) : process.kill(-child.pid, sig) } catch {} }
+    const stop = (why) => { if (reason) return; reason = why; kill('SIGTERM'); forced = setTimeout(() => kill('SIGKILL'), 2000) }
+    const onAbort = () => stop('aborted')
+    const timer = timeout ? setTimeout(() => stop('timed out'), timeout) : null
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
+    const settle = (code, error = null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer); clearTimeout(forced); signal?.removeEventListener('abort', onAbort)
+      if (reason) kill('SIGKILL')
+      if (!error && !reason && code === 0) return resolve(out)
+      reject(Object.assign(new Error(error?.message ?? (reason ? `Command ${reason}: ${command}` : `Command failed (exit ${code}): ${command}`)), out))
+    }
+    child.on('error', (error) => settle(null, error))
+    child.on('close', (code) => settle(code))
+  })
+}
 import { activeAttempt as active, workerBusy, pendingReview, workLimits, invalidateReview, overlaps, rankedUnits, unitTasks, touchesErrors, approvedTasks, scopedBoard } from './work-policy.mjs'
 const now = () => new Date().toISOString()
 const date = () => now().slice(2, 10).replaceAll('-', '')
@@ -257,7 +285,7 @@ async function verify(root, checks, commit, signal, timeout = 60 * 60 * 1000, sc
       // The group gate's real duration is the same measurement a timed vibe loop reserves for.
       const measure = () => runtime && scope.TIER === 'group' && !signal?.aborted ? recordTiming(runtime, timingKey('final', command), Date.now() - began) : null
       try {
-        const { stdout, stderr } = await execute(command, { cwd: root, maxBuffer: 8 * 1024 * 1024, timeout, signal, env })
+        const { stdout, stderr } = await runCheckCommand(command, { cwd: root, timeout, signal, env })
         results.push({ command, startedAt, finishedAt: now(), stdout: stdout.slice(-16000), stderr: stderr.slice(-16000) })
       } catch (error) {
         await measure()

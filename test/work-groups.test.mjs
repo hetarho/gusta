@@ -6,7 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { startWork, claimWork, claimNextWork, inspectWork, updateWork, releaseWork, commitWorkerWork, submitWork, integrateWork, finishWork, cleanupWork, recoverWork, workBoard, workHistory, syncWork } from '../src/work-groups.mjs'
+import { startWork, claimWork, claimNextWork, inspectWork, updateWork, releaseWork, commitWorkerWork, submitWork, integrateWork, finishWork, cleanupWork, recoverWork, workBoard, workHistory, syncWork, runCheckCommand } from '../src/work-groups.mjs'
 import { nextWork, claimReviewWaiting } from '../src/work-wait.mjs'
 import { claimReview, finishReview, releaseReview, resumeWork } from '../src/work-review.mjs'
 import { runWork, recoverRunner } from '../src/work-runner.mjs'
@@ -1163,4 +1163,30 @@ test('runner가 lane 중간에 멈추면 다음 runner가 같은 공간에서 �
   const workers = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((job) => job.role === 'worker')
   assert.deepEqual(workers.map((job) => job.taskId), ['T001', 'T002'])
   assert.equal(workers[0].workspace, workers[1].workspace)
+})
+
+test('검사 명령의 중단·시간 초과는 셸이 fork한 명령까지 프로세스 그룹째 멈추고, 결과는 출력 꼬리만 남긴다', { skip: process.platform === 'win32' }, async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'haeram-check-kill-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const beat = path.join(dir, 'beat')
+  const read = () => readFile(beat, 'utf8').catch(() => '')
+  const beating = async () => { const before = await read(); await pause(250); return (await read()) !== before }
+  // `; true` makes every shell fork node instead of exec'ing it — the child that signalling only /bin/sh missed.
+  const command = `node -e "setInterval(()=>require('fs').writeFileSync('${beat}', String(Date.now())), 20)"; true`
+
+  const abort = new AbortController()
+  const running = runCheckCommand(command, { cwd: dir, signal: abort.signal })
+  for (const deadline = Date.now() + 60000; !(await read()) && Date.now() < deadline;) await pause(20)
+  assert.ok(await read(), 'the command started')
+  abort.abort()
+  await assert.rejects(running, /aborted/)
+  assert.equal(await beating(), false, 'abort left the forked command running')
+
+  await rm(beat, { force: true })
+  await assert.rejects(runCheckCommand(command, { cwd: dir, timeout: 1500 }), /timed out/)
+  assert.equal(await beating(), false, 'timeout left the forked command running')
+
+  assert.deepEqual(await runCheckCommand('echo out; echo err >&2', { cwd: dir }), { stdout: 'out\n', stderr: 'err\n' })
+  await assert.rejects(runCheckCommand('echo bad >&2; exit 3', { cwd: dir }), (error) => /exit 3/.test(error.message) && error.stderr === 'bad\n')
 })

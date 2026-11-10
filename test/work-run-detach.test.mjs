@@ -235,9 +235,17 @@ test('dispatch 기록은 로그 내용을 담지 않고 실패 이유만 남긴�
   }
 })
 
-// A group gate that records its PID, then runs until the test drops `release` (or `ms` passes),
-// so how long it runs never depends on machine load.
-const gate = (marker, ms, release = '') => `node -e "const fs=require('fs'); fs.writeFileSync('${marker}', String(process.pid)); const end=Date.now()+${ms}; const t=setInterval(()=>{ if (Date.now()>end || ('${release}' && fs.existsSync('${release}'))) clearInterval(t) }, 50)"`
+// A group gate that records its PID and beats `<marker>.beat`, then runs until the test drops
+// `release` (or `ms` passes), so how long it runs never depends on machine load. `; true` makes
+// every shell fork node instead of exec'ing it, as dash does on Linux: stopping only the shell
+// would leave the gate running.
+const gate = (marker, ms, release = '') => `node -e "const fs=require('fs'); fs.writeFileSync('${marker}', String(process.pid)); const end=Date.now()+${ms}; const t=setInterval(()=>{ fs.writeFileSync('${marker}.beat', String(Date.now())); if (Date.now()>end || ('${release}' && fs.existsSync('${release}'))) clearInterval(t) }, 50)"; true`
+// A stopped command stops beating; a PID check would count an unreaped zombie as alive.
+const stillBeating = async (marker) => {
+  const before = await readFile(`${marker}.beat`, 'utf8').catch(() => '')
+  await sleep(300)
+  return (await readFile(`${marker}.beat`, 'utf8').catch(() => '')) !== before
+}
 
 test('묶음 최종 검증 중의 stop은 검증 명령을 멈추고 실행을 interrupted로 끝낸다', async (t) => {
   const setup = await fixture(t)
@@ -246,7 +254,7 @@ test('묶음 최종 검증 중의 stop은 검증 명령을 멈추고 실행을 i
   const stop = new AbortController()
   const running = runWork({ ...setup, work: 'gate-stop', adapter: setup.adapter, verify: checks, groupVerify: [gate(marker, 120000)], env: env(), stopSignal: stop.signal })
   running.catch(() => {})
-  const pid = Number(await until(() => readFile(marker, 'utf8').catch(() => ''), Boolean, 'group gate started'))
+  await until(() => readFile(`${marker}.beat`, 'utf8').catch(() => ''), Boolean, 'group gate started')
   const stopped = Date.now()
   stop.abort()
   const result = await running
@@ -254,7 +262,7 @@ test('묶음 최종 검증 중의 stop은 검증 명령을 멈추고 실행을 i
   assert.ok(result.finishError, 'the gate did not pass')
   assert.equal(result.finish, null)
   assert.ok(Date.now() - stopped < 60000, 'the gate command did not run to its end')
-  await until(async () => alive(pid), (value) => !value, 'gate command killed')
+  assert.equal(await stillBeating(marker), false, 'the gate command (forked by the shell) kept running after stop')
   assert.equal((await readRuntime(setup.runtime)).groups['gate-stop'].lastRun.outcome, 'interrupted')
 })
 
