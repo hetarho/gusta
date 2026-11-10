@@ -276,7 +276,7 @@ test('맡김: 실패한 승인 제출물과 미응답 결정이 남으면 재시
   assert.equal(checks.filter((entry) => entry.tasks === 'T002').length, 1, 'the failed submission must not be retried')
 })
 
-test('맡김: timeout 직전 작업 공간을 스냅샷하고 진행분을 커밋한 뒤 같은 세션으로 이어 간다 (R9)', async (t) => {
+test('맡김: timeout 직전 작업 공간을 스냅샷하고 진행분을 커밋한 뒤 같은 세션으로 이어 간다 (R9); dispatch 로그는 실행 중에 쌓인다', async (t) => {
   const setup = await fixture(t)
   const directory = path.join(setup.temporary, 'providers')
   await mkdir(directory)
@@ -293,7 +293,7 @@ const flag=(key)=>args.includes(key)?args[args.indexOf(key)+1]:null;
 fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({role:job.role,taskId:job.taskId,session:flag('--session-id'),resume:flag('--resume'),note:job.directive?.note??null})+'\\n');
 let result;
 if(job.role==='worker') {
-  if(job.taskId==='T001'&&!job.directive) { fs.writeFileSync('measured.txt','round 1: 36.2%'); setInterval(()=>{},1000); return }
+  if(job.taskId==='T001'&&!job.directive) { fs.writeFileSync('measured.txt','round 1: 36.2%'); console.log(JSON.stringify({type:'system',subtype:'init',marker:'live-T001'})); setInterval(()=>{},1000); return }
   if(job.taskId==='T001'&&fs.readFileSync('measured.txt','utf8')!=='round 1: 36.2%')throw Error('measurement lost');
   const file='spec/tasks/'+fs.readdirSync('spec/tasks').find(name=>name.startsWith(job.taskId+'.'));
   const text=fs.readFileSync(file,'utf8').replace('- [ ]','- [v]');
@@ -305,7 +305,21 @@ console.log(JSON.stringify({type:'result',is_error:false,structured_output:resul
 `, { mode: 0o755 })
   const env = { ...process.env, PATH: `${directory}${path.delimiter}${process.env.PATH}`, HAERAM_NO_AWAKE: '1' }
   const group = await startWork({ ...setup, name: 'auto', verify: ['node -e "0"'] })
-  const result = await runWork({ ...setup, work: group.id, provider: 'claude', env, autopilot: true, pollMs: 20, timeoutMs: 3000 })
+  const runtime = runtimeRoot(await inspectWorkspace(setup))
+  const running = runWork({ ...setup, work: group.id, provider: 'claude', env, autopilot: true, pollMs: 20, timeoutMs: 3000 })
+  running.catch(() => {})
+  // While the hung provider still runs, its dispatch record already names a log holding its output.
+  let live = null
+  try {
+    for (let i = 0; i < 250 && !live; i++) {
+      const entry = Object.values((await readRuntime(runtime)).attempts).find((value) => value.taskId === 'T001' && value.dispatch?.status === 'running')
+      if (entry && (await readFile(entry.dispatch.log, 'utf8').catch(() => '')).includes('live-T001')) live = entry.dispatch
+      else await sleep(20)
+    }
+  } finally { await running.catch(() => {}) }
+  const result = await running
+  assert.ok(live, 'the dispatch log shows provider output before the provider exits')
+  assert.ok(!JSON.stringify((await readRuntime(runtime)).history).includes(live.log), 'local log paths stay out of history')
   assert.equal(result.outcome, 'completed', JSON.stringify(result))
   const calls = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.role === 'worker' && call.taskId === 'T001')
   assert.equal(calls.length, 2)
@@ -313,6 +327,10 @@ console.log(JSON.stringify({type:'result',is_error:false,structured_output:resul
   assert.match(calls[1].note, /time limit/)
   const board = await workBoard({ ...setup, work: group.id })
   const attempt = board.attempts.find((entry) => entry.taskId === 'T001')
+  // The board names the log; the merged unit's logs went with its prune.
+  assert.ok(result.pruned.pruned.includes(path.dirname(attempt.dispatch.log)), JSON.stringify(result.pruned))
+  await assert.rejects(readFile(attempt.dispatch.log, 'utf8'), { code: 'ENOENT' })
+  assert.equal((await readRuntime(runtime)).attempts[attempt.id].dispatch.stderr, undefined, 'the record keeps no log content')
   // The snapshot ref lived until the run pruned the integrated unit (prune-branches default);
   // the measurement it protected is on the group branch.
   assert.ok(result.pruned.pruned.includes(`refs/haeram/checkpoints/${attempt.id}`), JSON.stringify(result.pruned))

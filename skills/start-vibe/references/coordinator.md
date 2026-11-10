@@ -13,6 +13,7 @@ SKILL.md 2절의 조건일 때만 쓴다. 아래 `work ...`·`vibe ...`는 `npx 
 
 ## 2. 실행
 - `work run --work <slug> --autopilot [--provider codex|claude | --providers codex,claude] --json`을 셸 도구의 백그라운드 실행으로 띄운다(함께 모드면 `--autopilot` 없이). 실행기는 배정·같은 세션 resume·통합·검증 캐시/heavy 락·스냅샷·절전 방지를 모델 턴 없이 맡는다([runner.md](../../manage-work/references/runner.md)):
+  - 세션이 끝나도 이어 가야 하면 `--detach`로 띄운다. 확인은 `work run --work <slug> --status`, 멈춤은 `kill` 대신 `work run --work <slug> --stop`.
   - 맡김에서 결정 요청만 남으면 모델 호출 없이 결정을 기다린다(기본 15분, `--decision-wait-ms`로 변경). 대기할 attempt와 질문을 stderr·runtime 이력에 남긴다. 통합 실패 후 새로 제출·승인된 제출물은 같은 run에서 다시 통합한다. 같은 제출물의 통합 실패로 승인된 단위가 남으면 결정 대기 없이 `needs-attention`으로 끝낸다. 함께 모드는 결정 대기 없이 반환한다.
 
 ## 3. 조정자 루프

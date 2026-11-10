@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtemp, writeFile, rm, readFile, realpath } from 'node:fs/promises'
+import { writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { executeAgentAdapter, claudeResult, providerArguments } from '../src/agent-adapter.mjs'
+import { executeAgentAdapter, claudeResult, claudeEnvelope, providerArguments } from '../src/agent-adapter.mjs'
 import { builtInAdapter, inspectProviders, inspectOrca } from '../src/work-providers.mjs'
 
 async function stub(t, name, body) {
@@ -34,6 +35,35 @@ test('Claude의 structured_output을 해석하고 오류/구조 누락을 성공
   assert.throws(() => claudeResult(JSON.stringify({ is_error: true, structured_output: result }), 'reviewer'), /실행 실패/)
   assert.throws(() => claudeResult(JSON.stringify({ result: JSON.stringify(result) }), 'reviewer'), /structured_output/)
   assert.throws(() => claudeResult(JSON.stringify({ structured_output: { ...result, findings: [{ priority: 'P0' }] } }), 'reviewer'), /finding/)
+})
+
+test('Claude stream-json은 마지막 최상위 result 이벤트만 결과로 읽는다', () => {
+  const result = { verdict: 'approved', summary: 'reviewed', findings: [] }
+  const lines = (...events) => events.map((event) => JSON.stringify(event)).join('\n')
+  const init = { type: 'system', subtype: 'init', session_id: 's' }
+  // A nested object typed "result" (a tool result, a quoted event) is not the session's answer.
+  const nested = { type: 'user', message: { content: [{ type: 'result', structured_output: { verdict: 'nope' } }] } }
+  const stream = lines(init, { type: 'assistant', message: { content: [] } }, { type: 'result', subtype: 'success', is_error: false, usage: { output_tokens: 3 }, structured_output: result }, nested)
+  assert.deepEqual(claudeResult(`${stream}\n`, 'reviewer'), result)
+  assert.equal(claudeEnvelope(stream).usage.output_tokens, 3)
+  assert.throws(() => claudeResult(lines(init, { type: 'result', subtype: 'error_max_turns', is_error: true }), 'reviewer'), /실행 실패: error_max_turns/)
+  assert.throws(() => claudeResult(lines(init, nested), 'reviewer'), /result 이벤트가 없습니다/)
+  // Exit 0 without a result event: the last event is not mistaken for an envelope lacking a schema.
+  for (const ended of [lines(init, { type: 'assistant', message: { content: [] } }), JSON.stringify({ type: 'assistant', message: { content: [] } })]) assert.throws(() => claudeResult(ended, 'reviewer'), /result 이벤트가 없습니다/)
+  assert.deepEqual(claudeResult(JSON.stringify({ structured_output: result }), 'reviewer'), result)
+  const args = providerArguments('claude', 'reviewer', { schema: 'schema', result: 'result' })
+  assert.equal(flag(args, '--output-format'), 'stream-json'); assert.ok(args.includes('--verbose'))
+})
+
+test('Claude 이벤트는 프로세스가 끝나기 전에 로그로 흐르고 결과·사용량은 result 이벤트에서 읽는다', async (t) => {
+  const unit = { kind: 'task', id: 'T001', outcome: 'completed', pushed: false, next: 'implementation' }
+  // The provider answers only after the host has logged its first event, so a buffered log deadlocks (exit 3).
+  const fixture = await stub(t, 'claude', `const fs=require('node:fs');process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'system',subtype:'init',session_id:'s'}));const started=Date.now();const wait=()=>{if(fs.existsSync('release'))console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,usage:{output_tokens:5},structured_output:${JSON.stringify(unit)}}));else if(Date.now()-started>5000)process.exit(3);else setTimeout(wait,10)};wait();});`)
+  let log = ''
+  const result = await executeAgentAdapter({ provider: 'claude', job: { role: 'unit', workspace: fixture.root }, env: fixture.env,
+    log: (text) => { log += text; if (log.includes('"subtype":"init"')) writeFileSync(path.join(fixture.root, 'release'), 'go') } })
+  assert.equal(result.id, 'T001'); assert.equal(result.usage.output_tokens, 5)
+  assert.match(log, /"type":"result"/)
 })
 
 test('리뷰어는 읽기 정책으로 실행하며 모델 이름은 해석 없이 전달한다', async (t) => {

@@ -341,12 +341,38 @@ test('a stop marker terminates an active command adapter rather than starting an
   assert.ok(await readFile(r.log, 'utf8') !== undefined)
 })
 
+test('the unit log follows the adapter live, before the unit process exits', async (t) => {
+  const { root, temporary, initial } = await fixture(t)
+  const directory = path.join(temporary, 'logs'); await mkdir(directory)
+  const release = path.join(temporary, 'release')
+  // The adapter answers only after the host has the progress lines on disk; a buffered log times out (exit 3).
+  const adapter = await fakeAdapter(temporary, `process.stdout.write('progress-out\\n');process.stderr.write('progress-err\\n');const started=Date.now();
+    const wait=()=>{if(fs.existsSync(${JSON.stringify(release)}))console.log(JSON.stringify({kind:'task',id:'T001',outcome:'completed',pushed:false,next:'implementation'}));else if(Date.now()-started>5000)process.exit(3);else setTimeout(wait,10)};wait();`)
+  const running = executeVibeUnit({ adapter, tag: 't060' }, { workspace: root, role: 'unit', diffBase: initial }, directory, { stopFile: path.join(directory, 'STOP'), deadline: Date.now() + 60000, timeoutMs: 60000 })
+  let seen = ''
+  for (let i = 0; i < 250 && !(seen.includes('progress-out') && seen.includes('progress-err')); i++) {
+    const name = (await readdir(directory)).find((entry) => entry.endsWith('.log'))
+    seen = name ? await readFile(path.join(directory, name), 'utf8') : ''
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  const live = seen.includes('progress-out')
+  await writeFile(release, 'go')
+  const r = await running
+  assert.ok(live, 'adapter stdout reached the unit log while the unit ran')
+  assert.equal(r.result?.id, 'T001', r.error)
+  assert.match(await readFile(r.log, 'utf8'), /progress-out[\s\S]*"kind":"task"/)
+})
+
 test('detached host survives parent return and writes its final manifest with one shared report', async (t) => {
   const { root, temporary } = await fixture(t)
   const bin = path.join(temporary, 'bin'); await mkdir(bin)
   await writeFile(path.join(bin, 'claude'), `#!${process.execPath}\nprocess.stdin.resume();process.stdin.on('end',()=>console.log(JSON.stringify({structured_output:{ran:true,exitCode:0,denied:false,note:'fake main checkout probe'}})));`, { mode: 0o755 })
   const adapter = await fakeAdapter(temporary, "console.log(JSON.stringify({kind:'none',id:'',outcome:'no_work',pushed:false,next:'stop'}));")
-  const result = await vibeLoop({ ...opts(root), adapter, provider: undefined, detach: true, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } })
+  // The detached host delivers its own finished summary through the notification hook.
+  const hook = path.join(temporary, 'notify.cjs'), notified = path.join(temporary, 'notified.jsonl')
+  await writeFile(hook, `let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>require('node:fs').appendFileSync(process.argv[2],input));`)
+  const notifyCommand = [process.execPath, hook, notified].map((value) => `'${value.replaceAll("'", "'\\''")}'`).join(' ')
+  const result = await vibeLoop({ ...opts(root), adapter, provider: undefined, detach: true, notifyCommand, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } })
   assert.equal(result.detached, true); assert.ok(result.pid)
   t.after(() => { try { process.kill(-result.pid, 'SIGTERM') } catch {} })
   let state
@@ -362,6 +388,8 @@ test('detached host survives parent return and writes its final manifest with on
   // writes; removing the fixture under them races (ENOTEMPTY). Wait for both to exit.
   const alive = (pid) => { try { process.kill(pid, 0); return true } catch { return false } }
   for (let i = 0; i < 200 && [result.pid, state.supervisor?.pid].some((pid) => pid && alive(pid)); i++) await new Promise((resolve) => setTimeout(resolve, 50))
+  const notices = (await readFile(notified, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+  assert.deepEqual(notices.map(({ type, level, reason, units, report }) => ({ type, level, reason, units, report })), [{ type: 'finished', level: 'info', reason: 'no-progress', units: 2, report: state.report }])
 })
 
 for (const pushEachUnit of [false, true]) test(`strict concurrency runs one final gate by default; per-unit push=${pushEachUnit}`, async (t) => {

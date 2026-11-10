@@ -22,6 +22,7 @@ const requiredCoreFiles = [
   'bin/haeram-agent-adapter.mjs',
   'bin/haeram-vibe-loop.mjs',
   'bin/haeram-vibe-watch.mjs',
+  'bin/haeram-work-run.mjs',
   'src/vibe-loop.mjs',
   'src/loop-control.mjs',
   'src/loop-metadata.mjs',

@@ -15,6 +15,11 @@ npx haeram-spec-creator work run --work feature --provider codex --reviewer-prov
 
 기존 그룹은 기록된 한도를 사용하고, 한도 기록이 없는 그룹은 4/1/8을 사용한다.
 
+### 분리 실행
+터미널·채팅이 끝나도 이어 가야 하면 같은 옵션에 `--detach`를 붙인다. 분리된 호스트가 runner 기록을 잡은 뒤에만 `{runId,pid,log}`를 반환한다(호스트 출력 `logs/run-<runId>.log`). 묶음당 runner는 하나라 두 번째 시작은 거부한다.
+- `work run --work <w> --status`: 파일만 읽어 호스트 상태(`running`·`host-lost`·`heartbeat-stale`·`unknown-host`·`stopped`)·PID·로그 경로·진행 중 dispatch(ID·로그 경로)를, 끝난 뒤에는 결과 요약(전체는 `logs/run-<runId>.json`)을 준다. 로그 내용은 싣지 않는다.
+- `work run --work <w> --stop`: 호스트에 SIGTERM을 보내 Ctrl-C와 같은 종료 경로(자식 중단·기록 보존)를 탄다. 맡김은 `kill` 대신 이것만 쓴다. `host-lost`면 신호 없이 `work runner-recover`로, heartbeat가 60초 넘게 멈췄거나 다른 호스트면 거부한다(PID 재사용 방지).
+
 ### 검증 단계
 - `--task-verify`(선택): 태스크마다 호스트가 제출 커밋에 실행하는 빠른 검사(lint·타입 검사 등). 워커는 별도로 자기 태스크가 추가·수정·영향을 준 테스트만 실행한다. 전체 스위트를 여기에 넣으면 태스크마다 전체 테스트가 돌아 단계 구분의 의미가 없다.
 - `--verify`(필수): 단위(lane 또는 lane 없는 태스크)를 통합할 때마다 merge 후보에서 한 번 실행한다. 기본은 빠른 통합 검사이며 통합/e2e·전체 스위트는 넣지 않는다.
@@ -53,7 +58,7 @@ providers 목록은 슬롯에 순환 배정한다. 6개 슬롯과 `codex,claude`
 
 모델을 생략하면 해당 CLI 설정을 사용한다. 혼합 실행에서는 리뷰어 모델을 워커에서 상속하지 않고, reviewerProvider를 생략하면 목록의 첫 도구를 사용한다. `--provider`와 `--providers`는 함께 지정하지 않는다. 혼합 실행의 `--model`은 거부하며 adapter의 각 workers 항목에 지정한다. `--adapter`와 provider/model CLI 옵션도 함께 지정하지 않는다.
 
-기본 어댑터는 새 세션에 배포된 implement-task/review-task 본문과 배정 정보를 전달하고, 이어 쓰는 세션에는 새 정보(다음 태스크, correction, 조정자 메모)만 보낸다. Codex는 worker에 workspace-write, reviewer에 read-only sandbox를 지정하고 JSON schema와 최종 결과 파일을 사용한다. Claude는 worker에 acceptEdits, reviewer에 plan 권한 모드와 역할별 도구 목록을 지정하고 structured_output을 읽는다. 기존 인증·권한 정책을 사용하며 권한을 건너뛰는 옵션은 사용하지 않는다. 워커가 도는 새 worktree는 한 번도 신뢰한 적 없는 폴더라서 `claude -p`는 프로젝트 `.claude/settings.json`의 `permissions.allow`를 적용하지 않는다. 워커가 실행해야 할 명령은 `work start/configure --allow-tool 'Bash(pnpm run *)'`로 묶음에 저장하면 워커의 `--allowedTools`에 더해진다. `vibe preflight --probe '<명령>' --allow-tool ...`이 같은 조건의 새 worktree에서 실제 헤드리스 워커로 그 명령을 실행해 보고 권한 거부를 미리 알려 준다. 호스트의 `--verify` 명령은 별도로 실행된다. CLI 출력 형식이 맞지 않거나 종료 코드가 실패면 완료로 취급하지 않는다. 규약 근거: [Codex 비대화형 실행](https://developers.openai.com/codex/noninteractive/), [Claude headless 실행](https://code.claude.com/docs/en/headless).
+기본 어댑터는 새 세션에 배포된 implement-task/review-task 본문과 배정 정보를 전달하고, 이어 쓰는 세션에는 새 정보(다음 태스크, correction, 조정자 메모)만 보낸다. Codex는 worker에 workspace-write, reviewer에 read-only sandbox를 지정하고 JSON schema와 최종 결과 파일을 사용한다. Claude는 worker에 acceptEdits, reviewer에 plan 권한 모드와 역할별 도구 목록을 지정하고 `--output-format stream-json --verbose`의 마지막 result 이벤트에서 structured_output을 읽는다. 기존 인증·권한 정책을 사용하며 권한을 건너뛰는 옵션은 사용하지 않는다. 워커가 도는 새 worktree는 한 번도 신뢰한 적 없는 폴더라서 `claude -p`는 프로젝트 `.claude/settings.json`의 `permissions.allow`를 적용하지 않는다. 워커가 실행해야 할 명령은 `work start/configure --allow-tool 'Bash(pnpm run *)'`로 묶음에 저장하면 워커의 `--allowedTools`에 더해진다. `vibe preflight --probe '<명령>' --allow-tool ...`이 같은 조건의 새 worktree에서 실제 헤드리스 워커로 그 명령을 실행해 보고 권한 거부를 미리 알려 준다. 호스트의 `--verify` 명령은 별도로 실행된다. CLI 출력 형식이 맞지 않거나 종료 코드가 실패면 완료로 취급하지 않는다. 규약 근거: [Codex 비대화형 실행](https://developers.openai.com/codex/noninteractive/), [Claude headless 실행](https://code.claude.com/docs/en/headless).
 
 기본 어댑터의 워커는 코드와 자신의 태스크만 편집하고 커밋하지 않는다. 호스트가 시작 시 깨끗한 작업 공간과 HEAD를 기록하고, 종료 시 acceptance·계약·SSOT·spec 변경 범위를 검사한 뒤 커밋한다(`committing`). 이어 검증·제출한다. 예상 밖 HEAD 변경이나 계약 위반은 blocked로 남기며 변경을 되돌리지 않는다. sandbox의 공용 Git 디렉토리 쓰기 권한을 넓히지 않아도 된다.
 
@@ -101,7 +106,7 @@ stdout은 최종 JSON 객체 하나만 출력하고 진행 로그는 stderr로 �
 
 리뷰어는 review-task의 JSON 형식(`verdict`, `summary`, `findings`)을 반환한다. 코드가 바뀌면 재제출이 필요하다. 상위 브랜치가 바뀌어도 바뀐 파일이 제출물의 변경·SSOT와 겹치지 않으면 승인이 유지되고, 겹치면 재리뷰한다. 합친 결과는 통합 검증이 다시 확인한다.
 
-runner는 빈 슬롯을 채우고 수정 요청을 우선 배정하며 리뷰 대기열을 처리한다. 대기 중 모델 호출은 하지 않는다. 살아 있는 자식 프로세스의 heartbeat는 10초마다 기록하지만 에이전트의 의미 있는 진행을 보장하지는 않는다. 장시간 작업자는 board를 다시 읽고 정책 변경을 판단해야 한다.
+runner는 빈 슬롯을 채우고 수정 요청을 우선 배정하며 리뷰 대기열을 처리한다. 대기 중 모델 호출은 하지 않는다. 살아 있는 자식 프로세스의 heartbeat는 10초마다 기록하지만 에이전트의 의미 있는 진행을 보장하지는 않는다. 진행은 dispatch 로그로 본다: 어댑터 stdout/stderr가 실행 중에 `<git-common-dir>/haeram/v1/logs/<attempt>/dispatch-<id>.log`에 쌓이고, 경로는 attempt의 `dispatch.log`(`work board`·`work status` JSON)에 있다 — `tail -f`로 본다. 기록과 work 출력에는 로그 내용을 싣지 않고, 실패하면 어댑터의 마지막 일반 텍스트 stderr 줄만 `dispatch.error`에 남는다. 이력·저장 파일에는 경로도 싣지 않는다. 장시간 작업자는 board를 다시 읽고 정책 변경을 판단해야 한다.
 
 완료 시 `outcome:completed`(`--group-verify`를 지정했다면 그 검증까지 통과해야 한다, 결과는 `finish`). 더 진행할 수 없으면 `needs-attention`과 남은 작업을 반환한다(`remaining`에 태스크와 attempt ID 포함). 횟수 한도는 `dispatch-limit`, 종료 신호/heartbeat 실패는 `interrupted`. maxTaskRuns는 한 번의 run 안에서 태스크별·역할별 최대 실행 횟수이며 재실행 전에 반복 실패 원인을 확인한다. 자동 통합 실패와 재시도 횟수는 attempt가 아니라 제출물(`submissionId`, 없으면 제출 commit)별로 기억한다. 같은 제출물의 비일시적 실패는 같은 run에서 다시 시도하지 않지만, 고쳐서 재제출·재승인하면 같은 attempt도 다시 통합한다. Claude·Codex와 command 어댑터 모두에 적용된다.
 
@@ -145,4 +150,4 @@ Ctrl-C/종료 신호는 runner가 시작한 자식 프로세스만 중단하고 
 
 진행 중 검증·통합 명령이 남았다면 `work recover --attempt <id>`, 남은 리뷰 선점은 리뷰어 종료 확인 후 `work review-release --review <id>`. 작업자의 미완료 변경은 검토하고 `work update --attempt <id> --status doing`으로 명시적으로 재개한다. runtime JSON을 직접 고치거나 timeout만으로 다른 작업자의 소유권을 빼앗지 않는다.
 
-runner는 모든 자식을 멈춘 뒤 통합·해제된 단위만 정리한다(spec/SETTINGS.md `prune-branches`, 결과의 `pruned`). 합쳐지지 않은 커밋이나 미커밋 변경이 있는 공간, 막힌 단위, 묶음 브랜치는 실패 원인 조사와 최종 검토를 위해 남긴다. 설정이 false면 정리하지 않으며, 그때는 작업자 종료를 확인한 뒤 `work cleanup`으로 정리한다.
+runner는 모든 자식을 멈춘 뒤 통합·해제된 단위만 정리한다(spec/SETTINGS.md `prune-branches`, 결과의 `pruned`). 합쳐지지 않은 커밋이나 미커밋 변경이 있는 공간, 막힌 단위, 묶음 브랜치는 실패 원인 조사와 최종 검토를 위해 남긴다. dispatch 로그(`logs/<attempt>/`)는 남긴 것 없이 합쳐진 단위만 지우고, 해제·막힘·실패·진행 중이거나 무언가 보존된 단위의 로그는 남긴다(해제 단위는 정리될 때 `kept`로 한 번 보고). 설정이 false면 정리하지 않으며, 그때는 작업자 종료를 확인한 뒤 `work cleanup`으로 정리한다.

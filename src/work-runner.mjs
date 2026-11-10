@@ -1,4 +1,5 @@
-import { readFile, rm } from 'node:fs/promises'
+import { readFile, rm, mkdir, open, writeFile } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,7 +13,8 @@ import { workLimits, activeAttempt } from './work-policy.mjs'
 import { workingTree } from './check-cache.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { git } from './workspace.mjs'
-import { pruneWork } from './prune.mjs'
+import { pruneWork, dispatchLogDir } from './prune.mjs'
+import { processAlive, atomicJSON, readJSON } from './loop-control.mjs'
 
 const { repository, groupOf, attemptOf, now, fail, requireStopped, commands, tierChecks, briefFor } = workInternals
 // A session carries its context into the next lane task, correction or answered decision,
@@ -81,6 +83,7 @@ export async function runWork(options) {
   const decisionWaitMs = positive(options.decisionWaitMs, (autopilot ? 15 : 120) * 60 * 1000, 'decision-wait-ms')
   const checkpointMs = positive(options.checkpointMs, 30 * 60 * 1000, 'checkpoint-ms')
   const pollMs = positive(options.pollMs, 5000, 'poll-ms')
+  const heartbeatMs = positive(options.heartbeatMs, 10000, 'heartbeat-ms')
   const context = await repository(options)
   const stored = groupOf(await readRuntime(context.root), options.work)
   const verify = tierChecks(options, stored, 'unit')
@@ -92,10 +95,10 @@ export async function runWork(options) {
   }
   const run = { adapter: config.kind, providers: config.roles ? Object.fromEntries(Object.entries(config.roles).map(([role, entry]) => [role, { provider: entry.provider, model: entry.model, version: entry.version }])) : null,
     workers: config.workers?.map((entry) => ({ provider: entry.provider, model: entry.model, version: entry.version })) ?? null,
-    id: randomUUID(), pid: process.pid, host: os.hostname(), startedAt: now(), autopilot, decisionWaitMs }
+    id: options.runId ?? randomUUID(), pid: process.pid, host: os.hostname(), startedAt: now(), autopilot, decisionWaitMs, ...(options.hostLog ? { log: options.hostLog } : {}) }
   const group = await transaction(context.root, (state) => {
     const group = groupOf(state, options.work)
-    if (group.runner) fail('작업 묶음에 runner가 이미 있습니다. 종료 후 runner-recover로 확인하세요.', [JSON.stringify(group.runner)])
+    if (group.runner) runnerExists(group.runner)
     group.runner = run
     return structuredClone(group)
   })
@@ -171,10 +174,15 @@ export async function runWork(options) {
   const stop = () => { interrupted = true; stopping = true; abort.abort(); for (const job of jobs.values()) kill(job) }
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
-  let heartbeat = Promise.resolve()
+  // A detached host forwards its signals here; one that arrived before registration stops at once.
+  options.stopSignal?.addEventListener('abort', stop)
+  if (options.stopSignal?.aborted) stop()
+  // The heartbeat lasts as long as the runner record: through the group gate and prune, until the
+  // record becomes lastRun (recorded), so a long final gate never reads as a stale host.
+  let heartbeat = Promise.resolve(), recorded = false
   const timer = setInterval(() => {
     heartbeat = heartbeat.then(() => transaction(context.root, (state) => {
-      if (state.groups[group.id]?.runner?.id !== run.id) fail('runner ownership changed')
+      if (state.groups[group.id]?.runner?.id !== run.id) { if (recorded) return; fail('runner ownership changed') }
       state.groups[group.id].runner.heartbeatAt = now()
       for (const job of jobs.values()) {
         const entry = state.attempts[job.attempt]
@@ -188,7 +196,7 @@ export async function runWork(options) {
       job.checkpointAt = Date.now()
       checkpoints = checkpoints.then(() => checkpointWorkspace(job)).catch(() => {})
     }
-  }, 10000)
+  }, heartbeatMs)
   timer.unref()
 
   const orphaned = (entry) => /^[0-9a-f-]{36}\/worker-\d+$/.test(entry.owner ?? '') && !entry.owner.startsWith(`${run.id}/`) &&
@@ -230,6 +238,10 @@ export async function runWork(options) {
       return
     }
     const id = randomUUID()
+    // One log per dispatch, written as the adapter streams: a person follows it with tail -f.
+    // It lives under its unit, so pruning the merged unit removes it (prune-branches).
+    const log = path.join(dispatchLogDir(context.root, attempt.id), `dispatch-${id}.log`)
+    await mkdir(path.dirname(log), { recursive: true })
     const adapter = role === 'worker' && config.workers?.length ? config.workers[(slot - 1) % config.workers.length] : config.roles?.[role] ?? config
     const provider = adapter.provider ?? 'custom'
     const resume = role === 'worker' && current.session?.provider === provider && (current.resumes ?? 0) < MAX_RESUMES ? current.session.id : null
@@ -238,7 +250,7 @@ export async function runWork(options) {
       sessionFile: role === 'worker' ? path.join(os.tmpdir(), `haeram-session-${id}`) : null }
     await transaction(context.root, (state) => {
       const entry = attemptOf(state, attempt.id)
-      entry.dispatch = { id, runner: run.id, role, slot, provider, model: adapter.model ?? null, status: 'starting', pid: null, host: os.hostname(), startedAt: now() }
+      entry.dispatch = { id, runner: run.id, role, slot, provider, model: adapter.model ?? null, status: 'starting', pid: null, host: os.hostname(), startedAt: now(), log }
       if (role === 'worker') {
         entry.resumes = resume ? (entry.resumes ?? 0) + 1 : 0
         delete entry.directive
@@ -261,22 +273,33 @@ export async function runWork(options) {
         ? 'Use implement-task. Implement only taskId (or fix review findings) in this workspace, run the checks this task adds or affects, check acceptance, fill result, and commit. Full suites run at unit integration. Return JSON {"outcome":"completed","summary":"..."}. The runner owns submit and dispatches the next lane task to this workspace; do not submit, integrate, or claim another task. For a blocker return {"outcome":"blocked","summary":"reason"}; when only a planning decision blocks you, add "decision":{"question":"...","options":["..."],"recommendation":"..."} and commit your partial work.'
         : 'Use review-task. Review the pinned commit against baseCommit, every task in tasks, and SSOT. Do not edit or commit. Return JSON {"verdict":"approved|changes_requested","summary":"...","findings":[{"priority":"P1|P2|P3","where":"file:line","message":"..."}]}. The runner owns review-finish.' }
     if (config.kind === 'builtin' && role === 'worker') payload.instruction = 'Use implement-task to edit and verify only taskId, running the checks this task adds or affects; full suites run at unit integration. Do not commit or submit; the host runner validates scope, commits, submits and dispatches the next lane task. Return JSON with outcome completed|blocked, summary and decision (empty unless a planning decision blocks you).'
+    const file = createWriteStream(log, { flags: 'a', mode: 0o600 })
+    // A log write failure must not end the dispatch. The record never holds log content (it reaches
+    // coordinator output): only the adapter's last plain stderr line, as the failure reason.
+    file.on('error', () => {})
     const child = spawn(adapter.command, adapter.args, { cwd: job.workspace, shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], env: { ...(options.env ?? process.env), HAERAM_ROLE: role, HAERAM_ATTEMPT: attempt.id, HAERAM_DISPATCH: id } })
     job.child = child
-    let output = '', stderr = '', overflow = false
+    let output = '', overflow = false, pending = '', reason = null
+    // Provider events arrive as JSON lines; the adapter's own message (its error) is plain text.
+    const scan = (text) => {
+      const lines = (pending + text).split('\n')
+      pending = lines.pop().slice(0, 4096)
+      for (const line of lines) { const value = line.trim(); if (value && !/^[{[]/.test(value)) reason = value.slice(0, 300) }
+    }
     job.promise = new Promise((resolve) => {
       let completed = false
-      const finish = (error) => { if (completed) return; completed = true; clearTimeout(timeout); job.settled = true; job.error = error; job.output = output; job.stderr = stderr; resolve(job) }
+      const finish = (error) => { if (completed) return; completed = true; clearTimeout(timeout); file.end(); job.settled = true; job.error = error; job.output = output; resolve(job) }
       const timeout = setTimeout(() => {
         job.timedOut = true
         // Snapshot first: the files an experiment wrote so far survive the kill.
         const saved = role === 'worker' ? checkpointWorkspace(job).catch(() => null) : Promise.resolve()
         saved.finally(() => { kill(job); setTimeout(() => { if (job.settled) return; try { if (process.platform === 'win32') child.kill('SIGKILL'); else process.kill(-child.pid, 'SIGKILL') } catch {} }, 2000).unref() })
       }, config.timeoutMs)
-      child.stdout.on('data', (data) => { output += data; if (output.length > 1024 * 1024) { overflow = true; output = output.slice(0, 1024 * 1024); kill(job) } })
-      child.stderr.on('data', (data) => { stderr = (stderr + data).slice(-16000) })
+      child.stdout.on('data', (data) => { file.write(data); output += data; if (output.length > 1024 * 1024) { overflow = true; output = output.slice(0, 1024 * 1024); kill(job) } })
+      child.stderr.setEncoding('utf8')
+      child.stderr.on('data', (data) => { file.write(data); scan(data) })
       child.on('error', (error) => finish(error.message))
-      child.on('close', (code, signal) => finish(job.timedOut ? 'adapter timeout' : overflow ? 'adapter output exceeded 1 MiB' : code === 0 ? null : `adapter exited ${code ?? signal}`))
+      child.on('close', (code, signal) => { scan('\n'); finish(job.timedOut ? 'adapter timeout' : overflow ? 'adapter output exceeded 1 MiB' : code === 0 ? null : `adapter exited ${code ?? signal}${reason ? `: ${reason}` : ''}`) })
       child.stdin.on('error', () => {})
       child.stdin.end(`${JSON.stringify(payload)}\n`)
     })
@@ -308,7 +331,7 @@ export async function runWork(options) {
       if (session) await transaction(context.root, (state) => { attemptOf(state, job.attempt).session = { id: session, provider: job.provider } })
     }
     try {
-      if (job.error) fail(job.error, [job.stderr])
+      if (job.error) fail(job.error)
       const result = JSON.parse(job.output)
       job.summary = result.summary ?? null
       if (job.role === 'reviewer') await finishReview({ ...options, review: job.review.id, result })
@@ -347,7 +370,7 @@ export async function runWork(options) {
     } finally {
       await transaction(context.root, (state) => {
         const entry = attemptOf(state, job.attempt)
-        if (entry.dispatch?.id === job.id) Object.assign(entry.dispatch, { status: 'finished', finishedAt: now(), error: job.resultError ?? job.error ?? null, summary: job.summary ?? null, stderr: job.stderr })
+        if (entry.dispatch?.id === job.id) Object.assign(entry.dispatch, { status: 'finished', finishedAt: now(), error: job.resultError ?? job.error ?? null, summary: job.summary ?? null })
       })
       jobs.delete(job.id)
     }
@@ -433,8 +456,6 @@ export async function runWork(options) {
     }
   } finally {
     for (const job of jobs.values()) kill(job)
-    clearInterval(timer)
-    await heartbeat
     await checkpoints
     if (awake?.pid) try { process.kill(awake.pid) } catch {}
     // Terminate only children created by this runner. Claims and files remain inspectable.
@@ -442,7 +463,7 @@ export async function runWork(options) {
     await Promise.all([...jobs.values()].map((job) => job.promise))
     clearTimeout(forced)
     for (const job of [...jobs.values()]) { job.error ??= 'runner stopped before accepting result'; await settle(job) }
-    process.off('SIGINT', stop); process.off('SIGTERM', stop)
+    // A stop still reaches the group gate (abort kills its command) and ends the run interrupted.
     let finalBoard = await workBoard(options).catch(() => null)
     if (groupVerify.length && !interrupted && !heartbeatError && finalBoard && !finalBoard.tasks.some((task) => !task.st?.startsWith('blocked@') && !task.mainSession) &&
         !finalBoard.attempts.some(activeAttempt)) {
@@ -456,10 +477,17 @@ export async function runWork(options) {
     // This runs while the runner record still holds the group, so no session reads a unit mid-cleanup
     // as live work. The group itself stays for the coordinator; vibe prune closes it at session end.
     try { pruned = await pruneWork({ ...options, work: group.id }) } catch (error) { pruneError = error.message }
-    await transaction(context.root, (state) => {
-      const current = groupOf(state, group.id)
-      if (current.runner?.id === run.id) { current.lastRun = { ...run, stoppedAt: now(), dispatched, failures, outcome: finalBoard ? outcomeFor(finalBoard) : 'needs-attention' }; delete current.runner }
-    })
+    recorded = true
+    try {
+      await transaction(context.root, (state) => {
+        const current = groupOf(state, group.id)
+        if (current.runner?.id === run.id) { current.lastRun = { ...run, stoppedAt: now(), dispatched, failures, outcome: finalBoard ? outcomeFor(finalBoard) : 'needs-attention' }; delete current.runner }
+      })
+    } finally {
+      clearInterval(timer)
+      await heartbeat
+      process.off('SIGINT', stop); process.off('SIGTERM', stop); options.stopSignal?.removeEventListener('abort', stop)
+    }
     try { snapshot = await syncWork(options) } catch (error) { snapshotError = error.message; failures.push({ role: 'snapshot', error: error.message, details: error.details ?? [] }) }
   }
   const board = await workBoard(options)
@@ -469,4 +497,116 @@ export async function runWork(options) {
     outcome: outcomeFor(board),
     remaining: board.tasks.map(({ id, waitingOn, runtimeStatus, attempt }) => ({ id, waitingOn, runtimeStatus, attempt: attempt?.id ?? null })),
     attempts: attempts.map(({ id, taskId, status, reason }) => ({ id, taskId, status, reason })) }
+}
+
+// work run --detach/--status/--stop. The host is an ordinary runWork in its own session: the group's
+// runner record is its lock and ownership acknowledgement, and status reads files only.
+const HOST = fileURLToPath(new URL('../bin/haeram-work-run.mjs', import.meta.url))
+const STALE_MS = 60000
+export const runFiles = (root, runId) => ({ log: path.join(root, 'logs', `run-${runId}.log`), result: path.join(root, 'logs', `run-${runId}.json`) })
+const runnerHealth = (runner, alive, at) => runner.host !== os.hostname() ? 'unknown-host' : !alive(runner.pid) ? 'host-lost'
+  : at - Date.parse(runner.heartbeatAt ?? runner.startedAt) > STALE_MS ? 'heartbeat-stale' : 'running'
+const brief = (text) => String(text).slice(0, 300)
+const outcomeOf = (result) => result.ok === false ? { ok: false, error: brief(result.error) } : { outcome: result.outcome, dispatched: result.dispatched, summary: result.summary,
+  decisions: result.decisions ?? [], failures: result.failures?.length ?? 0, remaining: result.remaining?.length ?? 0,
+  errors: Object.fromEntries(['heartbeatError', 'finishError', 'pruneError', 'snapshotError'].filter((key) => result[key]).map((key) => [key, brief(result[key])])) }
+const runnerExists = (runner) => fail('작업 묶음에 runner가 이미 있습니다. 종료 후 runner-recover로 확인하세요.', [JSON.stringify(runner)])
+
+export async function workRunStatus(options, deps = {}) {
+  const alive = deps.alive ?? processAlive
+  const context = await repository(options)
+  const state = await readRuntime(context.root)
+  const group = Object.hasOwn(state.groups, options.work ?? '') ? state.groups[options.work] : null
+  if (!group) fail(`작업 묶음을 찾을 수 없습니다: ${options.work ?? '(미지정)'}`)
+  const runner = group.runner
+  if (runner) {
+    const health = runnerHealth(runner, alive, (deps.now ?? Date.now)())
+    const dispatches = Object.values(state.attempts).filter((entry) => entry.dispatch?.runner === runner.id && ['starting', 'running'].includes(entry.dispatch.status))
+      .map(({ id, taskId, dispatch }) => ({ id: dispatch.id, attempt: id, taskId, role: dispatch.role, status: dispatch.status, log: dispatch.log ?? null }))
+    return { schemaVersion: 1, work: group.id, state: health, running: health === 'running', runId: runner.id, pid: runner.pid, host: runner.host, log: runner.log ?? null,
+      startedAt: runner.startedAt, heartbeatAt: runner.heartbeatAt ?? null, ...(runner.decisionWait ? { decisionWait: runner.decisionWait } : {}), dispatches,
+      ...(health === 'host-lost' ? { next: `work runner-recover --work ${group.id}` } : {}) }
+  }
+  const last = group.lastRun
+  if (!last) return { schemaVersion: 1, work: group.id, state: 'none', running: false, dispatches: [] }
+  const file = runFiles(context.root, last.id).result
+  const result = await readJSON(file).catch(() => null)
+  return { schemaVersion: 1, work: group.id, state: 'stopped', running: false, runId: last.id, log: last.log ?? null, startedAt: last.startedAt, stoppedAt: last.stoppedAt ?? null,
+    outcome: last.outcome, dispatches: [], result: result ? { ...outcomeOf(result), file } : null }
+}
+
+// Unattended sessions must not run kill themselves: the CLI sends the signal the runner already
+// handles (children stopped, attempts recorded). A stale record is never signalled.
+export async function stopWorkRun(options, deps = {}) {
+  const status = await workRunStatus(options, deps)
+  if (['none', 'stopped'].includes(status.state)) fail('실행 중인 runner가 없습니다.', [status.state])
+  if (status.state === 'host-lost') fail('runner 호스트가 이미 종료돼 기록만 남았습니다. work runner-recover로 정리하세요.', [String(status.pid)])
+  if (status.state !== 'running') fail(`runner가 ${status.state} 상태라 신호를 보내지 않습니다(다른 호스트이거나 PID 재사용일 수 있음). 사람이 확인하세요.`, [String(status.pid)])
+  ;(deps.kill ?? process.kill)(status.pid, 'SIGTERM')
+  return { schemaVersion: 1, ok: true, work: status.work, runId: status.runId, pid: status.pid, signal: 'SIGTERM', stopping: true, log: status.log }
+}
+
+export async function detachWork(options, deps = {}) {
+  const readyMs = positive(options.readyTimeoutMs, 30000, 'ready-timeout-ms')
+  const context = await repository(options)
+  const live = groupOf(await readRuntime(context.root), options.work)
+  if (live.runner) runnerExists(live.runner)
+  const runId = randomUUID(), files = runFiles(context.root, runId)
+  await mkdir(path.dirname(files.log), { recursive: true })
+  const { detach, env, readyTimeoutMs, ...rest } = options
+  const config = path.join(path.dirname(files.log), `run-${runId}.config.json`)
+  await writeFile(config, JSON.stringify({ result: files.result, options: { ...rest, targetRoot: path.resolve(options.targetRoot ?? process.cwd()),
+    ...(options.adapter ? { adapter: path.resolve(options.adapter) } : {}), runId, hostLog: files.log } }), { mode: 0o600 })
+  const log = await open(files.log, 'a', 0o600)
+  try {
+    let child
+    try {
+      child = (deps.spawn ?? spawn)(process.execPath, [HOST, config], { cwd: context.cwd, detached: true, stdio: ['ignore', log.fd, log.fd], env: env ?? process.env })
+      await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
+    } catch (error) { await rm(config, { force: true }); throw error }
+    let exited = false
+    child.once('exit', () => { exited = true })
+    child.unref()
+    const until = Date.now() + readyMs
+    while (Date.now() < until) {
+      // Read the exit first: a host that exited before this read left every record it will write.
+      const gone = exited
+      const group = (await readRuntime(context.root)).groups[options.work]
+      // Acknowledged once the host owns the runner record (or already finished with it).
+      if (group?.runner?.id === runId || group?.lastRun?.id === runId) return { schemaVersion: 1, ok: true, detached: true, work: options.work, runId, pid: child.pid, log: files.log, running: group.runner?.id === runId }
+      if (gone) {
+        const ended = await readJSON(files.result).catch(() => null)
+        fail(ended?.error ?? 'work run 호스트가 runner를 등록하기 전에 종료했습니다.', [files.log, ...(ended?.details ?? [])])
+      }
+      await sleep(50)
+    }
+    fail('work run 호스트의 준비 확인이 시간 안에 오지 않았습니다. 다시 시작하기 전에 work run --status로 확인하세요.', [files.log])
+  } finally { await log.close() }
+}
+
+// bin/haeram-work-run.mjs: signals never end the host abruptly. The first starts the runner's
+// graceful stop; later ones are absorbed while it stops children and records state.
+export async function workRunHost(file, deps = {}) {
+  const { options, result: resultFile } = JSON.parse(await readFile(file, 'utf8'))
+  await rm(file, { force: true })
+  const stopping = new AbortController()
+  const request = () => stopping.abort()
+  process.on('SIGTERM', request); process.on('SIGINT', request)
+  try {
+    let result
+    try { result = await (deps.runWork ?? runWork)({ ...options, stopSignal: stopping.signal }) }
+    catch (error) { result = { schemaVersion: 1, ok: false, error: error.message, details: error.details ?? [] } }
+    await atomicJSON(resultFile, { ...result, runId: options.runId, work: options.work, endedAt: now() })
+    process.stderr.write(`[work run] ${result.outcome ?? 'error'}: ${resultFile}\n`)
+    return result
+  } finally { process.off('SIGTERM', request); process.off('SIGINT', request) }
+}
+
+export async function workRun(options) {
+  const modes = ['status', 'stop', 'detach', 'dryRun'].filter((key) => options[key])
+  if (modes.length > 1) fail(`${modes.map((key) => key === 'dryRun' ? '--dry-run' : `--${key}`).join('·')}는 함께 지정할 수 없습니다.`)
+  if (options.status) return workRunStatus(options)
+  if (options.stop) return stopWorkRun(options)
+  if (options.detach) return detachWork(options)
+  return runWork(options)
 }

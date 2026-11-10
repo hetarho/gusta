@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import path from 'node:path'
 import { SkillPackageError } from './errors.mjs'
+import { sections, tableRows, INBOX_LINE } from './spec-format.mjs'
 
 export const processAlive = (pid) => {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false
@@ -75,15 +76,64 @@ export async function releaseLoop(lock, runId) {
   await controlTransaction(lock, async () => { if ((await readJSON(lock))?.runId === runId) await rm(lock, { force: true }) })
 }
 
-export async function loopEvent(directory, state, type, detail = {}) {
-  const event = { schemaVersion: 1, id: randomUUID(), runId: state.runId, tag: state.tag, at: new Date().toISOString(), type, ...detail }
+// Events that reach the owner, by level: failure (something broke) · attention (a judgment waits) ·
+// info (the run ended, nothing waits). `finished` carries its own level. No per-unit or heartbeat notice.
+export const NOTIFY_LEVELS = { failed: 'failure', 'host-lost': 'failure', 'heartbeat-stale': 'failure', 'metadata-error': 'failure', 'supervisor-error': 'failure', 'needs-judgment': 'attention', finished: 'info' }
+export const NOTIFY_CAP = 10
+
+// What a unit left for the owner to judge, from STATE before/after: inbox decided/parked lines it
+// added, open decisions ([?] count per SSOT row) it added, and a task it reported parked without an
+// inbox line. With before='' it is everything awaiting judgment now.
+export function judgmentItems(before = '', after = '', result = null) {
+  const inbox = (text) => (sections(text).get('inbox') ?? []).map((line) => line.trim().match(INBOX_LINE)).filter((entry) => entry && entry[2] !== 'suggest')
+  const seen = new Set(inbox(before).map(([line]) => line))
+  const items = inbox(after).filter(([line]) => !seen.has(line))
+    .map(([, , kind, refs, text]) => ({ kind, refs: refs.split(/\s+/), text: text.length > 80 ? `${text.slice(0, 79)}…` : text }))
+  const open = (text) => new Map(tableRows(sections(text).get('ssot')).map(([id, , , , count]) => [id, Number(count) || 0]))
+  const was = open(before)
+  for (const [id, count] of open(after)) if (count > (was.get(id) ?? 0)) items.push({ kind: 'open', refs: [id], count: count - (was.get(id) ?? 0) })
+  const id = result?.outcome === 'parked' && result.id && result.id !== '-' ? result.id : null
+  if (id && !items.some((item) => item.kind === 'parked' && item.refs.includes(id))) items.push({ kind: 'parked', refs: [id] })
+  return items
+}
+const capped = (items) => ({ count: items.length, items: items.slice(0, NOTIFY_CAP), more: Math.max(0, items.length - NOTIFY_CAP) })
+
+// The one end-of-run notice: outcome, what waits for the owner, and whether the work went out.
+// state: the closing manifest (status, reason, error, units, publication) with report=null when absent.
+export function finishedSummary(state, stateText = '') {
+  const waiting = judgmentItems('', stateText), status = state.status ?? 'failed', last = state.publication
+  const push = last?.pushed ? { pushed: true, commit: last.pushed, target: last.target ?? null }
+    : { pushed: false, reason: last?.reason ?? (last?.landed ? 'local' : status === 'stopped' ? 'not-attempted' : status), ...(last?.landed ? { landed: last.landed, target: last.target ?? null } : {}) }
+  return { level: status === 'failed' ? 'failure' : waiting.length ? 'attention' : 'info', status, reason: state.reason ?? null, ...(state.error ? { error: state.error } : {}),
+    units: state.units ?? 0, judgment: capped(waiting), parked: waiting.filter((item) => item.kind === 'parked').length, push, report: state.report ?? null }
+}
+export const judgmentNotice = (unit, task, items) => ({ unit, task: task ?? null, ...capped(items) })
+
+// At most one finished notice per run: the host on its way out, or the supervisor for a lost host.
+// A write that fails before the outbox record exists releases the claim, so a later close can retry;
+// once the record exists the hook may have run, and the claim stays.
+export async function finishedEvent(directory, state, detail) {
+  const claim = path.join(directory, `finished-${state.runId}.claim`), id = randomUUID()
+  try { await (await open(claim, 'wx', 0o600)).close() }
+  catch (error) { if (error.code === 'EEXIST') return null; throw error }
+  try { return await loopEvent(directory, state, 'finished', detail, { id }) }
+  catch (error) {
+    if (await readJSON(path.join(directory, 'notifications', `${id}.json`)).catch(() => null) === null) await rm(claim, { force: true })
+    throw error
+  }
+}
+
+export async function loopEvent(directory, state, type, detail = {}, { id = randomUUID() } = {}) {
+  const level = NOTIFY_LEVELS[type]
+  const event = { schemaVersion: 1, id, runId: state.runId, tag: state.tag, at: new Date().toISOString(), type, ...(level ? { level } : {}), ...detail }
   await appendFile(path.join(directory, 'events.jsonl'), `${JSON.stringify(event)}\n`, { mode: 0o600 })
   // This local, durable outbox is the notification transport. No external delivery is claimed.
-  if (['failed', 'host-lost', 'heartbeat-stale', 'metadata-error', 'supervisor-error'].includes(type)) {
+  if (level) {
     const receiptPath = path.join(directory, 'notifications', `${event.id}.json`)
     let receipt = { ...event, transport: state.notifyCommand ? 'command' : 'local-file', delivery: 'pending', deliveredToHook: false, externalDelivered: false }
     await atomicJSON(receiptPath, receipt)
-    process.stderr.write(`vibe loop ${state.tag}: ${type}: ${detail.error ?? detail.reason ?? ''} (${directory})\n`)
+    const summary = type === 'needs-judgment' ? `${detail.count} item(s)` : type === 'finished' ? `${detail.status} (${detail.reason})` : detail.error ?? detail.reason ?? ''
+    process.stderr.write(`vibe loop ${state.tag}: ${type}: ${summary} (${directory})\n`)
     if (state.notifyCommand) {
       const log = await open(path.join(directory, 'notification.log'), 'a', 0o600)
       try {
@@ -180,7 +230,13 @@ export async function watchLoop(directory, runId, { intervalMs = 1000 } = {}) {
         await atomicJSON(path.join(directory, 'loop.json'), stopped)
         return stopped
       }))
-      if (stopped) await loopEvent(directory, stopped, 'host-lost', { error: stopped.error })
+      if (stopped) {
+        await loopEvent(directory, stopped, 'host-lost', { error: stopped.error })
+        // The lost host cannot close its run: the supervisor sends the one finished notice.
+        const read = (file) => stopped.cwd && file ? readFile(path.join(stopped.cwd, file), 'utf8').catch(() => null) : null
+        const report = await read(stopped.report) === null ? null : stopped.report
+        await finishedEvent(directory, stopped, finishedSummary({ ...stopped, report }, await read('spec/STATE.md') ?? ''))
+      }
       return
     }
     if (!warned && Date.now() - Date.parse(state.heartbeatAt) > 60000) { warned = true; await loopEvent(directory, state, 'heartbeat-stale') }

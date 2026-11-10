@@ -1,7 +1,7 @@
 import { inspectWork, startWork, configureWork, claimWork, claimNextWork, updateWork, releaseWork, submitWork, integrateWork, finishWork, cleanupWork, recoverWork, workBoard, workHistory, syncWork, unlockWork, workBrief } from './work-groups.mjs'
 import { finishReview, releaseReview, updateReview, resumeWork } from './work-review.mjs'
 import { nextWork, claimReviewWaiting } from './work-wait.mjs'
-import { runWork, recoverRunner } from './work-runner.mjs'
+import { workRun, recoverRunner } from './work-runner.mjs'
 import { workDoctor } from './work-providers.mjs'
 import { workScout } from './work-scout.mjs'
 import { SkillPackageError } from './errors.mjs'
@@ -24,7 +24,9 @@ const HELP = `작업 묶음 (Orca 등 외부 도구 없이도 사용 가능)
     [--task-verify <command>] [--group-verify <command>]
     [--reviewer-provider codex|claude] [--model <id>] [--reviewer-model <id>] [--dry-run]
     [--timeout-ms <ms>] [--max-dispatches <n>] [--max-task-runs <n>]
-    [--autopilot] [--decision-wait-ms <ms>] [--checkpoint-ms <ms>]
+    [--autopilot] [--decision-wait-ms <ms>] [--checkpoint-ms <ms>] [--detach]
+  work run --work <name> (--status | --stop)   --detach는 분리된 호스트로 시작해 {runId,pid,log}만 반환. --status는 파일만 읽어
+                                    호스트 생존·dispatch 로그 경로·종료 결과 요약을, --stop은 호스트에 정상 종료 신호(SIGTERM)를 보낸다
   work runner-recover --work <name>
   work scout --prompt-file <file> [--provider auto|codex|claude] [--model <id>] [--timeout-ms 900000]
                                     읽기 전용 헤드리스 탐색 세션 1개 — 제안 JSON만 반환(오케스트레이터는 코드를 직접 읽지 않는다)
@@ -60,6 +62,10 @@ next/review-claim --wait: 배정이 생길 때까지 모델 호출 없이 기다
 release/recover: 기존 작업자·명령이 종료됐음을 확인한 뒤 실행하세요. TTL 자동 회수는 없습니다.
 `
 
+// No output carries log content: a dispatch names its log file. Records written before the runner
+// stopped keeping an adapter stderr tail still hold one, so it is dropped here for every action.
+const withoutLogs = (key, value) => key === 'dispatch' && value && typeof value === 'object' && Object.hasOwn(value, 'stderr') ? (({ stderr, ...rest }) => rest)(value) : value
+
 const POLICY = ['push', 'remote', 'review', 'review-path', 'review-lines', 'allow-tool']
 const LISTS = ['verify', 'task-verify', 'group-verify', 'review-path', 'allow-tool']
 const allowed = {
@@ -76,7 +82,7 @@ const allowed = {
   cleanup: ['attempt'], recover: ['attempt', 'work'], unlock: ['lock-id'],
 }
 const actions = { doctor: workDoctor, configure: configureWork, 'claim-next': claimNextWork, next: nextWork, resume: resumeWork, 'review-claim': claimReviewWaiting, 'review-finish': finishReview,
-  'review-update': updateReview, 'review-release': releaseReview, run: runWork, 'runner-recover': recoverRunner, scout: workScout, start: startWork, claim: claimWork, status: inspectWork, board: workBoard,
+  'review-update': updateReview, 'review-release': releaseReview, run: workRun, 'runner-recover': recoverRunner, scout: workScout, start: startWork, claim: claimWork, status: inspectWork, board: workBoard,
   history: workHistory, sync: syncWork, brief: workBrief, update: updateWork, submit: submitWork, integrate: integrateWork, finish: finishWork, release: releaseWork,
   cleanup: cleanupWork, recover: recoverWork, unlock: unlockWork }
 
@@ -92,6 +98,7 @@ async function dispatch(args) {
   while (args.length) {
     const argument = args.shift()
     if (argument === '--dry-run' && action === 'run') { options.dryRun = true; continue }
+    if (['--detach', '--status', '--stop'].includes(argument) && action === 'run') { options[argument.slice(2)] = true; continue }
     if (argument === '--start' && action === 'next') { options.start = true; continue }
     if (argument === '--coordinator' && action === 'next') { options.coordinator = true; continue }
     if (argument === '--autopilot' && ['next', 'run'].includes(action)) { options.autopilot = true; continue }
@@ -107,7 +114,7 @@ async function dispatch(args) {
     else options[field] = value
   }
   const result = await actions[action](options)
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify(result, withoutLogs, 2)}\n`)
   if (result.ok === false) process.exitCode = 1
 }
 

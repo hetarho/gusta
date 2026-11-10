@@ -1,19 +1,26 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, writeFile, readdir, realpath, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, readdir, realpath, mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { fixture, git, execute } from './helpers/vibe-fixture.mjs'
 import { vibeLoop } from '../src/vibe-loop.mjs'
-import { atomicJSON, readJSON, watchLoop, acquireLoop, releaseLoop, loopEvent } from '../src/loop-control.mjs'
-import { activeRows } from '../src/state-doc.mjs'
+import { atomicJSON, readJSON, watchLoop, acquireLoop, releaseLoop, loopEvent, judgmentItems, finishedSummary, finishedEvent } from '../src/loop-control.mjs'
+import { activeRows, appendInbox } from '../src/state-doc.mjs'
 import { vibePush } from '../src/vibe.mjs'
 
 const options = (root) => ({ targetRoot: root, tag: 'ctrl01', provider: 'codex', maxUnits: 3 })
 const passed = async () => ({ ok: true, checks: [] })
 const receipt = { exitCode: 0, result: { kind: 'task', id: 'T001', outcome: 'completed', pushed: false, next: 'implementation' } }
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`
+// A real notification hook: appends each stdin payload as one JSONL line.
+async function hook(temporary) {
+  const handler = path.join(temporary, 'notify-append.cjs'), received = path.join(temporary, 'notified.jsonl')
+  await writeFile(handler, `let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>require('node:fs').appendFileSync(process.argv[2],input.trim()+'\\n'));`)
+  return { command: [process.execPath, handler, received].map(shellQuote).join(' '), received: async () => (await readFile(received, 'utf8').catch(() => '')).split('\n').filter(Boolean).map((line) => JSON.parse(line)) }
+}
 async function code(root, n = 1) {
   await writeFile(path.join(root, 'app.js'), `// unit ${n}\n`)
   await git(root, 'add', 'app.js')
@@ -225,9 +232,9 @@ test('configuration and metadata retries preserve elapsed time and unit limits',
 
 test('independent supervisor observes an actually killed isolated host and emits durable failure; it never restarts a worker', async (t) => {
   const { root, temporary } = await fixture(t)
-  const helper = path.join(temporary, 'host.mjs')
+  const helper = path.join(temporary, 'host.mjs'), notify = await hook(temporary)
   const module = new URL('../src/vibe-loop.mjs', import.meta.url).href
-  await writeFile(helper, `import {vibeLoop} from ${JSON.stringify(module)}; await vibeLoop(${JSON.stringify(options(root))}, {preflight:async()=>({ok:true,checks:[]}), execute:async()=>new Promise(()=>{})});`)
+  await writeFile(helper, `import {vibeLoop} from ${JSON.stringify(module)}; await vibeLoop(${JSON.stringify({ ...options(root), notifyCommand: notify.command })}, {preflight:async()=>({ok:true,checks:[]}), execute:async()=>new Promise(()=>{})});`)
   const child = spawn(process.execPath, [helper], { stdio: 'ignore' })
   t.after(() => { try { child.kill('SIGKILL') } catch {} })
   const directory = path.join(root, '.git/haeram/v1/loops/ctrl01'), manifest = path.join(directory, 'loop.json')
@@ -241,15 +248,20 @@ test('independent supervisor observes an actually killed isolated host and emits
   assert.equal(state.running, false); assert.equal(state.reason, 'host-lost'); assert.equal(state.units, 0)
   assert.equal((await readJSON(requested.receipt)).status, 'cancelled')
   // The supervisor stops the manifest first and appends the event right after; under load that gap is visible.
-  let events = '', notified = []
-  for (let n = 0; n < 120; n++) {
+  let events = '', notices = []
+  for (let n = 0; n < 400; n++) {
     events = await readFile(path.join(directory, 'events.jsonl'), 'utf8')
-    notified = await readdir(path.join(directory, 'notifications')).catch(() => [])
-    if (/host-lost/.test(events) && notified.length) break
+    notices = await notify.received()
+    if (notices.some((notice) => notice.type === 'finished')) break
     await pause(25)
   }
   assert.match(events, /host-lost/)
-  assert.ok(notified.length)
+  // The lost host cannot close its run: the supervisor sends host-lost, then the one finished summary.
+  assert.deepEqual(notices.map(({ type, level }) => [type, level]), [['host-lost', 'failure'], ['finished', 'failure']])
+  const finished = notices[1]
+  assert.equal(finished.status, 'failed'); assert.equal(finished.reason, 'host-lost'); assert.equal(finished.units, 0)
+  assert.deepEqual(finished.push, { pushed: false, reason: 'failed' }); assert.equal(finished.report, state.report)
+  assert.equal((await readdir(path.join(directory, 'notifications'))).length, 2)
   const result = await vibeLoop({ targetRoot: root, tag: 'ctrl01', recoverMetadata: true })
   assert.equal(result.implementationRestarted, false)
   assert.equal(await git(root, 'status', '--porcelain'), '')
@@ -354,9 +366,9 @@ for (const succeeds of [true, false]) test(`notification command consumes the ac
   await writeFile(handler, `let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{require('node:fs').writeFileSync(process.argv[2],input);process.exitCode=${succeeds ? 0 : 1};});`)
   const directory = path.join(root, '.git/notification-test')
   await atomicJSON(path.join(directory, 'fixture.json'), {})
-  const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`
   const event = await loopEvent(directory, { runId: 'isolated', tag: 'ctrl01', cwd: root, notifyCommand: [process.execPath, handler, received].map(shellQuote).join(' ') }, 'failed', { error: 'injected host failure' })
   assert.deepEqual(await readJSON(received), event)
+  assert.equal(event.level, 'failure'); assert.equal(event.error, 'injected host failure')
   const receipt = await readJSON(path.join(directory, 'notifications', `${event.id}.json`))
   assert.equal(receipt.delivery, succeeds ? 'hook-acknowledged' : 'failed')
   assert.equal(receipt.deliveredToHook, succeeds)
@@ -499,4 +511,108 @@ test('a clean committed report with the generated name is preserved unless a pre
   assert.equal(await readFile(path.join(root, report), 'utf8'), 'User-owned committed report\n')
   assert.equal(await git(root, 'rev-parse', 'HEAD'), before)
   assert.equal(await git(root, 'status', '--porcelain'), '')
+})
+
+test('judgment items are only what a unit added for the owner: decided/parked lines, new open decisions, a parked result', () => {
+  const before = '# STATE\n\n## inbox\n- 261110 decided ARCH-1: old → a (alt: b)\n- 261110 suggest -: optional\n\n## ssot\n| id | rev | tasked | pending | [?] |\n|---|---|---|---|---|\n| ARCH | 1 | 1 | - | 1 |\n| AUTH | 2 | 2 | - | 0 |\n'
+  const after = before.replace('- 261110 suggest -: optional', '- 261110 suggest -: optional\n- 261111 decided AUTH-3: Session length → 30 days (alt: 7 days | 1 day)\n- 261111 parked T004 AUTH-4: billing needs the owner\n- 261111 suggest -: next idea')
+    .replace('| AUTH | 2 | 2 | - | 0 |', '| AUTH | 3 | 2 | AUTH-4+ | 2 |')
+  assert.deepEqual(judgmentItems(before, after), [
+    { kind: 'decided', refs: ['AUTH-3'], text: 'Session length → 30 days (alt: 7 days | 1 day)' },
+    { kind: 'parked', refs: ['T004', 'AUTH-4'], text: 'billing needs the owner' },
+    { kind: 'open', refs: ['AUTH'], count: 2 },
+  ])
+  assert.deepEqual(judgmentItems(after, after), [])
+  // Resolved lines are not news; a parked result without its inbox line is, once.
+  assert.deepEqual(judgmentItems(after, before, { kind: 'task', id: 'T009', outcome: 'parked' }), [{ kind: 'parked', refs: ['T009'] }])
+  assert.equal(judgmentItems(before, after, { kind: 'task', id: 'T004', outcome: 'parked' }).filter((item) => item.kind === 'parked').length, 1)
+  assert.deepEqual(judgmentItems(before, before, { kind: 'none', id: '', outcome: 'no_work' }), [])
+  assert.equal(judgmentItems('', `## inbox\n- 261111 decided X-1: ${'long '.repeat(40)}`)[0].text.length, 80)
+})
+
+test('finished summary: level, waiting judgment capped with IDs, parked count and publication', () => {
+  const text = `## inbox\n${Array.from({ length: 12 }, (_, n) => `- 261111 ${n % 3 ? 'decided' : 'parked'} T${100 + n}: item ${n}`).join('\n')}\n`
+  const summary = finishedSummary({ status: 'stopped', reason: 'no-work', units: 4, report: 'spec/reports/261111-k3f9.md', publication: { pushed: 'abc123', target: 'main' } }, text)
+  assert.equal(summary.level, 'attention'); assert.equal(summary.parked, 4)
+  assert.deepEqual([summary.judgment.count, summary.judgment.items.length, summary.judgment.more], [12, 10, 2])
+  assert.deepEqual(summary.judgment.items[0], { kind: 'parked', refs: ['T100'], text: 'item 0' })
+  assert.deepEqual(summary.push, { pushed: true, commit: 'abc123', target: 'main' }); assert.equal(summary.report, 'spec/reports/261111-k3f9.md')
+  assert.deepEqual(finishedSummary({ status: 'stopped', reason: 'max-units', units: 1, publication: { pushed: null, target: null, reason: 'land-unset' } }),
+    { level: 'info', status: 'stopped', reason: 'max-units', units: 1, judgment: { count: 0, items: [], more: 0 }, parked: 0, push: { pushed: false, reason: 'land-unset' }, report: null })
+  const failed = finishedSummary({ status: 'failed', reason: 'host-lost', error: 'loop host exited without finalization', units: 2 }, text)
+  assert.equal(failed.level, 'failure'); assert.equal(failed.error, 'loop host exited without finalization'); assert.deepEqual(failed.push, { pushed: false, reason: 'failed' })
+  assert.deepEqual(finishedSummary({ status: 'cancelled', reason: 'stop-file', units: 0, publication: { pushed: null, landed: 'def456', target: 'develop' } }).push, { pushed: false, reason: 'local', landed: 'def456', target: 'develop' })
+  assert.deepEqual(finishedSummary({ status: 'stopped', reason: 'final-window', units: 3 }).push, { pushed: false, reason: 'not-attempted' })
+})
+
+test('a run has exactly one finished notice, whoever closes it', async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'haeram-finished-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const state = { runId: 'run-1', tag: 'ctrl01' }
+  const first = await finishedEvent(directory, state, { level: 'info', status: 'stopped', reason: 'no-work' })
+  assert.equal(first.type, 'finished'); assert.equal(first.level, 'info')
+  assert.equal(await finishedEvent(directory, state, { level: 'failure', status: 'failed', reason: 'host-lost' }), null)
+  assert.equal((await readdir(path.join(directory, 'notifications'))).length, 1)
+  assert.equal((await finishedEvent(directory, { ...state, runId: 'run-2' }, { level: 'info' })).runId, 'run-2')
+})
+
+for (const blocked of ['events.jsonl', 'notifications']) test(`a finished notice whose ${blocked} write fails stays retryable, then is sent once`, async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'haeram-finished-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const state = { runId: 'run-1', tag: 'ctrl01' }
+  // Injected write failure: a directory where the event log goes, or a file where the outbox goes.
+  if (blocked === 'events.jsonl') await mkdir(path.join(directory, blocked)); else await writeFile(path.join(directory, blocked), '')
+  await assert.rejects(finishedEvent(directory, state, { level: 'info', status: 'stopped', reason: 'no-work' }))
+  await assert.rejects(readFile(path.join(directory, 'finished-run-1.claim')), { code: 'ENOENT' })
+  await rm(path.join(directory, blocked), { recursive: true, force: true })
+  const sent = await finishedEvent(directory, state, { level: 'info', status: 'stopped', reason: 'no-work' })
+  assert.equal(sent.type, 'finished')
+  assert.equal(await finishedEvent(directory, state, { level: 'failure', status: 'failed', reason: 'host-lost' }), null)
+  assert.deepEqual(await readdir(path.join(directory, 'notifications')), [`${sent.id}.json`])
+})
+
+test('the hook gets one needs-judgment per unit that left judgment, none for others, and one finished summary', async (t) => {
+  const { root, temporary } = await fixture(t)
+  const notify = await hook(temporary), file = path.join(root, 'spec/STATE.md')
+  let calls = 0
+  const result = await vibeLoop({ ...options(root), maxUnits: 3, notifyCommand: notify.command }, { preflight: passed,
+    execute: async () => {
+      const n = ++calls
+      let text = await readFile(file, 'utf8')
+      if (n === 1) text = appendInbox(text, '- 261111 decided ARCH-3: Retry policy → exponential (alt: fixed)').replace('| ARCH | 1 | 1 | - | 0 |', '| ARCH | 1 | 1 | - | 1 |')
+      if (n === 2) text = appendInbox(text, '- 261111 parked T002: needs production credentials')
+      await writeFile(file, text); await writeFile(path.join(root, 'app.js'), `// unit ${n}\n`)
+      await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', `unit ${n}`)
+      return { exitCode: 0, result: { kind: 'task', id: `T00${n}`, outcome: n === 2 ? 'parked' : 'completed', pushed: false, next: 'implementation' } }
+    }, check: async () => ({ ok: true }),
+  })
+  assert.equal(result.ok, true, result.error); assert.equal(result.units, 3)
+  const notices = await notify.received()
+  assert.deepEqual(notices.map(({ type, level }) => [type, level]), [['needs-judgment', 'attention'], ['needs-judgment', 'attention'], ['finished', 'attention']])
+  assert.deepEqual(notices.slice(0, 2).map(({ unit, task, count, items, more }) => ({ unit, task, count, items, more })), [
+    { unit: 1, task: 'T001', count: 2, more: 0, items: [{ kind: 'decided', refs: ['ARCH-3'], text: 'Retry policy → exponential (alt: fixed)' }, { kind: 'open', refs: ['ARCH'], count: 1 }] },
+    { unit: 2, task: 'T002', count: 1, more: 0, items: [{ kind: 'parked', refs: ['T002'], text: 'needs production credentials' }] },
+  ])
+  const { status, reason, units, judgment, parked, push, report } = notices[2]
+  assert.deepEqual({ status, reason, units, count: judgment.count, parked, push, report }, { status: 'stopped', reason: 'max-units', units: 3, count: 3, parked: 1, push: { pushed: false, reason: 'land-unset' }, report: result.report })
+  assert.deepEqual(judgment.items.map((item) => `${item.kind} ${item.refs.join(' ')}`), ['decided ARCH-3', 'parked T002', 'open ARCH'])
+  const receipts = await Promise.all((await readdir(path.join(path.dirname(result.manifest), 'notifications'))).map((name) => readJSON(path.join(path.dirname(result.manifest), 'notifications', name))))
+  assert.equal(receipts.length, 3); assert.ok(receipts.every((entry) => entry.delivery === 'hook-acknowledged' && entry.externalDelivered === false))
+})
+
+test('a failing or missing notification hook never fails the run', async (t) => {
+  const { root, temporary } = await fixture(t)
+  const result = await vibeLoop({ ...options(root), maxUnits: 1, notifyCommand: shellQuote(path.join(temporary, 'missing-hook')) }, { preflight: passed,
+    execute: async () => {
+      const file = path.join(root, 'spec/STATE.md')
+      await writeFile(file, appendInbox(await readFile(file, 'utf8'), '- 261111 parked T001: owner decides'))
+      await git(root, 'add', file)
+      return code(root)
+    }, check: async () => ({ ok: true }),
+  })
+  assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'max-units')
+  const directory = path.dirname(result.manifest)
+  const receipts = await Promise.all((await readdir(path.join(directory, 'notifications'))).map((name) => readJSON(path.join(directory, 'notifications', name))))
+  assert.deepEqual(receipts.map((entry) => entry.type).sort(), ['finished', 'needs-judgment'])
+  assert.ok(receipts.every((entry) => entry.delivery === 'failed' && entry.deliveredToHook === false))
 })

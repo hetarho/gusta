@@ -65,8 +65,24 @@ export function compactUsage(usage) {
   return { input: usage.input_tokens ?? 0, cacheWrite: usage.cache_creation_input_tokens ?? 0, cacheRead: usage.cache_read_input_tokens ?? 0, output: usage.output_tokens ?? 0 }
 }
 
+// stream-json prints one event per line and ends with a `type:"result"` event; the last one is
+// the answer. A single JSON envelope (`--output-format json`, command adapters) is accepted too.
+const resultEvent = (line) => {
+  if (!line.includes('"type":"result"')) return null
+  try { const event = JSON.parse(line); return event?.type === 'result' ? event : null } catch { return null }
+}
+export function claudeEnvelope(text) {
+  const last = String(text).split('\n').map(resultEvent).filter(Boolean).at(-1)
+  if (last) return last
+  let envelope
+  try { envelope = JSON.parse(text) } catch { fail('Claude 응답에 result 이벤트가 없습니다.') }
+  // A lone envelope has no type (or is the result); any other event means the session ended without one.
+  if (envelope?.type !== undefined && envelope.type !== 'result') fail('Claude 응답에 result 이벤트가 없습니다.')
+  return envelope
+}
+
 export function claudeResult(text, role) {
-  const envelope = JSON.parse(text)
+  const envelope = claudeEnvelope(text)
   if (envelope.is_error || envelope.subtype?.startsWith('error')) fail(`Claude 실행 실패: ${envelope.subtype ?? 'error'}`)
   if (!envelope.structured_output) fail('Claude 응답에 structured_output이 없습니다. JSON schema를 지원하는 CLI인지 확인하세요.')
   return validateAgentResult(role, envelope.structured_output)
@@ -154,7 +170,8 @@ export function providerArguments(provider, role, files, model, { allowTools = [
     if (permissionMode === 'bypass') return ['exec', '--dangerously-bypass-approvals-and-sandbox', ...tail]
     return resume ? ['-a', 'never', '--sandbox', sandbox, 'exec', 'resume', resume, ...tail] : ['-a', 'never', 'exec', '--sandbox', sandbox, ...tail]
   }
-  if (provider === 'claude') return ['--print', '--output-format', 'json', '--json-schema', JSON.stringify(RESULT_SCHEMAS[role]),
+  // stream-json (which print mode allows only with --verbose) lets the log follow the session live.
+  if (provider === 'claude') return ['--print', '--output-format', 'stream-json', '--verbose', '--json-schema', JSON.stringify(RESULT_SCHEMAS[role]),
     '--permission-mode', writes ? permissionMode === 'bypass' ? 'bypassPermissions' : 'acceptEdits' : 'plan', '--permission-prompts', 'none',
     '--tools', writes ? 'Bash,Read,Edit,Write,Glob,Grep' : 'Bash,Read,Glob,Grep',
     '--allowedTools', writes ? [...WORKER_TOOLS, ...allowTools].join(',') : 'Read,Glob,Grep,Bash(git diff *),Bash(git show *),Bash(git log *),Bash(git status *),Bash(git ls-files *)',
@@ -178,7 +195,10 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     // The provider is an independent foreground run, not a nested interactive session.
     delete childEnv.CLAUDECODE
     const child = spawn(provider, args, { cwd: job.workspace, env: childEnv, shell: false, stdio: ['pipe', 'pipe', 'pipe'] })
-    let output = '', events = '', errorOutput = '', tooLarge = false, interrupted = false, timedOut = false, forced
+    let partial = '', answer = '', last = '', events = '', errorOutput = '', tooLarge = false, interrupted = false, timedOut = false, forced
+    // Claude keeps only the last result event (or a lone envelope line) in memory; every event
+    // already went to the log as it arrived, so a long session does not grow the buffer.
+    const keep = (line) => { if (!line.trim()) return; last = line; if (resultEvent(line)) answer = line }
     // In work run, both processes share the runner-owned process group. Direct adapter
     // invocations still forward termination to the provider.
     const stop = () => {
@@ -192,9 +212,11 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     try {
       await new Promise((resolve, reject) => {
         child.on('error', reject)
+        child.stdout.setEncoding('utf8')
         child.stdout.on('data', (chunk) => {
+          // Both providers stream events: the log follows the session as it runs.
+          log(chunk)
           if (provider === 'codex') {
-            log(chunk.toString())
             // Keep only the head of the event stream: the session ID comes first.
             if (events.length < 64 * 1024) {
               events += chunk
@@ -202,8 +224,10 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
             }
             return
           }
-          output += chunk
-          if (output.length > 8 * 1024 * 1024) { tooLarge = true; stop(); output = output.slice(0, 8 * 1024 * 1024) }
+          const lines = (partial + chunk).split('\n')
+          partial = lines.pop()
+          for (const line of lines) keep(line)
+          if (partial.length > 8 * 1024 * 1024) { tooLarge = true; stop(); partial = '' }
         })
         child.stderr.on('data', (chunk) => { errorOutput = (errorOutput + chunk).slice(-16000); log(chunk.toString()) })
         child.on('close', (code, signal) => code === 0 && !interrupted ? resolve() : reject(new SkillPackageError(`${provider} 실행 실패 (${tooLarge ? 'output limit' : timedOut ? 'timeout' : interrupted ? 'interrupted' : code ?? signal})`, [errorOutput])))
@@ -215,8 +239,9 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
       process.off('SIGTERM', stop); process.off('SIGINT', stop)
     }
     if (provider === 'claude') {
-      if (job.role === 'unit') log(output)
-      return { ...claudeResult(output, job.role), session, ...(['unit', 'scout'].includes(job.role) ? { usage: JSON.parse(output).usage ?? null } : {}) }
+      keep(partial)
+      const output = answer || last
+      return { ...claudeResult(output, job.role), session, ...(['unit', 'scout'].includes(job.role) ? { usage: claudeEnvelope(output).usage ?? null } : {}) }
     }
     return { ...validateAgentResult(job.role, JSON.parse(await readFile(files.result, 'utf8'))), session: codexSession(events) ?? job.resume ?? null }
   } finally { await rm(temporary, { recursive: true, force: true }) }

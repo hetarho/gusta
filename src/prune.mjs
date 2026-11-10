@@ -1,4 +1,5 @@
-import { access } from 'node:fs/promises'
+import { access, rm } from 'node:fs/promises'
+import path from 'node:path'
 import { git } from './workspace.mjs'
 import { readRuntime, transaction } from './work-runtime.mjs'
 import { readSetting } from './settings.mjs'
@@ -15,6 +16,9 @@ import { activeRows } from './state-doc.mjs'
 const { repository, requireClean, now } = workInternals
 const commitOf = async (root, name) => (await git(root, ['rev-parse', '--verify', '--quiet', `${name}^{commit}`], [1]))?.trim() || null
 const contains = async (root, older, newer) => (await git(root, ['merge-base', '--is-ancestor', older, newer], [1])) !== null
+const exists = (file) => access(file).then(() => true, () => false)
+// work run writes each dispatch's live log under its unit, so a unit's logs go as one folder.
+export const dispatchLogDir = (root, attemptId) => path.join(root, 'logs', attemptId)
 
 // A finished group is unused once its branch is merged into the branch it came from or the
 // branch it pushes to (local, or as last fetched).
@@ -73,17 +77,31 @@ export async function pruneWork(options = {}) {
     for (const attempt of Object.values(state.attempts)) {
       if (attempt.group !== group.id || activeAttempt(attempt) || attempt.operation || attempt.status === 'failed') continue
       // A cleaned attempt is revisited only for what an older cleanup left behind.
-      if (attempt.cleanedAt && !(attempt.preservedCandidates ?? []).length && !(attempt.managed && attempt.branch && !(attempt.prunedRefs ?? []).includes(attempt.branch))) continue
-      try {
-        const done = attempt.cleanedAt ? await pruneCleanedAttempt({ targetRoot: context.cwd, attempt: attempt.id }) : await cleanupWork({ targetRoot: context.cwd, attempt: attempt.id })
-        if (!done) continue
-        if (!attempt.cleanedAt) result.cleaned.push(attempt.id)
-        result.pruned.push(...(done.prunedRefs ?? []).filter((ref) => !(attempt.prunedRefs ?? []).includes(ref)))
-        if (done.branchKept) result.kept.push({ attempt: attempt.id, reason: done.branchKept })
-        for (const candidate of done.preservedCandidates ?? []) result.kept.push({ attempt: attempt.id, path: candidate, reason: 'candidate workspace not removable' })
-      } catch (error) {
-        result.kept.push({ attempt: attempt.id, path: attempt.workspace, reason: error.message })
+      const leftovers = (attempt.preservedCandidates ?? []).length || (attempt.managed && attempt.branch && !(attempt.prunedRefs ?? []).includes(attempt.branch))
+      let current = attempt
+      if (!attempt.cleanedAt || leftovers) {
+        try {
+          const done = attempt.cleanedAt ? await pruneCleanedAttempt({ targetRoot: context.cwd, attempt: attempt.id }) : await cleanupWork({ targetRoot: context.cwd, attempt: attempt.id })
+          if (done) {
+            current = done
+            if (!attempt.cleanedAt) result.cleaned.push(attempt.id)
+            result.pruned.push(...(done.prunedRefs ?? []).filter((ref) => !(attempt.prunedRefs ?? []).includes(ref)))
+            if (done.branchKept) result.kept.push({ attempt: attempt.id, reason: done.branchKept })
+            for (const candidate of done.preservedCandidates ?? []) result.kept.push({ attempt: attempt.id, path: candidate, reason: 'candidate workspace not removable' })
+          }
+        } catch (error) {
+          result.kept.push({ attempt: attempt.id, path: attempt.workspace, reason: error.message })
+          continue
+        }
       }
+      // Dispatch logs go with a merged unit that left nothing behind; a unit kept above keeps them
+      // too, and a released (unmerged) one keeps them, reported once when it is cleaned.
+      const logs = dispatchLogDir(context.root, attempt.id)
+      if (!current.cleanedAt || !(await exists(logs))) continue
+      if (current.status === 'integrated' && !current.branchKept && !(current.preservedCandidates ?? []).length) {
+        await rm(logs, { recursive: true, force: true })
+        result.pruned.push(logs)
+      } else if (!attempt.cleanedAt && current.status !== 'integrated') result.kept.push({ attempt: attempt.id, path: logs, reason: '합쳐지지 않은 단위라 dispatch 로그를 보존합니다.' })
     }
     if (!options.groups) continue
     try {

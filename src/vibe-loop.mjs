@@ -18,7 +18,7 @@ import { SESSION_TAG, TASK_ID } from './spec-format.mjs'
 import { sections, tableRows } from './spec-format.mjs'
 import { validateAgentResult, compactUsage } from './agent-adapter.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, startLoopMonitor, controlTransaction, processAlive } from './loop-control.mjs'
+import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine } from './loop-time.mjs'
 
@@ -53,6 +53,8 @@ export const timeboxMs = (value) => {
   const match = String(value ?? '').match(/^(\d+(?:\.\d+)?)(m|h)$/)
   return match ? Number(match[1]) * (match[2] === 'h' ? 3600000 : 60000) : null
 }
+// The last publication, compact: a later call that published nothing keeps an earlier push.
+const published = (result, previous) => result.pushed || !previous?.pushed ? { pushed: result.pushed ?? null, target: result.target ?? null, ...(result.landed ? { landed: result.landed } : {}), ...(result.reason ? { reason: result.reason } : {}) } : previous
 const depIds = (dep) => String(dep ?? '').split(/[\s,]+/).filter((id) => TASK_ID.test(id))
 const positive = (value, fallback, label, integer = false) => {
   const n = Number(value ?? fallback)
@@ -71,9 +73,13 @@ export async function executeVibeUnit(options, job, directory, limits = {}) {
     if (!config?.command || !Array.isArray(config.args) || config.args.some((value) => typeof value !== 'string')) throw new SkillPackageError('adapter에는 command와 문자열 args 배열이 필요합니다.')
     if (config.command.includes('/') && !path.isAbsolute(config.command)) config.command = path.resolve(path.dirname(file), config.command)
   }
-  const log = await open(logPath, 'w', 0o600)
+  // Append mode: host and adapter write to one file description without overwriting each other.
+  const log = await open(logPath, 'a', 0o600)
   await writeFile(path.join(directory, `${id}.job.json`), JSON.stringify({ ...job, sessionFile }, null, 2))
-  let output = '', forced, stopped = null
+  let output = '', forced, stopped = null, writing = Promise.resolve()
+  // The unit log follows the session live: the adapter's stderr (provider events) goes straight to
+  // the file and its stdout is appended in arrival order, not at the end.
+  const append = (chunk) => { writing = writing.then(() => log.write(chunk)).catch(() => {}) }
   try {
     return await new Promise((resolve) => {
       const child = spawn(config.command, config.args, { cwd: job.workspace, env: { ...process.env, ...options.env,
@@ -112,14 +118,14 @@ export async function executeVibeUnit(options, job, directory, limits = {}) {
         const checks = { runs: ran.length, cached: ran.filter((entry) => entry.cached).length, ms: ran.reduce((total, entry) => total + (Number(entry.ms) || 0), 0) }
         resolve({ dispatch: id, exitCode: code, stopped, error: error ?? null, result, usage, checks, session: session?.trim() ?? null, log: logPath })
       }
-      child.stdout.on('data', (chunk) => { output += chunk; if (output.length > 1024 * 1024) stop('output-limit') })
+      child.stdout.on('data', (chunk) => { append(chunk); output += chunk; if (output.length > 1024 * 1024) stop('output-limit') })
       child.on('error', (error) => finish(127, error.message))
       child.on('close', (code) => finish(code ?? 1))
       child.stdin.on('error', () => {})
       child.stdin.end(JSON.stringify({ ...job, sessionFile }))
     })
   } finally {
-    await log.writeFile(`\n${output.slice(-1024 * 1024)}\n`)
+    await writing
     await log.close()
   }
 }
@@ -215,7 +221,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const start = deps.now(), deadline = start + hours * 3600000
   const report = `spec/reports/${new Date(start).toISOString().slice(2, 10).replaceAll('-', '')}-${options.tag}.md`
   const reportPath = path.join(root, report)
-  let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false, pruned = null
+  let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false, pruned = null, publication = null
   // scope grows with the tasks this run creates for scoped work (a split, a prerequisite, a repair).
   const scope = scopeIds ? new Set(scopeIds) : null
   const inScope = (id) => !scope || scope.has(id)
@@ -249,6 +255,15 @@ export async function vibeLoop(options = {}, injected = {}) {
     try { await loopEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, type, detail) }
     catch (caught) { operationalErrors.push({ operation: 'event-write', error: caught.message }); process.stderr.write(`loop event-write failed: ${caught.message}\n`) }
   }
+  // Notices for the owner (judgment waiting, run finished) never hold up or fail the run: the hook
+  // runs alongside the next unit, a write error only reaches stderr, and the run waits for them once.
+  const deliveries = []
+  const notify = (send) => {
+    const sent = send().catch((caught) => { process.stderr.write(`loop notification failed: ${caught.message}\n`) })
+    deliveries.push(sent)
+    return sent
+  }
+  const stateFile = path.join(root, 'spec/STATE.md')
   const metadataStep = async (operation, run) => {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try { await metadata.applyOperation(); return await run() }
@@ -272,7 +287,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const snapshot = () => ({ ...plan, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, pruned, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, scope: scope ? [...scope] : null, snapshots, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, scope: scope ? [...scope] : null, snapshots, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -449,6 +464,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     await metadata.assertClean()
     const pushed = await deps.push({ ...options, targetRoot: root, ...(code ? { verifiedCommit: head } : {}) })
     if (pushed.ok === false) throw new SkillPackageError('묶음 push 실패')
+    publication = published(pushed, publication)
     if (pushed.pushed && code) {
       codePushed = true
       const ci = await deps.ci({ ...options, targetRoot: root, signal: controller.signal, timeoutMs: Math.max(1, deadline - deps.now()), commit: pushed.pushed, branch: pushed.target ?? context.target, diffBase: base })
@@ -466,6 +482,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       await metadata.assertClean()
       const final = await deps.push({ ...options, targetRoot: root, verifiedCommit: head })
       if (final.ok === false) throw new SkillPackageError('마감 보고서 push 실패')
+      publication = published(final, publication)
     }
     base = (await git(root, ['rev-parse', 'HEAD'])).trim(); pending = []
     await save()
@@ -616,6 +633,9 @@ export async function vibeLoop(options = {}, injected = {}) {
       failureStreak = failed && !(cut && progressed) ? failureStreak + 1 : 0
       noProgress = progressed ? 0 : noProgress + 1
       await save()
+      // At most one notice per unit, only when it left the owner something to judge (after any park).
+      const judged = judgmentItems(before.state, await readFile(stateFile, 'utf8').catch(() => before.state), receipt.result)
+      if (judged.length) notify(() => loopEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, 'needs-judgment', judgmentNotice(count, taskId, judged)))
       if (cut) await event('unit-cut', { unit: count, task: taskId, cause: receipt.stopped, ms: entry.ms, snapshot: leftover?.ref ?? null, next: recovery?.taskId === taskId ? recovery.reason : entry.parked ? 'parked' : null })
       else if (receipt.stopped) {
         reason = receipt.stopped
@@ -688,6 +708,10 @@ export async function vibeLoop(options = {}, injected = {}) {
       // Separate fallback lets status/supervision recognize a failed final manifest write.
       await atomicJSON(path.join(directory, 'terminal.json'), { ...snapshot(), running: false, status: 'failed', error: error ?? caught.message })
     } finally { process.off('SIGINT', interrupted); process.off('SIGTERM', interrupted); await releaseLoop(lock, runId) }
+    // Every terminal state ends with one summary for the owner, after the lock is free.
+    await Promise.all(deliveries)
+    const closed = { ...snapshot(), report: await present(reportPath) ? report : null }
+    await notify(async () => finishedEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, finishedSummary(closed, await readFile(stateFile, 'utf8').catch(() => ''))))
   }
   return { ...plan, reserve, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
     time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }) }
