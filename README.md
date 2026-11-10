@@ -289,6 +289,8 @@ npx haeram-spec-creator vibe push --verified-commit <SHA> --wait-ci --diff-base 
 ```bash
 npx haeram-spec-creator vibe loop --tag k3f9 --provider claude --dry-run --json
 npx haeram-spec-creator vibe loop --tag k3f9 --provider codex --max-units 30 --max-hours 8 --detach --json
+# 이 태스크(와 이번 실행이 그것을 위해 만든 태스크)만
+npx haeram-spec-creator vibe loop --tag k3f9 --provider claude --tasks 'T012 T013 T014' --detach --json
 # 실행 중 변경: 현재 단위를 끝낸 같은 호스트가 적용합니다. pending은 적용 완료가 아닙니다.
 npx haeram-spec-creator vibe loop --tag k3f9 --configure --push-each-unit --wait-ms 30000 --json
 npx haeram-spec-creator vibe loop --tag k3f9 --status --json
@@ -298,7 +300,11 @@ npx haeram-spec-creator vibe loop --tag k3f9 --stop-after-unit --json
 npx haeram-spec-creator vibe loop --tag k3f9 --stop --json
 ```
 
-반복기는 preflight·active·보고서를 한 번 준비한 뒤 태스크 하나, 기획 한 조각(SSOT+create-task), inbox 정리마다 새 세션을 시작합니다. 시간 한도의 마지막 구간은 **마감 관문 전용**입니다 — 그 구간에 들어서면 새 단위를 시작하지 않고(`reason: final-window`, 실행 중이던 단위는 마칩니다) 모은 코드 전체를 한 번 검증한 뒤 push·CI까지 진행합니다. 관문이 실패하면 근거를 담은 수정 태스크를 만들어 그 구간 안에서 한 번 고치고 다시 검증합니다(두 번째 실패는 push 없이 보고). 구간 길이는 실측입니다: `vibe check --tier batch`·`work finish`·`vibe design verify`가 기록한 전체 검증 시간×2 + 최근 단위 시간 + (push 브랜치가 있으면) CI 대기 시간. 아직 한 번도 측정되지 않았을 때만 max-hours의 20%를 쓰고, 측정은 단위 경계마다 다시 읽습니다. `--final-reserve-hours`로 직접 정할 수 있습니다.
+반복기는 preflight·active·보고서를 한 번 준비한 뒤 태스크 하나, 기획 한 조각(SSOT+create-task), inbox 정리마다 새 세션을 시작합니다. 시간 한도의 마지막 구간은 **마감 관문 전용**입니다 — 그 구간에 들어서면 새 단위를 시작하지 않고(`reason: final-window`, 단위의 상한도 이 구간 시작까지라 실행 중이던 단위가 구간을 먹지 않습니다) 모은 코드 전체를 한 번 검증한 뒤 push·CI까지 진행합니다. 관문이 실패하면 근거를 담은 수정 태스크를 만들어 그 구간 안에서 한 번 고치고 다시 검증합니다(두 번째 실패는 push 없이 보고). 구간 길이는 실측입니다: `vibe check --tier batch`·`work finish`·`vibe design verify`가 기록한 전체 검증 시간×2 + 최근 단위 시간 + (push 브랜치가 있으면) CI 대기 시간. 아직 한 번도 측정되지 않았을 때만 max-hours의 20%를 쓰고, 측정은 단위 경계마다 다시 읽습니다. `--final-reserve-hours`로 직접 정할 수 있습니다.
+
+**단위 상한은 멈춘 세션을 끊는 장치이지 실행의 끝이 아닙니다.** 단위 하나는 `--timeout-ms`(기본 1시간)까지, explore 태스크는 timebox+30분까지 돕니다(남은 작업 시간에 timebox가 들어가지 않으면 그 태스크는 건너뛰고, 그것만 남으면 `explore-no-time`으로 마감합니다). 상한이나 출력 한도로 끊긴 단위, 실패한 단위가 남긴 미커밋 변경은 로컬 ref(`refs/haeram/units/<tag>/…`, push 안 함)에 스냅샷한 뒤 그 경로만 HEAD로 되돌리고, 새 세션이 그 스냅샷에서 이어갑니다. 같은 태스크가 다시 끊기면 한 단위에 맞게 쪼개는 기획 단위를 돌리고, 쪼갠 뒤에도 끊기면 inbox에 parked로 남기고 다른 태스크로 넘어갑니다. 변경 없이 끊긴 단위만 실패로 세며(2회 연속이면 `session-failures`로 정지), 실패로 멈춰도 앞 단위들이 커밋한 코드는 마감 관문을 거쳐 push됩니다. 이어받은 태스크가 끝나면 스냅샷 ref를 지우고, 남은 ref는 보고서 next에 적습니다.
+
+`--tasks 'T### …'`는 그 태스크만 합니다. 범위 밖 선행 태스크가 끝나지 않았으면 시작하지 않고, 이번 실행이 범위 태스크를 위해 만든 태스크(쪼갠 후속·선행·관문 수정)는 범위에 들어갑니다. 범위가 끝나면 `scope-done`으로 마감 관문을 돌고 멈춥니다. STATE next 줄의 형식이나 갱신에 기대지 않습니다.
 
 어디서 시간이 갔는지도 남깁니다. 단위마다 걸린 시간·그 안의 `vibe check` 시간·토큰 수를 기록하고, `loop.json`·결과 JSON의 `time`과 마감 보고서 checks의 한 줄(`- time: 5h00m — implementation 2h30m/2 (model 2h00m, task checks 30m), planning 40m/1, gate 30m, CI 6m, host 9m; slowest T### 1h30m`)로 구현·기획·태스크 검사·마감 관문·CI·호스트 몫을 나눠 보여 줍니다. 다음 속도 개선은 이 숫자에서 고릅니다(`vibe check`를 거치지 않은 명령은 모델 시간에 포함됩니다).
 
@@ -306,7 +312,7 @@ npx haeram-spec-creator vibe loop --tag k3f9 --stop --json
 
 `.git/haeram/v1/loops/<tag>/loop.json`에 상태·로그·세션 ID·정지 파일 경로를 남깁니다. `--detach`는 부모 터미널과 분리하고 macOS에서는 caffeinate를 사용합니다. STOP 표식은 재시작 전에 직접 지웁니다. headless 세션은 프로젝트 설정을 사용할 수 있는 메인 checkout에서 권한을 실측하며 기본은 Claude acceptEdits+허용 목록, Codex workspace-write입니다. 필요한 명령은 `--allow-tool 'Bash(pnpm *)'`처럼 추가합니다. 사용자가 명시한 `--permission-mode bypass`만 권한 우회를 켭니다.
 
-실행 중에는 `--status`로 heartbeat·요청/적용 설정·운영 오류를 보고, `--configure --push-each-unit|--no-push-each-unit`로 단위별 push를 바꿉니다 — 현재 단위가 끝난 뒤 같은 호스트에 적용되며 receipt의 `status:applied`로 확인합니다(pending은 적용 전). SETTINGS push가 false이면 이 옵션도 원격 게시를 켜지 않습니다. `--stop`·SIGINT·SIGTERM은 즉시 취소라 새 마감 검증·push를 시작하지 않고, `--stop-after-unit`은 현재 단위와 마감 관문까지 마친 뒤 멈춥니다. 호스트는 자기가 쓴 보고서와 자기 active 행만 정리하고, 그 밖의 변경이 남으면 보존한 채 다음 단위와 게시를 멈춥니다. 종료된 호스트는 `--recover-metadata`로 정리합니다(모델·push·재시작 없음). 독립 감시자·실패 알림(`--notify-command`)·복구 계약은 [loop 제어 계약](skills/start-vibe/references/loop-control.md)에 있습니다.
+실행 중에는 `--status`로 heartbeat·요청/적용 설정·운영 오류를 보고, `--configure --push-each-unit|--no-push-each-unit`로 단위별 push를 바꿉니다 — 현재 단위가 끝난 뒤 같은 호스트에 적용되며 receipt의 `status:applied`로 확인합니다(pending은 적용 전). SETTINGS push가 false이면 이 옵션도 원격 게시를 켜지 않습니다. `--stop`·SIGINT·SIGTERM은 즉시 취소라 새 마감 검증·push를 시작하지 않고, `--stop-after-unit`은 현재 단위와 마감 관문까지 마친 뒤 멈춥니다. 호스트는 자기가 쓴 보고서와 자기 active 행만 정리합니다. 성공을 보고한 단위 뒤에 그 밖의 변경이 남으면 사람의 편집일 수 있으니 보존한 채 다음 단위와 게시를 멈춥니다(끝내지 못한 단위의 변경은 위처럼 스냅샷으로 넘깁니다). 종료된 호스트는 `--recover-metadata`로 정리합니다(모델·push·재시작 없음). 독립 감시자·실패 알림(`--notify-command`)·복구 계약은 [loop 제어 계약](skills/start-vibe/references/loop-control.md)에 있습니다.
 
 맡김의 결정·주차 규칙은 위 [모드 표](#3-start-vibe로-시작하기)와 같습니다. 구현이 판단 문제로 막히면 기획 한 조각으로 해소해 재개하고, CI 실패는 근거를 담은 수정 태스크로 만들어 다음 단위로 먼저 실행합니다. 시간·단위·반복 실패 한도에 닿으면 `loop.json`과 보고서에 우선 재개할 태스크를 남깁니다.
 

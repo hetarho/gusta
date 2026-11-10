@@ -418,14 +418,17 @@ test('wait-ms acknowledges actual boundary application and can disable per-unit 
   assert.equal(acknowledgement.request.actual.pushEachUnit, false)
 })
 
-test('unit timeout is a failure event rather than a successful silent stop', async (t) => {
+test('unit timeout is recorded, never a silent success; idle cuts end the run as session failures', async (t) => {
   const { root } = await fixture(t)
+  let calls = 0
   const result = await vibeLoop(options(root), { preflight: passed,
-    execute: async () => ({ exitCode: 1, stopped: 'unit-timeout', result: null }),
-    check: () => assert.fail('interrupted unit cannot trigger final checks'), push: () => assert.fail('interrupted unit cannot publish'),
+    execute: async () => { calls++; return { exitCode: 1, stopped: 'unit-timeout', result: null } },
+    check: () => assert.fail('no code to verify'), push: async () => ({ ok: true, pushed: null }),
   })
-  assert.equal(result.ok, false); assert.equal(result.reason, 'unit-timeout')
-  assert.match(await readFile(path.join(path.dirname(result.manifest), 'events.jsonl'), 'utf8'), /"type":"failed"/)
+  assert.equal(result.ok, false); assert.equal(result.reason, 'session-failures'); assert.equal(calls, 2)
+  const events = await readFile(path.join(path.dirname(result.manifest), 'events.jsonl'), 'utf8')
+  assert.match(events, /"type":"unit-cut"/); assert.match(events, /"type":"failed"/)
+  assert.match(await readFile(path.join(root, result.report), 'utf8'), /cut \(unit-timeout\)/)
   assert.equal((await readJSON(result.manifest)).running, false)
   assert.equal(await git(root, 'status', '--porcelain'), '')
 })

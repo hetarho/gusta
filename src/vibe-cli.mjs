@@ -14,7 +14,11 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
   vibe loop --tag <tag> --provider claude|codex [--model <name>] [--max-units 100] [--max-hours 8]
     [--final-reserve-hours <measured>] [--batch-size 3] [--permission-mode acceptEdits|bypass] [--allow-tool <rule> ...]
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
+    [--tasks 'T001 T002'] [--timeout-ms 3600000]
                                                 끝 예약(실측 전체 검증×2+수정 단위+CI)에는 새 단위 없이 마감 관문·수정 1회만
+                                                --tasks: 그 태스크(와 이번 실행이 그것을 위해 만든 태스크)만, 끝나면 마감 관문
+                                                --timeout-ms: 단위 하나의 상한(explore는 timebox+30분). 넘기면 미커밋 변경을
+                                                스냅샷해 새 단위가 이어받고, 다시 넘기면 쪼개고, 그래도 넘기면 주차. loop는 계속
   vibe loop --tag <tag> --stop                  정지 파일 기록; 실행 중인 단위도 종료
   vibe loop --tag <tag> --stop-after-unit       현재 단위·마감 검증 완료 후 정지
   vibe loop --tag <tag> --configure --push-each-unit|--no-push-each-unit [--wait-ms <ms>]
@@ -64,7 +68,7 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
 `
 
 const allowed = {
-  loop: ['tag', 'provider', 'model', 'max-units', 'max-hours', 'final-reserve-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'remote', 'wait-ms', 'notify-command'],
+  loop: ['tag', 'provider', 'model', 'max-units', 'max-hours', 'final-reserve-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref'], format: ['section'],
   status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host'],
   claim: ['tag', 'task', 'remote'],

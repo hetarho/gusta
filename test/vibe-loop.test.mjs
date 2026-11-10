@@ -3,10 +3,11 @@ import assert from 'node:assert/strict'
 import { readFile, writeFile, readdir, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fixture, git } from './helpers/vibe-fixture.mjs'
-import { vibeLoop, executeVibeUnit, closingReserve } from '../src/vibe-loop.mjs'
+import { vibeLoop, executeVibeUnit, closingReserve, nextRung, timeboxMs, EXPLORE_EXIT_MS } from '../src/vibe-loop.mjs'
 import { timingKey } from '../src/check-cache.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
-import { activeRows } from '../src/state-doc.mjs'
+import { activeRows, appendInbox } from '../src/state-doc.mjs'
+import { recoveryText } from '../src/agent-adapter.mjs'
 
 const passed = async () => ({ ok: true, checks: [] })
 const unit = (outcome = 'completed') => ({ exitCode: 0, result: { kind: 'task', id: 'T001', outcome, pushed: false, next: 'implementation' } })
@@ -430,4 +431,144 @@ test('a unit session records its vibe check runs and token usage for the breakdo
   const r = await executeVibeUnit({ adapter, tag: 't060' }, { workspace: root, role: 'unit', diffBase: initial }, directory, { stopFile: path.join(directory, 'STOP'), deadline: Date.now() + 60000, timeoutMs: 60000 })
   assert.equal(r.result.id, 'T001'); assert.deepEqual(r.usage, { input: 3, cacheWrite: 4, cacheRead: 5, output: 6 })
   assert.equal(r.checks.runs, 1); assert.equal(r.checks.cached, 0); assert.ok(r.checks.ms >= 50)
+})
+
+const cutUnit = () => ({ exitCode: 1, stopped: 'unit-timeout', result: null })
+const published = () => ({ check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: null }) })
+
+test('a unit cut at its limit hands its uncommitted work to a fresh continuation unit; the run goes on and publishes', async (t) => {
+  const { root } = await fixture(t)
+  const jobs = []
+  let checks = 0, pushes = 0
+  const result = await vibeLoop({ ...opts(root), maxUnits: 10 }, { preflight: passed,
+    execute: async (options, job, directory, limits) => {
+      jobs.push({ task: job.brief?.taskId, recovery: job.recovery, timeLimit: job.timeLimit, timeoutMs: limits.timeoutMs, clean: await git(root, 'status', '--porcelain') === '' })
+      if (jobs.length === 1) {
+        await writeFile(path.join(root, 'app.js'), '// half of T001\n')
+        await mkdir(path.join(root, 'notes'), { recursive: true }); await writeFile(path.join(root, 'notes/partial.txt'), 'measured\n')
+        return cutUnit()
+      }
+      if (jobs.length === 2) {
+        await git(root, 'checkout', job.recovery.snapshot.commit, '--', 'notes/partial.txt')
+        assert.equal(await readFile(path.join(root, 'notes/partial.txt'), 'utf8'), 'measured\n')
+      }
+      return completeTask(root, job.brief.taskId)
+    },
+    check: async () => { checks++; return { ok: true } }, push: async () => { pushes++; return { ok: true, pushed: null } },
+  })
+  assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'no-work')
+  assert.deepEqual(jobs.map((job) => job.task), ['T001', 'T001', 'T002', 'T003'])
+  assert.ok(jobs.every((job) => job.clean), 'every unit starts from a clean tree')
+  assert.equal(jobs[0].recovery, undefined); assert.equal(jobs[0].timeoutMs, 3600000); assert.equal(jobs[0].timeLimit.minutes, 60)
+  assert.equal(jobs[1].recovery.reason, 'interrupted'); assert.equal(jobs[1].recovery.cause, 'unit-timeout'); assert.equal(jobs[1].recovery.taskId, 'T001')
+  assert.deepEqual(jobs[1].recovery.snapshot.files, ['app.js', 'notes/partial.txt'])
+  // The continuation finished the task, so its snapshot ref is gone.
+  assert.equal(await git(root, 'for-each-ref', 'refs/haeram/units'), '')
+  const events = await readFile(path.join(path.dirname(result.manifest), 'events.jsonl'), 'utf8')
+  assert.match(events, /"type":"unit-cut"/); assert.doesNotMatch(events, /"type":"failed"/)
+  assert.match(await readFile(path.join(root, result.report), 'utf8'), /T001: cut \(unit-timeout\) · uncommitted work → refs\/haeram\/units\/t060\//)
+  assert.equal(checks, 1); assert.ok(pushes >= 1)
+})
+
+test('a task that keeps getting cut is continued, split once, then parked; other tasks still run', async (t) => {
+  const { root } = await fixture(t)
+  const seen = []
+  const result = await vibeLoop({ ...opts(root), maxUnits: 12 }, { preflight: passed, ...published(),
+    execute: async (options, job) => {
+      const id = job.brief?.taskId
+      seen.push(`${id}:${job.recovery?.reason ?? '-'}`)
+      if (id !== 'T001') return completeTask(root, id)
+      if (job.recovery?.reason === 'split') {
+        const file = path.join(root, 'spec/tasks/T001.example.md')
+        await writeFile(file, (await readFile(file, 'utf8')).replace('Fix example.', 'Fix the first half of example.'))
+        await git(root, 'commit', '-qam', 'narrow T001')
+        return { exitCode: 0, result: { kind: 'planning', id: 'T001', outcome: 'completed', pushed: false, next: 'implementation' } }
+      }
+      await writeFile(path.join(root, 'app.js'), `// attempt ${seen.length}\n`)
+      return cutUnit()
+    },
+  })
+  assert.deepEqual(seen, ['T001:-', 'T001:interrupted', 'T001:split', 'T001:-', 'T001:interrupted', 'T002:-', 'T003:-'])
+  assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'parked-only')
+  assert.match(await git(root, 'show', 'HEAD:spec/STATE.md'), /^- \d{6} parked T001: .*refs\/haeram\/units\/t060\/\S+-5\b/m)
+  assert.match(await readFile(path.join(root, result.report), 'utf8'), /uncommitted work kept: refs\/haeram\/units\/t060\/\S+-5 \(T001, 1 files\)/)
+})
+
+test('an idle cut counts as a session failure; two stop the run, which still publishes committed work', async (t) => {
+  const { root } = await fixture(t)
+  let calls = 0, checks = 0, pushes = 0
+  const result = await vibeLoop({ ...opts(root), maxUnits: 10 }, { preflight: passed,
+    execute: async (options, job) => ++calls === 1 ? completeTask(root, job.brief.taskId) : cutUnit(),
+    check: async () => { checks++; return { ok: true } }, push: async () => { pushes++; return { ok: true, pushed: null } },
+  })
+  assert.equal(result.reason, 'session-failures'); assert.equal(result.ok, false); assert.equal(calls, 3)
+  assert.equal(checks, 1); assert.ok(pushes >= 1)
+  assert.equal(await git(root, 'status', '--porcelain'), '')
+})
+
+async function exploreFixture(t) {
+  const made = await fixture(t)
+  const file = path.join(made.root, 'spec/tasks/T001.example.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('touches:src/', 'touches:src/ | explore:2h'))
+  await git(made.root, 'commit', '-qam', 'explore T001')
+  return made
+}
+
+test('an explore unit runs its timebox plus exit time; units end inside the work window; an explore that no longer fits yields', async (t) => {
+  const { root } = await exploreFixture(t)
+  const roomy = []
+  await vibeLoop({ ...opts(root), maxUnits: 1 }, { preflight: passed, ...published(),
+    execute: async (options, job, directory, limits) => { roomy.push([job.brief.taskId, limits.timeoutMs]); return completeTask(root, job.brief.taskId) } })
+  assert.deepEqual(roomy, [['T001', 2 * 3600000 + EXPLORE_EXIT_MS]])
+
+  const { root: late } = await exploreFixture(t)
+  let now = 0
+  const jobs = []
+  // 8h run, unmeasured reserve 96m: from 5h the work window has 84m left, too short for 2h30m.
+  const result = await vibeLoop({ ...opts(late), tag: 't061', maxUnits: 10 }, { preflight: async () => { now = 5 * 3600000; return passed() }, now: () => now, ...published(),
+    execute: async (options, job, directory, limits) => { jobs.push([job.brief.taskId, limits.timeoutMs]); now += 30 * 60000; return completeTask(late, job.brief.taskId) } })
+  assert.deepEqual(jobs, [['T002', 3600000], ['T003', 54 * 60000]])
+  assert.equal(result.reason, 'explore-no-time')
+})
+
+test('--tasks runs only the scoped tasks and what the run creates for them, then closes', async (t) => {
+  const { root } = await fixture(t)
+  const state = path.join(root, 'spec/STATE.md')
+  await writeFile(state, (await readFile(state, 'utf8')).replace('| T003 | example | ARCH | - | todo |', '| T003 | example | ARCH | T002 | todo |').replace(/## next\n[\s\S]*?(?=\n## |$)/, '## next\n- implement-task T001\n'))
+  await git(root, 'commit', '-qam', 'T003 after T002')
+  await assert.rejects(vibeLoop({ ...opts(root), tasks: 'T009', dryRun: true }), /tasks\/done에 없는/)
+  await assert.rejects(vibeLoop({ ...opts(root), tasks: 'T003', dryRun: true }), /범위 밖 선행/)
+  assert.deepEqual((await vibeLoop({ ...opts(root), tasks: 'T003,T002', dryRun: true })).scope, ['T003', 'T002'])
+  const seen = []
+  const result = await vibeLoop({ ...opts(root), maxUnits: 10, tasks: 'T003,T002' }, { preflight: passed, ...published(),
+    execute: async (options, job) => {
+      const id = job.brief.taskId
+      seen.push(id)
+      if (id === 'T002') {
+        await writeFile(path.join(root, 'spec/tasks/T004.example.md'), '# T004 Follow-up\n> st:todo | ssot:ARCH-1 | base:ARCH@1 | dep:T002 | touches:src/\n\n## goal\nFollow up.\n\n## acceptance\n- [ ] Works.\n\n## impl notes\n- -\n\n## result\n')
+        await writeFile(state, (await readFile(state, 'utf8')).replace('\n\n## next', '\n| T004 | follow-up | ARCH | T002 | todo |\n\n## next'))
+      }
+      return completeTask(root, id)
+    },
+  })
+  assert.deepEqual(seen, ['T002', 'T003', 'T004'])
+  assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'scope-done')
+  assert.match(await readFile(state, 'utf8'), /^\| T001 \| example \| ARCH \| - \| todo \|$/m)
+  assert.deepEqual(JSON.parse(await readFile(result.manifest, 'utf8')).scope, ['T003', 'T002', 'T004'])
+})
+
+test('ladder, timebox, inbox and recovery prompt helpers', () => {
+  assert.equal(nextRung({ cuts: 1, split: false }), 'interrupted')
+  assert.equal(nextRung({ cuts: 2, split: false }), 'split')
+  assert.equal(nextRung({ cuts: 2, split: true }), 'park')
+  assert.equal(nextRung({ cuts: 3, split: false }), 'park')
+  assert.equal(timeboxMs('2h'), 7200000); assert.equal(timeboxMs('90m'), 5400000); assert.equal(timeboxMs('-'), null)
+  assert.equal(appendInbox('# STATE\n\n## cfg\n- level: expert\n\n## ssot\n| id |\n', '- 261110 parked T001: x'),
+    '# STATE\n\n## cfg\n- level: expert\n\n## inbox\n- 261110 parked T001: x\n\n## ssot\n| id |\n')
+  assert.equal(appendInbox('## cfg\n- a\n\n## inbox\n- 261101 decided ARCH-1: q → a\n\n## ssot\n', '- 261110 parked T001: x'),
+    '## cfg\n- a\n\n## inbox\n- 261101 decided ARCH-1: q → a\n- 261110 parked T001: x\n\n## ssot\n')
+  const snapshot = { commit: 'abc', base: 'def' }
+  assert.match(recoveryText({ reason: 'interrupted', cause: 'unit-timeout', taskId: 'T001', snapshot }), /git checkout abc -- <paths>/)
+  assert.match(recoveryText({ reason: 'split', taskId: 'T001', snapshot }), /Do not implement it now/)
+  assert.match(recoveryText({ reason: 'blocked-task', taskId: 'T001' }), /read the blocker/)
 })

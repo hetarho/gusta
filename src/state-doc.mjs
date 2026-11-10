@@ -48,6 +48,17 @@ export function activeRows(text) {
   return splitTable(block.body).rows.map(cells).map(([tag, host, mode, since, at, doing]) => ({ tag, host, mode, since, at, doing }))
 }
 
+// Append one inbox line, keeping every other byte. A new section goes after cfg and active.
+export function appendInbox(text, line) {
+  const section = text.match(/^## inbox[ \t]*\n[\s\S]*?(?=^## |(?![\s\S]))/m)
+  if (section) {
+    const tail = text.slice(section.index + section[0].length)
+    return `${text.slice(0, section.index)}${section[0].trimEnd()}\n${line}\n${tail ? '\n' : ''}${tail}`
+  }
+  const index = text.search(/^## (?!cfg\b|active\b)/m)
+  return index < 0 ? `${text.trimEnd()}\n\n## inbox\n${line}\n` : `${text.slice(0, index)}## inbox\n${line}\n\n${text.slice(index)}`
+}
+
 // Write, update or remove this session's row. A new section goes right after cfg.
 export function upsertActive(text, row, { remove = false } = {}) {
   const blocks = parseState(text)

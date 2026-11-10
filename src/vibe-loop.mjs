@@ -10,9 +10,11 @@ import { readVerification, vibeBrief } from './vibe-brief.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { vibeCIWait } from './vibe-ci.mjs'
 import { git } from './workspace.mjs'
-import { readTimings, recordTiming, timingKey, measured } from './check-cache.mjs'
+import { readTimings, recordTiming, timingKey, measured, workingTree } from './check-cache.mjs'
 import { inspectWork } from './work-groups.mjs'
-import { SESSION_TAG } from './spec-format.mjs'
+import { approvedTasks } from './work-policy.mjs'
+import { appendInbox } from './state-doc.mjs'
+import { SESSION_TAG, TASK_ID } from './spec-format.mjs'
 import { sections, tableRows } from './spec-format.mjs'
 import { validateAgentResult, compactUsage } from './agent-adapter.mjs'
 import { SkillPackageError } from './errors.mjs'
@@ -37,6 +39,21 @@ export function closingReserve({ timings, commands, push = false, hours, timeout
   const ciMs = push ? measured(timings, timingKey('ci')) ?? 0 : 0
   return { ms: 2 * gateMs + fixMs + ciMs, source: 'measured', gateMs, fixMs, ciMs }
 }
+// A unit's time limit catches a stuck session; it does not end the run. A unit cut at the limit
+// (or by the output cap) hands its snapshot to a fresh unit: continue, then split, then park.
+const CUT = new Set(['unit-timeout', 'output-limit'])
+// The rung for a task whose unit ended unfinished: continue from the snapshot, then split it once
+// into tasks that fit a unit, then park it. A split restarts the count for the narrowed task.
+export const nextRung = ({ cuts, split }) => cuts <= 1 ? 'interrupted' : !split && cuts === 2 ? 'split' : 'park'
+// An explore unit runs its whole timebox, plus time to record the exit and commit.
+export const EXPLORE_EXIT_MS = 30 * 60000
+// Closer to the closing window than this, a new unit would only be cut: the window opens instead.
+export const MIN_UNIT_MS = 10 * 60000
+export const timeboxMs = (value) => {
+  const match = String(value ?? '').match(/^(\d+(?:\.\d+)?)(m|h)$/)
+  return match ? Number(match[1]) * (match[2] === 'h' ? 3600000 : 60000) : null
+}
+const depIds = (dep) => String(dep ?? '').split(/[\s,]+/).filter((id) => TASK_ID.test(id))
 const positive = (value, fallback, label, integer = false) => {
   const n = Number(value ?? fallback)
   if (!Number.isFinite(n) || n <= 0 || (integer && !Number.isSafeInteger(n))) throw new SkillPackageError(`${label}: 양수가 필요합니다.`)
@@ -119,6 +136,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const batchSize = positive(options.batchSize, 3, 'batch-size', true), timeoutMs = positive(options.timeoutMs, 3600000, 'timeout-ms')
   const optionHours = options.finalReserveHours === undefined ? undefined : Number(options.finalReserveHours)
   if (optionHours !== undefined && (!Number.isFinite(optionHours) || optionHours < 0 || optionHours >= hours)) throw new SkillPackageError('final-reserve-hours: 0 이상 max-hours 미만이 필요합니다.')
+  const scopeIds = options.tasks === undefined ? null : approvedTasks(Array.isArray(options.tasks) ? options.tasks : String(options.tasks).replaceAll(',', ' '))
   const context = await vibeSession(options), root = context.root
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'haeram-vibe-loop.lock')
@@ -147,6 +165,17 @@ export async function vibeLoop(options = {}, injected = {}) {
     } finally { await releaseLoop(lock, owner.runId) }
   }
   const state = await deps.status({ ...options, tag: options.tag })
+  // --tasks: the run works only these tasks (and what it creates for them). Checked up front, so an
+  // unattended night never waits on a prerequisite nobody is going to finish.
+  const initialIds = new Set((state.remaining ?? []).map((task) => task.id))
+  if (scopeIds) {
+    const done = new Set((await readdir(path.join(root, 'spec/tasks/done')).catch(() => [])).map((name) => name.split('.')[0]))
+    const rows = new Map((state.remaining ?? []).map((task) => [task.id, task]))
+    const missing = scopeIds.filter((id) => !rows.has(id) && !done.has(id))
+    if (missing.length) throw new SkillPackageError('--tasks: STATE tasks와 tasks/done에 없는 태스크입니다.', missing)
+    const outside = scopeIds.flatMap((id) => depIds(rows.get(id)?.dep).filter((dep) => !scopeIds.includes(dep) && !done.has(dep)).map((dep) => `${id} → ${dep}`))
+    if (outside.length) throw new SkillPackageError('--tasks: 범위 밖 선행 태스크가 끝나지 않았습니다. 범위에 넣거나 먼저 끝내세요.', outside)
+  }
   const verify = await readVerification(root)
   const batchVerify = options.verify ?? verify.batch
   if (!Array.isArray(batchVerify) || batchVerify.some((command) => typeof command !== 'string' || !command.trim())) throw new SkillPackageError('--verify에는 실행 가능한 명령이 필요합니다.')
@@ -156,7 +185,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   let reserve = await estimateReserve()
   if (reserve.ms >= hours * 3600000) throw new SkillPackageError(`마감 관문 실측(전체 검증 2회+수정 1회+CI)이 ${(reserve.ms / 3600000).toFixed(2)}시간이라 max-hours 안에 구현 시간이 없습니다. --max-hours를 늘리거나 --final-reserve-hours를 지정하세요.`)
   const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? 'command', permissionMode: options.permissionMode ?? 'acceptEdits',
-    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs }, reserve, verify, batchVerify,
+    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS }, scope: scopeIds, reserve, verify, batchVerify,
     directory, stopFile, manifest, freshSessionPerUnit: true, pushEachUnit: Boolean(options.pushEachUnit), notifyCommand: options.notifyCommand ?? null }
   if (options.dryRun) return { ...plan, dryRun: true, modelRequests: 0 }
   if ((await inspectWork({ targetRoot: root })).mode !== 'single') throw new SkillPackageError('vibe loop는 단독 checkout에서 실행하세요. 활성 work 공간은 work run을 사용합니다.')
@@ -187,10 +216,28 @@ export async function vibeLoop(options = {}, injected = {}) {
   const report = `spec/reports/${new Date(start).toISOString().slice(2, 10).replaceAll('-', '')}-${options.tag}.md`
   const reportPath = path.join(root, report)
   let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false, pruned = null
-  let priorityTask = /^T\d+$/.test(previous?.priorityTask ?? '') ? previous.priorityTask : null
+  // scope grows with the tasks this run creates for scoped work (a split, a prerequisite, a repair).
+  const scope = scopeIds ? new Set(scopeIds) : null
+  const inScope = (id) => !scope || scope.has(id)
+  // A task that did not exist when the run started joins the scope when it depends on a scoped task
+  // or a scoped task depends on it. Tasks other sessions planned meanwhile stay out.
+  const growScope = (tasks) => {
+    for (let grew = true; grew;) {
+      grew = false
+      for (const task of tasks) {
+        if (scope.has(task.id) || initialIds.has(task.id)) continue
+        if (depIds(task.dep).some((id) => scope.has(id)) || tasks.some((other) => scope.has(other.id) && depIds(other.dep).includes(task.id))) { scope.add(task.id); grew = true }
+      }
+    }
+  }
+  let priorityTask = /^T\d+$/.test(previous?.priorityTask ?? '') && inScope(previous.priorityTask) ? previous.priorityTask : null
   // repairTask: the gate/CI repair this run queued. failedGate: the code a gate last failed on.
   let repairTask = null, failedGate = null, gateFailures = 0
-  let recovery = previous?.recovery?.reason === 'blocked-task' && /^T\d+$/.test(previous.recovery.taskId ?? '') ? previous.recovery : null
+  let recovery = ['blocked-task', 'interrupted', 'split'].includes(previous?.recovery?.reason) && /^T\d+$/.test(previous.recovery.taskId ?? '') && inScope(previous.recovery.taskId) ? previous.recovery : null
+  // ladder: per task, units that ended before finishing it since its last split, and whether it was
+  // split. snapshots: the uncommitted work those units left.
+  const ladder = new Map(recovery?.cuts ? [[recovery.taskId, { cuts: recovery.cuts, split: Boolean(recovery.split) }]] : [])
+  const snapshots = recovery?.snapshot ? [{ ...recovery.snapshot, task: recovery.taskId }] : []
   const dispatches = [], batches = []
   const operationalErrors = [], configHistory = []
   const appliedConfig = { pushEachUnit: Boolean(options.pushEachUnit) }
@@ -225,7 +272,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const snapshot = () => ({ ...plan, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, pruned, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, scope: scope ? [...scope] : null, snapshots, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -255,7 +302,8 @@ export async function vibeLoop(options = {}, injected = {}) {
   const updateReport = async (closing = false) => {
     let text = await readFile(reportPath, 'utf8')
     if (closing) text = text.replace(/\bto:-/, `to:${new Date(deps.now()).toISOString()}`)
-    const lines = pending.map((entry) => `- ${entry.result?.kind ?? 'session'} ${entry.result?.id ?? '-'}: ${entry.result?.outcome ?? (entry.stopped ? `cancelled (${entry.stopped})` : 'failed')} (${entry.head.slice(0, 12)})`).filter((line) => !text.includes(line))
+    const outcome = (entry) => entry.result?.outcome ?? (CUT.has(entry.stopped) ? `cut (${entry.stopped})` : entry.stopped ? `cancelled (${entry.stopped})` : 'failed')
+    const lines = pending.map((entry) => `- ${entry.result?.kind ?? 'session'} ${entry.result?.id ?? entry.task ?? '-'}: ${outcome(entry)}${entry.leftover ? ` · uncommitted work → ${entry.leftover.ref}` : ''}${entry.parked ? ' · parked' : ''} (${entry.head.slice(0, 12)})`).filter((line) => !text.includes(line))
     if (lines.length) text = text.replace('\n## decided', `${lines.join('\n')}\n\n## decided`)
     const current = await deps.status({ ...options, targetRoot: root, section: 'inbox', fetch: false })
     for (const kind of ['decided', 'parked']) {
@@ -269,7 +317,8 @@ export async function vibeLoop(options = {}, injected = {}) {
     if (checks.length) text = text.replace('\n## next', `${checks.join('\n')}\n\n## next`)
     // Where the run's time went, once, when the run closes (a reopened report gets a fresh line).
     if (closing) text = text.replace(/^- time: .*\n/m, '').replace('\n## next', `${timeLine(timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }))}\n\n## next`)
-    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}`)
+    const kept = snapshots.filter((snapshot) => !snapshot.dropped).map((snapshot) => `- uncommitted work kept: ${snapshot.ref} (${snapshot.task ?? '-'}, ${snapshot.fileCount} files)\n`).join('')
+    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${kept}`)
     await metadata.writeReport(text)
   }
   const recordReport = (closing) => metadataStep('report-write', () => updateReport(closing))
@@ -319,6 +368,40 @@ export async function vibeLoop(options = {}, injected = {}) {
     await git(root, ['add', '--', file, taskPath])
     await git(root, ['commit', '--quiet', '--only', '-m', `create-task ${id}: ${title}`, '--', file, taskPath])
     priorityTask = repairTask = id
+    scope?.add(id)
+  }
+  // An unfinished unit's uncommitted changes must block neither the next unit nor the gate. They are
+  // kept as a commit on a local ref (never on the branch, never pushed; a staged-only version is its
+  // second parent), the tree returns to HEAD, and the next fresh unit gets the snapshot to restore.
+  const keepLeftover = async (task, cause) => {
+    if (!(await git(root, ['status', '--porcelain', '--untracked-files=all'])).trim()) return null
+    const head = (await git(root, ['rev-parse', 'HEAD'])).trim(), tree = await workingTree(root)
+    const index = (await git(root, ['write-tree']).catch(() => '')).trim()
+    const parents = [head]
+    if (index && index !== tree && index !== (await git(root, ['rev-parse', 'HEAD^{tree}'])).trim()) parents.push((await git(root, ['commit-tree', index, '-p', head, '-m', `vibe ${options.tag} unit ${count}: staged`])).trim())
+    const commit = (await git(root, ['commit-tree', tree, ...parents.flatMap((parent) => ['-p', parent]), '-m', `vibe ${options.tag} unit ${count} ${task ?? '-'}: ${cause}`])).trim()
+    const ref = `refs/haeram/units/${options.tag}/${runId.slice(0, 8)}-${count}`
+    await git(root, ['update-ref', ref, commit])
+    const files = (await git(root, ['diff', '--name-only', head, commit])).trim().split('\n').filter(Boolean)
+    // Only the untracked paths git reports: a clean of the whole tree would also drop empty directories
+    // that were there before the unit (git cannot see them, so the snapshot cannot hold them).
+    const untracked = (await git(root, ['status', '--porcelain', '-z', '--untracked-files=normal'])).split('\0').filter((entry) => entry.startsWith('?? ')).map((entry) => entry.slice(3))
+    await git(root, ['reset', '--hard', '--quiet', 'HEAD'])
+    if (untracked.length) await git(root, ['clean', '-f', '-d', '--quiet', '--', ...untracked])
+    const snapshot = { ref, commit, base: head, task, cause, unit: count, files: files.slice(0, 20), fileCount: files.length }
+    snapshots.push(snapshot)
+    await event('unit-leftover', { unit: count, task, cause, ref, files: files.length })
+    return snapshot
+  }
+  // The last rung: a task still unfinished after a continuation and a split waits for the owner.
+  const parkTask = async (id, snapshot) => {
+    const file = path.join(root, 'spec/STATE.md')
+    const date = new Date(deps.now()).toISOString().slice(2, 10).replaceAll('-', '')
+    const line = `- ${date} parked ${id}: units kept ending before finishing it, after a continuation and a split${snapshot ? `; last attempt kept at ${snapshot.ref}` : ''}. Needs a smaller split or a longer --timeout-ms.`
+    await writeFile(file, appendInbox(await readFile(file, 'utf8'), line))
+    await git(root, ['add', '--', file])
+    await git(root, ['commit', '--quiet', '--only', '-m', `vibe ${options.tag}: park ${id}`, '--', file])
+    await event('task-parked', { task: id, snapshot: snapshot?.ref ?? null })
   }
   // A batch boundary only records the report. Batch suites, the push and the CI wait run when
   // the work runs out or in the closing window. Per-unit publication requires an explicit option.
@@ -431,10 +514,11 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (priorityTask && status.remaining && !status.remaining.some((task) => task.id === priorityTask)) priorityTask = null
       if (repairTask && status.remaining && !status.remaining.some((task) => task.id === repairTask)) repairTask = null
       if (recovery && status.remaining && !status.remaining.some((task) => task.id === recovery.taskId)) recovery = null
+      if (scope) growScope(status.remaining ?? [])
       if (!recovery && status.implementation?.blocked?.length) {
         const inbox = await deps.status({ ...options, targetRoot: root, section: 'inbox', fetch: false })
         const parked = new Set((inbox.inbox ?? []).filter((entry) => entry.kind === 'parked').flatMap((entry) => entry.refs))
-        const taskId = status.implementation.blocked.find((id) => !parked.has(id))
+        const taskId = status.implementation.blocked.find((id) => !parked.has(id) && inScope(id))
         if (taskId) { recovery = { reason: 'blocked-task', taskId }; priorityTask = taskId }
       }
       // The closing window, re-measured at every boundary. Not a cancellation: nothing new starts,
@@ -442,20 +526,30 @@ export async function vibeLoop(options = {}, injected = {}) {
       // whose unit must leave room for the gate's re-run.
       reserve = await estimateReserve()
       let repairMs = null
-      if (deps.now() >= deadline - reserve.ms) {
+      if (deps.now() >= deadline - reserve.ms - MIN_UNIT_MS) {
         const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
         if (head !== base && !(failedGate && !(await codeChanged(failedGate.head, head)))) { await flush(false, true); continue }
         repairMs = deadline - deps.now() - (reserve.gateMs ?? 0)
         if (!repairTask || !status.runnable?.includes(repairTask) || repairMs <= 0) { reason = 'final-window'; break }
       }
-      const finished = status.parkedOnly ? 'parked-only' : status.settled || status.route === 'ideation-first' ? 'no-work' : null
+      const runnable = (status.runnable ?? []).filter(inScope)
+      const scoped = scope && !runnable.length ? ((status.remaining ?? []).some((task) => scope.has(task.id)) ? 'scope-blocked' : 'scope-done') : null
+      const finished = scoped ?? (status.parkedOnly ? 'parked-only' : status.settled || status.route === 'ideation-first' ? 'no-work' : null)
       if (finished && !recovery) {
         // Publish before deciding there is no more work: CI can add a repair task.
         if ((await git(root, ['rev-parse', 'HEAD'])).trim() !== base) { await flush(false, true); if (priorityTask || recovery) continue }
         reason = finished; break
       }
+      // A unit ends inside the work window. An explore unit needs its whole timebox, so it starts
+      // only when the timebox still fits; any other task fits and is cut at the window if need be.
+      const workLeft = deadline - reserve.ms - deps.now()
+      const exploreMs = new Map((status.implementation?.explore ?? []).map(({ id, timebox }) => [id, timeboxMs(timebox)]).filter(([, ms]) => ms))
+      const unitLimit = (id) => exploreMs.has(id) ? Math.max(timeoutMs, exploreMs.get(id) + EXPLORE_EXIT_MS) : timeoutMs
       const nextTask = status.next?.[0]?.match(/^- implement-task (T\d+)\b/)?.[1]
-      const selected = repairMs !== null ? repairTask : recovery?.taskId ?? (status.runnable?.includes(priorityTask) ? priorityTask : null) ?? status.implementation?.resume?.find((id) => status.runnable?.includes(id)) ?? (status.runnable?.includes(nextTask) ? nextTask : null) ?? status.runnable?.[0]
+      const queued = [priorityTask, ...(status.implementation?.resume ?? []), nextTask, ...runnable].filter((id) => id && runnable.includes(id))
+      const selected = repairMs !== null ? repairTask : recovery?.taskId ?? queued.find((id) => !exploreMs.has(id) || unitLimit(id) <= workLeft) ?? null
+      if (selected === null && queued.length) { reason = 'explore-no-time'; break }
+      const limitMs = repairMs !== null ? Math.min(timeoutMs, Math.max(1, repairMs)) : Math.min(unitLimit(selected), Math.max(1, workLeft))
       if (status.concurrency === 'strict' && context.target) {
         await metadataCommit(`vibe ${options.tag}: session presence`)
         await deps.claim({ ...options, targetRoot: root, task: selected })
@@ -464,33 +558,66 @@ export async function vibeLoop(options = {}, injected = {}) {
       const before = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
       await metadata.assertClean()
       const brief = selected ? await vibeBrief({ targetRoot: root, task: selected, diffBase: before.head }) : null
+      const dispatched = recovery
       const job = { schemaVersion: 1, role: 'unit', mode: 'autopilot', workspaceMode: 'single', workspace: root, tag: options.tag, report, status, brief,
         cliCommand: [process.execPath, cli], allowTools: allowTool, permissionMode: options.permissionMode ?? 'acceptEdits', diffBase: before.head, hostManaged: true,
+        timeLimit: { minutes: Math.max(1, Math.round(limitMs / 60000)), cutAt: new Date(Date.now() + limitMs).toISOString() },
         ...(recovery ? { recovery } : {}) }
+      // A continuation consumes its snapshot; once the task is done the ref is dropped.
+      if (dispatched?.snapshot && dispatched.reason !== 'split') for (const snapshot of snapshots) if (snapshot.ref === dispatched.snapshot.ref) snapshot.handed = true
       phase = 'unit'; await save()
       const unitStart = deps.now()
-      const receipt = await deps.execute({ ...options, ...appliedConfig }, job, directory, { stopFile, deadline, signal: controller.signal, timeoutMs: Math.min(timeoutMs, Math.max(1, repairMs ?? deadline - deps.now())) })
+      const receipt = await deps.execute({ ...options, ...appliedConfig }, job, directory, { stopFile, deadline, signal: controller.signal, timeoutMs: limitMs })
       count++
       const after = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
-      const entry = { ...receipt, unit: count, head: after.head, at: new Date(deps.now()).toISOString(), ms: deps.now() - unitStart }
+      const cut = CUT.has(receipt.stopped)
+      const failed = receipt.exitCode !== 0 || !receipt.result
+      const taskId = receipt.result?.id || selected || null
+      // Only an unfinished unit's changes are presumed its own attempt and kept aside. A user stop
+      // leaves the tree for the user; changes after a unit that reported success may be the owner's,
+      // so they stay in place and stop the run (the boundary's assertClean).
+      const leftover = failed && (cut || !receipt.stopped) ? await keepLeftover(taskId, receipt.stopped ?? 'failed') : null
+      const entry = { ...receipt, unit: count, task: taskId, head: after.head, at: new Date(deps.now()).toISOString(), ms: deps.now() - unitStart, ...(leftover ? { leftover: { ref: leftover.ref, files: leftover.fileCount } } : {}) }
       dispatches.push(entry); pending.push(entry)
       await checkpoint()
-      const failed = receipt.exitCode !== 0 || !receipt.result
       // A real unit's duration sizes the repair buffer of the closing reserve.
       if (!failed) await recordTiming(context.runtime, timingKey('unit'), deps.now() - unitStart)
+      const kept = (snapshot) => snapshot && { ref: snapshot.ref, commit: snapshot.commit, base: snapshot.base, files: snapshot.files, fileCount: snapshot.fileCount }
       if (!failed) {
-        const taskId = receipt.result.id || selected
         // A unit owns planning as well as implementation. Give a blocked task a
         // fresh planning unit even if its STATE row is no longer runnable.
         recovery = receipt.result.outcome === 'blocked' && /^T\d+$/.test(taskId ?? '')
           ? { reason: 'blocked-task', taskId, previousResult: receipt.result } : null
         if (recovery) priorityTask = taskId
         if (receipt.result.outcome === 'parked' && taskId === priorityTask) priorityTask = null
+        // A completed split narrows the task: its count restarts, and it is not split again.
+        if (dispatched?.reason === 'split' && receipt.result.outcome !== 'blocked') ladder.set(dispatched.taskId, { cuts: 0, split: true })
+        if (receipt.result.kind === 'task' && receipt.result.outcome === 'completed') {
+          for (const snapshot of snapshots) if (snapshot.task === taskId && snapshot.handed && !snapshot.dropped) { await git(root, ['update-ref', '-d', snapshot.ref]); snapshot.dropped = true }
+        }
+      } else if ((cut || leftover) && /^T\d+$/.test(taskId ?? '')) {
+        // An unfinished unit is work for the next fresh unit, not the end of the run.
+        const rung = { ...(ladder.get(taskId) ?? { cuts: 0, split: false }) }
+        rung.cuts++
+        ladder.set(taskId, rung)
+        const snapshot = kept(leftover ?? (dispatched?.taskId === taskId ? dispatched.snapshot : null))
+        const step = nextRung(rung)
+        if (step === 'park') {
+          await parkTask(taskId, snapshot)
+          entry.parked = true; recovery = null
+          if (priorityTask === taskId) priorityTask = null
+        } else {
+          recovery = { reason: step, cause: receipt.stopped ?? 'failed', taskId, cuts: rung.cuts, split: rung.split, ...(snapshot ? { snapshot } : {}) }
+          priorityTask = taskId
+        }
       }
-      failureStreak = failed ? failureStreak + 1 : 0
-      noProgress = before.head === after.head && before.state === after.state ? noProgress + 1 : 0
+      // A unit cut while it was changing things was working, not failing: only an idle cut counts.
+      const progressed = before.head !== after.head || before.state !== after.state || Boolean(leftover)
+      failureStreak = failed && !(cut && progressed) ? failureStreak + 1 : 0
+      noProgress = progressed ? 0 : noProgress + 1
       await save()
-      if (receipt.stopped) {
+      if (cut) await event('unit-cut', { unit: count, task: taskId, cause: receipt.stopped, ms: entry.ms, snapshot: leftover?.ref ?? null, next: recovery?.taskId === taskId ? recovery.reason : entry.parked ? 'parked' : null })
+      else if (receipt.stopped) {
         reason = receipt.stopped
         if (['stop-file', 'signal', 'max-hours'].includes(reason)) stop(reason)
         else { error = receipt.error ?? `unit stopped: ${reason}`; await event('failed', { reason, error }) }
@@ -523,7 +650,9 @@ export async function vibeLoop(options = {}, injected = {}) {
       try {
         phase = 'finalizing'
         await metadataStep('active-end', () => metadata.beat(true))
-        if (!error && failureStreak === 0 && !controller.signal.aborted && deps.now() < deadline) await flush(true)
+        // Failed units left nothing behind (keepLeftover), so the work earlier units committed
+        // still goes through the gate and out. Only a host error or a cancellation skips it.
+        if (!error && !controller.signal.aborted && deps.now() < deadline) await flush(true)
       } catch (caught) {
         if (controller.signal.aborted || stopReason) reason = stopReason ?? reason
         else { error ??= caught.message; reason = 'failed'; await event('failed', { error: caught.message }) }

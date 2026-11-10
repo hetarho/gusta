@@ -53,11 +53,11 @@ runtime는 `<Git common dir>/haeram/v1/loops/<tag>/`다(일반 checkout은 `.git
 | `loop.json` | 원자적 교체. runId/host/PID, phase/status, startedAt/workDeadline/deadline/endedAt, units, requestedConfig/appliedConfig, configHistory, reason/stopReason, error/operationalErrors |
 | `heartbeatAt` | 약 1초마다 기록. 60초 지연은 건강하지 않은 상태이며 살아 있는 소유권을 탈취하지 않음 |
 | `terminal.json` | 최종 manifest 쓰기 실패의 별도 종료 기록. `--status`는 같은 runId일 때 병합 |
-| `events.jsonl` | started/configuration-applied/stopped, failed/metadata-error/host-lost/heartbeat-stale/supervisor-error 등 |
+| `events.jsonl` | started/configuration-applied/stopped, unit-cut/unit-leftover/task-parked(알림 없음), failed/metadata-error/host-lost/heartbeat-stale/supervisor-error 등 |
 | `notifications/<event-id>.json` | 실패 이벤트의 내구성 있는 outbox와 실제 훅 시도 결과 |
 
 독립 감시 프로세스는 호스트가 비정상 종료되면 `status:failed`, `reason:host-lost`, `running:false`를 기록하고 미적용 요청을 취소한다. 호스트는 감시자가 사라져도 운영 오류로 중단한다. `--status`는 원시 running 플래그만 믿지 않고 PID·heartbeat·감시자·terminal을 확인한다. 다른 host 소유권이나 살아 있는 PID는 자동 탈취하지 않는다. 사용자 취소·no-work·원래 시간/단위 한도를 감시자가 되돌리지 않는다.
-단위 timeout·출력 한도 같은 비사용자 강제 종료도 성공으로 반환하지 않고 실패 이벤트를 남긴다. 체크포인트·절전 방지 종료 실패도 운영 오류로 남기며 조용히 버리지 않는다.
+단위 상한(`--timeout-ms`, explore는 timebox+30분, 어느 쪽이든 마감 구간 시작까지)·출력 한도로 끊긴 단위는 성공으로 반환하지 않는다: `unit-cut` 이벤트와 보고서 `cut (...)` 줄로 남기되 loop는 계속한다. 실패·절단 단위의 미커밋 변경은 `refs/haeram/units/<tag>/<run>-<n>`에 스냅샷하고(스테이징만 된 내용은 둘째 부모, push 안 함) 그 경로만 HEAD로 되돌린 뒤 새 단위에 넘긴다 — 같은 태스크는 이어가기→한 번 쪼개기→inbox parked(`unit-leftover`·`task-parked`). 이어받은 태스크가 끝나면 그 ref를 지우고, 남은 ref는 보고서 next에 적는다. 변경 없는 절단만 실패로 세며 연속 2회면 `session-failures`로 멈추지만 앞 단위가 커밋한 코드는 마감 관문·push를 거친다. 성공을 보고한 단위 뒤의 미커밋 변경은 사람의 것일 수 있어 그대로 두고 다음 단위·게시를 멈춘다. 사용자 취소는 트리를 건드리지 않는다. 체크포인트·절전 방지 종료 실패도 운영 오류로 남기며 조용히 버리지 않는다.
 
 `--notify-command '<command>'`를 시작 옵션에 지정하면 호스트와 감시자가 실패 이벤트 JSON을 stdin으로 보낸다. 명령은 대상 checkout에서 실행하며 stdout/stderr는 `notification.log`, 제한은 10초다. exit 0만 `delivery:hook-acknowledged`, `deliveredToHook:true`다. 훅 실패는 `delivery:failed`, 미설정은 `pending`이며 둘 다 전달 완료가 아니다. 훅 성공도 외부 사용자 수신 증거는 아니므로 `externalDelivered:false`를 유지한다.
 
