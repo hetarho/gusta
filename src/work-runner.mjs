@@ -12,6 +12,7 @@ import { workLimits, activeAttempt } from './work-policy.mjs'
 import { workingTree } from './check-cache.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { git } from './workspace.mjs'
+import { pruneWork } from './prune.mjs'
 
 const { repository, groupOf, attemptOf, now, fail, requireStopped, commands, tierChecks, briefFor } = workInternals
 // A session carries its context into the next lane task, correction or answered decision,
@@ -111,7 +112,7 @@ export async function runWork(options) {
   let interrupted = false
   const abort = new AbortController()
   let heartbeatError = null
-  let snapshot = null, snapshotError = null, finish = null, finishError = null
+  let snapshot = null, snapshotError = null, finish = null, finishError = null, pruned = null, pruneError = null
   const decisions = []
   let lastActivity = Date.now()
   let decisionTimedOut = false
@@ -451,6 +452,10 @@ export async function runWork(options) {
       }
       finalBoard = await workBoard(options).catch(() => null)
     }
+    // Every child has stopped: integrated units no longer need their workspace or branch (prune-branches).
+    // This runs while the runner record still holds the group, so no session reads a unit mid-cleanup
+    // as live work. The group itself stays for the coordinator; vibe prune closes it at session end.
+    try { pruned = await pruneWork({ ...options, work: group.id }) } catch (error) { pruneError = error.message }
     await transaction(context.root, (state) => {
       const current = groupOf(state, group.id)
       if (current.runner?.id === run.id) { current.lastRun = { ...run, stoppedAt: now(), dispatched, failures, outcome: finalBoard ? outcomeFor(finalBoard) : 'needs-attention' }; delete current.runner }
@@ -460,7 +465,7 @@ export async function runWork(options) {
   const board = await workBoard(options)
   const status = await inspectWork(options)
   const attempts = status.attempts.filter((entry) => entry.group === group.id)
-  return { schemaVersion: 1, run: run.id, dispatched, failures, decisions, heartbeatError, snapshot, snapshotError, finish, finishError, summary: board.summary,
+  return { schemaVersion: 1, run: run.id, dispatched, failures, decisions, heartbeatError, snapshot, snapshotError, finish, finishError, pruned, pruneError, summary: board.summary,
     outcome: outcomeFor(board),
     remaining: board.tasks.map(({ id, waitingOn, runtimeStatus, attempt }) => ({ id, waitingOn, runtimeStatus, attempt: attempt?.id ?? null })),
     attempts: attempts.map(({ id, taskId, status, reason }) => ({ id, taskId, status, reason })) }

@@ -17,5 +17,5 @@
   - `review`: review-task로 `review.workspace`를 읽기 전용 검토하고 `work review-finish`를 실행한다.
   - `blocked`: 직접 고칠 수 있으면 고치고 `work update --attempt <id> --status doing` 후 다시 submit. 기획 판단이 필요하면 함께 모드는 보고하고 멈추고, 맡김 모드는 결정 요청(질문·선택지·추천)을 `work update --attempt <id> --status blocked --reason <요약> --decision-file <repo 밖 JSON>`으로 남기고 루프를 계속한다 — 조정자가 결정한 뒤 재개된다.
   - `wait`: 그대로 다시 호출한다(`reason:needs-reviewer`면 응답의 `instruction`대로).
-  - `complete`: 묶음 브랜치·검증 커밋과 push 브랜치 반영 여부를 보고한다(묶음에 `--push`가 있으면 통합마다 이미 올라가 있다). push가 없는 묶음의 main 반영은 함께 모드면 묻고, 맡김 모드면 inbox `parked`. `stalled`: 막힌 원인을 보고하고 멈춘다(맡김이면 inbox `parked` 후 다른 일). `main-session`: 남은 일이 explore 태스크와 그 후속뿐이다 — 묶음을 마치고 메인 세션에서 단독으로 진행한다.
+  - `complete`: 응답 instruction대로 `landFrom`에서 `vibe push`로 SETTINGS land에 반영하고 묶음 브랜치·검증 커밋·반영 결과를 보고한다(묶음에 `--push`가 있으면 통합마다 이미 올라가 있다). land가 미정이면 함께 모드는 haeram-init으로 정하고, 맡김 모드는 inbox `parked`. `stalled`: 막힌 원인을 보고하고 멈춘다(맡김이면 inbox `parked` 후 다른 일). `main-session`: 남은 일이 explore 태스크와 그 후속뿐이다 — 묶음을 마치고 메인 세션에서 단독으로 진행한다.
 - 루프에서는 `work integrate`·`work finish`를 직접 실행하지 않고, 다른 세션의 작업 공간에 쓰지 않는다.

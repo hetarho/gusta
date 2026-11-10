@@ -38,7 +38,7 @@ const HELP = `작업 묶음 (Orca 등 외부 도구 없이도 사용 가능)
   work integrate --attempt <id> [--verify <command> ...] [--auto-correct]
   work finish --work <name> [--verify <command> ...]
   work release --attempt <id> [--reason <text>]
-  work cleanup --attempt <id>
+  work cleanup --attempt <id>                  prune-branches(기본 true)면 합쳐진 단위 브랜치·ignored 산출물·후보 공간까지 삭제
   work recover (--attempt <id> | --work <name>)
   work unlock --lock-id <id>
 

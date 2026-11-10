@@ -4,6 +4,7 @@ import path from 'node:path'
 import { sections, tableRows, quoteLine, quoteFields, splitRefs, TASK_ID, TASK_ST, EXPLORE, exploreValue, EXIT_LINE, SESSION_TAG, ISO_UTC, INBOX_LINE, REPORT_FILE, REPORT_SECTIONS, parseSsot, references, refId } from './spec-format.mjs'
 import { touchesErrors } from './work-policy.mjs'
 import { dependencyErrors, laneErrors, laneValue } from './task-graph.mjs'
+import { parseSettings } from './settings.mjs'
 
 const DOMAIN_ID = /^[A-Z]{2,6}$/
 const DOC_ST = /^(open|ready|converted)@\d{6}$/ // ideation · review
@@ -264,6 +265,8 @@ export async function lintSpec({ targetRoot } = {}) {
   if (push !== undefined && !['-', '?'].includes(push) && !/^[A-Za-z0-9._/-]+$/.test(push)) {
     errors.push(`cfg push 값이 잘못됐습니다: ${push || '(빈 값)'} (브랜치 이름|-|?)`)
   }
+  // Legacy cfg push/plan stay readable (no warning: integration requires a warning-free spec);
+  // vibe status/settings report them as `legacy` and migrate moves them.
 
   // ssot
   const ssotRows = tableRows(stateSections.get('ssot'))
@@ -717,6 +720,15 @@ export async function lintSpec({ targetRoot } = {}) {
     }
     const order = names.filter((name) => REPORT_SECTIONS.includes(name))
     if (order.join(' ') !== REPORT_SECTIONS.filter((name) => order.includes(name)).join(' ')) warnings.push(`reports/${file} 섹션 순서가 골격과 다릅니다.`)
+  }
+
+  // SETTINGS.md (optional): a missing file or key means the default. An invalid value is an error —
+  // prune acts on it, and refuses to guess.
+  const settings = await readIfExists(path.join(specRoot, 'SETTINGS.md'))
+  if (settings !== null) {
+    const parsed = parseSettings(settings)
+    for (const problem of parsed.errors) errors.push(`SETTINGS.md: ${problem}`)
+    for (const key of parsed.unknown) warnings.push(`SETTINGS.md: 알 수 없는 설정 ${key} — vibe settings로 지원 키를 확인하세요.`)
   }
 
   // next / log

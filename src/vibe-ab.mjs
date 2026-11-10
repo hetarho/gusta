@@ -9,6 +9,7 @@ import { runtimeRoot, canonicalDestination } from './work-runtime.mjs'
 import { atomicJSON, processAlive } from './loop-control.mjs'
 import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
 import { inspectProviders, availableProvider } from './work-providers.mjs'
+import { readSetting } from './settings.mjs'
 import { SkillPackageError } from './errors.mjs'
 
 // A/B comparison: one problem, 2..6 variants, each on its own branch, sibling worktree and
@@ -227,18 +228,22 @@ async function removeWorktrees(ctx, record, names) {
 async function pruneBranches(ctx, record, names) {
   for (const name of names) await git(ctx.root, ['branch', '-D', record.variants[name].branch]).catch(() => {})
 }
+// Once a variant is picked or the comparison is dropped no variant branch is used again:
+// they go by default (spec/SETTINGS.md prune-branches); --prune-branches forces it when that is false.
+const pruning = async (ctx, options) => options.pruneBranches || await readSetting({ root: ctx.root }, 'prune-branches')
 
 export async function abStop(options = {}) {
   const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
   const names = Object.keys(record.variants)
   for (const name of names) stopServer(record.variants[name])
   await save(ctx, record)
+  const prune = options.remove && await pruning(ctx, options)
   if (options.remove) {
     await removeWorktrees(ctx, record, names)
-    if (options.pruneBranches) await pruneBranches(ctx, record, names)
+    if (prune) await pruneBranches(ctx, record, names)
     await rm(recordFile(ctx, slug), { force: true })
   }
-  return { schemaVersion: 1, ok: true, slug, stopped: names, removed: Boolean(options.remove), branches: options.pruneBranches ? [] : names.map((name) => record.variants[name].branch) }
+  return { schemaVersion: 1, ok: true, slug, stopped: names, removed: Boolean(options.remove), branches: prune ? [] : names.map((name) => record.variants[name].branch) }
 }
 
 // Adoption merges exactly one variant into the checkout that started the comparison. Recording the
@@ -259,9 +264,10 @@ export async function abPick(options = {}) {
   }
   const merged = (await git(ctx.root, ['rev-parse', 'HEAD'])).trim()
   await removeWorktrees(ctx, record, names)
-  if (options.pruneBranches) await pruneBranches(ctx, record, names)
+  const prune = await pruning(ctx, options)
+  if (prune) await pruneBranches(ctx, record, names)
   await rm(recordFile(ctx, slug), { force: true })
-  return { schemaVersion: 1, ok: true, slug, adopted: name, merged, summary: winner.runs.at(-1)?.summary ?? null, branches: options.pruneBranches ? [] : names.map((other) => record.variants[other].branch) }
+  return { schemaVersion: 1, ok: true, slug, adopted: name, merged, summary: winner.runs.at(-1)?.summary ?? null, branches: prune ? [] : names.map((other) => record.variants[other].branch) }
 }
 
 export const AB_STEPS = { start: abStart, run: abRun, serve: abServe, exec: abExec, status: abStatus, pick: abPick, stop: abStop }

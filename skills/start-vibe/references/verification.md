@@ -21,7 +21,7 @@ ARCH task → `--task-verify`, 빠른 통합 검사 → `--verify`, 통합/e2e·
 1. 단위들을 통합하고 대상 브랜치의 최신 변경을 합친다. 조정 중에는 같은 checkout의 코드 쓰기를 멈추고 깨끗한 최종 후보를 확정한다. 기본은 모든 단위를 모은 뒤 한 번이며, 다른 세션 감지나 보고서 경계만으로 단위별 e2e/push를 켜지 않는다.
 2. 조정자 CLI 한 곳에서 최종 검증한다: 묶음이면 저장된 `work finish` 관문, 단독이면 `vibe check --tier batch --diff-base <묶음 시작 SHA> -- <command>`. batch/group은 clone 공용 heavy 락을 자동 획득하고 락 안에서 성공 기록을 재확인한다. 같은 트리·명령·범위의 성공은 재사용한다. `work finish`의 현재 검증 결과가 있으면 같은 e2e를 별도로 반복하지 않는다.
 3. 실패하거나 실행 중 코드/HEAD가 바뀌면 push하지 않는다. 조정자가 수정 작업을 배정하고 변경 후 최종 후보를 다시 검증한다. 실행하지 않은 검사는 통과로 기록하지 않는다.
-4. 성공한 검증 커밋을 `vibe push --verified-commit <검증 SHA>`로 전달한다(cfg push 브랜치가 있을 때만). sync/retry로 코드·설정·SSOT가 달라지면 CLI가 push를 거절한다. 현재 후보를 다시 검증한 뒤 새 SHA로 재시도한다. STATE·태스크·보고서·work 실행 기록만의 변경은 재검증을 요구하지 않는다. CI는 실제 코드 push 후 한 번 기다린다.
+4. 성공한 검증 커밋을 `vibe push --verified-commit <검증 SHA>`로 전달한다(SETTINGS land·push대로 — 할 일이 없으면 CLI가 none으로 끝낸다). sync/retry로 코드·설정·SSOT가 달라지면 CLI가 push를 거절한다. 현재 후보를 다시 검증한 뒤 새 SHA로 재시도한다. STATE·태스크·보고서·work 실행 기록만의 변경은 재검증을 요구하지 않는다. CI는 실제 코드 push 후 한 번 기다린다.
 
 위임된 단위 세션에서는 호스트가 strict 선점(SKILL.md 4절 `vibe claim`)을 맡는다.
 

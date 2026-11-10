@@ -1,4 +1,4 @@
-import { readFile, writeFile, readdir, mkdir, mkdtemp, rm, access } from 'node:fs/promises'
+import { readFile, writeFile, readdir, mkdir, mkdtemp, rm, access, realpath } from 'node:fs/promises'
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
@@ -14,6 +14,7 @@ import { lintSpec } from './spec-lint.mjs'
 import { workInternals } from './work-groups.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { readSettings, branchPlan, defaultBranch } from './settings.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { vibeCIWait, githubRepository } from './vibe-ci.mjs'
@@ -55,19 +56,48 @@ export async function fetchBranch(root, remote, source, target) {
   }
 }
 
-// Where this checkout pushes at the end of a session: cfg push names a branch the user chose.
-// Anything else (`-`, unset `?`, no cfg) commits only.
+// Move a local branch forward to commit: only a fast-forward and, where the branch is checked
+// out, only in a clean checkout (merged there with --ff-only).
+export async function advanceBranch(context, branch, commit) {
+  const { root } = context
+  const ref = `refs/heads/${branch}`
+  if (!(await exists(root, ref))) return 'absent'
+  const old = await sha(root, ref)
+  if (old === commit) return 'current'
+  if (!(await ancestor(root, old, commit))) return 'diverged'
+  const holder = context.workspace.git.worktrees.find((tree) => tree.branch === branch)
+  if (holder && await realpath(holder.path).catch(() => holder.path) === root) return 'self'
+  try {
+    if (!holder) await git(root, ['update-ref', ref, commit, old])
+    else if ((await git(holder.path, ['status', '--porcelain', '--untracked-files=no'])).trim()) return 'dirty'
+    else await git(holder.path, ['merge', '--ff-only', '--quiet', commit])
+    return 'ff'
+  } catch { return 'moved' }
+}
+
+// Code that changed after the final gate is not what was verified (spec bookkeeping aside).
+async function assertVerified(root, verifiedCommit, commit) {
+  if (!verifiedCommit) return
+  const verified = await sha(root, verifiedCommit)
+  const changed = (await git(root, ['diff', '--name-only', verified, commit])).trim().split('\n').filter((file) => file && !/^spec\/(?:STATE\.md$|reports\/|tasks\/|work\/)/.test(file))
+  if (changed.length) fail('최종 검증 이후 코드가 변경됐습니다. 합친 현재 결과를 다시 검증한 뒤 반영하세요.', changed)
+}
+
+// Where finished work goes, from spec/SETTINGS.md (legacy STATE cfg push/plan as fallback):
+// target is the branch `vibe push` publishes (push: true), land the branch work lands on.
+// Unset or push: false commits only.
 export async function vibeSession(options = {}) {
   const workspace = await inspectWorkspace(options)
   if (!workspace.git?.head) fail('커밋이 있는 Git checkout이 필요합니다.')
   const root = workspace.git.root
   const state = await readOptional(path.join(root, 'spec/STATE.md'))
-  const push = state === null ? null : cfgOf(state).get('push') ?? null
+  const settings = await readSettings({ root })
   const remotes = (await git(root, ['remote'])).split('\n').map((line) => line.trim()).filter(Boolean)
   const remote = options.remote ?? (remotes.includes('origin') ? 'origin' : remotes[0] ?? null)
   if (options.remote && !remotes.includes(options.remote)) fail(`원격이 없습니다: ${options.remote}`)
-  const target = push && !['-', '?'].includes(push) ? push : null
-  return { workspace, root, state, push, remote, target, branch: workspace.git.branch, runtime: runtimeRoot(workspace) }
+  const branches = branchPlan(settings.values, { branch: workspace.git.branch, defaultBranch: await defaultBranch(root) })
+  const target = branches.pushTarget
+  return { workspace, root, state, settings, branches, push: target ?? '-', remote, target, branch: workspace.git.branch, runtime: runtimeRoot(workspace) }
 }
 
 async function unmerged(root) {
@@ -112,21 +142,22 @@ export async function vibeSync(options = {}) {
   return { schemaVersion: 1, ok: true, action, head: await sha(root, 'HEAD'), target }
 }
 
-// Push HEAD to the push branch; a rejection means someone pushed first — sync and retry.
+// Land HEAD the way SETTINGS says: land-via pr opens a PR into land; push: true publishes to the
+// push branch (a rejection means someone pushed first — sync and retry); otherwise a land branch
+// other than this one takes the work as a local merge. Nothing to do is not an error.
 export async function vibePush(options = {}) {
   const context = await vibeSession(options)
-  if (!context.target) return { schemaVersion: 1, ok: true, pushed: null, reason: 'push-disabled' }
+  const { branches } = context
+  if (!context.target && !branches.landTarget) return { schemaVersion: 1, ok: true, pushed: null, reason: branches.unset ? 'land-unset' : 'push-disabled' }
   if (await designOf(context.workspace)) fail('이 checkout은 디자인 중입니다(vibe design). 사용자에게 디자인이 끝났는지 확인하고 start-design 마감(vibe design verify → end → 커밋) 뒤 push하세요.')
-  if (!context.remote) fail('push할 원격이 없습니다. cfg push를 -로 두거나 원격을 추가하세요.')
+  if (branches.via === 'pr' && branches.landTarget) return landByPR(context, options)
+  if (!context.target) return landLocal(context, options)
+  if (!context.remote) fail('push할 원격이 없습니다. spec/SETTINGS.md push를 false로 두거나 원격을 추가하세요.')
   let last
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const synced = await vibeSync(options)
     const pushed = await sha(context.root, 'HEAD')
-    if (options.verifiedCommit) {
-      const verified = await sha(context.root, options.verifiedCommit)
-      const changed = (await git(context.root, ['diff', '--name-only', verified, pushed])).trim().split('\n').filter((file) => file && !/^spec\/(?:STATE\.md$|reports\/|tasks\/|work\/)/.test(file))
-      if (changed.length) fail('최종 검증 이후 코드가 변경됐습니다. 원격을 합친 현재 결과를 다시 검증한 뒤 push하세요.', changed)
-    }
+    await assertVerified(context.root, options.verifiedCommit, pushed)
     try {
       const tracking = `refs/remotes/${context.remote}/${context.target}`
       const diffBase = options.diffBase ?? (await exists(context.root, tracking) ? await sha(context.root, tracking) : undefined)
@@ -143,6 +174,86 @@ export async function vibePush(options = {}) {
     }
   }
   return fail('push하지 못했습니다.', [last])
+}
+
+// push: false with land on another branch: take land in first (STATE by section) so land itself
+// only fast-forwards, then move the local land branch to HEAD.
+async function landLocal(context, options) {
+  const { root } = context
+  const land = context.branches.landTarget
+  const ref = `refs/heads/${land}`
+  if (!(await exists(root, ref))) fail(`land 브랜치 ${land}가 없습니다. 브랜치를 만들거나 /haeram-setting으로 land를 고치세요.`)
+  if ((await git(root, ['status', '--porcelain', '--untracked-files=no'])).trim()) fail('커밋하지 않은 변경이 있습니다. 먼저 커밋하세요.')
+  let merged = false
+  if (!(await ancestor(root, ref, 'HEAD'))) {
+    try { await git(root, [...await stateMergeArgs(root, context.runtime), 'merge', '--no-edit', '--quiet', ref]); merged = true } catch (error) {
+      const conflicts = await unmerged(root)
+      await git(root, ['merge', '--abort'], [1, 128])
+      fail(`${land}과 충돌했습니다. 직접 merge해 충돌을 해결한 뒤 다시 반영하세요.`, conflicts.length ? conflicts : [error.stderr || error.message])
+    }
+  }
+  const head = await sha(root, 'HEAD')
+  await assertVerified(root, options.verifiedCommit, head)
+  const moved = await advanceBranch(context, land, head)
+  if (['dirty', 'diverged', 'moved'].includes(moved)) fail(`${land}에 반영하지 못했습니다(${moved === 'dirty' ? '그 브랜치 checkout에 커밋하지 않은 변경' : '그 사이 브랜치가 움직임'}). 다시 실행하세요.`, [head])
+  return { schemaVersion: 1, ok: true, pushed: null, landed: head, target: land, mode: 'local', merged, local: moved }
+}
+
+// land-via pr: publish this branch and open a PR into land (gh when available; otherwise the
+// caller opens it from base/head).
+async function landByPR(context, options) {
+  const { root, remote, branch } = context
+  const land = context.branches.landTarget
+  if (!remote) fail('PR을 올릴 원격이 없습니다.')
+  if (!branch) fail('detached HEAD는 PR로 올릴 수 없습니다. 브랜치를 만든 뒤 다시 실행하세요.')
+  if ((await git(root, ['status', '--porcelain', '--untracked-files=no'])).trim()) fail('커밋하지 않은 변경이 있습니다. 먼저 커밋하세요.')
+  const head = await sha(root, 'HEAD')
+  await assertVerified(root, options.verifiedCommit, head)
+  await git(root, ['push', '--quiet', remote, `${head}:refs/heads/${branch}`])
+  const gh = (args) => execute('gh', args, { cwd: root, encoding: 'utf8', timeout: 60000, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }).then((result) => result.stdout.trim())
+  let pr = null, prError = null
+  try { pr = (await gh(['pr', 'create', '--base', land, '--head', branch, '--fill'])).split('\n').pop() } catch (error) {
+    pr = await gh(['pr', 'view', branch, '--json', 'url', '--jq', '.url']).catch(() => null)
+    if (!pr) prError = (error.stderr || error.message || '').trim().slice(-500)
+  }
+  return { schemaVersion: 1, ok: true, pushed: head, target: branch, mode: 'pr', base: land, pr, prError }
+}
+
+// vibe deploy: fast-forward the deploy branch to land — the commit the final gate verified when
+// it landed. A deploy branch with commits land lacks is refused: merge it into land and verify first.
+export async function vibeDeploy(options = {}) {
+  const context = await vibeSession(options)
+  const { root, remote, branches } = context
+  if (!branches.deploy) fail('deploy 브랜치가 정해지지 않았습니다. /haeram-setting deploy <branch>로 정하세요.')
+  const source = branches.land ?? context.branch
+  if (!source) fail('배포할 land 브랜치가 정해지지 않았습니다. /haeram-init으로 정하세요.')
+  if (source === branches.deploy) return { schemaVersion: 1, ok: true, deployed: null, reason: 'land-is-deploy', to: branches.deploy }
+  if (await designOf(context.workspace)) fail('이 checkout은 디자인 중입니다(vibe design). 디자인 마감 뒤 배포하세요.')
+  const onRemote = branches.push
+  if (onRemote && !remote) fail('배포할 원격이 없습니다.')
+  const ref = (branch) => onRemote ? `refs/remotes/${remote}/${branch}` : `refs/heads/${branch}`
+  if (onRemote && !(await fetchBranch(root, remote, `refs/heads/${source}`, ref(source)))) fail(`원격에 land 브랜치 ${source}가 없습니다. 먼저 vibe push로 반영하세요.`)
+  if (!onRemote && !(await exists(root, ref(source)))) fail(`land 브랜치 ${source}가 없습니다.`)
+  const from = await sha(root, ref(source))
+  const present = onRemote ? await fetchBranch(root, remote, `refs/heads/${branches.deploy}`, ref(branches.deploy)) : await exists(root, ref(branches.deploy))
+  const previous = present ? await sha(root, ref(branches.deploy)) : null
+  if (previous === from) return { schemaVersion: 1, ok: true, deployed: null, reason: 'up-to-date', from: source, to: branches.deploy, commit: from }
+  if (previous && !(await ancestor(root, previous, from))) {
+    const extra = (await git(root, ['log', '--format=%h %s', `${from}..${previous}`])).trim().split('\n').slice(0, 10)
+    fail(`${branches.deploy}에 ${source}에 없는 커밋이 있습니다. ${source}에 ${branches.deploy}를 먼저 합치고 검증한 뒤 다시 배포하세요.`, extra)
+  }
+  if (onRemote) {
+    await git(root, ['push', '--quiet', remote, `${from}:refs/heads/${branches.deploy}`])
+    await git(root, ['update-ref', ref(branches.deploy), from])
+  } else if (!previous) await git(root, ['branch', branches.deploy, from])
+  const local = previous || onRemote ? await advanceBranch(context, branches.deploy, from) : 'created'
+  if (!onRemote && ['dirty', 'diverged', 'moved', 'self'].includes(local)) fail(`${branches.deploy}에 반영하지 못했습니다(${local}).`, [from])
+  const result = { schemaVersion: 1, ok: true, deployed: from, previous, from: source, to: branches.deploy, remote: onRemote ? remote : null, local }
+  if (onRemote && options.waitCi) {
+    try { result.ci = await vibeCIWait({ ...options, diffBase: previous ?? undefined, commit: from, branch: branches.deploy }); result.ok = result.ci.ok }
+    catch (error) { result.ok = false; result.ci = { ok: false, outcome: 'error', error: error.message } }
+  }
+  return result
 }
 
 // Publish only this session's claim on the remote's tree, never pending local code.
@@ -272,7 +383,9 @@ export async function vibeStatus(options = {}) {
   const text = await readOptional(path.join(root, 'spec/STATE.md'))
   if (text === null) return { schemaVersion: 1, route: 'architecture', reason: 'spec/STATE.md가 없습니다.', git: Boolean(workspace.git) }
   const cfg = cfgOf(text)
-  const result = { schemaVersion: 1, tag: options.tag ?? null, cfg: { level: cfg.get('level') ?? null, lang: cfg.get('lang') ?? null, push: cfg.get('push') ?? null, plan: cfg.get('plan') ?? null } }
+  const settings = await readSettings({ root })
+  const result = { schemaVersion: 1, tag: options.tag ?? null, cfg: { level: cfg.get('level') ?? null, lang: cfg.get('lang') ?? null },
+    settings: { land: settings.values.land, landVia: settings.values['land-via'], push: settings.values.push, deploy: settings.values.deploy, plan: settings.values.plan, unset: settings.unset, ...(settings.legacy.length ? { legacy: settings.legacy } : {}) } }
   if (options.section) {
     if (options.section !== 'inbox') fail('status --section은 inbox를 지원합니다.')
     return { ...result, inbox: summarize(text).inbox }
@@ -353,9 +466,12 @@ export async function vibePreflight(options = {}) {
   const context = await vibeSession(options)
   const checks = []
   const add = (name, ok, detail, needsUser = false) => checks.push({ name, ok, detail, needsUser: !ok && needsUser })
-  add('push-target', true, context.target ?? 'commit only (no cfg push branch)')
+  add('push-target', true, context.target ?? 'commit only (SETTINGS push false)')
+  // Informational: an undecided land is settled by haeram-init before autopilot starts (common rule 1);
+  // autopilot itself commits on the current branch, so it never blocks here.
+  add('branch-settings', true, context.branches.unset ? 'land 미정 — 맡김은 현재 브랜치에 커밋만 합니다(/haeram-init으로 정하면 반영)' : `land ${context.settings.values.land}${context.branches.deploy ? ` → deploy ${context.branches.deploy}` : ''}`)
   if (context.target) {
-    if (!context.remote) add('remote', false, 'no git remote for cfg push', true)
+    if (!context.remote) add('remote', false, 'no git remote for SETTINGS push', true)
     else {
       try {
         await git(context.root, ['push', '--dry-run', '--quiet', context.remote, `HEAD:refs/heads/${context.target}`])

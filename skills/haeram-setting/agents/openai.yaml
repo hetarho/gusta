@@ -1,0 +1,4 @@
+interface:
+  display_name: "Haeram Setting"
+  short_description: "haeram 패키지 동작 설정 보기·바꾸기"
+  default_prompt: "Use $haeram-setting to show this project's haeram-spec-creator settings (spec/SETTINGS.md) as a table, and change only the values I name."

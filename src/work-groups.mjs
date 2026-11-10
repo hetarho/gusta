@@ -12,6 +12,7 @@ import { assembleBrief, commitSource } from './spec-context.mjs'
 import { runtimeRoot, readRuntime, transaction, readLock, unlockRuntime, canonicalDestination } from './work-runtime.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { lintSpec } from './spec-lint.mjs'
+import { readSetting } from './settings.mjs'
 import { progressSnapshot, progressState, workSummary, progressChecks } from './work-progress.mjs'
 import { planUnits, mainSessionTasks } from './task-graph.mjs'
 import { checkKey, commitTree, cachedPass, recordPass, withHeavyLock, recordTiming, timingKey } from './check-cache.mjs'
@@ -855,8 +856,47 @@ export async function recoverWork(options) {
     : { status: 'blocked', reason: 'interrupted operation; inspect preserved workspace before resubmitting' }))
 }
 
+// Integration and review candidates are detached scratch checkouts of this repository. With
+// prune-branches they go even when a failed merge left them dirty: the runtime keeps the log.
+async function removeCandidates(context, group, candidates, prune) {
+  const preserved = []
+  for (const candidate of candidates) {
+    try {
+      const inspection = await inspectWorkspace({ targetRoot: candidate })
+      if (!inspection.git) continue
+      if (inspection.git.commonDir !== context.workspace.git.commonDir || !inspection.git.detached ||
+          (!prune && ((await git(candidate, ['status', '--porcelain', '--ignored'])).trim() || !(await ancestor(context.cwd, inspection.git.head, await head(group.path)))))) {
+        preserved.push(candidate)
+        continue
+      }
+      await git(context.cwd, ['worktree', 'remove', ...(prune ? ['--force'] : []), candidate])
+    } catch { preserved.push(candidate) }
+  }
+  return preserved
+}
+
+// The attempt branch, its runner checkpoint ref and the remote wip/<attempt> snapshot, once the
+// branch holds nothing the group branch lacks. A branch still checked out stays (git refuses).
+async function pruneAttemptRefs(context, group, attempt) {
+  const pruned = []
+  if (attempt.managed && attempt.branch && await git(context.cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${attempt.branch}`], [1])) {
+    const target = await git(context.cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${group.branch}`], [1])
+    if (!target?.trim() || !(await ancestor(context.cwd, `refs/heads/${attempt.branch}`, target.trim()))) return { pruned, kept: `${attempt.branch}: 묶음 브랜치에 없는 커밋이 있어 보존합니다.` }
+    if (await git(context.cwd, ['branch', '-D', attempt.branch], [1]) === null) return { pruned, kept: `${attempt.branch}: 다른 작업 공간이 사용 중이라 보존합니다.` }
+    pruned.push(attempt.branch)
+  }
+  const checkpoint = `refs/haeram/checkpoints/${attempt.id}`
+  if (await git(context.cwd, ['rev-parse', '--verify', '--quiet', checkpoint], [1])) {
+    await git(context.cwd, ['update-ref', '-d', checkpoint])
+    pruned.push(checkpoint)
+  }
+  if (group.push && await git(context.cwd, ['push', '--quiet', group.remote ?? 'origin', '--delete', `wip/${attempt.id.slice(0, 8)}`], [1, 128]) !== null) pruned.push(`${group.remote ?? 'origin'}/wip/${attempt.id.slice(0, 8)}`)
+  return { pruned, kept: null }
+}
+
 export async function cleanupWork(options) {
   const context = await repository(options)
+  const prune = await readSetting({ root: context.cwd }, 'prune-branches')
   const reservation = await reserve(context, options.attempt, 'cleaning', ['integrated', 'released'])
   const previous = reservation.attempt.integratedCommit ? 'integrated' : 'released'
   const { attempt, group } = reservation
@@ -867,27 +907,38 @@ export async function cleanupWork(options) {
     const workerHead = await head(attempt.workspace)
     if (!(await ancestor(context.cwd, workerHead, await head(context.cwd, `refs/heads/${group.branch}`)))) fail('상위 브랜치에 포함되지 않은 커밋이 있습니다. 작업 공간을 보존합니다.')
     if (attempt.managed) {
-      if ((await git(attempt.workspace, ['status', '--porcelain', '--ignored'])).trim()) fail('ignored 파일을 포함해 남은 파일이 있습니다. 확인 후 정리하세요.')
-      await git(context.cwd, ['worktree', 'remove', attempt.workspace])
+      // prune-branches: ignored install/build output goes with the workspace the CLI created.
+      if (!prune && (await git(attempt.workspace, ['status', '--porcelain', '--ignored'])).trim()) fail('ignored 파일을 포함해 남은 파일이 있습니다. 확인 후 정리하세요.')
+      await git(context.cwd, ['worktree', 'remove', ...(prune ? ['--force'] : []), attempt.workspace])
     }
-    const preservedCandidates = []
-    for (const candidate of attempt.candidates ?? []) {
-      try {
-        const inspection = await inspectWorkspace({ targetRoot: candidate })
-        if (inspection.git?.commonDir !== context.workspace.git.commonDir || !inspection.git.detached ||
-            (await git(candidate, ['status', '--porcelain', '--ignored'])).trim() ||
-            !(await ancestor(context.cwd, inspection.git.head, await head(group.path)))) {
-          preservedCandidates.push(candidate)
-          continue
-        }
-        await git(context.cwd, ['worktree', 'remove', candidate])
-      } catch { preservedCandidates.push(candidate) }
-    }
-    return await finishOperation(context, reservation, (entry) => Object.assign(entry, { status: previous, cleanedAt: now(), workspaceRetained: !attempt.managed, preservedCandidates }))
+    const preservedCandidates = await removeCandidates(context, group, attempt.candidates ?? [], prune)
+    const refs = prune ? await pruneAttemptRefs(context, group, attempt) : { pruned: [], kept: null }
+    return await finishOperation(context, reservation, (entry) => Object.assign(entry, { status: previous, cleanedAt: now(), workspaceRetained: !attempt.managed, preservedCandidates,
+      ...(prune ? { prunedRefs: refs.pruned, branchKept: refs.kept } : {}) }))
   } catch (error) {
     await finishOperation(context, reservation, (entry) => Object.assign(entry, { status: previous, reason: error.message }))
     throw error
   }
+}
+
+// prune-branches for what an earlier cleanup left: candidates it preserved and branches it
+// did not delete (cleanups before the setting existed). Returns null when nothing was left.
+export async function pruneCleanedAttempt(options) {
+  const context = await repository(options)
+  const state = await readRuntime(context.root)
+  const attempt = attemptOf(state, options.attempt)
+  const group = state.groups[attempt.group]
+  if (!attempt.cleanedAt || attempt.operation || !group) return null
+  const leftovers = (attempt.preservedCandidates ?? []).length || (attempt.managed && attempt.branch && !attempt.prunedRefs?.includes(attempt.branch))
+  if (!leftovers) return null
+  const preservedCandidates = await removeCandidates(context, group, attempt.preservedCandidates ?? [], true)
+  const refs = await pruneAttemptRefs(context, group, attempt)
+  return transaction(context.root, (current) => {
+    const entry = attemptOf(current, attempt.id)
+    Object.assign(entry, { preservedCandidates, prunedRefs: [...(entry.prunedRefs ?? []), ...refs.pruned], branchKept: refs.kept })
+    if (refs.kept === null && attempt.branch && !entry.prunedRefs.includes(attempt.branch)) entry.prunedRefs.push(attempt.branch)
+    return structuredClone(entry)
+  })
 }
 
 export async function workBoard(options) {

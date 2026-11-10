@@ -1,14 +1,14 @@
 import { execFile } from 'node:child_process'
-import { realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { git } from './workspace.mjs'
-import { vibeSession, cfgOf, fetchBranch, exists, sha, ancestor } from './vibe.mjs'
+import { vibeSession, fetchBranch, exists, sha, ancestor, advanceBranch } from './vibe.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { TASK_ID } from './spec-format.mjs'
 import { SkillPackageError } from './errors.mjs'
 
-// Planning documents have one home: the cfg plan branch (default main). Every checkout merges
+// Planning documents have one home: the SETTINGS plan branch (unset: land, else the repository
+// default branch). Every checkout merges
 // that branch before numbering and publishes its spec-only planning commits onto it, so two
 // worktrees never hand out the same T###. Only spec/ travels to the plan branch; the plan
 // branch's history comes back as a merge, which keeps later three-way merges (task archive,
@@ -20,8 +20,7 @@ const treeOf = async (root, commit) => (await git(root, ['rev-parse', `${commit}
 
 async function planContext(options) {
   const context = await vibeSession(options)
-  const value = context.state === null ? null : cfgOf(context.state).get('plan') ?? null
-  return { ...context, plan: value === '-' ? null : value && value !== '?' ? value : 'main' }
+  return { ...context, plan: context.branches.plan }
 }
 
 // The remote branch when the remote has it, else the local one.
@@ -33,7 +32,7 @@ async function planTip(context) {
   }
   const local = `refs/heads/${plan}`
   if (await exists(root, local)) return { commit: await sha(root, local), remote: false, label: plan }
-  return fail(`기획 브랜치 ${plan}이 없습니다. cfg plan에 기획 정본 브랜치를 적거나 -로 두세요.`)
+  return fail(`기획 브랜치 ${plan}이 없습니다. spec/SETTINGS.md plan에 기획 정본 브랜치를 적거나 -로 두세요(/haeram-setting).`)
 }
 
 // merge-tree never touches the working tree; STATE merges by section like every other merge.
@@ -100,22 +99,7 @@ async function mergeInto(context, commit, label) {
 
 // Move the local plan branch forward only when that is a fast-forward and, where it is
 // checked out, the checkout is clean.
-async function advanceLocal(context, commit) {
-  const { root, plan } = context
-  const ref = `refs/heads/${plan}`
-  if (!(await exists(root, ref))) return 'absent'
-  const old = await sha(root, ref)
-  if (old === commit) return 'current'
-  if (!(await ancestor(root, old, commit))) return 'diverged'
-  const holder = context.workspace.git.worktrees.find((tree) => tree.branch === plan)
-  if (holder && await realpath(holder.path).catch(() => holder.path) === root) return 'self'
-  try {
-    if (!holder) await git(root, ['update-ref', ref, commit, old])
-    else if (await dirty(holder.path)) return 'dirty'
-    else await git(holder.path, ['merge', '--ff-only', '--quiet', commit])
-    return 'ff'
-  } catch { return 'moved' }
-}
+const advanceLocal = (context, commit) => advanceBranch(context, context.plan, commit)
 
 const collision = (duplicates) => fail('태스크 ID 충돌: 다른 checkout이 같은 번호를 먼저 기획 브랜치에 올렸습니다. plan-sync 후 이 checkout의 미발행 태스크를 다시 채번하세요.', duplicates)
 

@@ -7,10 +7,11 @@ import test from 'node:test'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { mergeState, upsertActive, activeRows } from '../src/state-doc.mjs'
-import { vibeStatus, vibeSync, vibePush, vibeClaim, vibeBeat, vibeCheckpoint, vibePreflight, vibeCheck } from '../src/vibe.mjs'
+import { vibeStatus, vibeSync, vibePush, vibeDeploy, vibeClaim, vibeBeat, vibeCheckpoint, vibePreflight, vibeCheck } from '../src/vibe.mjs'
 import { withHeavyLock } from '../src/check-cache.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 import { vibeDesign } from '../src/vibe-design.mjs'
+import { vibePrune } from '../src/prune.mjs'
 
 const execute = promisify(execFile)
 const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
@@ -239,6 +240,29 @@ test('checkpoint는 HEAD·브랜치를 건드리지 않고 미추적 파일까�
   assert.equal(second.pushed, true)
 })
 
+test('prune: 이 세션의 wip/<tag>는 미커밋 변경 동안 보존하고, 로컬은 커밋 뒤·원격은 push 뒤에 지운다', async (t) => {
+  const { a, remote } = await machines(t)
+  const remoteWip = () => execute('git', ['--git-dir', remote, 'rev-parse', '--verify', '--quiet', 'refs/heads/wip/aaaa']).then(() => true, () => false)
+  await writeFile(path.join(a, 'untracked.txt'), 'one\n')
+  await vibeCheckpoint({ targetRoot: a, tag: 'aaaa' })
+  let result = await vibePrune({ targetRoot: a, tag: 'aaaa' })
+  assert.deepEqual(result.pruned, [])
+  assert.match(result.kept[0].reason, /미커밋/)
+  await commitAll(a, 'work')
+  result = await vibePrune({ targetRoot: a, tag: 'aaaa' })
+  assert.deepEqual(result.pruned, ['wip/aaaa'])
+  assert.match(result.kept[0].reason, /HEAD가 아직 origin\/main/)
+  assert.equal(await remoteWip(), true)
+  await git(a, 'push', '-q', 'origin', 'main')
+  result = await vibePrune({ targetRoot: a, tag: 'aaaa' })
+  assert.deepEqual(result.pruned, ['origin/wip/aaaa'])
+  assert.equal(await remoteWip(), false)
+  assert.equal((await git(a, 'branch', '--list', 'wip/*')).stdout, '')
+  await writeFile(path.join(a, 'spec/SETTINGS.md'), '# SETTINGS\n- prune-branches: false\n')
+  await commitAll(a, 'keep')
+  assert.deepEqual(await vibePrune({ targetRoot: a, tag: 'aaaa' }), { schemaVersion: 1, ok: true, skipped: 'prune-branches: false' })
+})
+
 test('route: 기획 거리·구현 거리에 따라 planning·implementation·choose·ideation-first', async (t) => {
   const plain = STATE.replace('| T001 | first | ARCH | - | todo |\n| T002 | second | ARCH | - | todo |\n', '')
   const withIdeation = plain.replace('## ssot\n', '## ideation\n| id | st |\n|---|---|\n| tags | open@261013 |\n\n## ssot\n')
@@ -298,13 +322,65 @@ test('heavy lock은 무거운 검사를 하나씩만 실행한다', async (t) =>
   assert.equal(peak, 1)
 })
 
+test('land 전략: push false면 land를 먼저 합쳐 로컬 land를 fast-forward하고, deploy는 land로만 fast-forward한다', async (t) => {
+  const { a, temporary } = await machines(t)
+  await writeFile(path.join(a, 'spec/SETTINGS.md'), '# SETTINGS\n- land: next\n- push: false\n- deploy: main\n')
+  await commitAll(a, 'settings')
+  await git(a, 'branch', 'next')
+  await git(a, 'checkout', '-q', '-b', 'feat')
+  await writeFile(path.join(a, 'feature.txt'), 'one\n')
+  const first = await commitAll(a, 'feature')
+  let landed = await vibePush({ targetRoot: a, verifiedCommit: first })
+  assert.deepEqual([landed.mode, landed.target, landed.merged, landed.local, landed.landed], ['local', 'next', false, 'ff', first])
+  assert.equal((await git(a, 'rev-parse', 'next')).stdout.trim(), first)
+  // land moved meanwhile in its own checkout: it is merged in first, and changed code needs a new gate.
+  const other = path.join(temporary, 'next checkout')
+  await git(a, 'worktree', 'add', '-q', other, 'next')
+  await writeFile(path.join(other, 'other.txt'), 'theirs\n')
+  await commitAll(other, 'other')
+  await writeFile(path.join(a, 'feature.txt'), 'two\n')
+  const second = await commitAll(a, 'feature 2')
+  await assert.rejects(vibePush({ targetRoot: a, verifiedCommit: second }), /최종 검증 이후/)
+  const merged = (await git(a, 'rev-parse', 'HEAD')).stdout.trim()
+  landed = await vibePush({ targetRoot: a, verifiedCommit: merged })
+  assert.deepEqual([landed.merged, landed.local], [false, 'ff'])
+  assert.equal((await git(other, 'rev-parse', 'HEAD')).stdout.trim(), merged)
+  assert.equal(await readFile(path.join(other, 'feature.txt'), 'utf8'), 'two\n')
+  // 배포해줘: main only fast-forwards to the landed commit.
+  const deployed = await vibeDeploy({ targetRoot: a })
+  assert.deepEqual([deployed.from, deployed.to, deployed.deployed, deployed.remote], ['next', 'main', merged, null])
+  assert.equal((await git(a, 'rev-parse', 'main')).stdout.trim(), merged)
+  assert.equal((await vibeDeploy({ targetRoot: a })).reason, 'up-to-date')
+  const tree = (await git(a, 'rev-parse', 'main^{tree}')).stdout.trim()
+  const hotfix = (await git(a, 'commit-tree', tree, '-p', 'main', '-m', 'hotfix')).stdout.trim()
+  await git(a, 'update-ref', 'refs/heads/main', hotfix)
+  await assert.rejects(vibeDeploy({ targetRoot: a }), /main에 next에 없는 커밋/)
+})
+
+test('land-via pr은 작업 브랜치를 올리고 PR 대상만 알려 주며 land에 직접 push하지 않는다', async (t) => {
+  const { a, remote } = await machines(t)
+  await writeFile(path.join(a, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- land-via: pr\n- push: true\n')
+  await commitAll(a, 'settings')
+  await git(a, 'checkout', '-q', '-b', 'improve/x')
+  await writeFile(path.join(a, 'x.txt'), 'x\n')
+  const head = await commitAll(a, 'x')
+  const before = (await execute('git', ['--git-dir', remote, 'rev-parse', 'main'], { encoding: 'utf8' })).stdout.trim()
+  const result = await vibePush({ targetRoot: a })
+  assert.deepEqual([result.mode, result.base, result.target, result.pushed], ['pr', 'main', 'improve/x', head])
+  assert.ok(result.pr || result.prError)
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'improve/x'], { encoding: 'utf8' })).stdout.trim(), head)
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'main'], { encoding: 'utf8' })).stdout.trim(), before)
+})
+
 test('preflight는 push 대상이 없으면 커밋만으로 보고 묻지 않는다', async (t) => {
   const { a } = await machines(t, { state: STATE.replace('- push: main', '- push: ?') })
   const unset = await vibePreflight({ targetRoot: a })
   assert.equal(unset.checks.find((check) => check.name === 'push-target').ok, true)
   assert.equal(unset.checks.some((check) => check.name === 'push-permission'), false)
+  // An undecided land never blocks autopilot (it commits only); preflight just reports it.
   assert.deepEqual(unset.needsUser.filter((check) => check.name !== 'ci-access'), [])
-  assert.deepEqual(await vibePush({ targetRoot: a }), { schemaVersion: 1, ok: true, pushed: null, reason: 'push-disabled' })
+  assert.match(unset.checks.find((check) => check.name === 'branch-settings').detail, /land 미정/)
+  assert.deepEqual(await vibePush({ targetRoot: a }), { schemaVersion: 1, ok: true, pushed: null, reason: 'land-unset' })
   const { a: ready } = await machines(t)
   const result = await vibePreflight({ targetRoot: ready })
   assert.equal(result.checks.find((check) => check.name === 'push-permission').ok, true)

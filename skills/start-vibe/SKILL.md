@@ -14,7 +14,7 @@ description: >-
 **철학**: AI가 만들고 사람은 고른다(결정함). 문서 먼저 · 적은 토큰 · 빠른 구현 — 시간은 구현에 쓰고 무거운 검증은 마감 관문 한 번에 모은다.
 
 ## 공통 규칙 (모든 spec 스킬)
-1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 create-architecture로 보낸다.
+1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 create-architecture로 보낸다. `settings.unset`이 있으면 haeram-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
 2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 start-design 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(start-vibe)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(start-vibe 3절). 모드가 정해지지 않았으면 함께 모드다.
@@ -61,15 +61,16 @@ ideation/done/은 라우팅 후보가 아니다. 기획 조각의 전환 완료 
 - **권한 창을 만들지 않는다.** 맡김의 권한 확인 창은 질문과 같다 — 사람이 없으니 세션이 멈추고, 그동안 캐시가 식어 토큰이 다시 든다. 위험해서 확인이 필요해 보여도 묻지 않고, 창이 뜰 만한 호출 자체를 하지 않는다:
   - 셸 호출 하나에 일 하나. `cd`를 `;`·`&&`·파이프로 다른 명령과 섞지 않고 절대 경로·`git -C`를 쓴다. 읽기와 쓰기·삭제를 한 호출에 섞지 않는다.
   - 쓰기·삭제는 현재 checkout(워커는 배정된 worktree)과 세션 임시 폴더 안에서만. 상위 폴더·다른 worktree·홈·시스템 경로는 건드리지 않는다.
-  - `rm -rf`·`kill`/`pkill`·`sudo`·`chmod`·`curl`/`wget`(다운로드·웹 조회)·전역 설치·`git push --force`/`reset --hard`/`clean`/브랜치 삭제·권한 설정 파일 수정은 하지 않는다. 프로세스·CI·작업 상태는 `ps`나 웹 조회 대신 `work board`·`vibe ci wait`·백그라운드 완료 알림으로 본다.
+  - `rm -rf`·`kill`/`pkill`·`sudo`·`chmod`·`curl`/`wget`(다운로드·웹 조회)·전역 설치·`git push --force`/`reset --hard`/`clean`/브랜치 삭제·권한 설정 파일 수정은 하지 않는다(쓰지 않는 브랜치 정리는 `vibe prune`이 설정대로 한다). 프로세스·CI·작업 상태는 `ps`나 웹 조회 대신 `work board`·`vibe ci wait`·백그라운드 완료 알림으로 본다.
   - 부하 에이전트(Agent 도구)를 띄우지 않는다 — 그 도구 호출의 권한 창도 이 세션을 멈춘다. 병렬은 헤드리스 실행기(`work run`)로만 한다.
   - 그래도 필요한 일(디스크 정리, 다른 worktree 정리, 권한 추가, 프로세스 종료)은 하지 않고 inbox parked·보고서에 남긴 뒤 다른 일로 간다. 실행 가능한 일이 없으면 마감한다.
 
 ## 4. 커밋·검증·push
 - 커밋: 태스크·기획 조각·경량 수정마다 관련 파일만 커밋한다. 실행기 밖에서는 선점·active를 첫 작업 커밋에 포함하고 보고서는 태스크 3개(기본)·기획 조각의 태스크 소진·세션 끝 중 먼저 온 묶음 경계에 갱신한다.
-- 기획 문서는 cfg plan 브랜치(기본 `main`)에 항상 최신으로 둔다: 기획 조각은 `vibe plan-sync`로 시작하고, 기획 커밋은 spec/만 담아 커밋 직후 `vibe plan-push`한다. 코드 push 규칙(cfg push)과 무관하다. ID 충돌로 거절되면 고른 기획 스킬이 다시 채번해 올린다. 충돌·권한 문제로 실패하면 inbox parked에 남기고 구현으로 넘어가지 않는다(번호가 정본에 없는 태스크를 구현하지 않는다).
-- push는 기본으로 하지 않는다(cfg push `-`, 미정 `?`도 같다) — push마다 원격 CI가 돌아 빌드 시간을 쓴다. push 대상을 묻지 않는다. 사용자가 cfg push에 브랜치를 직접 적어 둔 경우에만 세션 끝·반복기 멈춤에 한 번 `vibe push`한다. 묶음 경계마다 push하지 않는다.
-- strict(cfg push 브랜치가 있고 다른 생존 세션·소유 불명 doing이 보일 때): 세션을 등록·커밋한 뒤 `vibe claim --tag <tag> --task T###`로 원격 선점 정보를 **먼저** 공유한다. claim은 원격 트리의 STATE에 자기 선점만 기록하므로 미검증 로컬 코드는 push하지 않는다. 원격 영수증을 로컬에 합친 뒤 소유권을 재확인한다. 다른 tag면 다른 후보. 원격이 선점을 판정한다. push 브랜치가 없으면 이 checkout 혼자 일한다. 같은 checkout의 동시 쓰기 금지.
+- 기획 문서는 SETTINGS plan 브랜치(미정이면 land, land도 브랜치가 아니면 저장소 기본 브랜치)에 항상 최신으로 둔다: 기획 조각은 `vibe plan-sync`로 시작하고, 기획 커밋은 spec/만 담아 커밋 직후 `vibe plan-push`한다. 코드 반영 규칙(SETTINGS land·push)과 무관하다. ID 충돌로 거절되면 고른 기획 스킬이 다시 채번해 올린다. 충돌·권한 문제로 실패하면 inbox parked에 남기고 구현으로 넘어가지 않는다(번호가 정본에 없는 태스크를 구현하지 않는다).
+- 끝난 작업의 반영은 SETTINGS `land`·`land-via`·`push`가 정한다. 세션 끝·반복기 멈춤에 최종 검증 뒤 `vibe push --verified-commit <SHA>`를 한 번 실행한다. push가 true면 원격, false면 로컬 land 브랜치, pr이면 PR로 반영하고, 할 일이 없으면 CLI가 none으로 끝낸다. 반영 대상은 묻지 않는다. push마다 원격 CI가 돌아 빌드 시간을 쓰므로 묶음 경계마다 push하지 않는다. land가 미정이면 함께는 haeram-init으로 정하고, 맡김은 현재 브랜치에 커밋만 한 뒤 inbox parked에 남긴다.
+- "배포해줘"는 `vibe deploy --wait-ci`로 SETTINGS deploy 브랜치를 land로 fast-forward한다. 사용자가 요청할 때만 하며, deploy가 `-`면 haeram-setting으로 정하게 안내한다. 거절(deploy에 land에 없는 커밋)되면 그 커밋을 land에 합쳐 검증한 뒤 다시 배포한다.
+- strict(SETTINGS push 대상이 있고 다른 생존 세션·소유 불명 doing이 보일 때): 세션을 등록·커밋한 뒤 `vibe claim --tag <tag> --task T###`로 원격 선점 정보를 **먼저** 공유한다. claim은 원격 트리의 STATE에 자기 선점만 기록하므로 미검증 로컬 코드는 push하지 않는다. 원격 영수증을 로컬에 합친 뒤 소유권을 재확인한다. 다른 tag면 다른 후보. 원격이 선점을 판정한다. push 브랜치가 없으면 이 checkout 혼자 일한다. 같은 checkout의 동시 쓰기 금지.
 - 검증: 태스크=추가·변경·영향 **단위 테스트**+typecheck·lint·format(분류·인계는 implement-task 4절). 통합·e2e·전체 스위트는 작업을 시작한 **조정자/loop 호스트 하나만 최종 통합 후보에서 push 직전** 한 번 실행한다(커밋만 남기면 전체 완료 관문). 태스크 커밋·WIP 체크포인트·단위 세션 종료는 이 경계가 아니며, 별도 명시 없는 단위별 push·세션 종료 e2e는 하지 않는다. work 매핑·캐시·heavy 락·검증 SHA push는 [조정자 검증 절차](references/verification.md). 기존 ARCH가 통합/e2e를 task로 요구하면 맡김의 기획 조각에서 batch로 옮기고 근거를 기록한다.
 - CI는 실제 push당 `vibe ci wait --commit <sha> --diff-base <묶음 시작 SHA> --json` 한 번 또는 push --wait-ci. Claude는 셸 백그라운드+하네스 완료 알림, Codex는 긴 timeout의 단일 블로킹 호출. sleep→조회→보고 모델 루프 금지. 긴 e2e·벤치마크도 완료까지 모델을 깨우지 않는다. 맡김에서 실패는 근거를 담은 수정 태스크를 만들어 **다음 단위로 우선 실행**한다. 수정 태스크 생성만 하고 종료하지 않는다. 기획 판단은 3절대로 해소하고, 실제 권한·외부 작업에 막히면 해당 건만 parked 후 다른 태스크로 간다. 시간·단위 한도와 반복 무진행·실행 실패 제한은 유지한다. run 없는 push는 CLI가 skipped로 마친다.
 - 1시간마다, 긴 명령 전 `vibe checkpoint --tag <tag>` 유지(push 브랜치가 없으면 로컬 `wip/<tag>`에만 남는다). 무관한 사용자 변경은 커밋하지 않는다.

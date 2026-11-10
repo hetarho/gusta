@@ -4,7 +4,7 @@
 
 ## 일반 터미널: work run
 
-사용자가 여러 태스크의 지속 실행을 요청했을 때 사용한다. Codex·Claude CLI용 기본 어댑터가 포함돼 있다. `work doctor`로 설치·필수 옵션 지원과 Orca runtime 접근 여부를 확인한다. CLI 로그인·요금·모델 접근 권한은 검사하지 않으며, doctor와 dry-run은 모델을 호출하지 않는다. 실행기는 리뷰·검증 통과 후 작업 묶음 브랜치까지 자동 통합한다. 묶음에 `--push <branch>`가 저장돼 있으면 통합마다 그 브랜치로 push한다(원격이 앞서 있으면 후보에서 먼저 합친다). 없으면 main 반영·push는 하지 않는다.
+사용자가 여러 태스크의 지속 실행을 요청했을 때 사용한다. Codex·Claude CLI용 기본 어댑터가 포함돼 있다. `work doctor`로 설치·필수 옵션 지원과 Orca runtime 접근 여부를 확인한다. CLI 로그인·요금·모델 접근 권한은 검사하지 않으며, doctor와 dry-run은 모델을 호출하지 않는다. 실행기는 리뷰·검증 통과 후 작업 묶음 브랜치까지 자동 통합한다. 묶음에 `--push <branch>`가 저장돼 있으면 통합마다 그 브랜치로 push한다(원격이 앞서 있으면 후보에서 먼저 합친다). 없으면 묶음 브랜치까지만 반영한다. land 반영은 조정자가 `complete` 뒤 `vibe push`로 한다.
 
 ```bash
 npx haeram-spec-creator work start feature --workers 4 --reviewers 1 --max-pending 8 --json
@@ -145,4 +145,4 @@ Ctrl-C/종료 신호는 runner가 시작한 자식 프로세스만 중단하고 
 
 진행 중 검증·통합 명령이 남았다면 `work recover --attempt <id>`, 남은 리뷰 선점은 리뷰어 종료 확인 후 `work review-release --review <id>`. 작업자의 미완료 변경은 검토하고 `work update --attempt <id> --status doing`으로 명시적으로 재개한다. runtime JSON을 직접 고치거나 timeout만으로 다른 작업자의 소유권을 빼앗지 않는다.
 
-통합된 작업 공간의 정리는 작업자 종료 확인 후 `work cleanup`으로 별도 수행한다. runner는 실패 원인 조사와 최종 검토를 위해 작업 공간을 남긴다.
+runner는 모든 자식을 멈춘 뒤 통합·해제된 단위만 정리한다(spec/SETTINGS.md `prune-branches`, 결과의 `pruned`). 합쳐지지 않은 커밋이나 미커밋 변경이 있는 공간, 막힌 단위, 묶음 브랜치는 실패 원인 조사와 최종 검토를 위해 남긴다. 설정이 false면 정리하지 않으며, 그때는 작업자 종료를 확인한 뒤 `work cleanup`으로 정리한다.

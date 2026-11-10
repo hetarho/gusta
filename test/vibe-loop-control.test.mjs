@@ -43,7 +43,8 @@ test('immediate cancellation after a successful unit never runs closing verifica
 test('unit completion -> owned report commit -> configuration acknowledgement -> exactly one next unit in the same host', async (t) => {
   const { root } = await fixture(t)
   const stateFile = path.join(root, 'spec/STATE.md')
-  await writeFile(stateFile, (await readFile(stateFile, 'utf8')).replace('- push: -', '- push: main'))
+  // Publication is a branch-strategy setting: land on main and push it.
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- push: true\n'); await git(root, 'add', 'spec/SETTINGS.md')
   await git(root, 'commit', '-qam', 'publication configuration')
   const seen = [], order = []; let request, originalStart, originalDeadline, pushedSHA, verifiedSHA, ciSHA, reportObserved = false
   const result = await vibeLoop({ ...options(root), maxUnits: 2 }, { preflight: passed,
@@ -239,8 +240,16 @@ test('independent supervisor observes an actually killed isolated host and emits
   for (let n = 0; n < 150; n++) { state = await readJSON(manifest); if (!state.running) break; await pause(25) }
   assert.equal(state.running, false); assert.equal(state.reason, 'host-lost'); assert.equal(state.units, 0)
   assert.equal((await readJSON(requested.receipt)).status, 'cancelled')
-  assert.match(await readFile(path.join(directory, 'events.jsonl'), 'utf8'), /host-lost/)
-  assert.ok((await readdir(path.join(directory, 'notifications'))).length)
+  // The supervisor stops the manifest first and appends the event right after; under load that gap is visible.
+  let events = '', notified = []
+  for (let n = 0; n < 120; n++) {
+    events = await readFile(path.join(directory, 'events.jsonl'), 'utf8')
+    notified = await readdir(path.join(directory, 'notifications')).catch(() => [])
+    if (/host-lost/.test(events) && notified.length) break
+    await pause(25)
+  }
+  assert.match(events, /host-lost/)
+  assert.ok(notified.length)
   const result = await vibeLoop({ targetRoot: root, tag: 'ctrl01', recoverMetadata: true })
   assert.equal(result.implementationRestarted, false)
   assert.equal(await git(root, 'status', '--porcelain'), '')
@@ -301,7 +310,8 @@ for (const changeAfterVerification of [false, true]) test(`isolated bare publica
   await git(root, 'init', '--bare', '-q', remote)
   await git(root, 'remote', 'add', 'origin', remote)
   const file = path.join(root, 'spec/STATE.md')
-  await writeFile(file, (await readFile(file, 'utf8')).replace('- push: -', '- push: main'))
+  // Publication is a branch-strategy setting: land on main and push it.
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- push: true\n'); await git(root, 'add', 'spec/SETTINGS.md')
   await git(root, 'commit', '-qam', 'publication configuration')
   await git(root, 'push', '-q', 'origin', 'main')
   const original = await git(root, 'rev-parse', 'HEAD')

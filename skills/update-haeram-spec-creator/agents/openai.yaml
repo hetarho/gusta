@@ -1,0 +1,4 @@
+interface:
+  display_name: "Update Haeram Spec Creator"
+  short_description: "haeram 스킬셋 최신 버전으로 갱신하고 spec/ 이관"
+  default_prompt: "Use $update-haeram-spec-creator to update haeram-spec-creator to the latest npm version, reinstall its skills, and migrate spec/ (STATE, SETTINGS, FORMAT) to the new structure."

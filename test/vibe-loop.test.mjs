@@ -366,7 +366,7 @@ test('detached host survives parent return and writes its final manifest with on
 for (const pushEachUnit of [false, true]) test(`strict concurrency runs one final gate by default; per-unit push=${pushEachUnit}`, async (t) => {
   const { root } = await fixture(t)
   const file = path.join(root, 'spec/STATE.md')
-  await writeFile(file, (await readFile(file, 'utf8')).replace('- push: -', '- push: main')); await git(root, 'commit', '-qam', 'push branch')
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- push: true\n'); await git(root, 'add', 'spec/SETTINGS.md'); await git(root, 'commit', '-qam', 'push branch')
   let checks = 0, pushes = 0, n = 0
   const result = await vibeLoop({ ...opts(root), maxUnits: 3, pushEachUnit }, { preflight: passed,
     status: async (options) => ({ ...await vibeStatus(options), concurrency: 'strict' }),

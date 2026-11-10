@@ -1,4 +1,4 @@
-import { vibeStatus, vibeSync, vibePush, vibeClaim, vibeBeat, vibeCheckpoint, vibePreflight, vibeAwake, vibeCheck, vibeMergeState } from './vibe.mjs'
+import { vibeStatus, vibeSync, vibePush, vibeDeploy, vibeClaim, vibeBeat, vibeCheckpoint, vibePreflight, vibeAwake, vibeCheck, vibeMergeState } from './vibe.mjs'
 import { vibePlanSync, vibePlanPush } from './vibe-plan.mjs'
 import { vibeLoop } from './vibe-loop.mjs'
 import { vibeCIWait } from './vibe-ci.mjs'
@@ -6,6 +6,8 @@ import { AB_STEPS } from './vibe-ab.mjs'
 import { vibeBrief, vibeFormat } from './vibe-brief.mjs'
 import { vibeDesign } from './vibe-design.mjs'
 import { renderBrief } from './spec-context.mjs'
+import { vibeSettings } from './settings.mjs'
+import { vibePrune } from './prune.mjs'
 import { SkillPackageError } from './errors.mjs'
 
 const HELP = `세션 도구 (start-vibe·start-design이 사용)
@@ -27,15 +29,21 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
   vibe format --section task|state|ssot|report|reading  FORMAT 발췌만
   vibe status [--tag <tag>] [--no-fetch]        원격의 다른 세션·남은 일·추천 경로(route)
   vibe sync                                     원격 push 브랜치를 HEAD에 반영 (STATE는 섹션 단위 병합)
-  vibe plan-sync                                기획 브랜치(cfg plan, 기본 main)의 최신을 HEAD에 합침 — 기획·채번 전
+  vibe plan-sync                                기획 브랜치(SETTINGS plan, 미정이면 land)의 최신을 HEAD에 합침 — 기획·채번 전
   vibe plan-push [--commit <sha> ...]           spec/만 바꾼 기획 커밋(기본 HEAD)을 기획 브랜치에 올리고 다시 합침.
                                                 원격에 그 브랜치가 있으면 push, 없으면 로컬 브랜치만. ID 충돌이면 거절
   vibe claim --tag <tag> [--task T###]            선점 정보만 원격 트리에 push; 미검증 로컬 코드는 보존
   vibe push [--wait-ci] [--diff-base <sha>] [--verified-commit <sha>]
-                                                sync 후 push. verified-commit 이후 코드가 바뀌면 재검증 필요
+                                                끝난 작업을 spec/SETTINGS.md land로 반영: push true면 sync 후 원격 push,
+                                                false면 로컬 land 브랜치 병합, land-via pr이면 이 브랜치 push+PR. 할 일 없으면 none.
+                                                verified-commit 이후 코드가 바뀌면 재검증 필요
+  vibe deploy [--wait-ci]                       '배포해줘': deploy 브랜치를 land로 fast-forward (push true면 원격). 갈라졌으면 거절
   vibe beat --tag <tag> [--mode pair|autopilot] [--doing <T###|->] [--end]
                                                 STATE ## active의 이 세션 행 쓰기·갱신·삭제 (커밋은 호출자)
   vibe checkpoint --tag <tag> [--message <text>] 작업 트리 스냅샷을 wip/<tag>로 push (현재 브랜치는 그대로)
+  vibe prune [--tag <tag>] [--work <name>]      마감 정리: 합쳐진 작업 묶음·단위의 worktree·브랜치, 이 세션의 wip/<tag>.
+                                                spec/SETTINGS.md prune-branches가 false면 건너뜀. 안 합쳐진 커밋·미커밋 변경은 보존
+  vibe settings [--set <key>=<value> ...]       spec/SETTINGS.md의 유효 설정(없으면 기본값) 보기·바꾸기 (커밋은 호출자)
   vibe design [start --tag <tag> [--scope <text>] | verify [--verify <command> ...] [--timeout-ms <ms>] | end]
                                                 디자인 모드(start-design): 이 checkout의 Git 디렉터리에 디자인 중 상태 쓰기·전체 검증·삭제.
                                                 STATE·다른 worktree는 건드리지 않음 (커밋은 호출자). verify는 ARCH task·batch 명령 전부를
@@ -58,14 +66,14 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
 const allowed = {
   loop: ['tag', 'provider', 'model', 'max-units', 'max-hours', 'final-reserve-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'remote', 'wait-ms', 'notify-command'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref'], format: ['section'],
-  status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], beat: ['tag', 'mode', 'doing', 'host'],
+  status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host'],
   claim: ['tag', 'task', 'remote'],
-  checkpoint: ['tag', 'message', 'remote'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
+  checkpoint: ['tag', 'message', 'remote'], prune: ['tag', 'work', 'remote'], settings: ['set'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
   awake: ['hours', 'remote'], check: ['tier', 'diff-base', 'task', 'timeout-ms'], design: ['tag', 'scope', 'verify', 'timeout-ms'],
   ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'variant', 'prompt-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
 }
-const flags = { loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep'], ab: ['remove', 'prune-branches'] }
-const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, claim: vibeClaim, beat: vibeBeat, checkpoint: vibeCheckpoint, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
+const flags = { loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep'], ab: ['remove', 'prune-branches'] }
+const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
   ab: (options) => { if (!Object.hasOwn(AB_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe ab <${Object.keys(AB_STEPS).join('|')}> <slug>`); return AB_STEPS[options.step](options) } }
 
 export async function runVibeCLI(args) {
@@ -100,7 +108,7 @@ export async function runVibeCLI(args) {
     const value = equals === -1 ? args.shift() : argument.slice(equals + 1)
     if (value === undefined || (value.startsWith('--') && name !== 'probe')) throw new SkillPackageError(`${argument} 값이 필요합니다.`)
     const field = name === 'target' ? 'targetRoot' : name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())
-    if (['allow-tool', 'verify', 'copy'].includes(name) || (action === 'plan-push' && name === 'commit')) (options[field] ??= []).push(value)
+    if (['allow-tool', 'verify', 'copy', 'set'].includes(name) || (action === 'plan-push' && name === 'commit')) (options[field] ??= []).push(value)
     else options[field] = value
   }
   if (action === 'check') {

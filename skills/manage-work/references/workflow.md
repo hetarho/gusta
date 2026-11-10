@@ -9,7 +9,7 @@
 - explore 태스크와 그 후속은 묶음에 배정하지 않는다. 다른 단위가 끝나면 next가 `main-session`을 돌려주고, 메인 세션에서 단독으로 진행한다.
 - 기존 일반 checkout의 feature branch를 연결하려면 `--workspace current`, 항상 분리하려면 `--workspace new`. 분기 기준·이름·경로가 지정됐다면 `--base`, `--branch`, `--path`를 사용한다. 사용자에게 매번 모드를 묻지 않는다.
 - 미커밋 변경은 새 worktree에 복사되지 않는다. 관련 기획을 먼저 정리하고 사용자가 허용한 범위로 커밋한다. 관련 없는 변경은 자동 stash·commit하지 않는다.
-- 반환된 `path`에서 기획·채번을 진행한다. 채번 기준은 묶음 브랜치가 아니라 cfg plan 브랜치(기본 `main`)다 — 기획 전 `vibe plan-sync`로 합치고, spec/만 담은 기획 커밋 직후 `vibe plan-push`로 올린다. 그래서 여러 묶음·worktree가 동시에 기획해도 번호가 겹치지 않는다(먼저 올린 쪽이 이기고, 거절된 쪽이 다시 채번한다). 한 묶음의 기획 공간에는 쓰기 담당을 하나만 둔다. 기획 커밋이 worker 배정의 기준이다.
+- 반환된 `path`에서 기획·채번을 진행한다. 채번 기준은 묶음 브랜치가 아니라 SETTINGS plan 브랜치다 — 기획 전 `vibe plan-sync`로 합치고, spec/만 담은 기획 커밋 직후 `vibe plan-push`로 올린다. 그래서 여러 묶음·worktree가 동시에 기획해도 번호가 겹치지 않는다(먼저 올린 쪽이 이기고, 거절된 쪽이 다시 채번한다). 한 묶음의 기획 공간에는 쓰기 담당을 하나만 둔다. 기획 커밋이 worker 배정의 기준이다.
 - 태스크는 create-task의 "기반 → 줄기 → 통합" 구조로 분해한다. 배정 전에 `work board`의 `units`와 errors를 확인한다 — `lane 순환`이 있으면 배정되지 않으므로 기획 공간에서 dep·lane을 먼저 고친다.
 - Git 미지원·생성 실패 시 남은 branch/path를 보고한다. 다른 작업자가 없는 안전한 단독 작업은 기존 방식으로 진행할 수 있지만, 선점 실패나 격리 실패를 같은 폴더 병렬 쓰기로 우회하지 않는다.
 
@@ -31,11 +31,12 @@
 - 세션 루프 밖에서는 조정자가 승인된 제출물에 `work integrate --attempt <id> --json`(저장된 단위 명령, `--verify`로 덮어쓰기 가능). 이 요청은 로컬 후보 생성·검증·상위 작업 브랜치 반영을 수행한다. 후보 worktree에는 의존성 설치나 환경 준비가 없으므로 필요하면 명시적인 검증 명령에 설치/준비도 포함한다. 외부 서비스·공유 DB가 필요한 검증은 프로젝트의 격리 규칙을 따른다.
 - CLI는 별도 후보에서 merge, 단위의 모든 태스크 아카이브, STATE 행 제거, spec 검사, 커밋, 지정 검증을 수행한다. 검증 시간 상한은 명령당 1시간이며 `--verify-timeout-ms`로 바꾼다. 상위 checkout이 clean이고 기준이 그대로일 때만 fast-forward한다. 충돌/실패 후보는 보존하며 실제 원인은 JSON details에서 확인한다.
 - 승인은 제출 커밋에 묶인다. 코드 변경은 재제출·재리뷰가 필요하고, 상위 커밋이 바뀌면 바뀐 파일이 그 단위의 변경·SSOT와 겹칠 때만 재리뷰한다. 승인됐다고 검증을 생략하지 않는다.
-- 통합 후 태스크가 done이고 후속 dep이 열린다. `work finish`의 검증 커밋은 `work board`의 `verified`로 확인한다(`current:false`면 이후 코드가 바뀌었으니 다시 finish). `--push`가 있으면 통합·sync마다 그 브랜치로 push되고 결과는 `group.pushed`에 남는다(거부되면 다음 통합·sync가 원격을 합쳐 다시 push한다). `--push`가 없으면 `work integrate`는 로컬 묶음 브랜치까지만 반영하고, main 반영·PR·push는 프로젝트의 기존 흐름을 따른다.
+- 통합 후 태스크가 done이고 후속 dep이 열린다. `work finish`의 검증 커밋은 `work board`의 `verified`로 확인한다(`current:false`면 이후 코드가 바뀌었으니 다시 finish). `--push`가 있으면 통합·sync마다 그 브랜치로 push되고 결과는 `group.pushed`에 남는다(거부되면 다음 통합·sync가 원격을 합쳐 다시 push한다). `--push`가 없으면 `work integrate`는 로컬 묶음 브랜치까지만 반영한다. 묶음이 끝나면(`complete`) 응답의 `landFrom`(기획 공간)에서 `vibe push --target <landFrom> --verified-commit <검증 SHA>`로 SETTINGS land에 반영한다. merge·PR·push 방식은 land-via·push가 정한다.
 - 같은 트리에서 통과한 검사는 다시 돌리지 않는다(검증 기록에 `cached`). 재제출은 고친 커밋부터의 변경만 `HAERAM_DIFF_BASE`로 넘긴다. 단위·묶음 검증은 clone 단위 heavy 락으로 하나씩 실행된다.
 
 ## 4. 정리·복구
-- 작업자가 종료된 뒤 `work cleanup --attempt <id>`. 통합/해제된 실행만 정리하며 상위 브랜치에 없는 커밋·미커밋 변경은 보존한다. 자체 생성 공간에 ignored 파일이 남아 있어도 보존한다. 외부 생성 공간은 폴더를 남기고 배정만 해제한다. 자체 생성 브랜치와 실패한 후보는 복구를 위해 남을 수 있다.
+- 작업자가 종료된 뒤 `work cleanup --attempt <id>`. 통합/해제된 실행만 정리하며 상위 브랜치에 없는 커밋·미커밋 변경은 보존한다. 외부 생성 공간은 폴더를 남기고 배정만 해제한다. spec/SETTINGS.md `prune-branches`(기본 true)면 자체 생성 공간을 ignored 산출물까지 지우고 합쳐진 단위 브랜치·체크포인트 ref·후보 공간도 지운다. false면 ignored 파일이 남은 공간과 브랜치를 보존한다.
+- 실행기가 끝나면 CLI가 끝난 단위를 자동으로 정리한다. 조정을 마칠 때 `vibe prune`을 한 번 실행한다. 묶음 브랜치와 기획 공간은 남은 태스크가 없고 기준(base)·push 브랜치에 합쳐진 경우에만 지워진다. 보존된 항목과 이유는 결과의 `kept`로 보고한다.
 - 중단한 워커의 선점을 해제하려면 `work release --attempt <id> --reason <reason>`. 파일은 보존된다. 새 시도에는 새 attempt ID를 쓰며, 이전 ID로 새 실행을 갱신하지 않는다.
 - 검증/통합/정리 CLI가 중단됐다면 프로세스 종료를 확인하고 `work recover --attempt <id>`. 생성 중 중단된 기획 공간은 `work recover --work <slug>`. 후자는 예약한 브랜치/경로가 실제로 존재할 때 연결을 복구한다.
 - 짧은 runtime 쓰기 락이 남았으면 `work status`의 lock ID로 `work unlock --lock-id <id>`. 살아있는 PID와 다른 호스트의 락은 회수하지 않는다. 불완전한 lock/recovery 디렉토리나 손상된 JSON은 보존하고 진단 내용을 보고한다. `--force` 삭제나 무조건 초기화로 우회하지 않는다.

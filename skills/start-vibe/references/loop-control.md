@@ -16,7 +16,7 @@
 
 ## 요청과 확인
 
-실행 중인 checkout에서 같은 tag로 요청한다. `--configure`에는 push 옵션 하나가 필요하다. 이 옵션은 cfg push의 게시 권한을 대신하지 않는다.
+실행 중인 checkout에서 같은 tag로 요청한다. `--configure`에는 push 옵션 하나가 필요하다. 이 옵션은 SETTINGS push의 게시 권한을 대신하지 않는다.
 
 ```sh
 npx haeram-spec-creator vibe loop --tag k3f9 --configure --push-each-unit --wait-ms 30000 --json

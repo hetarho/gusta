@@ -53,13 +53,15 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   assert.match(await git(root, 'log', '-1', '--format=%s'), /ab hero: adopt b/)
   assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before); assert.equal(await git(root, 'rev-parse', 'HEAD^2'), winner)
   for (const entry of started.variants) assert.equal(await exists(entry.path), false)
-  assert.deepEqual(adopted.branches, ['ab/hero/a', 'ab/hero/b'])
+  // prune-branches defaults to true: no variant branch outlives the pick.
+  assert.deepEqual(adopted.branches, [])
+  assert.equal(await git(root, 'branch', '--list', 'ab/hero/*'), '')
   await new Promise((resolve) => setTimeout(resolve, 300))
   await assert.rejects(fetch(served.variants[0].url))
   await assert.rejects(abStatus({ targetRoot: root, slug: 'hero' }), /없습니다/)
 })
 
-test('start refuses uncommitted user changes; stop --remove keeps branches unless pruned', async (t) => {
+test('start refuses uncommitted user changes; stop --remove keeps branches when prune-branches is false unless forced', async (t) => {
   const { root } = await fixture(t)
   await writeFile(path.join(root, 'dirty.txt'), 'x')
   await assert.rejects(abStart({ targetRoot: root, slug: 'nav' }), /미커밋/)
@@ -72,6 +74,7 @@ test('start refuses uncommitted user changes; stop --remove keeps branches unles
   await assert.rejects(abStop({ targetRoot: root, slug: 'nav', remove: true }), /커밋되지 않은 변경/)
   await git(started.variants[0].path, 'add', 'pending.txt'); await git(started.variants[0].path, 'commit', '-q', '-m', 'wip')
   await assert.rejects(abPick({ targetRoot: root, slug: 'nav', variant: 'b' }), /커밋이 없습니다/)
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- prune-branches: false\n'); await git(root, 'add', 'spec/SETTINGS.md'); await git(root, 'commit', '-q', '-m', 'keep branches')
   const stopped = await abStop({ targetRoot: root, slug: 'nav', remove: true })
   assert.deepEqual(stopped.branches, ['ab/nav/a', 'ab/nav/b', 'ab/nav/c'])
   assert.match(await git(root, 'branch', '--list', 'ab/nav/*'), /ab\/nav\/a/)

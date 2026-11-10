@@ -13,7 +13,7 @@ description: >-
 **역할: 개선 조정자.** 사용자가 문제를 지정하지 않아도 실행 기록·코드·작업 흐름에서 개선 후보를 찾는다. 문제 발견 → 한 지표의 반복 실험 → 확인된 최선의 후보 → 독립 검토 → PR → 결과 관찰을 운영한다. 태스크·구현·기획은 기존 스킬에 맡긴다. 최적화할 대상과 검증 기준을 함께 바꿔 성과를 만들지 않는다.
 
 ## 공통 규칙 (모든 spec 스킬)
-1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 create-architecture 실행을 안내한다.
+1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 create-architecture 실행을 안내한다. `settings.unset`이 있으면 haeram-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
 2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 start-design 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(start-vibe)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(start-vibe 3절). 모드가 정해지지 않았으면 함께 모드다.
@@ -65,7 +65,7 @@ description: >-
 
 검토자/권한이 없으면 검토 패킷을 남기고 review pending으로 종료한다.
 
-허용된 개선 브랜치 push·PR 작성은 사전 위임 범위에서 진행한다. 일반 cfg push나 plan 브랜치를 PR 대상 코드의 직행 경로로 쓰지 않는다. 기본은 독립 검토와 필수 관문이 통과한 PR 작성까지다. merge는 별도의 명시적 사전 위임과 프로젝트 보호 규칙을 모두 만족할 때만 가능하며, 작성자 계정으로 플랫폼의 독립 승인 제한을 우회하지 않는다.
+허용된 개선 브랜치 push·PR 작성은 사전 위임 범위에서 진행한다. PR 대상(base)은 SETTINGS land다. land가 미정이면 PR을 만들지 않고 parked에 남긴다. `vibe push`의 land 직접 병합·push나 plan 브랜치를 PR 대상 코드의 직행 경로로 쓰지 않는다. 기본은 독립 검토와 필수 관문이 통과한 PR 작성까지다. merge는 별도의 명시적 사전 위임과 프로젝트 보호 규칙을 모두 만족할 때만 가능하며, 작성자 계정으로 플랫폼의 독립 승인 제한을 우회하지 않는다.
 
 ## 6. 피드백·종료
 

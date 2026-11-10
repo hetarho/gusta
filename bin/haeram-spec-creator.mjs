@@ -5,6 +5,7 @@ import { getPackageInfo } from '../src/package-info.mjs'
 import { runWorkCLI } from '../src/work-cli.mjs'
 import { runVibeCLI } from '../src/vibe-cli.mjs'
 import { inspectWork } from '../src/work-groups.mjs'
+import { migrateSpec, packageVersions } from '../src/migrate.mjs'
 
 const HELP = `haeram-spec-creator
 
@@ -14,6 +15,9 @@ const HELP = `haeram-spec-creator
   haeram-spec-creator install [--target <path>] [--agent both|claude|codex] [--dry-run] [--force]
   haeram-spec-creator check [--target <path>] [--agent both|claude|codex]
   haeram-spec-creator lint [--target <path>] [--hints]
+  haeram-spec-creator outdated [--target <path>]   설치 버전(lock)·실행 버전·npm 최신 버전 (JSON)
+  haeram-spec-creator migrate [--target <path>] [--dry-run]
+                                 spec/ 구조 변경 이관(예: STATE cfg push/plan → SETTINGS.md) 뒤 FORMAT 차이·미정 설정·lint 보고 (JSON)
   haeram-spec-creator context [--target <path>] [--json]
   haeram-spec-creator board [--target <path>] [--json]
   haeram-spec-creator work <start|claim|status|board|update|submit|integrate|release|cleanup|recover|unlock> ...
@@ -97,6 +101,12 @@ async function main() {
   }
   if (options.help || !command || command === 'help') {
     process.stdout.write(HELP)
+    return
+  }
+  if (['migrate', 'outdated'].includes(command)) {
+    const result = command === 'migrate' ? await migrateSpec(options) : await packageVersions(options)
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    if (result.ok === false || (result.lint && !result.lint.ok)) process.exitCode = 1
     return
   }
   if (options.json && !['context', 'board'].includes(command)) {

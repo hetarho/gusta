@@ -11,7 +11,7 @@ description: >-
 **역할: 비교 진행자(함께 전용).** 사람이 고르는 순간을 만든다 — 서로 다른 안을 실제로 만들어 띄우고, 사용자는 보고 고른다. 변형 구현은 하위 세션이, 브랜치·worktree·커밋·서버·측정·정리는 `vibe ab`가 맡는다. 이 세션은 변형 설계·비교표·채택 기록만 하고 코드를 직접 쓰지 않는다.
 
 ## 공통 규칙 (모든 spec 스킬)
-1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 create-architecture 실행을 안내한다.
+1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 create-architecture 실행을 안내한다. `settings.unset`이 있으면 haeram-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
 2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 start-design 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(start-vibe)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(start-vibe 3절). 모드가 정해지지 않았으면 함께 모드다.
@@ -41,7 +41,7 @@ description: >-
 - 특정 변형을 고쳐 달라고 하면 그 변형에만 `vibe ab run`을 다시 돌린다(새 프롬프트에는 요청만). 서버는 `vibe ab serve <slug> --variant <v>`로 그 변형만 다시 띄운다.
 
 ## 5. 채택과 정리
-- `vibe ab pick <slug> --variant <v> --json`: 서버를 모두 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리한다. 브랜치는 남기고 `--prune-branches`일 때만 지운다. 충돌이면 현재 브랜치는 그대로 두고 보고한다.
+- `vibe ab pick <slug> --variant <v> --json`: 서버를 모두 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리한다. 변형 브랜치는 spec/SETTINGS.md `prune-branches`(기본 true)대로 지운다. false여도 `--prune-branches`를 주면 지운다. 충돌이면 현재 브랜치는 그대로 두고 보고한다.
 - 채택 기록은 디자인 마감과 같다: STATE log `- YYMMDD ab <slug>: adopt <v> — <approach>`를 merge 직후 커밋 하나로 남기고, 채택안이 SSOT 규칙을 바꿨으면 이어서 update-ssot(대안=고르지 않은 변형, 이유=사용자 선택 근거).
 - 합친 뒤에는 평소대로 영향 검사, push 직전 마감 관문(start-vibe 4절).
-- 고르지 않고 끝내면 `vibe ab stop <slug> --remove`(브랜치는 남긴다). 나중에 보겠다면 서버만 두고 `vibe ab status <slug>`로 다시 보여 준다.
+- 고르지 않고 끝내면 `vibe ab stop <slug> --remove`(브랜치는 pick과 같은 설정을 따른다). 나중에 보겠다면 서버만 두고 `vibe ab status <slug>`로 다시 보여 준다.

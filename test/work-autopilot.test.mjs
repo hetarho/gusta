@@ -313,7 +313,10 @@ console.log(JSON.stringify({type:'result',is_error:false,structured_output:resul
   assert.match(calls[1].note, /time limit/)
   const board = await workBoard({ ...setup, work: group.id })
   const attempt = board.attempts.find((entry) => entry.taskId === 'T001')
-  const snapshot = (await git(setup.root, 'show', `refs/haeram/checkpoints/${attempt.id}:measured.txt`)).stdout
-  assert.equal(snapshot, 'round 1: 36.2%')
+  // The snapshot ref lived until the run pruned the integrated unit (prune-branches default);
+  // the measurement it protected is on the group branch.
+  assert.ok(result.pruned.pruned.includes(`refs/haeram/checkpoints/${attempt.id}`), JSON.stringify(result.pruned))
+  assert.ok(result.pruned.cleaned.includes(attempt.id))
+  assert.equal((await git(setup.root, 'show', `${group.branch}:measured.txt`)).stdout, 'round 1: 36.2%')
   assert.match((await git(setup.root, 'log', '--format=%s', group.branch)).stdout, /WIP T001: checkpoint after the time limit/)
 })

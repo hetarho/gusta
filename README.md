@@ -24,7 +24,7 @@ Claude Code와 Codex가 바로 코드를 작성하기 전에 목표, 범위, 제
 
 1. **spec이 1급 문서다.** 다른 SDD 프로세스와 같습니다. 코드보다 문서가 먼저 바뀝니다. 결정은 SSOT에, 진행은 STATE에, 구현 계획은 태스크에 먼저 쓰고, 코드는 그 결과물입니다. 구현 중 기획 공백이 보이면 코드로 임의로 확정하지 않고 update-ssot로 올립니다.
 2. **최소한의 토큰으로 최고의 결과.** 필요한 것만 읽습니다. 구현 세션은 문서 전체가 아니라 태스크가 기대는 결정 블록만 담은 브리핑(`vibe brief`)을 받고, FORMAT은 필요한 발췌만 봅니다. spec은 영어 압축 표기로 쓰고, 명령 출력은 요약과 마지막 몇 줄만 봅니다. 조정자(오케스트레이터)는 코드를 직접 읽거나 고치지 않고 탐색·구현·리뷰를 새 세션에 맡겨 결론만 받습니다 — 읽은 것은 이후 모든 턴에 다시 실리기 때문입니다. 맡김은 단위마다 새 세션을 띄워 대화가 쌓이지 않게 하고, 같은 트리에서 통과한 검사는 다시 돌리지 않으며, CI·긴 명령을 기다리는 동안에는 모델을 부르지 않습니다.
-3. **spec을 위해 속도를 포기하지 않는다.** 시간은 구현에 씁니다. 태스크마다 도는 것은 **변경 영향 단위 테스트와 빠른 검사(typecheck·lint·format)뿐**이고, 통합·e2e·전체 스위트·CI는 main(대상 브랜치)에 push하기 직전(push가 없으면 세션 끝)에 조정자가 한 번 실행합니다. 30분짜리 전체 테스트를 태스크 10개마다 돌리면 그것만으로 5시간이 사라집니다. 대신 맡김의 마지막 구간만 **마감 관문**(전체 검증·push·CI)에 남겨 둡니다. 그 길이는 고정 비율이 아니라 실측입니다 — 전체 검증 실측 시간 + 실패하면 고칠 단위 하나 + 다시 돌릴 시간(+CI). 30분짜리 스위트라면 10시간 중 약 1.5시간만 예약하고 나머지는 구현에 씁니다.
+3. **spec을 위해 속도를 포기하지 않는다.** 시간은 구현에 씁니다. 태스크마다 도는 것은 **변경 영향 단위 테스트와 빠른 검사(typecheck·lint·format)뿐**이고, 통합·e2e·전체 스위트·CI는 끝난 작업을 land 브랜치에 반영하기 직전(반영할 것이 없으면 세션 끝)에 조정자가 한 번 실행합니다. 30분짜리 전체 테스트를 태스크 10개마다 돌리면 그것만으로 5시간이 사라집니다. 대신 맡김의 마지막 구간만 **마감 관문**(전체 검증·push·CI)에 남겨 둡니다. 그 길이는 고정 비율이 아니라 실측입니다 — 전체 검증 실측 시간 + 실패하면 고칠 단위 하나 + 다시 돌릴 시간(+CI). 30분짜리 스위트라면 10시간 중 약 1.5시간만 예약하고 나머지는 구현에 씁니다.
 
 ### 코드 원칙 — 낮은 결합, 높은 응집
 
@@ -38,13 +38,13 @@ Claude Code와 Codex가 바로 코드를 작성하기 전에 목표, 범위, 제
 2. **사용자 수준 적응** — 최초 1회 캘리브레이션으로 `expert / mid / novice`를 정하면 모든 질문과 보고가 그 수준에 맞춰집니다. expert에게는 선택지를 용어로만 나열하고 세부·엣지까지 직접 묻고, mid에게는 선택지에 장단점을 한 줄씩 붙이고, novice에게는 기술명 대신 "무엇이 어떻게 되는지"를 물은 뒤 기술 결정은 에이전트가 내리고 한 줄로 보고합니다.
 3. **문서 먼저** — 단독 작업과 기획 공간은 진행 문서(`spec/STATE.md`)에 시작과 상태 변화를 기록합니다. 작업 묶음의 워커는 공유 실행 기록에 상태를 남깁니다. 세션을 이어 받아도 "다음 태스크 구현해줘", "SSOT 변경분 태스크로 쪼개줘"가 통하도록 현재 checkout의 맥락을 보존합니다. STATE 수정은 원자적 선점이 아니며, 다른 worktree의 변경은 자동으로 공유되지 않습니다.
 4. **정책 단위 문서** — SSOT의 한 결정은 **독립적으로 이해하고 검증할 수 있는 정책 하나**입니다. 조건이 많으면 줄을 합치지 않고 하위 항목이나 표로 폅니다(줄바꿈을 없애는 것은 간결화가 아닙니다). 대신 누가 언제 요청했는지, 과거 논의와 폐기된 방식의 상세, 미사여구는 남기지 않습니다 — 호환성·실패 조건·보안·과금·수치와 단위·부정 표현·필요한 근거는 반대로 반드시 남깁니다. 구조는 `lint`가 강제하고, 의미 품질은 `lint`가 **검토 후보**로만 표시한 뒤 `doc-review`가 사람과 함께 판단합니다.
-5. **결정할 사람이 있는지로 나뉘는 두 모드** — `/start-vibe`는 시작할 때 한 번 묻습니다. **함께**는 결정 지점마다 선택지를 모아 묻고, **맡김**은 그 뒤로 한 번도 묻지 않습니다 — 기획·기술 모두 추천안으로 진행하고, 받았어야 할 질문과 고른 답을 **결정함**(STATE `## inbox`)과 **보고서**(`spec/reports/`)에 남깁니다. 태스크마다 커밋하고, 검증·push는 [검증과 push](#검증과-push)를 따릅니다. cfg push에 브랜치가 있으면 다른 세션이 보일 때 선점 정보부터 원격에 공유해 다른 기기에서도 보입니다.
+5. **결정할 사람이 있는지로 나뉘는 두 모드** — `/start-vibe`는 시작할 때 한 번 묻습니다. **함께**는 결정 지점마다 선택지를 모아 묻고, **맡김**은 그 뒤로 한 번도 묻지 않습니다 — 기획·기술 모두 추천안으로 진행하고, 받았어야 할 질문과 고른 답을 **결정함**(STATE `## inbox`)과 **보고서**(`spec/reports/`)에 남깁니다. 태스크마다 커밋하고, 검증·push는 [검증과 push](#검증과-push)를 따릅니다. SETTINGS push가 켜져 있으면 다른 세션이 보일 때 선점 정보부터 원격에 공유해 다른 기기에서도 보입니다.
 
 ## 개발 흐름
 
 | 순서 | 스킬 | 역할 | 하는 일 | 산출물 |
 | --- | --- | --- | --- | --- |
-| 진입점 | `start-vibe` | 진행자 | 원격의 다른 기기 진행 확인 → 모드 질문 → 다음 스킬 선택 → 태스크별 커밋 → 마감 관문(전체 검증, cfg push 브랜치가 있으면 push 한 번). 맡김이면 결정함·보고서 | STATE `## active`·`## inbox`, `spec/reports/` |
+| 진입점 | `start-vibe` | 진행자 | 원격의 다른 기기 진행 확인 → 모드 질문 → 다음 스킬 선택 → 태스크별 커밋 → 마감 관문(전체 검증 뒤 SETTINGS land로 반영 한 번). 맡김이면 결정함·보고서 | STATE `## active`·`## inbox`, `spec/reports/` |
 | 디자인 | `start-design` | 디자인 진행자 | 이 checkout만 디자인 중으로 표시하고 말하는 대로 코드만 즉시 수정(테스트·커밋·push 없음) → 디자인 끝이면 전체 테스트 후 커밋 하나. 커밋·push 전엔 항상 디자인이 끝났는지 묻는다 | checkout 로컬 디자인 상태, 디자인 커밋 |
 | 비교 | `show-ab` | 비교 진행자 | 문제 하나를 변형 2~6개로 병렬 구현(하위 세션·변형별 worktree) → 포트별로 띄우거나 같은 측정을 나란히 → 고른 변형만 현재 브랜치에 merge. 함께 전용 | `ab/<slug>/<v>` 브랜치, 채택 merge·STATE log |
 | 아이디어 | `ideation` | 기획 전문가 | 흐릿한 아이디어를 발산·수렴 루프로 함께 구체화, SSOT 전환용 도메인 분할까지 | `spec/ideation/<slug>.md` |
@@ -60,6 +60,9 @@ Claude Code와 Codex가 바로 코드를 작성하기 전에 목표, 범위, 제
 | 제출물 리뷰 | `review-task` | 리뷰어 | 제출 커밋 검토 → 승인 또는 수정 요청 | 커밋·상위 기준에 고정된 리뷰 기록 |
 | 병렬 작업 | `manage-work` | 작업 조정자 | 상위 브랜치·태스크 worktree 배정 → 검증·통합 → 정리 | 작업 묶음 + 공유 실행 기록 |
 | 필요시 | `create-narrative` | 작가 | spec 전체를 사람이 읽기 좋은 한국어 이야기로 엮음 | `spec/NARRATIVE.md` |
+| 초기 설정 | `haeram-init` | 설정 인터뷰 | 브랜치 전략(land·병합 방식·push·배포 브랜치·기획 브랜치) 중 미정인 것만 묻고 저장. 다른 스킬도 미정이면 먼저 이리로 보냄 | `spec/SETTINGS.md` |
+| 업데이트 | `update-haeram-spec-creator` | 업데이트 담당 | npm 새 버전 확인 → 스킬 재설치 → spec/ 구조 이관(`migrate`)·FORMAT 병합 → lint → 커밋 | 설치·이관 커밋 |
+| 설정 | `haeram-setting` | 설정 안내 | 이 프로젝트의 패키지 동작 설정(`spec/SETTINGS.md`)을 표로 보여 주고, 말한 값만 바꿈 | `spec/SETTINGS.md` |
 | 세션 끝 | `haeram-report` | 회고자 | 이 세션에서 haeram 스킬·CLI가 어떻게 동작했는지 돌아보고 개선 사항을 근거와 함께 보고(읽기 전용·익명화) | markdown 코드 블록 하나 |
 
 설치된 프로젝트에는 다음 구조가 생깁니다.
@@ -68,6 +71,7 @@ Claude Code와 Codex가 바로 코드를 작성하기 전에 목표, 범위, 제
 spec/
 ├── STATE.md      # 관제탑: cfg(사용자 수준·push 브랜치) · 실행 중 세션(active) · 결정함(inbox) · SSOT rev 현황 · 태스크 보드 · next · log
 ├── FORMAT.md     # 모든 spec 문서의 압축 표기 규칙 (ID, 기호, 골격, 상태 규칙)
+├── SETTINGS.md   # (선택) 패키지 동작 설정 — 없는 키는 기본값. /haeram-setting으로 보기·바꾸기
 ├── ideation/     # (선택) 활성 아이디어 — open(구체화 중), ready(SSOT 반영 대기·진행 중)
 │   └── done/     # 전체 SSOT 반영을 확인한 converted 문서 보존 — STATE에서는 제거
 ├── ssot/         # 도메인별 SSOT — 결정([o]/[?]/[x])과 근거만, rev로 변경 추적
@@ -117,9 +121,9 @@ Claude Code나 Codex를 설치하려는 프로젝트에서 열고 다음 프롬�
 
 1. 원격을 가져와 다른 기기에서 진행 중인 세션(STATE `## active`, `wip/<tag>` 스냅샷)을 확인합니다.
 2. **질문은 한 번에** 합니다: 모드(함께/맡김), 기획 거리와 구현 거리가 둘 다 있으면 무엇부터, 다른 기기가 진행 중이면 이어받을지. push 대상은 묻지 않습니다(기본은 커밋만).
-3. 맡김이면 사용자가 떠나기 전에 점검합니다(`vibe preflight`: 디자인 중 여부·작업 트리·lint·검증 명령·절전 방지, cfg push가 있으면 push 권한·CI 접근, 작업 묶음이면 헤드리스 워커의 명령 실행 권한 실측). 정할 것이 있으면 이때 한 번 더 묻고, 그 뒤로는 묻지 않습니다.
+3. 맡김이면 사용자가 떠나기 전에 점검합니다(`vibe preflight`: 디자인 중 여부·작업 트리·lint·검증 명령·절전 방지, land 미정 여부, push가 켜져 있으면 push 권한·CI 접근, 작업 묶음이면 헤드리스 워커의 명령 실행 권한 실측). 정할 것이 있으면 이때 한 번 더 묻고, 그 뒤로는 묻지 않습니다.
 4. STATE를 보고 다음 일을 고릅니다 — 아무것도 없으면 `/ideation`으로 안내, 전환 안 된 아이디어가 있으면 기획(create-ssot → create-task), 태스크·변경분이 있으면 구현(implement-task). 함께는 이 대화에서 태스크를 하나씩 진행합니다. 맡김은 이 대화가 직접 반복하지 않고 [`vibe loop`](#오래-맡기기--vibe-loop)가 단위마다 새 세션을 띄웁니다. 독립 줄기가 충분히 클 때만 작업 묶음으로 병렬 처리합니다.
-5. 태스크마다 커밋합니다. 보고서는 태스크 3개(기본)·기획 조각 소진·세션 끝에 갱신하고, 전체 검증과 push는 세션 끝에 한 번입니다([검증과 push](#검증과-push)). cfg push 브랜치가 있고 다른 세션이 보이면 선점 정보 공유와 원격 판정을 먼저 합니다. 1시간 넘는 작업은 `wip/<tag>`로 스냅샷합니다(원격에는 cfg push 브랜치가 있을 때만 올라갑니다).
+5. 태스크마다 커밋합니다. 보고서는 태스크 3개(기본)·기획 조각 소진·세션 끝에 갱신하고, 전체 검증과 push는 세션 끝에 한 번입니다([검증과 push](#검증과-push)). SETTINGS push가 켜져 있고 다른 세션이 보이면 선점 정보 공유와 원격 판정을 먼저 합니다. 1시간 넘는 작업은 `wip/<tag>`로 스냅샷합니다(원격에는 SETTINGS push가 켜져 있을 때만 올라갑니다).
 
 | 모드 | 결정 | 사용자가 없을 때 |
 | --- | --- | --- |
@@ -151,7 +155,7 @@ SSOT·계약·저장 형식·결정이 바뀌지 않는 작은 버그/문구/스
 1. `vibe design start`로 이 checkout이 디자인 중임을 표시합니다. 이 상태는 checkout의 Git 디렉터리에만 저장되고 STATE에는 쓰지 않으므로, 기획 커밋·plan-push를 타고 다른 worktree로 퍼지지 않습니다. 개발 서버(hot reload)를 띄워 두고 결과를 실시간으로 봅니다.
 2. 디자인하는 동안에는 테스트·e2e·typecheck·커밋·push를 하지 않습니다. 그 checkout에서는 `vibe push`가 거절되고, 맡김 preflight는 실패하며 `vibe loop`는 멈춥니다. 다른 worktree의 작업은 영향을 받지 않습니다. 중간 저장이 필요하면 `vibe checkpoint`로 `wip/<tag>`에만 스냅샷합니다.
 3. 커밋·push가 필요해지면(직접 요청, 다른 스킬로 전환, 마감) 어떤 스킬이든 먼저 **"디자인 끝났나요?"** 를 묻습니다.
-4. 디자인이 끝나면 `vibe design verify`로 ARCH의 task·batch 명령 전부를 미커밋 작업 트리에서 한 번씩 돌립니다(빠른 검사가 실패하면 무거운 검사는 미룸, 같은 트리는 캐시). 디자인 때문에 바뀐 기대값은 테스트를 고치고, 깨진 기능은 코드를 고칩니다. 통과하면 `vibe design end` 후 디자인·테스트 수정·STATE log(`- YYMMDD design <area>: <what>`)를 커밋 하나로 남깁니다. push는 요청했거나 cfg push가 브랜치일 때만 합니다.
+4. 디자인이 끝나면 `vibe design verify`로 ARCH의 task·batch 명령 전부를 미커밋 작업 트리에서 한 번씩 돌립니다(빠른 검사가 실패하면 무거운 검사는 미룸, 같은 트리는 캐시). 디자인 때문에 바뀐 기대값은 테스트를 고치고, 깨진 기능은 코드를 고칩니다. 통과하면 `vibe design end` 후 디자인·테스트 수정·STATE log(`- YYMMDD design <area>: <what>`)를 커밋 하나로 남깁니다. 반영(`vibe push`)은 요청했거나 SETTINGS land·push가 반영을 정해 둔 경우에만 합니다.
 
 ### 스킬을 직접 부르기
 
@@ -189,6 +193,13 @@ THEME SSOT가 너무 길어. 의미 바꾸지 말고 정리해줘.      → doc-
 /haeram-report                                     → haeram-report
 ```
 
+```text
+/haeram-setting                                    → haeram-setting (설정 표)
+/haeram-setting prune-branches false               → 그 값만 바꾸고 커밋
+```
+
+설정은 `spec/SETTINGS.md`에 한 줄씩 남고, 파일이나 키가 없으면 기본값을 씁니다. 지금 있는 설정은 `prune-branches`(기본 `true`) 하나입니다. 작업이 끝나면 CLI가 자기가 만든 것 중 더 이상 쓰지 않는 것을 지웁니다. 작업이 끝나는 시점은 실행기 종료, `work cleanup`, `vibe loop` 종료, 세션 마감의 `vibe prune`, show-ab 채택입니다. 지우는 것은 이미 합쳐진 단위·묶음 브랜치, 그 worktree(설치·빌드 산출물 포함), 체크포인트 ref, 이 세션의 `wip/<tag>`입니다. 원격의 `wip/<tag>`는 HEAD가 push된 뒤에만 지웁니다. 합쳐지지 않은 커밋, 미커밋 변경, 진행 중인 작업은 남기고 이유를 `kept`로 보고합니다.
+
 haeram 스킬을 쓴 세션 끝에 부르면, 그 세션에서 스킬·CLI가 어떻게 동작했는지 돌아보고 개선 사항(오류·모호한 지시·토큰/시간 낭비·사람이 판단 아닌 일에 쓴 시간)을 근거와 함께 markdown 코드 블록 하나로 돌려줍니다. 파일은 바꾸지 않고, 대상 프로젝트 이름·도메인·ID는 익명화하므로 그대로 이 저장소의 이슈로 옮길 수 있습니다.
 
 ## 여러 안을 띄워 고르기 — `/show-ab`
@@ -203,7 +214,7 @@ haeram 스킬을 쓴 세션 끝에 부르면, 그 세션에서 스킬·CLI가 �
 1. 변형마다 `ab/<slug>/<a|b|…>` 브랜치와 형제 worktree, 포트(4101부터 빈 포트)가 생기고 의존성 설치(`--setup`)가 병렬로 돕니다(`vibe ab start`).
 2. 변형마다 새 하위 세션이 자기 worktree만 고칩니다(`vibe ab run`, 헤드리스 Claude·Codex 또는 에이전트의 하위 세션). 커밋은 CLI가 변형 브랜치에 하고, 진행자에게는 요약과 "어디를 보면 되는지"만 돌아옵니다.
 3. `vibe ab serve`가 변형마다 개발 서버를 `$PORT`로 띄우고 준비될 때까지 기다립니다. `vibe ab exec --repeat 3`은 변형을 번갈아 실행해 시간 중앙값·최소값을 모읍니다. 진행자는 변형 | 접근 | URL·측정값 | 장단점 비교표 하나로 보여 줍니다.
-4. 고르면 `vibe ab pick`이 서버를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리합니다(브랜치는 남김). 채택은 결정이라 STATE log에 남기고, SSOT 규칙이 바뀌었으면 update-ssot로 이어집니다. 전체 테스트는 합친 뒤 평소 마감 관문에서 한 번입니다.
+4. 고르면 `vibe ab pick`이 서버를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리합니다(브랜치는 `prune-branches` 설정대로, 기본은 삭제). 채택은 결정이라 STATE log에 남기고, SSOT 규칙이 바뀌었으면 update-ssot로 이어집니다. 전체 테스트는 합친 뒤 평소 마감 관문에서 한 번입니다.
 
 변형마다 구현 세션 하나만큼 토큰·시간이 들고, 고를 사람이 있어야 하므로 맡김에서는 실행하지 않습니다. 변형은 spec/을 고치지 않으며 미커밋 변경이 있으면 시작하지 않습니다.
 
@@ -220,7 +231,7 @@ haeram 스킬을 쓴 세션 끝에 부르면, 그 세션에서 스킬·CLI가 �
 
 PR이나 GitHub CLI가 없어도 로컬 구현·리뷰·통합을 할 수 있습니다. 하위 세션은 에이전트의 하위 세션 도구로, 없거나 맡김이면 헤드리스 `work scout`(읽기 전용 탐색, 제안 JSON만 반환)·`work run`(구현·리뷰)으로 띄웁니다. 오케스트레이터는 코드를 직접 훑지 않습니다. 기존 작업 묶음의 `--workspace current --tasks '<approved IDs>' --review all --push -`를 사용해 승인 범위 밖 todo를 소비하지 않으며, 그 todo가 남아 있어도 승인 범위를 마칠 수 있습니다. 실행 도구가 없으면 하위 세션을 가장하지 않고 제안 패킷과 필요한 연결을 보고합니다.
 
-기본은 현재 브랜치의 로컬 커밋까지입니다. 원격 코드 반영은 별도 요청 또는 사용자가 지정한 cfg push가 있을 때 조정자가 최종 검증 후 한 번 수행합니다. 기획 문서의 cfg plan 정책은 유지합니다. 실제 origin/main이 갱신됐는지와 로컬에만 반영됐는지를 구분해 보고합니다. [실행 절차](skills/self-improve-local/SKILL.md)에 역할·승인·통합 경계가 있습니다.
+통합 뒤 반영은 SETTINGS land·land-via·push를 따르며 조정자가 최종 검증 후 한 번 수행합니다(land가 current이고 push가 false면 현재 브랜치의 로컬 커밋까지). 기획 문서는 SETTINGS plan을 따릅니다. 실제 origin/main이 갱신됐는지와 로컬에만 반영됐는지를 구분해 보고합니다. [실행 절차](skills/self-improve-local/SKILL.md)에 역할·승인·통합 경계가 있습니다.
 
 ## 지시 없이 문제를 찾는 지속 개선
 
@@ -239,11 +250,32 @@ PR이나 GitHub CLI가 없어도 로컬 구현·리뷰·통합을 할 수 있습
 
 기존 프로젝트의 FORMAT 이관은 [기존 프로젝트 이관](#기존-프로젝트-이관)을 따릅니다.
 
+## 브랜치 전략
+
+끝난 작업이 어디로 가는지는 스킬에 고정돼 있지 않고 `spec/SETTINGS.md`가 정합니다. 정해지지 않았으면(`land: ?`) 어느 스킬을 부르든 먼저 `/haeram-init`이 묻습니다. 맡김은 묻지 않고 현재 브랜치에 커밋만 한 뒤 결정함에 남깁니다.
+
+| 키 | 값 | 뜻 |
+|---|---|---|
+| `land` | `?` · `current` · 브랜치 | start-vibe 세션·self-improve·작업 묶음이 끝나면 병합될 브랜치 |
+| `land-via` | `merge`(기본) · `pr` | land에 직접 병합하거나, 작업 브랜치를 올려 PR |
+| `push` | `false`(기본) · `true` | land를 원격에도 올릴지 (push마다 원격 CI) |
+| `deploy` | `-`(기본) · 브랜치 | "배포해줘"(`vibe deploy`)가 land로 fast-forward할 브랜치 |
+| `plan` | `?` · `-` · 브랜치 | 태스크 번호·SSOT rev를 매기는 기획 브랜치 (미정이면 land) |
+
+```text
+바로 main에 병합      land: main  · deploy: -
+next 경유 후 배포     land: next  · deploy: main   ("배포해줘" → main을 next로 fast-forward)
+PR                   land: main  · land-via: pr
+커밋만(예전 기본)      land: current
+```
+
+세션 끝의 `vibe push`가 이 설정대로 반영합니다. push가 켜져 있으면 원격 land를 합친 뒤 push하고, 꺼져 있으면 로컬 land 브랜치에 병합합니다(land를 먼저 합쳐 land는 fast-forward만). PR 전략이면 작업 브랜치를 올리고 PR을 엽니다. `vibe deploy`는 deploy 브랜치를 land의 검증된 커밋으로 fast-forward만 하고, deploy에 land에 없는 커밋(핫픽스 등)이 있으면 거절합니다. 그 커밋을 land에 합쳐 검증한 뒤 다시 배포합니다.
+
 ## 검증과 push
 
 - **태스크마다**: 변경 영향 단위 테스트와 빠른 검사(typecheck·lint·format)만 돌립니다. 테스트는 스크립트 이름이 아니라 격리 범위·의존성으로 분류하고, 실행하지 않은 통합/e2e는 result limits에 남겨 마감 관문에 넘깁니다. `vibe check --tier task`는 ARCH batch 단계에만 있는 명령(전체 스위트)을 거절하고, 5분 넘는 태스크 검사에는 `slow`·`hint`를 붙입니다(사용자가 별도 실행을 명시하면 `--allow-final`).
 - **마감 관문**: 통합·e2e·전체 스위트는 조정자/loop 호스트 하나가 최종 후보에서 한 번 실행합니다(단독 `vibe check --tier batch`, 묶음 `--group-verify`). 같은 트리·같은 명령의 통과는 재사용하고, 무거운 검사는 clone 공용 락으로 하나씩 돌립니다. 구현·리뷰 세션은 세션이 끝났다고 브라우저·전체 검사를 띄우지 않습니다. 검증 없는 코드 push는 중단합니다.
-- **push**: 기본은 커밋만(cfg `push: -`). cfg push에 브랜치가 있으면 검증한 SHA로 한 번 push하고(`vibe push --verified-commit <SHA>` — 그 뒤 코드가 바뀌면 거절) CI를 한 번 기다립니다(`vibe ci wait`: gh → 토큰 API → 공개 페이지 순, 기본 no-run 유예 2분·제한 1시간, 대기 중 모델 호출 없음). 단위별 push는 사용자가 명시할 때만입니다(`vibe loop --push-each-unit`, 묶음 `--push`).
+- **반영**: 끝난 작업은 SETTINGS `land`로 갑니다([브랜치 전략](#브랜치-전략)). 세션 끝에 검증한 SHA로 한 번 반영하고(`vibe push --verified-commit <SHA>` — 그 뒤 코드가 바뀌면 거절), push가 켜져 있으면 CI를 한 번 기다립니다(`vibe ci wait`: gh → 토큰 API → 공개 페이지 순, 기본 no-run 유예 2분·제한 1시간, 대기 중 모델 호출 없음). 단위별 push는 사용자가 명시할 때만입니다(`vibe loop --push-each-unit`, 묶음 `--push`).
 - 단계는 ARCH의 task/batch/CI 하위 줄이 정합니다. 단계가 없는 legacy ARCH는 package.json의 verify/test 스크립트를 batch로 보거나 `--verify '<command>'`를 씁니다. 세부 절차는 [조정자 검증 절차](skills/start-vibe/references/verification.md)에 있습니다.
 
 ```bash
@@ -274,7 +306,7 @@ npx haeram-spec-creator vibe loop --tag k3f9 --stop --json
 
 `.git/haeram/v1/loops/<tag>/loop.json`에 상태·로그·세션 ID·정지 파일 경로를 남깁니다. `--detach`는 부모 터미널과 분리하고 macOS에서는 caffeinate를 사용합니다. STOP 표식은 재시작 전에 직접 지웁니다. headless 세션은 프로젝트 설정을 사용할 수 있는 메인 checkout에서 권한을 실측하며 기본은 Claude acceptEdits+허용 목록, Codex workspace-write입니다. 필요한 명령은 `--allow-tool 'Bash(pnpm *)'`처럼 추가합니다. 사용자가 명시한 `--permission-mode bypass`만 권한 우회를 켭니다.
 
-실행 중에는 `--status`로 heartbeat·요청/적용 설정·운영 오류를 보고, `--configure --push-each-unit|--no-push-each-unit`로 단위별 push를 바꿉니다 — 현재 단위가 끝난 뒤 같은 호스트에 적용되며 receipt의 `status:applied`로 확인합니다(pending은 적용 전). cfg push가 `-`이면 이 옵션도 원격 게시를 켜지 않습니다. `--stop`·SIGINT·SIGTERM은 즉시 취소라 새 마감 검증·push를 시작하지 않고, `--stop-after-unit`은 현재 단위와 마감 관문까지 마친 뒤 멈춥니다. 호스트는 자기가 쓴 보고서와 자기 active 행만 정리하고, 그 밖의 변경이 남으면 보존한 채 다음 단위와 게시를 멈춥니다. 종료된 호스트는 `--recover-metadata`로 정리합니다(모델·push·재시작 없음). 독립 감시자·실패 알림(`--notify-command`)·복구 계약은 [loop 제어 계약](skills/start-vibe/references/loop-control.md)에 있습니다.
+실행 중에는 `--status`로 heartbeat·요청/적용 설정·운영 오류를 보고, `--configure --push-each-unit|--no-push-each-unit`로 단위별 push를 바꿉니다 — 현재 단위가 끝난 뒤 같은 호스트에 적용되며 receipt의 `status:applied`로 확인합니다(pending은 적용 전). SETTINGS push가 false이면 이 옵션도 원격 게시를 켜지 않습니다. `--stop`·SIGINT·SIGTERM은 즉시 취소라 새 마감 검증·push를 시작하지 않고, `--stop-after-unit`은 현재 단위와 마감 관문까지 마친 뒤 멈춥니다. 호스트는 자기가 쓴 보고서와 자기 active 행만 정리하고, 그 밖의 변경이 남으면 보존한 채 다음 단위와 게시를 멈춥니다. 종료된 호스트는 `--recover-metadata`로 정리합니다(모델·push·재시작 없음). 독립 감시자·실패 알림(`--notify-command`)·복구 계약은 [loop 제어 계약](skills/start-vibe/references/loop-control.md)에 있습니다.
 
 맡김의 결정·주차 규칙은 위 [모드 표](#3-start-vibe로-시작하기)와 같습니다. 구현이 판단 문제로 막히면 기획 한 조각으로 해소해 재개하고, CI 실패는 근거를 담은 수정 태스크로 만들어 다음 단위로 먼저 실행합니다. 시간·단위·반복 실패 한도에 닿으면 `loop.json`과 보고서에 우선 재개할 태스크를 남깁니다.
 
@@ -296,9 +328,11 @@ npx haeram-spec-creator vibe brief T201 --deep --json   # 미분류 참조까지
 
 ## 기존 프로젝트 이관
 
-1. `npx haeram-spec-creator@latest install --dry-run` → `install` → `check`. 설치는 `.claude/skills`·`.codex/skills`만 바꾸고, 로컬에서 고친 스킬 파일은 충돌로 보고하며 `--force` 없이 덮어쓰지 않습니다. `spec/`은 건드리지 않습니다.
+`/update-haeram-spec-creator`가 아래를 한 번에 합니다: `outdated`로 새 버전 확인 → 설치 → `migrate` → FORMAT 병합 → lint → 커밋. 직접 할 때는:
+
+1. `npx haeram-spec-creator@latest outdated`로 설치 버전·최신 버전·그 사이 변경(`changes`)을 봅니다. 그다음 `npx haeram-spec-creator@latest install --dry-run` → `install` → `check`. 설치는 `.claude/skills`·`.codex/skills`만 바꾸고, 로컬에서 고친 스킬 파일은 충돌로 보고하며 `--force` 없이 덮어쓰지 않습니다. `spec/`은 건드리지 않습니다.
 2. `lint`로 기존 문서를 검사합니다. 새 검사는 기존 문서를 오류로 만들지 않고 경고·검토 후보로 알립니다.
-3. `spec/FORMAT.md`·`STATE.md`는 자동 이관되지 않습니다. 설치된 `.claude/skills/create-architecture/assets/FORMAT.md`와 비교해 새 표기·골격·State rules·Reading·Autonomous improvement 줄만 옮기고 프로젝트가 고친 규칙은 그대로 둡니다. 옮기기 전까지 스킬은 프로젝트 FORMAT에 없는 표기(예: `→!`·`→=`·`→~`)를 쓰지 않습니다. 새 cfg 키·STATE 섹션은 필요하지 않습니다(cfg `brief`·`always`는 선택).
+3. `npx haeram-spec-creator@latest migrate --dry-run` → `migrate`로 구조 변경을 이관합니다(예: STATE cfg push·plan → `spec/SETTINGS.md`). 여러 번 실행해도 결과가 같습니다. 의미 판단이 필요한 `spec/FORMAT.md`는 자동으로 덮어쓰지 않습니다. 결과의 `format.missing`(새 패키지 줄)과 `format.extra`(프로젝트에만 있는 줄)를 보고, 새 줄은 옮기고 프로젝트가 고친 규칙은 남깁니다. `unset`이 있으면 `/haeram-init`으로 정합니다. FORMAT에 옮기기 전까지 스킬은 프로젝트 FORMAT에 없는 표기(예: `→!`·`→=`·`→~`)를 쓰지 않습니다.
 4. 버전별 이관 항목은 [CHANGELOG](CHANGELOG.md)에 있습니다.
 
 ## 직접 설치하기
@@ -378,9 +412,10 @@ npx haeram-spec-creator install --force
 # start-vibe 세션 도구
 npx haeram-spec-creator vibe status --tag k3f9        # 다른 기기의 세션·남은 일·추천 경로
 npx haeram-spec-creator vibe brief T012                # 태스크가 기대는 결정 블록·전역 규칙·flow·constraints·stale base 이후 chg
-npx haeram-spec-creator vibe plan-sync                # 기획 브랜치(cfg plan, 기본 main)의 최신을 합침 — 기획·채번 전
+npx haeram-spec-creator vibe plan-sync                # 기획 브랜치(SETTINGS plan, 미정이면 land)의 최신을 합침 — 기획·채번 전
 npx haeram-spec-creator vibe plan-push                # spec/만 담은 기획 커밋을 기획 브랜치에 올림 (태스크 ID 충돌이면 거절)
-npx haeram-spec-creator vibe push                     # 원격을 합치고(STATE는 섹션 단위) cfg push 브랜치로 push
+npx haeram-spec-creator vibe push                     # 끝난 작업을 SETTINGS land로 반영(push면 원격을 합친 뒤 push, 아니면 로컬 병합, pr이면 PR)
+npx haeram-spec-creator vibe deploy                   # '배포해줘': deploy 브랜치를 land로 fast-forward
 npx haeram-spec-creator vibe claim --tag a1b2 --task T001 # 선점 정보만 공유하고 미검증 로컬 코드는 남김
 npx haeram-spec-creator vibe checkpoint --tag k3f9    # 작업 트리 스냅샷을 wip/k3f9로 (현재 브랜치는 그대로)
 npx haeram-spec-creator vibe design start --tag d7 --scope "landing hero"  # 이 checkout만 디자인 중으로 (STATE·다른 worktree는 그대로)
@@ -474,7 +509,7 @@ npx haeram-spec-creator work --help
 
 `context --json`은 Git/worktree와 현재 작업 모드를 보여 줍니다. 일반 `board`는 현재 checkout의 파일만 읽는 조회 명령이고, `work board`가 작업 묶음의 기준 커밋과 공유 실행 기록을 함께 보여 줍니다. 보드의 claimable은 조회 시점의 후보이며 선점 자체는 claim이 수행합니다. JSON의 `schemaVersion`은 1입니다.
 
-작업 묶음의 원자적 선점은 같은 로컬 clone 안에서 동작합니다. 다른 기기(clone)와의 중복은 cfg push 브랜치가 있으면 `/start-vibe`가 막습니다 — 세션은 STATE `## active` 행과 doing tag를 먼저 push해 선점하고, 다른 기기는 시작할 때 그 행과 `wip/<tag>` 스냅샷으로 진행 중인 일을 알아챕니다. fan-out 경쟁 구현은 포함하지 않습니다. 자동 실행은 아래의 기본 실행기 또는 command 어댑터로 연결합니다. 기획 공간의 수동 Git 작업은 CLI 예약을 따르지 않으므로 통합 중 같은 checkout에서 다른 변경을 실행하지 않아야 합니다. 기존 프로젝트의 `spec/FORMAT.md`·`STATE.md`는 install로 자동 이관되지 않으며, 작업 묶음은 기존 task 골격을 이용하는 선택 기능입니다. 다른 clone에도 Git에 저장된 태스크·실행 이력 체크포인트가 남지만 현재 프로세스·선점 소유권과 명령 출력 로그는 전파되지 않습니다.
+작업 묶음의 원자적 선점은 같은 로컬 clone 안에서 동작합니다. 다른 기기(clone)와의 중복은 SETTINGS push가 켜져 있으면 `/start-vibe`가 막습니다 — 세션은 STATE `## active` 행과 doing tag를 먼저 push해 선점하고, 다른 기기는 시작할 때 그 행과 `wip/<tag>` 스냅샷으로 진행 중인 일을 알아챕니다. fan-out 경쟁 구현은 포함하지 않습니다. 자동 실행은 아래의 기본 실행기 또는 command 어댑터로 연결합니다. 기획 공간의 수동 Git 작업은 CLI 예약을 따르지 않으므로 통합 중 같은 checkout에서 다른 변경을 실행하지 않아야 합니다. 기존 프로젝트의 `spec/FORMAT.md`·`STATE.md`는 install로 자동 이관되지 않으며, 작업 묶음은 기존 task 골격을 이용하는 선택 기능입니다. 다른 clone에도 Git에 저장된 태스크·실행 이력 체크포인트가 남지만 현재 프로세스·선점 소유권과 명령 출력 로그는 전파되지 않습니다.
 
 ### 줄기(lane)로 나누고 단계별로 검증하기
 

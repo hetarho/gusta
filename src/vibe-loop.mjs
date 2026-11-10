@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import path from 'node:path'
 import { vibeStatus, vibeSession, vibePreflight, vibePush, vibeAwake, vibeCheckpoint, vibeSync, vibeClaim } from './vibe.mjs'
+import { vibePrune } from './prune.mjs'
 import { readVerification, vibeBrief } from './vibe-brief.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { vibeCIWait } from './vibe-ci.mjs'
@@ -121,7 +122,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const context = await vibeSession(options), root = context.root
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'haeram-vibe-loop.lock')
-  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, now: Date.now, monitor: startLoopMonitor, fault: async () => {}, ...injected }
+  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, now: Date.now, monitor: startLoopMonitor, fault: async () => {}, ...injected }
   const previous = await readJSON(manifest)
   if (previous && previous.cwd !== root) throw new SkillPackageError('이 tag는 다른 checkout 소유입니다.', [previous.cwd])
   if (options.stop) { await bindLoopDirectory(directory, root); await writeFile(stopFile, 'stop\n'); return { schemaVersion: 1, ok: true, stopFile, action: 'cancel' } }
@@ -185,7 +186,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const start = deps.now(), deadline = start + hours * 3600000
   const report = `spec/reports/${new Date(start).toISOString().slice(2, 10).replaceAll('-', '')}-${options.tag}.md`
   const reportPath = path.join(root, report)
-  let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false
+  let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false, pruned = null
   let priorityTask = /^T\d+$/.test(previous?.priorityTask ?? '') ? previous.priorityTask : null
   // repairTask: the gate/CI repair this run queued. failedGate: the code a gate last failed on.
   let repairTask = null, failedGate = null, gateFailures = 0
@@ -224,7 +225,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const snapshot = () => ({ ...plan, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -367,7 +368,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     if (pushed.ok === false) throw new SkillPackageError('묶음 push 실패')
     if (pushed.pushed && code) {
       codePushed = true
-      const ci = await deps.ci({ ...options, targetRoot: root, signal: controller.signal, timeoutMs: Math.max(1, deadline - deps.now()), commit: pushed.pushed, branch: context.target, diffBase: base })
+      const ci = await deps.ci({ ...options, targetRoot: root, signal: controller.signal, timeoutMs: Math.max(1, deadline - deps.now()), commit: pushed.pushed, branch: pushed.target ?? context.target, diffBase: base })
       batches.push({ ci })
       if (!ci.ok && ci.outcome === 'cancelled') throw new SkillPackageError('CI 대기가 중지됐습니다.')
       if (!['skipped', 'cancelled'].includes(ci.outcome) && Number.isFinite(ci.ms)) await recordTiming(context.runtime, timingKey('ci'), ci.ms)
@@ -535,6 +536,9 @@ export async function vibeLoop(options = {}, injected = {}) {
       operationalErrors.push({ operation: 'awake-end', error: caught.message })
       await event('metadata-error', { operation: 'awake-end', error: caught.message })
     })
+    // After the last push: this loop's wip/<tag> and merged work leftovers (prune-branches). A failed
+    // loop keeps its snapshot for recovery; a prune error is reported, never a loop failure.
+    if (initialized && !error) pruned = await deps.prune({ ...options, targetRoot: root, tag: options.tag }).catch((caught) => ({ ok: false, error: caught.message }))
     clearInterval(watcher)
     if (watching) await watching
     closing = true
@@ -556,6 +560,6 @@ export async function vibeLoop(options = {}, injected = {}) {
       await atomicJSON(path.join(directory, 'terminal.json'), { ...snapshot(), running: false, status: 'failed', error: error ?? caught.message })
     } finally { process.off('SIGINT', interrupted); process.off('SIGTERM', interrupted); await releaseLoop(lock, runId) }
   }
-  return { ...plan, reserve, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, codePushed, priorityTask, recovery, manifest,
+  return { ...plan, reserve, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
     time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }) }
 }

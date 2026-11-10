@@ -1,0 +1,4 @@
+interface:
+  display_name: "Haeram Init"
+  short_description: "정해지지 않은 haeram 설정(브랜치 전략) 정하기"
+  default_prompt: "Use $haeram-init to decide this project's unset haeram-spec-creator settings (branch strategy: land, land-via, push, deploy, plan) and write them to spec/SETTINGS.md."

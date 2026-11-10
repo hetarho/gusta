@@ -11,7 +11,7 @@ description: >-
 **역할: 실행한 세션이 오케스트레이터.** 탐색 세션이 근거 있는 제안을 보내고, 이 세션이 범위·비용·위험을 판단해 승인한 뒤 구현 세션을 배정한다. 구현자가 아닌 별도 세션의 리뷰와 검증을 통과한 단위를 호출한 checkout의 브랜치에 통합한다. PR은 만들지 않는다. 오케스트레이터는 배정·기획·승인·검증·통합·보고를 맡고 워커의 코드를 대신 작성하거나 자기 구현을 승인하지 않는다.
 
 ## 공통 규칙 (모든 spec 스킬)
-1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 create-architecture 실행을 안내한다.
+1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 create-architecture 실행을 안내한다. `settings.unset`이 있으면 haeram-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
 2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 start-design 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(start-vibe)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(start-vibe 3절). 모드가 정해지지 않았으면 함께 모드다.
@@ -52,8 +52,8 @@ description: >-
 
 ## 5. 현재 브랜치에 통합하고 마감
 
-단위 검사와 독립 리뷰를 통과한 제출물은 오케스트레이터가 관리하는 CLI로 호출한 checkout/브랜치에 통합한다. 최종 후보에서 필수 통합/전체 검사를 한 번 수행하고 실제 통합 SHA·검증 SHA·배정 이력을 보고한다. 후행 관문이 실패하면 완료·push하지 않고 수정 또는 되돌림을 조정한다. 구현 worktree나 별도 작업 브랜치에만 결과를 남기고 로컬 통합이 끝났다고 보고하지 않는다.
+단위 검사와 독립 리뷰를 통과한 제출물은 오케스트레이터가 관리하는 CLI로 호출한 checkout/브랜치에 통합한다. 최종 후보에서 필수 통합/전체 검사를 한 번 수행하고 실제 통합 SHA·검증 SHA·배정 이력을 보고한다. 후행 관문이 실패하면 완료·push하지 않고 수정 또는 되돌림을 조정한다. 구현 worktree나 별도 작업 브랜치에만 결과를 남기고 로컬 통합이 끝났다고 보고하지 않는다. 최종 관문 뒤 `vibe prune`으로 통합된 단위의 worktree·브랜치·후보 공간을 정리한다. 설정 prune-branches가 false면 CLI가 건너뛰고, 정리되지 않은 것(`kept`)은 parked에 남긴다.
 
-기본은 현재 브랜치의 로컬 커밋까지다. PR·GitHub CLI는 필요하지 않다. 원격 코드 push는 사용자가 이미 지정한 cfg push/명시적 요청이 있을 때만, 조정자의 최종 검증 뒤 한 번 수행한다. 원격 권한이 없으면 로컬 결과와 미발행 상태를 분리한다. 기획 문서의 plan-sync/plan-push는 기존 cfg plan 정책을 따르며 이를 몰래 변경하지 않는다.
+통합 뒤 반영은 SETTINGS land·land-via·push를 따른다. 조정자의 최종 검증 뒤 `vibe push --verified-commit <SHA>`를 한 번 실행한다. land가 current이고 push가 false면 현재 브랜치의 로컬 커밋까지이고, land-via가 pr이 아니면 PR·GitHub CLI는 필요하지 않다. land가 미정이면 반영하지 않고 parked에 남긴다. 원격 권한이 없으면 로컬 결과와 미발행 상태를 분리한다. 기획 문서의 plan-sync/plan-push는 SETTINGS plan을 따르며 이를 몰래 변경하지 않는다.
 
 기존 reports 골격으로 done=승인 제안·태스크·통합 커밋, decided=오케스트레이터의 선택/기각 이유, parked=사람 판단·권한·미통합, checks=실측/검증/미실행/예산, next=다음 관찰·재개 지점을 남긴다. expert는 범위·수치·SHA·판정, mid는 개선 효과·비용·한계, novice는 달라질 작업 경험과 사람 판단부터 보고한다. 스케줄러가 연결되지 않았다면 자동 재실행을 약속하지 않는다.

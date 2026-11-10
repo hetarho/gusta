@@ -11,6 +11,7 @@ import { nextWork, claimReviewWaiting } from '../src/work-wait.mjs'
 import { claimReview, finishReview, releaseReview, resumeWork } from '../src/work-review.mjs'
 import { runWork, recoverRunner } from '../src/work-runner.mjs'
 import { inspectWorkspace } from '../src/workspace.mjs'
+import { pruneWork } from '../src/prune.mjs'
 import { runtimeRoot, transaction, readRuntime, unlockRuntime } from '../src/work-runtime.mjs'
 
 const execute = promisify(execFile)
@@ -344,8 +345,9 @@ test('stale SSOT base와 워커 계약 변조는 배정/제출 시 거부한다'
   await assert.rejects(claimWork({ ...setup, work: group.id, task: 'T002' }), /신선도/)
 })
 
-test('ignored 로컬 파일도 worktree cleanup이 보존한다', async (t) => {
+test('prune-branches: false면 ignored 로컬 파일도 worktree cleanup이 보존한다', async (t) => {
   const setup = await ready(t)
+  await writeFile(path.join(setup.root, 'spec/SETTINGS.md'), '# SETTINGS\n- prune-branches: false\n')
   await integrateWork({ ...setup, attempt: setup.attempt.id, verify: checks })
   const exclude = (await git(setup.root, 'rev-parse', '--git-path', 'info/exclude')).stdout.trim()
   const file = path.resolve(setup.root, exclude)
@@ -353,6 +355,50 @@ test('ignored 로컬 파일도 worktree cleanup이 보존한다', async (t) => {
   await writeFile(path.join(setup.attempt.workspace, 'local.cache'), 'keep')
   await assert.rejects(cleanupWork({ ...setup, attempt: setup.attempt.id }), /ignored/)
   assert.equal(await readFile(path.join(setup.attempt.workspace, 'local.cache'), 'utf8'), 'keep')
+})
+
+test('prune-branches 기본값: cleanup이 ignored 산출물째 공간을 지우고 합쳐진 단위 브랜치·체크포인트 ref도 지운다', async (t) => {
+  const setup = await ready(t)
+  const { root, attempt } = setup
+  await integrateWork({ ...setup, attempt: attempt.id, verify: checks })
+  const exclude = path.resolve(root, (await git(root, 'rev-parse', '--git-path', 'info/exclude')).stdout.trim())
+  await writeFile(exclude, (await readFile(exclude, 'utf8')) + '\nnode_modules/\n')
+  await mkdir(path.join(attempt.workspace, 'node_modules'))
+  await writeFile(path.join(attempt.workspace, 'node_modules/dep.js'), 'installed')
+  await git(root, 'update-ref', `refs/haeram/checkpoints/${attempt.id}`, setup.sha)
+  const cleaned = await cleanupWork({ ...setup, attempt: attempt.id })
+  assert.deepEqual(cleaned.prunedRefs, [attempt.branch, `refs/haeram/checkpoints/${attempt.id}`])
+  assert.equal(cleaned.branchKept, null)
+  await assert.rejects(access(attempt.workspace), { code: 'ENOENT' })
+  assert.equal((await git(root, 'branch', '--list', 'task/*')).stdout, '')
+})
+
+test('pruneWork: 이전 cleanup이 남긴 단위 브랜치를 지우고, 묶음은 기준 브랜치에 합쳐진 뒤에만 닫는다', async (t) => {
+  const setup = await fixture(t)
+  const { root } = setup
+  const group = await startWork({ ...setup, name: 'scoped', tasks: 'T001' })
+  const attempt = await claimWork({ ...setup, work: group.id, task: 'T001' })
+  await implement(attempt)
+  await submitWork({ ...setup, attempt: attempt.id, verify: checks })
+  await approve(setup, attempt)
+  await integrateWork({ ...setup, attempt: attempt.id, verify: checks })
+  // An older cleanup (setting off) left the branch behind.
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- prune-branches: false\n')
+  await cleanupWork({ ...setup, attempt: attempt.id })
+  assert.match((await git(root, 'branch', '--list', 'task/*')).stdout, /task\/scoped\/T001/)
+  assert.deepEqual(await pruneWork({ targetRoot: root, groups: true }), { skipped: 'prune-branches: false' })
+  await rm(path.join(root, 'spec/SETTINGS.md'))
+  let result = await pruneWork({ targetRoot: root, groups: true })
+  assert.deepEqual(result.pruned, [attempt.branch])
+  assert.match(result.kept.find((entry) => entry.work === group.id).reason, /합쳐지지 않았습니다/)
+  await access(group.path)
+  await git(root, 'merge', '-q', '--ff-only', group.branch)
+  result = await pruneWork({ targetRoot: root, groups: true })
+  assert.deepEqual(result.pruned, [group.path, group.branch])
+  await assert.rejects(access(group.path), { code: 'ENOENT' })
+  assert.equal((await git(root, 'branch', '--list', 'work/*')).stdout, '')
+  assert.equal((await readRuntime(runtimeRoot(await inspectWorkspace({ targetRoot: root })))).groups.scoped.status, 'pruned')
+  assert.deepEqual(await pruneWork({ targetRoot: root, groups: true }), { cleaned: [], pruned: [], kept: [] })
 })
 
 test('생성 중인 실행은 live creator가 있으면 release할 수 없다', async (t) => {
@@ -800,7 +846,9 @@ else console.log(JSON.stringify({type:'result',is_error:false,structured_output:
   const saved = JSON.parse(await readFile(path.join(clone, 'spec/work/mixed-thirty.json'), 'utf8'))
   assert.deepEqual(saved.summary, result.summary)
   assert.ok(saved.attempts.every((entry) => entry.status === 'integrated' && entry.integratedCommit))
-  assert.equal(saved.history.filter((event) => event.status === 'integrated' && event.previousStatus !== 'integrated').length, 30)
+  // The runner pruned every unit before saving (prune-branches): cleaning → integrated is not an integration.
+  assert.equal(result.pruned.cleaned.length, 30)
+  assert.equal(saved.history.filter((event) => event.status === 'integrated' && !['integrated', 'cleaning'].includes(event.previousStatus)).length, 30)
   assert.equal(saved.group.lastRun.outcome, 'completed')
   const state = await readFile(path.join(clone, 'spec/STATE.md'), 'utf8')
   assert.match(state, /\| mixed-thirty \| 6 \| 30 \| 30 \| 0 \| 0 \| 0 \| 0 \|/)
@@ -1030,7 +1078,7 @@ test('세션 루프: 기반 → 리뷰 → 백그라운드 통합 → 줄기 분
 
   const board = await workBoard({ ...setup, work })
   assert.deepEqual(board.doneIds, ['T001', 'T002', 'T003', 'T004', 'T005'])
-  assert.ok(board.attempts.every((entry) => entry.status === 'integrated' && !entry.reviewHistory), JSON.stringify(board.attempts.map((entry) => entry.reviewHistory)))
+  assert.ok(board.attempts.every((entry) => entry.status === 'integrated' && !entry.reviewHistory), JSON.stringify(board.attempts.map((entry) => [entry.status, entry.reason, entry.reviewHistory])))
   const lines = (await readFile(log, 'utf8')).trim().split('\n').map((line) => line.split(' '))
   assert.deepEqual(readyA.steps.map((entry) => [entry.taskId, entry.commit]), [['T002', readyA.verifiedCommit], ['T003', readyA.verifiedCommit]])
   assert.ok(lines.some(([tier, id, base]) => tier === 'task' && id === 'T003' && base === ofB.attempt.startCommit), JSON.stringify(lines))

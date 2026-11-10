@@ -141,7 +141,7 @@ async function outlook(context, id, owner) {
 const UNATTENDED = {
   blocked: 'attempt.reason을 확인한다. 직접 고칠 수 있으면 고친 뒤 work update --attempt <id> --status doing으로 재개해 다시 submit한다. 기획 결정이 필요하면 결정 요청(question·options·recommendation)을 저장소 밖 JSON에 써서 work update --attempt <id> --status blocked --reason <요약> --decision-file <path>로 남기고 work next를 다시 호출한다 — 기다리지 않는다.',
   decide: 'attempt.decision에 답한다(조정자). 기획 공간에서 recommendation으로 update-ssot를 진행하고(잠정) inbox decided·보고서에 질문·선택·대안을 남겨 커밋한 뒤, work update --attempt <id> --status doing --note <적용한 결정과 SSOT rev>로 재개한다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 inbox parked 후 work release --attempt <id> --reason parked. 그리고 work next를 다시 호출한다.',
-  complete: '남은 일이 없다. push 브랜치 반영 결과와 검증 커밋을 보고서에 남기고 마감한다. push가 없는 묶음의 main 반영은 inbox parked로 남긴다.',
+  complete: '남은 일이 없다. landFrom에서 vibe push --target <landFrom> --verified-commit <verified.commit>으로 SETTINGS land에 반영하고, 반영 결과와 검증 커밋을 보고서에 남긴 뒤 마감한다. 결과 reason이 land-unset이면 inbox parked로 남긴다.',
   stalled: '사람만 풀 수 있는 원인이다. 원인을 inbox parked와 보고서에 남기고 묶음 밖의 다른 일로 간다 — 기다리지 않는다.',
   // No subagent here: its permission prompt would stall an unattended session (start-vibe §3).
   'needs-reviewer': '이 세션의 제출물만 남아 있어 독립 리뷰어가 필요하다. 맡김에서는 부하 에이전트를 띄우지 않는다 — 리뷰어 슬롯이 있는 헤드리스 실행기(work run)가 맡게 하고, 없으면 inbox parked로 남기고 다른 일로 간다.',
@@ -153,7 +153,7 @@ const INSTRUCTION = {
   blocked: 'attempt.reason을 확인한다. 직접 고칠 수 있으면 고친 뒤 work update --attempt <id> --status doing으로 재개해 다시 submit하고, 기획 판단이 필요하면 사용자에게 보고하고 멈춘다.',
   wait: 'work next를 다시 호출한다. 통합·검증은 CLI가 백그라운드에서 진행한다.',
   'needs-reviewer': '이 세션의 제출물만 남아 있어 독립 리뷰어가 필요하다. 다른 세션을 열어 같은 요청을 하게 하거나, 새 컨텍스트의 서브에이전트에서 다른 owner로 review-task를 실행한 뒤 work next를 다시 호출한다.',
-  complete: '남은 일이 없다. 묶음 브랜치와 검증 커밋을 보고하고 main 반영 여부를 사용자에게 묻는다.',
+  complete: '남은 일이 없다. landFrom에서 vibe push --target <landFrom> --verified-commit <verified.commit>으로 SETTINGS land에 반영하고 묶음 브랜치·검증 커밋·반영 결과를 보고한다. land가 정해지지 않았으면(land-unset) haeram-init으로 먼저 정한다.',
   stalled: 'blocked·finishFailure 원인을 사용자에게 보고하고 멈춘다. 해결되면 work next를 다시 호출한다.',
   decide: 'attempt.decision(question·options·recommendation)을 사용자에게 선택지형으로 묻고, 기획 공간에서 update-ssot로 반영해 커밋한 뒤 work update --attempt <id> --status doing --note <적용한 결정과 SSOT rev>로 재개한다.',
   'main-session': '묶음에서 할 일은 끝났다. 남은 tasks는 explore 태스크와 그 후속이라 메인 세션에서 단독으로(implement-task) 진행한다.',
@@ -215,8 +215,8 @@ export async function nextWork(options) {
       const group = result.action === 'complete' ? groupOf(await readRuntime(context.root), work) : null
       const integrationTarget = group?.managed === false ? { branch: group.branch, path: group.path } : null
       return { schemaVersion: 1, work, owner: options.owner, ...rest, ...(timedOut && seconds ? { reason: 'timeout', detail: result.reason } : {}),
-        ...(integrationTarget ? { integrationTarget } : {}),
-        instruction: integrationTarget ? '지정한 기존 로컬 브랜치에 통합과 최종 검증이 끝났다. integrationTarget과 검증 커밋을 보고한다. 이미 위임된 로컬 통합을 다시 묻지 않으며, 원격 반영은 별도 push 정책을 따른다.' : (options.autopilot ? UNATTENDED[key] : null) ?? INSTRUCTION[key] }
+        ...(integrationTarget ? { integrationTarget } : {}), ...(group ? { landFrom: group.path } : {}),
+        instruction: integrationTarget ? '지정한 기존 로컬 브랜치에 통합과 최종 검증이 끝났다. integrationTarget과 검증 커밋을 보고한다. 이미 위임된 로컬 통합을 다시 묻지 않는다. 이후 반영은 SETTINGS land·push를 따른다: vibe push --target <landFrom> --verified-commit <verified.commit> (land가 current이고 push가 false면 할 일 없음).' : (options.autopilot ? UNATTENDED[key] : null) ?? INSTRUCTION[key] }
     }
     await sleep(Math.min(options.pollMs ?? 5000, deadline - Date.now()))
   }

@@ -11,7 +11,7 @@ description: >-
 **역할: 회고자.** 이 세션에서 실행된 haeram-spec-creator 스킬과 CLI가 실제로 어떻게 동작했는지 돌아보고, 스킬셋 관리자에게 넘길 개선 보고서를 만든다. 대상 프로젝트의 코드·기획은 평가하지 않는다. 읽기 전용이다 — 파일·STATE·Git을 바꾸지 않고 하위 세션도 띄우지 않는다.
 
 ## 1. 전제와 근거
-- 이 대화에서 haeram 스킬(start-vibe·start-design·ideation·create-architecture·create-ssot·update-ssot·create-task·implement-task·review-task·review-code·doc-review·create-narrative·manage-work·self-improve·self-improve-local)이 한 번 이상 실행됐는지 대화 기록으로 확인한다. 없으면 "haeram 스킬을 실행한 세션에서 불러 주세요" 한 줄만 답하고 끝낸다.
+- 이 대화에서 haeram 스킬(start-vibe·start-design·ideation·create-architecture·create-ssot·update-ssot·create-task·implement-task·review-task·review-code·doc-review·create-narrative·manage-work·self-improve·self-improve-local·show-ab·haeram-init·haeram-setting·update-haeram-spec-creator)이 한 번 이상 실행됐는지 대화 기록으로 확인한다. 없으면 "haeram 스킬을 실행한 세션에서 불러 주세요" 한 줄만 답하고 끝낸다.
 - 근거는 이 대화에 남은 것만 쓴다: 스킬 지시, 실행한 명령과 출력, 오류·재시도, 사용자의 교정·불만, 권한 창, 대기, 반복해서 읽은 파일. 남아 있지 않은 부분을 추측으로 채우지 않는다. 앞부분이 요약됐으면 notes에 적는다.
 - 스킬 문장을 정확히 인용해야 할 때만 설치된 스킬 파일(`.claude/skills/<name>/` 또는 `.codex/skills/<name>/`)의 해당 절만 읽는다. 버전은 설치된 CLI의 `--version`으로 한 번 확인한다.
 

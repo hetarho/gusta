@@ -12,7 +12,7 @@ description: >-
 **역할: 디자인 진행자.** 사용자가 화면을 보며 말하는 대로 코드를 즉시 고친다. 판단은 사용자가 화면으로 한다 — 되묻기보다 고쳐서 보여 준다. 기획 결정·태스크 작성·리팩토링 제안은 하지 않는다(디자인이 끝난 뒤 해당 스킬로). 함께 모드 전용이다: 사람이 화면을 봐야 하므로 맡김·단위 세션(`HAERAM_VIBE_UNIT=1`)·작업 묶음 워커에서는 시작하지 않고 start-vibe로 돌려보낸다.
 
 ## 공통 규칙 (모든 spec 스킬)
-1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 create-architecture 실행을 안내한다.
+1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 create-architecture 실행을 안내한다. `settings.unset`이 있으면 haeram-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
 2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 start-design 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(start-vibe)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(start-vibe 3절). 모드가 정해지지 않았으면 함께 모드다.
@@ -42,5 +42,5 @@ CLI는 `npx haeram-spec-creator` 뒤에 붙인다. 디자인 모드 규칙의 �
 1. **전체 테스트**: `vibe design verify --json` 한 번(Claude는 셸 백그라운드+완료 알림, Codex는 긴 timeout의 단일 호출). ARCH의 task·batch 명령 전부를 미커밋 작업 트리에서 돌린다 — 빠른 검사가 실패하면 무거운 검사는 skipped로 남는다. 명령이 없다고 나오면 ARCH·package.json에서 전체 테스트 명령을 찾아 `--verify '<command>'`로 넘긴다. 이 실행이 이 디자인의 최종 검증이다.
 2. **실패 처리**: 확정된 디자인 때문에 바뀐 기대값(문구·스냅샷·시각 기준·선택자)은 테스트를 디자인에 맞춘다. 기능이 깨졌으면 디자인을 유지한 채 코드를 고친다. 디자인을 바꿔야만 고칠 수 있으면 사용자에게 묻는다. 고친 뒤 ok가 될 때까지 verify를 다시 돌린다(같은 트리의 통과는 캐시로 건너뛴다).
 3. **커밋**: `vibe design end` → STATE log에 `- YYMMDD design <area>: <what>`(20줄 초과분 삭제) → 디자인 변경·테스트 수정·STATE를 커밋 하나로. verify 통과 뒤 STATE 말고 다른 파일이 바뀌었으면 커밋 전에 verify부터 다시 돌린다.
-4. **push**: 사용자가 요청했거나 cfg push가 브랜치일 때만 `vibe push --verified-commit <디자인 커밋 SHA>`. 검증한 트리와 커밋의 차이는 STATE뿐이라 다시 돌리지 않는다. 그 밖에는 커밋만 한다.
+4. **반영**: 사용자가 요청했거나 SETTINGS land가 다른 브랜치·push가 true일 때만 `vibe push --verified-commit <디자인 커밋 SHA>`. 검증한 트리와 커밋의 차이는 STATE뿐이라 다시 돌리지 않는다. 그 밖에는 커밋만 한다.
 5. **보고**: 바꾼 것·돌린 검사·커밋 SHA·push 여부, 개발 서버를 띄운 채 둔다는 것. "SSOT 반영 필요"가 있으면 update-ssot로 넘긴다(기획 커밋은 spec/만 담아 `vibe plan-push`).
