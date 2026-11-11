@@ -475,6 +475,10 @@ export async function abExec(options = {}) {
     const last = runs[name].at(-1)
     return { variant: name, exitCodes: runs[name].map((entry) => entry.exitCode), minMs: times[0], medianMs: times[Math.floor((times.length - 1) / 2)], maxMs: times.at(-1), tail: last.tail, log: last.log }
   })
+  // The hub shows the latest measurement under each frame: numbers and the last output line, never the log.
+  const at = new Date().toISOString()
+  await update(ctx, slug, (live) => { for (const entry of variants) if (live.variants[entry.variant]) live.variants[entry.variant].exec = { at, command: options.command, repeat,
+    medianMs: entry.medianMs, minMs: entry.minMs, exitCodes: entry.exitCodes, last: String(entry.tail.at(-1) ?? '').slice(0, 300) } })
   return { schemaVersion: 1, ok: variants.every((entry) => entry.exitCodes.every((code) => code === 0)), slug, command: options.command, repeat, variants }
 }
 

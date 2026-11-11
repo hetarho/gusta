@@ -86,6 +86,9 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   const measured = await abExec({ targetRoot: root, slug: 'hero', command: 'node -e "console.log(require(\'./app.js\'))"', repeat: 2 })
   assert.equal(measured.ok, true); assert.deepEqual(measured.variants.map((entry) => entry.tail.at(-1)), ['alpha', 'beta'])
   assert.equal(measured.variants[0].exitCodes.length, 2); assert.ok(measured.variants[0].medianMs >= measured.variants[0].minMs)
+  // The hub shows each variant's latest measurement next to its frame.
+  const measuredPage = await (await fetch(served.hub)).text()
+  for (const entry of measured.variants) assert.ok(measuredPage.includes(`median ${entry.medianMs} ms · exit 0,0 · <code>${entry.tail.at(-1)}</code>`), entry.variant)
   const before = await git(root, 'rev-parse', 'HEAD'), winner = await git(root, 'rev-parse', 'ab/hero/b')
   const adopted = await abPick({ targetRoot: root, slug: 'hero', variant: 'b' })
   assert.equal(adopted.adopted, 'b'); assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "beta"\n')
@@ -236,7 +239,8 @@ test('hub page escapes session text and frames each variant at URL plus view pat
   assert.deepEqual(['', '/', 'settings', '/a/b', 'http://localhost:3000/x?y=1', 'the settings page'].map(viewPath), ['', '', '/settings', '/a/b', '/x?y=1', ''])
   const html = renderHub({ slug: 'hero', feedback: { notes: { a: { note: 'larger <b>', at: 'now' } }, chosen: { variant: 'b', at: 'now' } }, variants: [
     { name: 'a', url: 'http://localhost:4101/settings', summary: 'cards <script>x</script>\nsecond line', view: 'settings tab', serving: true },
-    { name: 'b', from: 'a', url: 'http://localhost:4102', summary: 'list', view: '', serving: false }] })
+    { name: 'b', from: 'a', url: 'http://localhost:4102', summary: 'list', view: '', serving: false, exec: { command: 'bench', medianMs: 812, exitCodes: [0, 1], last: '<b>done</b>' } }] })
+  assert.ok(html.includes('<p class="measure bad" title="bench">median 812 ms · exit 0,1 · <code>&lt;b&gt;done&lt;/b&gt;</code></p>'))
   assert.deepEqual([...html.matchAll(/<iframe src="([^"]+)"/g)].map((match) => match[1]), ['http://localhost:4101/settings', 'http://localhost:4102'])
   assert.ok(!html.includes('<script>x</script>')); assert.ok(html.includes('cards &lt;script&gt;'))
   assert.ok(html.includes('>larger &lt;b&gt;</textarea>')); assert.match(html, /data-variant="b" class="chosen"/)
