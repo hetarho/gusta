@@ -17,12 +17,10 @@ description: >-
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(start-vibe)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(start-vibe 3절). 모드가 정해지지 않았으면 함께 모드다.
 5. **읽기**: brief·status 요약을 먼저 쓰고 부족한 ID·섹션만 읽는다. 결정은 `vibe brief <T###|ID-n|ID@rev>`로 원문 블록째 받는다 — 끝의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
-작업 묶음 워커에서 불렸으면 문서 쓰기는 `manage-work`가 반환한 group.path(기획·채번·문서 정리 위치)로 인계하고 워커 checkout의 STATE·SSOT는 바꾸지 않는다. 어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 FORMAT SETTINGS `plan`).
-
-작업 묶음의 기획 공간에서는 공유 보드의 실행 상태와 참조 도메인으로 영향받는 워커를 확인한다. STATE의 todo 표기만으로 미착수라고 판단하지 않는다. 정책 변경을 커밋한 뒤 affected task/attempt를 보고하고, 해당 워커가 동기화·재검증하거나 재분해 후 다시 배정되게 한다.
+어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 FORMAT SETTINGS `plan`).
 
 ## 1. 시작
-STATE → 대상 SSOT 식별·정독 → log에 `- YYMMDD update-ssot <ID> start`.
+STATE → 대상 SSOT 식별 → `vibe brief <ID>`로 현재 결정 블록을 받는다 → log에 `- YYMMDD update-ssot <ID> start`.
 ideation에서 넘겨받은 변경이면 원본 활성 문서의 domains·vision·shape·explored를 읽고 반영 범위를 확인한다. open 문서를 기획으로 가져왔다면 문서·STATE st를 ready로 바꾼다. ideation/done/은 기본 입력이 아니다.
 입력이 doc-review가 넘긴 보류 항목(모순·공백·애매한 문장)이면 그 원문이 출발점이다. 함께 모드는 어느 쪽이 맞는지 확인받고, 맡김은 추천안으로 결정해 inbox decided에 선택·대안·이유를 남긴다. 단순 편집으로 모순을 감추지 않는다.
 
