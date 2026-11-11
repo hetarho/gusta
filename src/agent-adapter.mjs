@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { SkillPackageError } from './errors.mjs'
 import { renderBrief } from './spec-context.mjs'
-import { OPTIONAL_FLAGS } from './work-providers.mjs'
+import { OPTIONAL_FLAGS, STRICT_MCP } from './work-providers.mjs'
 
 const fail = (message) => { throw new SkillPackageError(message) }
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
@@ -172,10 +172,20 @@ async function promptFor(job) {
 
 const WORKER_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep']
 
+// The optional flags one Claude session gets: those its CLI supports (work-providers OPTIONAL_FLAGS),
+// --strict-mcp-config only while SETTINGS headless-mcp is isolate. Isolated means no MCP server at all:
+// no --mcp-config either, since the checkout's .mcp.json is code a worker can commit and passing it
+// would skip the approval project servers need (a reviewer would run the server it is reviewing).
+export function claudeOptionalFlags(flags = [], { headlessMcp = 'isolate' } = {}) {
+  if (!['isolate', 'inherit'].includes(headlessMcp)) fail('지원하지 않는 headless-mcp 값입니다.')
+  return flags.filter((flag) => OPTIONAL_FLAGS.claude.includes(flag) && (flag !== STRICT_MCP || headlessMcp === 'isolate'))
+}
+
 // allowTools extends what a worker runs without a prompt: new worktrees are never-trusted
 // folders, so the project's own permission allowlist does not apply to them.
-// flags: optional provider flags the installed CLI was found to support (work-providers OPTIONAL_FLAGS).
-export function providerArguments(provider, role, files, model, { allowTools = [], resume = null, session = null, permissionMode = 'acceptEdits', flags = [] } = {}) {
+// flags: optional provider flags the installed CLI was found to support (work-providers OPTIONAL_FLAGS);
+// headlessMcp: see claudeOptionalFlags.
+export function providerArguments(provider, role, files, model, { allowTools = [], resume = null, session = null, permissionMode = 'acceptEdits', flags = [], headlessMcp = 'isolate' } = {}) {
   const writes = WRITES.includes(role)
   const sandbox = writes ? 'workspace-write' : 'read-only'
   if (!['acceptEdits', 'bypass'].includes(permissionMode) || (!writes && permissionMode === 'bypass')) fail('지원하지 않는 permission mode입니다.')
@@ -191,7 +201,7 @@ export function providerArguments(provider, role, files, model, { allowTools = [
     '--tools', writes ? 'Bash,Read,Edit,Write,Glob,Grep' : 'Bash,Read,Glob,Grep',
     '--allowedTools', writes ? [...WORKER_TOOLS, ...allowTools].join(',') : 'Read,Glob,Grep,Bash(git diff *),Bash(git show *),Bash(git log *),Bash(git status *),Bash(git ls-files *)',
     ...(resume ? ['--resume', resume] : session ? ['--session-id', session] : []), ...(model ? ['--model', model] : []),
-    ...flags.filter((flag) => OPTIONAL_FLAGS.claude.includes(flag))]
+    ...claudeOptionalFlags(flags, { headlessMcp })]
   fail(`지원하지 않는 실행기: ${provider}`)
 }
 
@@ -207,7 +217,8 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     const session = provider === 'claude' ? job.resume ?? randomUUID() : job.resume ?? null
     const remember = (id) => job.sessionFile && id ? writeFile(job.sessionFile, id).catch(() => {}) : null
     await remember(session)
-    const args = providerArguments(provider, job.role, files, model, { allowTools: WRITES.includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags })
+    // job.headlessMcp is the host's SETTINGS value; a job without one is isolated.
+    const args = providerArguments(provider, job.role, files, model, { allowTools: WRITES.includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags, headlessMcp: job.headlessMcp ?? 'isolate' })
     const childEnv = { ...env }
     // The provider is an independent foreground run, not a nested interactive session.
     delete childEnv.CLAUDECODE

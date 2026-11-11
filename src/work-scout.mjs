@@ -3,6 +3,7 @@ import path from 'node:path'
 import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
 import { inspectProviders, availableProvider, providerFlags } from './work-providers.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { readSetting } from './settings.mjs'
 
 // One read-only headless session that returns proposals only. Orchestrators that cannot
 // start native subagents (autopilot, headless or Codex runs) delegate exploration here,
@@ -16,7 +17,8 @@ export async function workScout(options = {}, injected = {}) {
   const provider = await availableProvider(options, deps.inspect)
   const flags = await deps.flags(provider, { env: options.env ?? process.env })
   const started = deps.now()
-  const job = { schemaVersion: 1, role: 'scout', workspace: path.resolve(options.targetRoot ?? process.cwd()), prompt, timeoutMs }
+  const workspace = path.resolve(options.targetRoot ?? process.cwd())
+  const job = { schemaVersion: 1, role: 'scout', workspace, prompt, timeoutMs, headlessMcp: await readSetting({ targetRoot: workspace }, 'headless-mcp') }
   let result
   // Provider progress stays out of the returned JSON; only a short failure tail is kept.
   try { result = await deps.execute({ provider, model: options.model, job, log: () => {}, flags }) } catch (error) {
