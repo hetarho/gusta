@@ -42,14 +42,14 @@ export function applyFeedback(feedback, action, body, names, at) {
 export function hubModel(record, feedback, alive = processAlive) {
   return { slug: record.slug, feedback, variants: Object.entries(record.variants).map(([name, variant]) => {
     const last = variant.runs?.at(-1)
-    return { name, url: urlOf(variant), summary: last?.summary ?? '', view: last?.view ?? '', serving: Boolean(variant.server?.pid && alive(variant.server.pid)) }
+    return { name, from: variant.from ?? '', url: urlOf(variant), summary: last?.summary ?? '', view: last?.view ?? '', serving: Boolean(variant.server?.pid && alive(variant.server.pid)), exec: variant.exec ?? null }
   }) }
 }
 
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char])
 
-const STYLE = `:root{color-scheme:light dark;--bg:#fff;--fg:#1b1b1b;--muted:#666;--line:#d8d8d8;--accent:#0b63ce;--chosen:#1a7f37}
-@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#ececec;--muted:#9a9a9a;--line:#353535;--accent:#5aa2ff;--chosen:#3fb950}}
+const STYLE = `:root{color-scheme:light dark;--bg:#fff;--fg:#1b1b1b;--muted:#666;--line:#d8d8d8;--accent:#0b63ce;--chosen:#1a7f37;--bad:#cf222e}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#ececec;--muted:#9a9a9a;--line:#353535;--accent:#5aa2ff;--chosen:#3fb950;--bad:#f85149}}
 *{box-sizing:border-box}body{margin:0;font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg)}
 header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--line)}
 h1{font-size:16px;margin:0}button{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
@@ -61,7 +61,7 @@ section.chosen{border-color:var(--chosen);box-shadow:0 0 0 1px var(--chosen)}
 .head,.foot{display:flex;flex-direction:column;gap:4px;padding:8px 10px}.head p{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .frame{height:72vh;overflow:hidden;background:#fff;border-block:1px solid var(--line)}iframe{display:block;border:0;transform-origin:0 0}
 textarea{width:100%;min-height:56px;font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:6px;resize:vertical}
-.row{display:flex;gap:8px;align-items:center}`
+.row{display:flex;gap:8px;align-items:center}.measure{margin:0;overflow-wrap:anywhere}.measure.bad{color:var(--bad)}`
 
 const SCRIPT = `let width=1280
 const fit=()=>document.querySelectorAll('.frame').forEach((box)=>{const frame=box.firstElementChild,scale=Math.min(1,box.clientWidth/width);frame.style.width=width+'px';frame.style.height=box.clientHeight/scale+'px';frame.style.transform='scale('+scale+')'})
@@ -71,16 +71,25 @@ const post=(action,body)=>fetch(action,{method:'POST',headers:{'content-type':'a
 document.querySelectorAll('textarea').forEach((area)=>{let timer;const state=area.closest('.foot').querySelector('.saved');area.oninput=()=>{clearTimeout(timer);state.textContent='…';timer=setTimeout(()=>post('note',{variant:area.dataset.variant,note:area.value}).then(()=>state.textContent='saved',()=>state.textContent='not saved'),500)}})
 document.querySelectorAll('.choose').forEach((button)=>button.onclick=()=>post('choose',{variant:button.dataset.variant}).then((feedback)=>{const chosen=feedback.chosen.variant;document.querySelectorAll('section').forEach((section)=>section.classList.toggle('chosen',section.dataset.variant===chosen));document.getElementById('chosen').textContent='chosen: '+chosen+' — tell the session to adopt it'},()=>alert('not saved')))`
 
+// The latest `vibe ab exec` under a frame: median, exit codes and the last output line, led by the
+// command when the variants' latest measurements ran different commands (their numbers do not compare).
+function measured(exec, mixed) {
+  if (!exec) return ''
+  const codes = exec.exitCodes ?? [], bad = codes.some((code) => code !== 0)
+  return `<p class="measure${bad ? ' bad' : ''}" title="${escape(exec.command)}">${mixed ? `<code>${escape(exec.command)}</code> · ` : ''}median ${escape(exec.medianMs)} ms · exit ${escape(codes.join(','))}${exec.last ? ` · <code>${escape(exec.last)}</code>` : ''}</p>`
+}
+
 // Pure: the hub page. Every text a session wrote is escaped; frames load each variant at its view path.
 export function renderHub({ slug, variants, feedback = EMPTY() }) {
   const chosen = feedback.chosen?.variant
+  const mixed = new Set(variants.filter((variant) => variant.exec).map((variant) => variant.exec.command)).size > 1
   const sections = variants.map((variant) => {
     const summary = variant.summary.split('\n')[0]
     return `<section data-variant="${escape(variant.name)}"${variant.name === chosen ? ' class="chosen"' : ''}>
-<div class="head"><div class="row"><strong>${escape(variant.name)}</strong><a href="${escape(variant.url)}" target="_blank" rel="noopener">open in new tab ↗</a>${variant.serving ? '' : '<span class="muted">not serving</span>'}</div>
+<div class="head"><div class="row"><strong>${escape(variant.name)}</strong>${variant.from ? `<span class="muted">from ${escape(variant.from)}</span>` : ''}<a href="${escape(variant.url)}" target="_blank" rel="noopener">open in new tab ↗</a>${variant.serving ? '' : '<span class="muted">not serving</span>'}</div>
 <p title="${escape(variant.summary)}">${escape(summary) || '<span class="muted">no run yet</span>'}</p>${variant.view ? `<p class="muted" title="${escape(variant.view)}">view: ${escape(variant.view)}</p>` : ''}</div>
 <div class="frame"><iframe src="${escape(variant.url)}" title="variant ${escape(variant.name)}"></iframe></div>
-<div class="foot"><textarea data-variant="${escape(variant.name)}" placeholder="note for ${escape(variant.name)}">${escape(feedback.notes?.[variant.name]?.note ?? '')}</textarea>
+<div class="foot">${measured(variant.exec, mixed)}<textarea data-variant="${escape(variant.name)}" placeholder="note for ${escape(variant.name)}">${escape(feedback.notes?.[variant.name]?.note ?? '')}</textarea>
 <div class="row"><button class="choose" data-variant="${escape(variant.name)}">choose ${escape(variant.name)}</button><span class="saved muted"></span></div></div>
 </section>`
   }).join('\n')
