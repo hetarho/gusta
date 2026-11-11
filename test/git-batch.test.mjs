@@ -159,3 +159,33 @@ test('gitOperation agrees with one rev-parse per marker in a real repository and
     assert.equal(await gitOperation(where), expected)
   }
 })
+
+test('inspectWorkspace asks three questions in one round and answers like one question at a time', async (t) => {
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-batch-inspect-')))
+  t.after(() => rm(temporary, { recursive: true, force: true }))
+  const root = path.join(temporary, 'repo with spaces')
+  await mkdir(path.join(root, 'sub dir'), { recursive: true })
+  await execute('git', ['init', '-q', '-b', 'trunk', root])
+  await writeFile(path.join(root, 'sub dir/HEAD'), 'a file named like the ref\n')
+  await execute('git', ['-C', root, 'add', '.'])
+  await execute('git', ['-C', root, '-c', 'user.name=T', '-c', 'user.email=t@e', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'c'])
+  const linked = path.join(temporary, 'linked')
+  await execute('git', ['-C', root, 'worktree', 'add', '-q', '-b', 'side', linked])
+  const detached = path.join(temporary, 'detached')
+  await execute('git', ['-C', root, 'worktree', 'add', '-q', '--detach', detached])
+  const unborn = path.join(temporary, 'unborn')
+  await execute('git', ['init', '-q', unborn])
+  await writeFile(path.join(unborn, 'HEAD'), 'x\n')
+  const bare = path.join(temporary, 'bare.git')
+  await execute('git', ['clone', '-q', '--bare', root, bare])
+  const plain = path.join(temporary, 'plain')
+  await mkdir(plain)
+  const oneByOne = (cwd, args, codes) => args.length === 6 ? Promise.reject(new Error('asked one by one')) : git(cwd, args, codes)
+  for (const target of [root, path.join(root, 'sub dir'), linked, detached, unborn, bare, path.join(root, '.git'), plain]) {
+    assert.deepEqual(await inspectWorkspace({ targetRoot: target }), await inspectWorkspace({ targetRoot: target }, oneByOne), target)
+  }
+  const asked = []
+  await inspectWorkspace({ targetRoot: linked }, (cwd, args, codes) => { asked.push(args[0]); return git(cwd, args, codes) })
+  assert.deepEqual(asked.sort(), ['rev-parse', 'symbolic-ref', 'worktree'])
+  assert.equal((await inspectWorkspace({ targetRoot: unborn })).git.head, null)
+})

@@ -129,12 +129,33 @@ function parseWorktrees(output) {
   })
 }
 
+// rev-parse's answers for a work tree with a commit, one per line, from a single call. Anything
+// else (no commit yet, not a work tree, a path with a line break) is null and asked one by one.
+function parseAnswers(output) {
+  const lines = output.split('\n').map((value) => value.replace(/\r$/, ''))
+  if (lines.length !== 6 || lines[5] !== '' || lines[0] !== 'true' || !/^[0-9a-f]{40,64}$/.test(lines[4])) return null
+  const [, root, gitDir, commonDir, head] = lines
+  return { root, gitDir, commonDir, head }
+}
+
 // Discovery only: neither branch names nor environment-specific hints grant ownership.
-export async function inspectWorkspace({ targetRoot } = {}) {
+// Three git calls in one round for a work tree with a commit; any other checkout is inspected
+// one question at a time, as before.
+export async function inspectWorkspace({ targetRoot } = {}, run = git) {
   const target = await realpath(path.resolve(targetRoot ?? process.cwd()))
+  const settled = (promise) => { promise.catch(() => {}); return promise }
+  const answers = run(target, ['rev-parse', '--is-inside-work-tree', '--show-toplevel', '--absolute-git-dir', '--git-common-dir', 'HEAD']).then(parseAnswers, () => null)
+  const branch = settled(run(target, ['symbolic-ref', '--quiet', '--short', 'HEAD'], [1]))
+  const worktrees = settled(run(target, ['worktree', 'list', '--porcelain', '-z']))
+  const known = await answers
+  if (!known) return inspectEach(target, run)
+  return describe(target, { ...known, branch: await branch, worktrees: await worktrees })
+}
+
+async function inspectEach(target, run) {
   let inside
   try {
-    inside = await git(target, ['rev-parse', '--is-inside-work-tree'])
+    inside = await run(target, ['rev-parse', '--is-inside-work-tree'])
   } catch (error) {
     if (error.code === 'ENOENT' || /not a git repository/.test(error.stderr ?? '')) {
       return {
@@ -148,13 +169,17 @@ export async function inspectWorkspace({ targetRoot } = {}) {
     return { schemaVersion: 1, targetRoot: target, git: null, warnings: ['작업 checkout이 아닙니다 (bare 저장소 또는 Git 메타데이터 경로).'] }
   }
   const [root, gitDir, commonDir, branch, head, worktrees] = await Promise.all([
-    git(target, ['rev-parse', '--show-toplevel']),
-    git(target, ['rev-parse', '--absolute-git-dir']),
-    git(target, ['rev-parse', '--git-common-dir']),
-    git(target, ['symbolic-ref', '--quiet', '--short', 'HEAD'], [1]),
-    git(target, ['rev-parse', '--verify', '--quiet', 'HEAD'], [1]),
-    git(target, ['worktree', 'list', '--porcelain', '-z']),
+    run(target, ['rev-parse', '--show-toplevel']),
+    run(target, ['rev-parse', '--absolute-git-dir']),
+    run(target, ['rev-parse', '--git-common-dir']),
+    run(target, ['symbolic-ref', '--quiet', '--short', 'HEAD'], [1]),
+    run(target, ['rev-parse', '--verify', '--quiet', 'HEAD'], [1]),
+    run(target, ['worktree', 'list', '--porcelain', '-z']),
   ])
+  return describe(target, { root, gitDir, commonDir, branch, head, worktrees })
+}
+
+async function describe(target, { root, gitDir, commonDir, branch, head, worktrees }) {
   // Remove the output delimiter only; whitespace may be part of a valid path.
   const line = (value) => value?.replace(/\r?\n$/, '') ?? null
   const common = await realpath(path.resolve(target, line(commonDir)))
