@@ -413,8 +413,13 @@ export async function runWork(options) {
           let attempt = entries().find((entry) => entry.status === 'doing' && ![...jobs.values()].some((job) => job.attempt === entry.id) &&
             (entry.owner === owner || orphaned(entry)))
           if (attempt && attempt.owner !== owner) attempt = await adopt(attempt, owner)
-          attempt ??= await resumeWork({ ...options, owner })
-          if (attempt.idle) attempt = await claimNextWork({ ...options, owner, workspace: 'new' })
+          if (!attempt) {
+            // One inspection serves this slot's resume and claim-next: neither writes to Git before
+            // the claim's last use of it, and claim-next only needs the checkout's identity.
+            const slotContext = await repository(options)
+            attempt = await resumeWork({ ...options, owner }, slotContext)
+            if (attempt.idle) attempt = await claimNextWork({ ...options, owner, workspace: 'new' }, slotContext)
+          }
           if (attempt.idle) continue
           if ((counts.get(`worker:${attempt.id}:${attempt.taskId}`) ?? 0) >= config.maxTaskRuns) {
             await transaction(context.root, (live) => { Object.assign(attemptOf(live, attempt.id), { status: 'blocked', reason: 'worker retry limit; inspect review findings' }) })

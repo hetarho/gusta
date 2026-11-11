@@ -1,6 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { inspectWorkspace, git } from './workspace.mjs'
+import { inspectWorkspace, git, showMany } from './workspace.mjs'
 import { quoteLine, quoteFields, sections, tableRows, splitRefs, TASK_ID, TASK_ST, EXPLORE, exploreValue } from './spec-format.mjs'
 import { touchesErrors } from './work-policy.mjs'
 import { dependencyErrors, laneErrors, laneValue } from './task-graph.mjs'
@@ -30,19 +30,26 @@ async function taskFiles(directory, errors, optional = false) {
   }
 }
 
+// options.inspection: the caller's own inspectWorkspace() of targetRoot. Only its git.root and
+// warnings are read here (and it is returned as board.workspace): the checkout's path, which no Git
+// write changes, so a session may reuse it across writes (nextWork, claimReviewWaiting, pruneWork).
+// Not options.workspace, which claims and starts use for auto|current|new.
 export async function readTaskBoard(options = {}) {
-  const workspace = await inspectWorkspace(options)
+  const workspace = options.inspection ?? await inspectWorkspace(options)
   const root = workspace.git?.root ?? workspace.targetRoot
   const errors = []
   const warnings = [...workspace.warnings]
   const tasksRoot = path.join(root, 'spec', 'tasks')
   const commit = options.ref ? (await git(root, ['rev-parse', '--verify', '--end-of-options', `${options.ref}^{commit}`])).trim() : null
-  const names = async (directory) => (await git(root, ['ls-tree', '--name-only', '-z', `${commit}:${directory}`], [128]))?.split('\0').filter(Boolean) ?? []
-  const read = async (relative) => commit
-    ? git(root, ['show', `${commit}:${relative}`], [128])
-    : optionalRead(path.join(root, relative))
-  const files = commit ? (await names('spec/tasks')).filter((name) => name.endsWith('.md')) : await taskFiles(tasksRoot, errors)
-  const archive = commit ? (await names('spec/tasks/done')).filter((name) => name.endsWith('.md')) : await taskFiles(path.join(tasksRoot, 'done'), errors, true)
+  // One listing of the direct entries of spec/tasks and spec/tasks/done, as `ls-tree <commit>:<dir>` gives each.
+  const listing = commit ? (await git(root, ['ls-tree', '--name-only', '-z', commit, '--', 'spec/tasks/', 'spec/tasks/done/'], [128]))?.split('\0').filter(Boolean) ?? [] : null
+  const entries = (prefix) => listing.filter((name) => name.startsWith(prefix) && !name.slice(prefix.length).includes('/')).map((name) => name.slice(prefix.length))
+  const files = commit ? entries('spec/tasks/').filter((name) => name.endsWith('.md')) : await taskFiles(tasksRoot, errors)
+  const archive = commit ? entries('spec/tasks/done/').filter((name) => name.endsWith('.md')) : await taskFiles(path.join(tasksRoot, 'done'), errors, true)
+  // Every task file and STATE at the commit in one batch; a working tree is read file by file.
+  const wanted = [...files.map((file) => `spec/tasks/${file}`), 'spec/STATE.md']
+  const committed = commit ? new Map((await showMany(root, wanted.map((file) => `${commit}:${file}`))).map((content, index) => [wanted[index], content])) : null
+  const read = async (relative) => commit ? committed.get(relative) : optionalRead(path.join(root, relative))
   for (const file of [...files, ...archive]) {
     if (!/^T\d{3,}\.[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(file)) errors.push(`태스크 파일명 형식 오류: ${file}`)
   }

@@ -129,9 +129,10 @@ export async function finishReview(options) {
   }
 }
 
-export async function resumeWork(options) {
+// context: the caller's repository() for this same assignment (the runner's slot pass), else a new one.
+export async function resumeWork(options, context = null) {
   if (!options.owner?.trim()) fail('resume에는 --owner가 필요합니다.')
-  const context = await repository(options)
+  context ??= await repository(options)
   return transaction(context.root, (state) => {
     const group = groupOf(state, options.work)
     const attempts = Object.values(state.attempts).filter((entry) => entry.group === group.id)
