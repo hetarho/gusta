@@ -64,7 +64,7 @@ const flag=(key)=>args.includes(key)?args[args.indexOf(key)+1]:null;
 const resume=flag('--resume')??flag('resume');
 const session=resume??flag('--session-id')??require('node:crypto').randomUUID();
 if('${provider}'==='codex')console.log(JSON.stringify({type:'thread.started',thread_id:session}));
-fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({role:job.role,taskId:job.taskId,session,resume,note:job.directive?.note??null,brief:Boolean(job.brief),mode:job.mode})+'\\n');
+fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({role:job.role,taskId:job.taskId,session,resume,note:job.directive?.note??null,brief:Boolean(job.brief),mode:job.mode,bypass:args.some(arg=>arg.includes('bypass'))})+'\\n');
 let result;
 if(job.role==='worker') {
   if(job.taskId===${JSON.stringify(holdTask)})while(!fs.existsSync(${JSON.stringify(release)}))await new Promise(resolve=>setTimeout(resolve,20));
@@ -136,6 +136,10 @@ for (const provider of ['claude', 'codex']) test(`맡김 ${provider}: 기획 공
   assert.equal(calls[1].resume, calls[0].session)
   assert.equal(calls[1].note, 'ITEM-2 r2: a user keeps at most 10 items')
   assert.ok(calls.every((call) => call.brief && call.mode === 'autopilot'))
+  // Headless workers run with SETTINGS permission-mode (default bypass); reviewers stay read-only.
+  const all = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+  assert.ok(all.filter((call) => call.role === 'worker').every((call) => call.bypass))
+  assert.ok(all.some((call) => call.role === 'reviewer') && all.filter((call) => call.role === 'reviewer').every((call) => !call.bypass))
   // Every landed unit is on the remote push branch, inbox line included; T001 was reviewed
   // (an autopilot decision makes it risky), and the half done before the question survived.
   const trunk = (await execute('git', ['--git-dir', setup.remote, 'show', 'trunk:spec/STATE.md'], { encoding: 'utf8' })).stdout
@@ -188,6 +192,7 @@ test('맡김 CLI: 기본 결정 대기는 15분이고 명시적인 값이 우선
     const preview = JSON.parse((await execute(process.execPath, [...args, ...flags], { env })).stdout)
     assert.equal(preview.autopilot, autopilot)
     assert.equal(preview.decisionWaitMs, expected)
+    assert.equal(preview.permissionMode, 'bypass')
     assert.equal(preview.modelRequests, 0)
   }
 })

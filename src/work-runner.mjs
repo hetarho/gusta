@@ -15,6 +15,7 @@ import { stateMergeArgs } from './git-merge.mjs'
 import { git } from './workspace.mjs'
 import { pruneWork, dispatchLogDir } from './prune.mjs'
 import { processAlive, atomicJSON, readJSON } from './loop-control.mjs'
+import { permissionMode } from './settings.mjs'
 
 const { repository, groupOf, attemptOf, now, fail, requireStopped, commands, tierChecks, briefFor } = workInternals
 // A session carries its context into the next lane task, correction or answered decision,
@@ -85,17 +86,19 @@ export async function runWork(options) {
   const pollMs = positive(options.pollMs, 5000, 'poll-ms')
   const heartbeatMs = positive(options.heartbeatMs, 10000, 'heartbeat-ms')
   const context = await repository(options)
+  // Workers are headless: SETTINGS permission-mode (default bypass) unless this run names one.
+  const mode = await permissionMode(options, context.cwd)
   const stored = groupOf(await readRuntime(context.root), options.work)
   const verify = tierChecks(options, stored, 'unit')
   const taskVerify = options.taskVerify ?? stored.verify?.task ?? []
   const groupVerify = options.groupVerify ?? stored.verify?.group ?? []
   if (options.dryRun) {
     const group = groupOf(await readRuntime(context.root), options.work)
-    return { schemaVersion: 1, dryRun: true, work: group.id, limits: workLimits(group.limits), adapter: config, verify, taskVerify, groupVerify, autopilot, decisionWaitMs, modelRequests: 0 }
+    return { schemaVersion: 1, dryRun: true, work: group.id, limits: workLimits(group.limits), adapter: config, verify, taskVerify, groupVerify, autopilot, decisionWaitMs, permissionMode: mode, modelRequests: 0 }
   }
   const run = { adapter: config.kind, providers: config.roles ? Object.fromEntries(Object.entries(config.roles).map(([role, entry]) => [role, { provider: entry.provider, model: entry.model, version: entry.version }])) : null,
     workers: config.workers?.map((entry) => ({ provider: entry.provider, model: entry.model, version: entry.version })) ?? null,
-    id: options.runId ?? randomUUID(), pid: process.pid, host: os.hostname(), startedAt: now(), autopilot, decisionWaitMs, ...(options.hostLog ? { log: options.hostLog } : {}) }
+    id: options.runId ?? randomUUID(), pid: process.pid, host: os.hostname(), startedAt: now(), autopilot, decisionWaitMs, permissionMode: mode, ...(options.hostLog ? { log: options.hostLog } : {}) }
   const group = await transaction(context.root, (state) => {
     const group = groupOf(state, options.work)
     if (group.runner) runnerExists(group.runner)
@@ -267,7 +270,7 @@ export async function runWork(options) {
       cliCommand: [process.execPath, fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))],
       boardCommand: ['work', 'board', '--work', group.id, '--json'],
       verify, taskVerify, review: review ?? null, correction: attempt.correction ?? null,
-      mode: autopilot ? 'autopilot' : 'pair', resume, directive, sessionFile: job.sessionFile, allowTools: role === 'worker' ? liveGroup.allowTools ?? [] : [],
+      mode: autopilot ? 'autopilot' : 'pair', resume, directive, sessionFile: job.sessionFile, allowTools: role === 'worker' ? liveGroup.allowTools ?? [] : [], ...(role === 'worker' ? { permissionMode: mode } : {}),
       brief: role === 'worker' ? await briefFor(context, liveGroup, current).catch(() => null) : null, risk: role === 'reviewer' ? current.risk ?? null : null,
       instruction: role === 'worker'
         ? 'Use implement-task. Implement only taskId (or fix review findings) in this workspace, run the checks this task adds or affects, check acceptance, fill result, and commit. Full suites run at unit integration. Return JSON {"outcome":"completed","summary":"..."}. The runner owns submit and dispatches the next lane task to this workspace; do not submit, integrate, or claim another task. For a blocker return {"outcome":"blocked","summary":"reason"}; when only a planning decision blocks you, add "decision":{"question":"...","options":["..."],"recommendation":"..."} and commit your partial work.'

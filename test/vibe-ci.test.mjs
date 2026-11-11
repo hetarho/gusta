@@ -74,11 +74,31 @@ test('workflow paths-ignore skips before making any HTTP/API call', async (t) =>
   assert.equal(result.reason, 'workflow-paths'); assert.equal(result.polls, 0)
 })
 
-test('HTTP outage terminates on timeout rather than claiming skipped or success', async (t) => {
+test('CI nobody can read (no gh, no token, page closed) ends unchecked after the grace instead of holding the work', async (t) => {
   const { root } = await fixture(t); const time = clock()
-  const result = await vibeCIWait({ ...options(root), timeoutMs: 120000 }, { ...time, git: fakeGit, execute: async () => { throw new Error('missing') }, fetch: async () => response('rate limited', 429) })
-  assert.equal(result.ok, false); assert.equal(result.outcome, 'timed_out'); assert.equal(result.polls, 2)
-  assert.equal(time.sleeps.reduce((a,b) => a+b), 120000)
+  const result = await vibeCIWait({ ...options(root), timeoutMs: 3600000 }, { ...time, git: fakeGit, execute: async () => { throw new Error('missing') }, fetch: async () => response('not found', 404) })
+  assert.equal(result.outcome, 'unchecked'); assert.equal(result.reason, 'no-ci-access'); assert.equal(result.ok, true)
+  assert.equal(result.checkUrl, `https://github.com/owner/project/commit/${sha}`)
+  assert.equal(result.polls, 2); assert.deepEqual(time.sleeps, [60000])
+})
+
+test('an outage after CI was read terminates on timeout rather than claiming unchecked, skipped or success', async (t) => {
+  const { root } = await fixture(t); const time = clock(); let listings = 0
+  const result = await vibeCIWait({ ...options(root), timeoutMs: 240000 }, { ...time, git: fakeGit, execute: async () => { throw new Error('missing') }, fetch: async (url) => {
+    if (url.includes('/actions?')) return ++listings === 1 ? response('<a href="/owner/project/actions/runs/1">run</a>') : response('rate limited', 429)
+    return response(`${sha}<div data-job-status="in_progress"></div>`)
+  } })
+  assert.equal(result.ok, false); assert.equal(result.outcome, 'timed_out')
+  assert.equal(time.sleeps.reduce((a, b) => a + b), 240000)
+})
+
+test('a checkout without a GitHub remote reports CI unchecked without any request', async (t) => {
+  const { root } = await fixture(t)
+  await mkdir(path.join(root, '.github/workflows'), { recursive: true })
+  await writeFile(path.join(root, '.github/workflows/ci.yml'), 'on: push\n')
+  const noRemote = async (_, args) => { if (args[0] === 'remote') throw new Error('no such remote'); return fakeGit(_, args) }
+  const result = await vibeCIWait({ ...options(root), repo: undefined }, { ...clock(), git: noRemote, execute: () => assert.fail('no CI'), fetch: () => assert.fail('no CI') })
+  assert.deepEqual([result.ok, result.outcome, result.reason, result.polls], [true, 'unchecked', 'no-github-repo', 0])
 })
 
 test('a failing step inside an unfinished public job never marks that job completed', async (t) => {

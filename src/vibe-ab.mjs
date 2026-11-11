@@ -9,7 +9,7 @@ import { runtimeRoot, canonicalDestination } from './work-runtime.mjs'
 import { atomicJSON, processAlive } from './loop-control.mjs'
 import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
 import { inspectProviders, availableProvider } from './work-providers.mjs'
-import { readSetting } from './settings.mjs'
+import { readSetting, permissionMode } from './settings.mjs'
 import { SkillPackageError } from './errors.mjs'
 
 // A/B comparison: one problem, 2..6 variants, each on its own branch, sibling worktree and
@@ -134,7 +134,7 @@ export async function abRun(options = {}, injected = {}) {
   const provider = await availableProvider(options, deps.inspect)
   const started = Date.now()
   const job = { schemaVersion: 1, role: 'variant', workspace: variant.path, prompt: `Variant ${name} of ${slug}. $PORT for this variant: ${variant.port}.\n\n${prompt}`, timeoutMs,
-    allowTools: options.allowTool ?? [], permissionMode: options.permissionMode ?? 'acceptEdits' }
+    allowTools: options.allowTool ?? [], permissionMode: await permissionMode(options, ctx.root) }
   let result
   try { result = await deps.execute({ provider, model: options.model, job, log: () => {} }) } catch (error) {
     throw new SkillPackageError(error.message, (error.details ?? []).map((detail) => String(detail).slice(-2000)))

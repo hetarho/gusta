@@ -24,7 +24,7 @@ const HELP = `작업 묶음 (Orca 등 외부 도구 없이도 사용 가능)
     [--task-verify <command>] [--group-verify <command>]
     [--reviewer-provider codex|claude] [--model <id>] [--reviewer-model <id>] [--dry-run]
     [--timeout-ms <ms>] [--max-dispatches <n>] [--max-task-runs <n>]
-    [--autopilot] [--decision-wait-ms <ms>] [--checkpoint-ms <ms>] [--detach]
+    [--autopilot] [--decision-wait-ms <ms>] [--checkpoint-ms <ms>] [--permission-mode bypass|acceptEdits] [--detach]
   work run --work <name> (--status | --stop)   --detach는 분리된 호스트로 시작해 {runId,pid,log}만 반환. --status는 파일만 읽어
                                     호스트 생존·dispatch 로그 경로·종료 결과 요약을, --stop은 호스트에 정상 종료 신호(SIGTERM)를 보낸다
   work runner-recover --work <name>
@@ -74,7 +74,7 @@ const allowed = {
   'claim-next': ['work', 'owner', 'workspace', 'path'], next: ['work', 'owner', 'workspace', 'path', 'wait', 'workers', 'reviewers', 'max-pending', 'task-verify', 'verify', 'group-verify', ...POLICY], resume: ['work', 'owner', 'attempt'],
   'review-claim': ['work', 'owner', 'attempt', 'wait'], 'review-finish': ['review', 'result-file'],
   'review-update': ['review'], 'review-release': ['review', 'reason'],
-  doctor: [], run: ['work', 'adapter', 'verify', 'task-verify', 'group-verify', 'verify-timeout-ms', 'provider', 'providers', 'reviewer-provider', 'model', 'reviewer-model', 'timeout-ms', 'max-dispatches', 'max-task-runs', 'decision-wait-ms', 'checkpoint-ms'], 'runner-recover': ['work'],
+  doctor: [], run: ['work', 'adapter', 'verify', 'task-verify', 'group-verify', 'verify-timeout-ms', 'provider', 'providers', 'reviewer-provider', 'model', 'reviewer-model', 'timeout-ms', 'max-dispatches', 'max-task-runs', 'decision-wait-ms', 'checkpoint-ms', 'permission-mode'], 'runner-recover': ['work'],
   scout: ['prompt-file', 'provider', 'model', 'timeout-ms'],
   history: ['work', 'task'], sync: ['work'],
   status: [], board: ['work'], brief: ['attempt'], update: ['attempt', 'status', 'reason', 'decision-file', 'note'],

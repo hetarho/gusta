@@ -35,15 +35,21 @@ test('dry-run has zero model calls or mutations; options and ARCH tier plan are 
   const result = await vibeLoop({ ...opts(root), dryRun: true }, { execute: () => assert.fail('no model'), preflight: () => assert.fail('no probe') })
   assert.equal(result.modelRequests, 0); assert.equal(result.freshSessionPerUnit, true)
   assert.equal(result.limits.batchSize, 3)
+  assert.equal(result.permissionMode, 'bypass')
   assert.equal(await git(root, 'rev-parse', 'HEAD'), initial)
   assert.equal(await git(root, 'status', '--porcelain'), '')
+  // Units are headless: SETTINGS permission-mode decides, an explicit flag wins for this run.
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- permission-mode: acceptEdits\n')
+  assert.equal((await vibeLoop({ ...opts(root), dryRun: true })).permissionMode, 'acceptEdits')
+  assert.equal((await vibeLoop({ ...opts(root), dryRun: true, permissionMode: 'bypass' })).permissionMode, 'bypass')
+  await assert.rejects(vibeLoop({ ...opts(root), dryRun: true, permissionMode: 'plan' }), /--permission-mode/)
 })
 
 test('command adapter runs one new process/session per task, preflights once, and shares one report/tag', async (t) => {
   const { root, temporary } = await fixture(t)
   const records = path.join(temporary, 'records.jsonl')
   const adapter = await fakeAdapter(temporary, `
-    fs.appendFileSync(${JSON.stringify(records)},JSON.stringify({pid:process.pid,tag:job.tag,report:job.report,base:job.diffBase,resume:job.resume})+'\\n');
+    fs.appendFileSync(${JSON.stringify(records)},JSON.stringify({pid:process.pid,tag:job.tag,report:job.report,base:job.diffBase,resume:job.resume,mode:job.permissionMode})+'\\n');
     fs.writeFileSync(job.sessionFile,'session-'+process.pid);
     const stateFile='spec/STATE.md';let state=fs.readFileSync(stateFile,'utf8');
     const id=job.brief.taskId;state=state.split('\\n').filter(line=>!line.startsWith('| '+id+' |')).join('\\n');fs.writeFileSync(stateFile,state);
@@ -51,12 +57,12 @@ test('command adapter runs one new process/session per task, preflights once, an
     cp.execFileSync('git',['add','spec']);cp.execFileSync('git',['commit','-q','-m',id+' done']);
     console.log(JSON.stringify({kind:'task',id,outcome:'completed',pushed:false,next:'implementation'}));`)
   let preflights = 0, pushes = 0
-  const result = await vibeLoop({ ...opts(root), adapter, provider: undefined }, { preflight: async (options) => { preflights++; assert.equal(options.probeWorkspace, 'current'); return passed() }, push: async () => { pushes++; return { ok: true, pushed: null } } })
+  const result = await vibeLoop({ ...opts(root), adapter, provider: undefined }, { preflight: async (options) => { preflights++; assert.equal(options.probeWorkspace, 'current'); assert.equal(options.permissionMode, 'bypass'); return passed() }, push: async () => { pushes++; return { ok: true, pushed: null } } })
   assert.equal(result.ok, true, result.error); assert.equal(result.units, 3); assert.equal(preflights, 1)
   const rows = (await readFile(records, 'utf8')).trim().split('\n').map(JSON.parse)
   assert.equal(new Set(rows.map((row) => row.pid)).size, 3)
   assert.equal(new Set(rows.map((row) => row.report)).size, 1)
-  assert.ok(rows.every((row) => row.tag === 't060' && row.resume === undefined))
+  assert.ok(rows.every((row) => row.tag === 't060' && row.resume === undefined && row.mode === 'bypass'))
   const manifest = JSON.parse(await readFile(result.manifest, 'utf8'))
   assert.equal(new Set(manifest.dispatches.map((row) => row.session)).size, 3)
   assert.equal(manifest.dispatches.filter((row) => row.log).length, 3)
@@ -188,6 +194,20 @@ test('CI failure at the unit limit preserves a prioritized fix task with evidenc
   assert.match(await readFile(path.join(root, result.report), 'utf8'), /CI .*failure https:\/\/example.test\/run\/1/)
   assert.equal((await readFile(path.join(root, result.report), 'utf8')).match(/task T001: completed/g).length, 1)
   assert.equal(JSON.parse(await readFile(result.manifest, 'utf8')).priorityTask, 'T004')
+})
+
+test('unchecked CI (nobody can read it) neither stops the run nor queues a repair; the report asks the owner to check later', async (t) => {
+  const { root } = await fixture(t)
+  const result = await vibeLoop({ ...opts(root), maxUnits: 1 }, { preflight: passed,
+    execute: async () => { await writeFile(path.join(root, 'app.js'), '// code\n'); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit() },
+    check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: await git(root, 'rev-parse', 'HEAD') }),
+    ci: async ({ commit }) => ({ ok: true, outcome: 'unchecked', reason: 'no-ci-access', commit, runUrl: null, checkUrl: `https://github.com/owner/project/commit/${commit}`, jobs: [] }),
+  })
+  assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'max-units'); assert.equal(result.priorityTask, null)
+  assert.ok(!(await readdir(path.join(root, 'spec/tasks'))).some((name) => name.includes('fix-ci')))
+  const report = await readFile(path.join(root, result.report), 'utf8')
+  assert.match(report, /- CI \w+: unchecked \(no-ci-access\) https:\/\/github.com\/owner\/project\/commit\//)
+  assert.match(report, /## next[\s\S]*- check CI later: \w+ https:\/\/github.com\/owner\/project\/commit\//)
 })
 
 test('a pending CI repair keeps priority when the same loop is restarted after a limit', async (t) => {

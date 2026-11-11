@@ -18,6 +18,7 @@ import { SESSION_TAG, TASK_ID } from './spec-format.mjs'
 import { sections, tableRows } from './spec-format.mjs'
 import { validateAgentResult, compactUsage } from './agent-adapter.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { permissionMode, SETTINGS } from './settings.mjs'
 import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine } from './loop-time.mjs'
@@ -136,7 +137,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   if (control.length > 1) throw new SkillPackageError('loop 제어 동작은 하나만 지정하세요.')
   if (control.length && (options.dryRun || options.detach)) throw new SkillPackageError('실행 중 제어에는 --dry-run 또는 --detach를 함께 쓰지 않습니다.')
   if (!control.length && !options.adapter && !['claude', 'codex'].includes(options.provider)) throw new SkillPackageError('--provider claude|codex가 필요합니다.')
-  if (!['acceptEdits', 'bypass'].includes(options.permissionMode ?? 'acceptEdits')) throw new SkillPackageError('--permission-mode는 acceptEdits 또는 bypass입니다.')
+  if (options.permissionMode !== undefined && !SETTINGS['permission-mode'].accepts(options.permissionMode)) throw new SkillPackageError('--permission-mode는 bypass 또는 acceptEdits입니다.')
   if (options.notifyCommand !== undefined && (typeof options.notifyCommand !== 'string' || !options.notifyCommand.trim())) throw new SkillPackageError('--notify-command에는 실행 가능한 명령이 필요합니다.')
   const maxUnits = positive(options.maxUnits, 100, 'max-units', true), hours = positive(options.maxHours, 8, 'max-hours')
   const batchSize = positive(options.batchSize, 3, 'batch-size', true), timeoutMs = positive(options.timeoutMs, 3600000, 'timeout-ms')
@@ -144,6 +145,8 @@ export async function vibeLoop(options = {}, injected = {}) {
   if (optionHours !== undefined && (!Number.isFinite(optionHours) || optionHours < 0 || optionHours >= hours)) throw new SkillPackageError('final-reserve-hours: 0 이상 max-hours 미만이 필요합니다.')
   const scopeIds = options.tasks === undefined ? null : approvedTasks(Array.isArray(options.tasks) ? options.tasks : String(options.tasks).replaceAll(',', ' '))
   const context = await vibeSession(options), root = context.root
+  // Units are headless: SETTINGS permission-mode (default bypass) unless this run names one.
+  const mode = control.length ? null : await permissionMode(options, root)
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'haeram-vibe-loop.lock')
   const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, now: Date.now, monitor: startLoopMonitor, fault: async () => {}, ...injected }
@@ -190,7 +193,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const estimateReserve = async () => closingReserve({ timings: await readTimings(context.runtime), commands: batchVerify, push: Boolean(context.target), hours, timeoutMs, optionHours })
   let reserve = await estimateReserve()
   if (reserve.ms >= hours * 3600000) throw new SkillPackageError(`마감 관문 실측(전체 검증 2회+수정 1회+CI)이 ${(reserve.ms / 3600000).toFixed(2)}시간이라 max-hours 안에 구현 시간이 없습니다. --max-hours를 늘리거나 --final-reserve-hours를 지정하세요.`)
-  const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? 'command', permissionMode: options.permissionMode ?? 'acceptEdits',
+  const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? 'command', permissionMode: mode,
     cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS }, scope: scopeIds, reserve, verify, batchVerify,
     directory, stopFile, manifest, freshSessionPerUnit: true, pushEachUnit: Boolean(options.pushEachUnit), notifyCommand: options.notifyCommand ?? null }
   if (options.dryRun) return { ...plan, dryRun: true, modelRequests: 0 }
@@ -327,13 +330,15 @@ export async function vibeLoop(options = {}, injected = {}) {
       const fresh = entries.filter((line) => !text.includes(line))
       if (fresh.length) text = text.replace(`\n## ${next}`, `${fresh.join('\n')}\n\n## ${next}`)
     }
-    const checks = batches.map((entry) => entry.ci ? `- CI ${entry.ci.commit ?? '-'}: ${entry.ci.outcome} ${entry.ci.runUrl ?? ''}` : `- ${entry.command}: ${entry.cancelled ? 'cancelled' : entry.ok ? 'pass' : 'fail'} (${entry.log ?? '-'})`)
+    const checks = batches.map((entry) => entry.ci ? `- CI ${entry.ci.commit ?? '-'}: ${entry.ci.outcome}${entry.ci.outcome === 'unchecked' ? ` (${entry.ci.reason})` : ''} ${entry.ci.runUrl ?? entry.ci.checkUrl ?? ''}`.trimEnd() : `- ${entry.command}: ${entry.cancelled ? 'cancelled' : entry.ok ? 'pass' : 'fail'} (${entry.log ?? '-'})`)
       .filter((line) => !text.includes(line))
     if (checks.length) text = text.replace('\n## next', `${checks.join('\n')}\n\n## next`)
     // Where the run's time went, once, when the run closes (a reopened report gets a fresh line).
     if (closing) text = text.replace(/^- time: .*\n/m, '').replace('\n## next', `${timeLine(timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }))}\n\n## next`)
     const kept = snapshots.filter((snapshot) => !snapshot.dropped).map((snapshot) => `- uncommitted work kept: ${snapshot.ref} (${snapshot.task ?? '-'}, ${snapshot.fileCount} files)\n`).join('')
-    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${kept}`)
+    // CI the run could not read waits for the owner, not for the run.
+    const ciLater = batches.filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => `- check CI later: ${entry.ci.commit ?? '-'} ${entry.ci.checkUrl ?? ''}`.trimEnd() + '\n').join('')
+    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${ciLater}${kept}`)
     await metadata.writeReport(text)
   }
   const recordReport = (closing) => metadataStep('report-write', () => updateReport(closing))
@@ -470,7 +475,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       const ci = await deps.ci({ ...options, targetRoot: root, signal: controller.signal, timeoutMs: Math.max(1, deadline - deps.now()), commit: pushed.pushed, branch: pushed.target ?? context.target, diffBase: base })
       batches.push({ ci })
       if (!ci.ok && ci.outcome === 'cancelled') throw new SkillPackageError('CI 대기가 중지됐습니다.')
-      if (!['skipped', 'cancelled'].includes(ci.outcome) && Number.isFinite(ci.ms)) await recordTiming(context.runtime, timingKey('ci'), ci.ms)
+      if (!['skipped', 'cancelled', 'unchecked'].includes(ci.outcome) && Number.isFinite(ci.ms)) await recordTiming(context.runtime, timingKey('ci'), ci.ms)
       if (!ci.ok) await queueRepair('fix-ci', 'Fix CI failure', `Fix the failing checks for ${pushed.pushed}; preserve existing contracts.`, [`CI: ${ci.runUrl ?? '-'}`, `Jobs: ${JSON.stringify(ci.jobs ?? [])}`])
     }
     // The last CI result (and any repair queued at a limit) arrives after the
@@ -499,7 +504,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     if ((await git(root, ['status', '--porcelain'])).trim()) throw new SkillPackageError('loop 시작 전 미커밋 변경을 보존합니다. 먼저 정리하세요.')
     const allowTool = [...new Set(['Bash(git *)', `Bash(${process.execPath} ${cli} *)`, ...(options.allowTool ?? [])])]
     const probe = options.probe ?? `git status --porcelain${context.target ? ` && git push --dry-run ${quote(context.remote)} ${quote(`HEAD:refs/heads/${context.target}`)}` : ''}`
-    const preflight = await deps.preflight({ ...options, targetRoot: root, signal: controller.signal, probe, allowTool, probeWorkspace: 'current', probeTimeoutMs: Math.min(Number(options.probeTimeoutMs ?? 900000), Math.max(1, deadline - deps.now())) })
+    const preflight = await deps.preflight({ ...options, permissionMode: mode, targetRoot: root, signal: controller.signal, probe, allowTool, probeWorkspace: 'current', probeTimeoutMs: Math.min(Number(options.probeTimeoutMs ?? 900000), Math.max(1, deadline - deps.now())) })
     await writeFile(path.join(directory, 'preflight.json'), JSON.stringify(preflight, null, 2))
     if (!preflight.ok) throw new SkillPackageError('맡김 preflight 실패', preflight.checks.filter((check) => !check.ok).map((check) => `${check.name}: ${check.detail}`))
     if (state.git?.behind) await vibeSync({ ...options, targetRoot: root })
@@ -577,7 +582,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       const brief = selected ? await vibeBrief({ targetRoot: root, task: selected, diffBase: before.head }) : null
       const dispatched = recovery
       const job = { schemaVersion: 1, role: 'unit', mode: 'autopilot', workspaceMode: 'single', workspace: root, tag: options.tag, report, status, brief,
-        cliCommand: [process.execPath, cli], allowTools: allowTool, permissionMode: options.permissionMode ?? 'acceptEdits', diffBase: before.head, hostManaged: true,
+        cliCommand: [process.execPath, cli], allowTools: allowTool, permissionMode: mode, diffBase: before.head, hostManaged: true,
         timeLimit: { minutes: Math.max(1, Math.round(limitMs / 60000)), cutAt: new Date(Date.now() + limitMs).toISOString() },
         ...(recovery ? { recovery } : {}) }
       // A continuation consumes its snapshot; once the task is done the ref is dropped.

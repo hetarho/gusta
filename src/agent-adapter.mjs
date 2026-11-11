@@ -167,7 +167,8 @@ export function providerArguments(provider, role, files, model, { allowTools = [
   if (!['acceptEdits', 'bypass'].includes(permissionMode) || (!writes && permissionMode === 'bypass')) fail('지원하지 않는 permission mode입니다.')
   if (provider === 'codex') {
     const tail = ['--json', '--output-schema', files.schema, '--output-last-message', files.result, ...(model ? ['--model', model] : []), '-']
-    if (permissionMode === 'bypass') return ['exec', '--dangerously-bypass-approvals-and-sandbox', ...tail]
+    // exec resume takes the bypass flag too, so a resumed bypass session keeps its session.
+    if (permissionMode === 'bypass') return ['exec', ...(resume ? ['resume', resume] : []), '--dangerously-bypass-approvals-and-sandbox', ...tail]
     return resume ? ['-a', 'never', '--sandbox', sandbox, 'exec', 'resume', resume, ...tail] : ['-a', 'never', 'exec', '--sandbox', sandbox, ...tail]
   }
   // stream-json (which print mode allows only with --verbose) lets the log follow the session live.

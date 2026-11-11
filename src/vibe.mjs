@@ -14,7 +14,7 @@ import { lintSpec } from './spec-lint.mjs'
 import { workInternals } from './work-groups.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { readSettings, branchPlan, defaultBranch } from './settings.mjs'
+import { readSettings, branchPlan, defaultBranch, permissionMode } from './settings.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { vibeCIWait, githubRepository } from './vibe-ci.mjs'
@@ -498,7 +498,8 @@ export async function vibePreflight(options = {}) {
     const gh = await execute('gh', ['auth', 'status'], { timeout: 10000 }).then(() => true, () => false)
     const repo = context.remote ? githubRepository(await git(context.root, ['remote', 'get-url', context.remote])) : null
     const token = (options.env ?? process.env).GITHUB_TOKEN ?? (options.env ?? process.env).GH_TOKEN
-    add('ci-access', gh || Boolean(token) || Boolean(repo), gh ? 'gh' : token ? 'token API' : repo ? 'public HTML (no unauthenticated API)' : 'GitHub repository unavailable', true)
+    // Informational: CI nobody can read is skipped and reported as unchecked, never a reason to stop.
+    add('ci-access', true, gh ? 'gh' : token ? 'token API' : repo ? 'public HTML (no gh/token: a private repo\'s CI is reported unchecked for later)' : 'no GitHub repository: CI is reported unchecked for later')
   }
   const verify = await readVerification(context.root)
   const commands = [...verify.task, ...(options.verify ?? verify.batch)]
@@ -509,7 +510,7 @@ export async function vibePreflight(options = {}) {
     if (!available) missing.push(command)
   }
   add('verification', missing.length === 0, missing.length ? `missing commands: ${missing.join(', ')}` : verify.declared ? `task: ${verify.task.length}, batch: ${verify.batch.length}; conditional checks remain in ARCH guidance` : 'legacy ARCH: changed tests + fast checks at task tier; select batch commands before code push', true)
-  if (options.probe) checks.push(await probeWorker(context, options))
+  if (options.probe) checks.push(await probeWorker(context, { ...options, permissionMode: await permissionMode(options, context.root) }))
   return { schemaVersion: 1, ok: checks.every((check) => check.ok), checks, needsUser: checks.filter((check) => check.needsUser) }
 }
 
@@ -523,6 +524,7 @@ async function probeWorker(context, options) {
   const allow = options.allowTool ?? []
   const place = await workInternals.destination({ workspace: context.workspace, cwd: context.root }, `probe-${randomUUID().slice(0, 8)}`)
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-probe-'))
+  const bypass = options.permissionMode === 'bypass'
   const probeRoot = options.probeWorkspace === 'current' ? context.root : place
   if (probeRoot === place) await git(context.root, ['worktree', 'add', '--detach', '--quiet', place, 'HEAD'])
   try {
@@ -531,9 +533,9 @@ async function probeWorker(context, options) {
     const resultFile = path.join(temporary, 'result.json')
     await writeFile(schemaFile, JSON.stringify(PROBE_SCHEMA))
     const args = provider === 'claude'
-      ? ['--print', '--output-format', 'json', '--json-schema', JSON.stringify(PROBE_SCHEMA), '--permission-mode', options.permissionMode === 'bypass' ? 'bypassPermissions' : 'acceptEdits', '--permission-prompts', 'none',
+      ? ['--print', '--output-format', 'json', '--json-schema', JSON.stringify(PROBE_SCHEMA), '--permission-mode', bypass ? 'bypassPermissions' : 'acceptEdits', '--permission-prompts', 'none',
           '--tools', 'Bash,Read', '--allowedTools', ['Read', ...allow].join(',')]
-      : [...(options.permissionMode === 'bypass' ? ['exec', '--dangerously-bypass-approvals-and-sandbox'] : ['-a', 'never', 'exec', '--sandbox', 'workspace-write']), '--output-schema', schemaFile, '--output-last-message', resultFile, '-']
+      : [...(bypass ? ['exec', '--dangerously-bypass-approvals-and-sandbox'] : ['-a', 'never', 'exec', '--sandbox', 'workspace-write']), '--output-schema', schemaFile, '--output-last-message', resultFile, '-']
     if (options.model) args.push('--model', options.model)
     const env = { ...(options.env ?? process.env) }
     delete env.CLAUDECODE
@@ -555,7 +557,7 @@ async function probeWorker(context, options) {
     })
     const result = provider === 'claude' ? JSON.parse(output).structured_output : JSON.parse(await readFile(resultFile, 'utf8'))
     const ok = Boolean(result?.ran) && !result.denied && result.exitCode === 0
-    return { name: 'worker-probe', ok, needsUser: !ok, detail: `${provider}: ${result?.denied ? 'denied' : `exit ${result?.exitCode}`} — ${result?.note ?? ''}`.trim(), allowTool: allow, workspace: probeRoot, projectSettings: probeRoot === context.root ? 'main checkout: project settings available; trust and effective permissions verified by this probe' : 'new worktree: project allowlist may not apply' }
+    return { name: 'worker-probe', ok, needsUser: !ok, permissionMode: options.permissionMode, detail: `${provider} ${options.permissionMode}: ${result?.denied ? 'denied' : `exit ${result?.exitCode}`} — ${result?.note ?? ''}`.trim(), allowTool: allow, workspace: probeRoot, projectSettings: probeRoot === context.root ? 'main checkout: project settings available; trust and effective permissions verified by this probe' : 'new worktree: project allowlist may not apply' }
   } catch (error) {
     return { name: 'worker-probe', ok: false, needsUser: true, detail: error.message }
   } finally {

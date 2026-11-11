@@ -171,6 +171,8 @@ test('unit adapters use fresh sessions and permit bypass only when explicitly se
   const files = { schema: 'schema', result: 'result' }
   assert.equal(flag(providerArguments('claude', 'unit', files, null, { permissionMode: 'bypass' }), '--permission-mode'), 'bypassPermissions')
   assert.ok(providerArguments('codex', 'unit', files, null, { permissionMode: 'bypass' }).includes('--dangerously-bypass-approvals-and-sandbox'))
+  // A resumed bypass session keeps its Codex session (exec resume takes the bypass flag too).
+  assert.deepEqual(providerArguments('codex', 'worker', files, null, { permissionMode: 'bypass', resume: 'abc' }).slice(0, 4), ['exec', 'resume', 'abc', '--dangerously-bypass-approvals-and-sandbox'])
   assert.ok(!providerArguments('codex', 'unit', files).some((arg) => arg.includes('bypass')))
   await assert.rejects(executeAgentAdapter({ provider: 'claude', job: { role: 'unit', workspace: fixture.root, resume: first.session }, env: fixture.env }), /resume 금지/)
 })

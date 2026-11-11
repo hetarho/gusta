@@ -2,14 +2,14 @@ import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
-import { parseSettings, effectiveSettings, applySettings, readSetting, vibeSettings, branchPlan } from '../src/settings.mjs'
+import { parseSettings, effectiveSettings, applySettings, readSetting, vibeSettings, branchPlan, permissionMode } from '../src/settings.mjs'
 import { MIGRATIONS, formatDrift, changesSince, packageVersions } from '../src/migrate.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 import { fixture } from './helpers/vibe-fixture.mjs'
 
 test('설정: 파일·키가 없으면 기본값, 잘못된 값은 오류로 남고 읽는 쪽은 추측하지 않는다', async (t) => {
   assert.deepEqual(effectiveSettings(null).settings.map(({ key, value, source }) => [key, value, source]),
-    [['prune-branches', true, 'default'], ['land', '?', 'default'], ['land-via', 'merge', 'default'], ['push', false, 'default'], ['deploy', '-', 'default'], ['plan', '?', 'default']])
+    [['prune-branches', true, 'default'], ['land', '?', 'default'], ['land-via', 'merge', 'default'], ['push', false, 'default'], ['deploy', '-', 'default'], ['plan', '?', 'default'], ['permission-mode', 'bypass', 'default']])
   assert.deepEqual(effectiveSettings(null).unset, ['land'])
   assert.match(parseSettings('# SETTINGS\n- land: bad..name\n- deploy: true\n').errors.join(), /land: bad\.\.name.*deploy: true/)
   const parsed = parseSettings('# SETTINGS\n- prune-branches: false  # keep\n- color: blue\n')
@@ -20,6 +20,16 @@ test('설정: 파일·키가 없으면 기본값, 잘못된 값은 오류로 남
   await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- prune-branches: no\n')
   await assert.rejects(readSetting({ targetRoot: root }, 'prune-branches'), /SETTINGS.md 값이 잘못/)
   assert.ok((await lintSpec({ targetRoot: root })).errors.some((error) => /SETTINGS.md: prune-branches: no/.test(error)))
+})
+
+test('headless 권한: 기본은 bypass, SETTINGS가 바꾸고, 명시한 --permission-mode가 그 실행만 덮는다', async (t) => {
+  const { root } = await fixture(t, 0)
+  assert.equal(await permissionMode({}, root), 'bypass')
+  await vibeSettings({ targetRoot: root, set: ['permission-mode=acceptEdits'] })
+  assert.equal(await permissionMode({}, root), 'acceptEdits')
+  assert.equal(await permissionMode({ permissionMode: 'bypass' }, root), 'bypass')
+  await assert.rejects(permissionMode({ permissionMode: 'yolo' }, root), /bypass\|acceptEdits/)
+  await assert.rejects(vibeSettings({ targetRoot: root, set: ['permission-mode=plan'] }), /bypass\|acceptEdits/)
 })
 
 test('vibe settings --set은 파일을 만들거나 그 줄만 바꾸고, 같은 값이면 쓰지 않는다', async (t) => {

@@ -17,7 +17,7 @@ const success = new Set(['success', 'skipped', 'neutral'])
 const decode = (text) => text.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
 
 export function githubRepository(url) {
-  const match = url.trim().match(/(?:github\.com[:/])([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/)
+  const match = (url ?? '').trim().match(/(?:github\.com[:/])([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/)
   return match ? `${match[1]}/${match[2]}` : null
 }
 
@@ -118,15 +118,17 @@ export async function vibeCIWait(options = {}, injected = {}) {
   const workflowNames = await readdir(path.join(root, '.github/workflows')).catch(() => [])
   if (!workflowNames.some((name) => /\.ya?ml$/.test(name))) return { schemaVersion: 1, ok: true, outcome: 'skipped', reason: 'no-workflows', commit, polls: 0, jobs: [], runs: [], runUrl: null }
   const branch = options.branch ?? workspace.git?.branch
-  const url = options.repo ? null : await deps.git(root, ['remote', 'get-url', options.remote ?? 'origin'])
+  const url = options.repo ? null : await deps.git(root, ['remote', 'get-url', options.remote ?? 'origin']).catch(() => null)
   const repo = options.repo ?? githubRepository(url)
+  // CI nobody can read never holds the work: no GitHub repository means unchecked, reported for later.
+  if (!options.repo && !repo) return { schemaVersion: 1, ok: true, outcome: 'unchecked', reason: 'no-github-repo', commit, polls: 0, jobs: [], runs: [], runUrl: null, checkUrl: null }
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo ?? '')) throw new SkillPackageError('GitHub owner/repo를 판정하지 못했습니다. --repo로 지정하세요.')
   const timeout = Number(options.timeoutMs ?? 3600000), grace = Number(options.noRunMs ?? 120000)
   let interval = Number(options.pollMs ?? 15000)
   if (![timeout, grace, interval].every((n) => Number.isFinite(n) && n > 0)) throw new SkillPackageError('CI timeout·no-run·poll 값은 양수입니다.')
   const started = deps.now(), deadline = started + timeout
   const env = options.env ?? process.env
-  let transport = 'gh', polls = 0, lastError = null, runs = [], jobs = [], discovered = false, filtered = false
+  let transport = 'gh', polls = 0, lastError = null, runs = [], jobs = [], discovered = false, filtered = false, readable = false
   const token = env.GITHUB_TOKEN ?? env.GH_TOKEN ?? env.GITHUB_API_TOKEN
   const request = async (address, auth = false) => {
     const timeoutSignal = AbortSignal.timeout(Math.min(30000, Math.max(1, deadline - deps.now())))
@@ -145,8 +147,10 @@ export async function vibeCIWait(options = {}, injected = {}) {
     }
     return null
   }
-  const result = (outcome, reason) => ({ schemaVersion: 1, ok: success.has(outcome), outcome, reason, commit, repo, transport, polls, ms: deps.now() - started,
-    runUrl: runs[0]?.url ?? null, runs, jobs, ...(lastError ? { lastError } : {}) })
+  // unchecked: no transport could read CI (no gh, no token, the public page closed). The work goes
+  // on (ok) and the caller reports checkUrl for the owner to look at later; it is never a pass.
+  const result = (outcome, reason) => ({ schemaVersion: 1, ok: success.has(outcome) || outcome === 'unchecked', outcome, reason, commit, repo, transport, polls, ms: deps.now() - started,
+    runUrl: runs[0]?.url ?? null, checkUrl: `https://github.com/${repo}/commit/${commit}`, runs, jobs, ...(lastError ? { lastError } : {}) })
   try {
     const base = options.diffBase ?? `${commit}^`
     const files = (await deps.git(root, ['diff', '--name-only', base, commit])).trim().split('\n').filter(Boolean)
@@ -162,6 +166,7 @@ export async function vibeCIWait(options = {}, injected = {}) {
     try {
       const listing = await api(`repos/${repo}/actions/runs?head_sha=${commit}&per_page=100`)
       if (listing) {
+        readable = true
         const entries = (listing.workflow_runs ?? []).filter((run) => run.head_sha === commit && (!branch || run.head_branch === branch))
         if ((listing.total_count ?? 0) > 100) throw new Error('more than 100 workflow runs; cannot establish complete gate')
         runs = entries.map((run) => ({ id: run.id, name: run.name, url: run.html_url, status: run.status, conclusion: run.conclusion }))
@@ -180,6 +185,7 @@ export async function vibeCIWait(options = {}, injected = {}) {
       }
       if (transport === 'public-html') {
         const html = await request(`https://github.com/${repo}/actions?query=${encodeURIComponent(`branch:${branch ?? ''}`)}`)
+        readable = true
         const links = [...new Set([...html.matchAll(/href=["']([^"']*\/actions\/runs\/\d+)["']/g)].map((match) => new URL(match[1], 'https://github.com')).filter((url) => url.origin === 'https://github.com' && url.pathname.startsWith(`/${repo}/actions/runs/`)).map((url) => url.href))].slice(0, 12)
         runs = []; jobs = []
         for (const link of links) {
@@ -201,11 +207,17 @@ export async function vibeCIWait(options = {}, injected = {}) {
         return result(runs.every((run) => success.has(run.conclusion)) ? 'success' : 'failure', 'completed')
       }
       if (!discovered && deps.now() - started >= grace) return result('skipped', 'no-run-within-grace')
-    } catch (error) { lastError = error.message }
+    } catch (error) {
+      lastError = error.message
+      // Never read within the grace: retrying until the deadline would hold the work for nothing.
+      // A CI that was read once keeps being waited for — its outage is not a pass.
+      if (!readable && deps.now() - started >= grace) return result('unchecked', 'no-ci-access')
+    }
     // HTML has no API rate limit. All transports still back off; never use an
     // unauthenticated API request (60/hour) as a fallback.
     await deps.sleep(Math.min(transport === 'public-html' ? Math.max(interval, 60000) : interval, Math.max(0, deadline - deps.now())), options.signal)
     interval = Math.min(interval * 1.7, 120000)
   }
+  if (!readable) return result('unchecked', 'no-ci-access')
   return result('timed_out', lastError ? 'query-error-or-timeout' : 'timeout')
 }

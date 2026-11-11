@@ -198,7 +198,11 @@ THEME SSOT가 너무 길어. 의미 바꾸지 말고 정리해줘.      → doc-
 /haeram-setting prune-branches false               → 그 값만 바꾸고 커밋
 ```
 
-설정은 `spec/SETTINGS.md`에 한 줄씩 남고, 파일이나 키가 없으면 기본값을 씁니다. 지금 있는 설정은 `prune-branches`(기본 `true`) 하나입니다. 작업이 끝나면 CLI가 자기가 만든 것 중 더 이상 쓰지 않는 것을 지웁니다. 작업이 끝나는 시점은 실행기 종료, `work cleanup`, `vibe loop` 종료, 세션 마감의 `vibe prune`, show-ab 채택입니다. 지우는 것은 이미 합쳐진 단위·묶음 브랜치, 그 worktree(설치·빌드 산출물 포함), 체크포인트 ref, 이 세션의 `wip/<tag>`입니다. 원격의 `wip/<tag>`는 HEAD가 push된 뒤에만 지웁니다. 합쳐지지 않은 커밋, 미커밋 변경, 진행 중인 작업은 남기고 이유를 `kept`로 보고합니다.
+설정은 `spec/SETTINGS.md`에 한 줄씩 남고, 파일이나 키가 없으면 기본값을 씁니다. 브랜치 전략([아래 표](#브랜치-전략)) 말고는 `permission-mode`와 `prune-branches`가 있습니다.
+
+`permission-mode`(기본 `bypass`)는 CLI가 띄우는 헤드리스 작성 세션 — `vibe loop` 단위, `work run` 워커, show-ab 변형, `vibe preflight --probe` — 의 권한입니다. 맡김에는 권한 창에 답할 사람이 없으므로 기본은 권한 확인과 sandbox를 건너뜁니다(Claude bypassPermissions, Codex `--dangerously-bypass-approvals-and-sandbox`, 네트워크 허용). `acceptEdits`로 바꾸면 Claude는 편집+`--allow-tool` 목록만, Codex는 workspace-write sandbox(네트워크 없음)에서 돕니다. 리뷰어는 어느 쪽이든 읽기 전용이고, 명령의 `--permission-mode`는 그 실행에만 적용됩니다.
+
+`prune-branches`(기본 `true`): 작업이 끝나면 CLI가 자기가 만든 것 중 더 이상 쓰지 않는 것을 지웁니다. 작업이 끝나는 시점은 실행기 종료, `work cleanup`, `vibe loop` 종료, 세션 마감의 `vibe prune`, show-ab 채택입니다. 지우는 것은 이미 합쳐진 단위·묶음 브랜치, 그 worktree(설치·빌드 산출물 포함), 체크포인트 ref, 이 세션의 `wip/<tag>`입니다. 원격의 `wip/<tag>`는 HEAD가 push된 뒤에만 지웁니다. 합쳐지지 않은 커밋, 미커밋 변경, 진행 중인 작업은 남기고 이유를 `kept`로 보고합니다.
 
 haeram 스킬을 쓴 세션 끝에 부르면, 그 세션에서 스킬·CLI가 어떻게 동작했는지 돌아보고 개선 사항(오류·모호한 지시·토큰/시간 낭비·사람이 판단 아닌 일에 쓴 시간)을 근거와 함께 markdown 코드 블록 하나로 돌려줍니다. 파일은 바꾸지 않고, 대상 프로젝트 이름·도메인·ID는 익명화하므로 그대로 이 저장소의 이슈로 옮길 수 있습니다.
 
@@ -275,7 +279,7 @@ PR                   land: main  · land-via: pr
 
 - **태스크마다**: 변경 영향 단위 테스트와 빠른 검사(typecheck·lint·format)만 돌립니다. 테스트는 스크립트 이름이 아니라 격리 범위·의존성으로 분류하고, 실행하지 않은 통합/e2e는 result limits에 남겨 마감 관문에 넘깁니다. `vibe check --tier task`는 ARCH batch 단계에만 있는 명령(전체 스위트)을 거절하고, 5분 넘는 태스크 검사에는 `slow`·`hint`를 붙입니다(사용자가 별도 실행을 명시하면 `--allow-final`).
 - **마감 관문**: 통합·e2e·전체 스위트는 조정자/loop 호스트 하나가 최종 후보에서 한 번 실행합니다(단독 `vibe check --tier batch`, 묶음 `--group-verify`). 같은 트리·같은 명령의 통과는 재사용하고, 무거운 검사는 clone 공용 락으로 하나씩 돌립니다. 구현·리뷰 세션은 세션이 끝났다고 브라우저·전체 검사를 띄우지 않습니다. 검증 없는 코드 push는 중단합니다.
-- **반영**: 끝난 작업은 SETTINGS `land`로 갑니다([브랜치 전략](#브랜치-전략)). 세션 끝에 검증한 SHA로 한 번 반영하고(`vibe push --verified-commit <SHA>` — 그 뒤 코드가 바뀌면 거절), push가 켜져 있으면 CI를 한 번 기다립니다(`vibe ci wait`: gh → 토큰 API → 공개 페이지 순, 기본 no-run 유예 2분·제한 1시간, 대기 중 모델 호출 없음). 단위별 push는 사용자가 명시할 때만입니다(`vibe loop --push-each-unit`, 묶음 `--push`).
+- **반영**: 끝난 작업은 SETTINGS `land`로 갑니다([브랜치 전략](#브랜치-전략)). 세션 끝에 검증한 SHA로 한 번 반영하고(`vibe push --verified-commit <SHA>` — 그 뒤 코드가 바뀌면 거절), push가 켜져 있으면 CI를 한 번 기다립니다(`vibe ci wait`: gh → 토큰 API → 공개 페이지 순, 기본 no-run 유예 2분·제한 1시간, 대기 중 모델 호출 없음). 셋 다 CI를 읽지 못하면(gh·토큰 없는 비공개 저장소, GitHub 원격 아님) 유예 뒤 `unchecked`로 끝내고 진행을 멈추지 않습니다 — 통과로 치지 않고, 보고서 next의 `check CI later`와 종료 알림의 `ciUnchecked`로 확인할 커밋을 알려 줍니다. 단위별 push는 사용자가 명시할 때만입니다(`vibe loop --push-each-unit`, 묶음 `--push`).
 - 단계는 ARCH의 task/batch/CI 하위 줄이 정합니다. 단계가 없는 legacy ARCH는 package.json의 verify/test 스크립트를 batch로 보거나 `--verify '<command>'`를 씁니다. 세부 절차는 [조정자 검증 절차](skills/start-vibe/references/verification.md)에 있습니다.
 
 ```bash
@@ -310,7 +314,7 @@ npx haeram-spec-creator vibe loop --tag k3f9 --stop --json
 
 단위마다 새 세션이어도 프롬프트 캐시를 버리지 않습니다. 시스템 프롬프트·도구 정의처럼 세션끼리 같은 앞부분은 새 세션의 첫 요청에서도 캐시에서 읽힙니다(실측: 새 헤드리스 세션 첫 요청에서 약 18K 토큰 캐시 읽기). 새로 쓰는 것은 단위마다 다른 스킬 본문·브리핑·태스크뿐입니다. 반대로 한 대화를 오래 이어 쓰면 매 턴 쌓인 맥락 전체를 다시 읽고, 캐시가 만료(Claude Code는 1시간)된 뒤에는 그 전체를 2배 값으로 다시 씁니다. 그래서 맡김을 띄운 대화는 돌아와서 이어 쓰지 않고 새 대화에서 `/start-vibe`로 시작합니다 — 필요한 상태는 보고서·결정함·`loop.json`에 있습니다. 캐시를 살려 두려고 빈 요청을 보내지는 않습니다. 실제 비율은 `- time:` 줄의 `cache read` 값으로 확인합니다.
 
-`.git/haeram/v1/loops/<tag>/loop.json`에 상태·로그·세션 ID·정지 파일 경로를 남깁니다. `--detach`는 부모 터미널과 분리하고 macOS에서는 caffeinate를 사용합니다. STOP 표식은 재시작 전에 직접 지웁니다. headless 세션은 프로젝트 설정을 사용할 수 있는 메인 checkout에서 권한을 실측하며 기본은 Claude acceptEdits+허용 목록, Codex workspace-write입니다. 필요한 명령은 `--allow-tool 'Bash(pnpm *)'`처럼 추가합니다. 사용자가 명시한 `--permission-mode bypass`만 권한 우회를 켭니다.
+`.git/haeram/v1/loops/<tag>/loop.json`에 상태·로그·세션 ID·정지 파일 경로를 남깁니다. `--detach`는 부모 터미널과 분리하고 macOS에서는 caffeinate를 사용합니다. STOP 표식은 재시작 전에 직접 지웁니다. headless 세션 권한은 SETTINGS `permission-mode`(기본 `bypass`)를 따르고 메인 checkout에서 실측합니다. `acceptEdits`로 두었다면 필요한 명령을 `--allow-tool 'Bash(pnpm *)'`처럼 추가합니다. `--permission-mode`는 그 실행에만 적용됩니다.
 
 실행 중에는 `--status`로 heartbeat·요청/적용 설정·운영 오류를 보고, `--configure --push-each-unit|--no-push-each-unit`로 단위별 push를 바꿉니다 — 현재 단위가 끝난 뒤 같은 호스트에 적용되며 receipt의 `status:applied`로 확인합니다(pending은 적용 전). SETTINGS push가 false이면 이 옵션도 원격 게시를 켜지 않습니다. `--stop`·SIGINT·SIGTERM은 즉시 취소라 새 마감 검증·push를 시작하지 않고, `--stop-after-unit`은 현재 단위와 마감 관문까지 마친 뒤 멈춥니다. 호스트는 자기가 쓴 보고서와 자기 active 행만 정리합니다. 성공을 보고한 단위 뒤에 그 밖의 변경이 남으면 사람의 편집일 수 있으니 보존한 채 다음 단위와 게시를 멈춥니다(끝내지 못한 단위의 변경은 위처럼 스냅샷으로 넘깁니다). 종료된 호스트는 `--recover-metadata`로 정리합니다(모델·push·재시작 없음). 독립 감시자·알림(`--notify-command`: 실패·판단 대기·종료 요약)·복구 계약은 [loop 제어 계약](skills/start-vibe/references/loop-control.md)에 있습니다.
 

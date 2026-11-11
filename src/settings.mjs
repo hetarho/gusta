@@ -25,6 +25,8 @@ export const SETTINGS = {
     note: "branch the deploy command (vibe deploy, '배포해줘') fast-forwards to land; - = land is the release branch" },
   plan: { default: '?', ...branchOr('?', '-'),
     note: 'planning branch where task IDs and SSOT revs are numbered (vibe plan-sync/plan-push); ? = land when it names a branch, else the repository default branch; - = this checkout only' },
+  'permission-mode': { default: 'bypass', ...oneOf('bypass', 'acceptEdits'),
+    note: 'headless sessions the CLI starts to write code (vibe loop units, work run workers, show-ab variants, preflight probe): bypass = no permission prompts or sandbox, network allowed; acceptEdits = edits plus the allow-tool list only, Codex in its workspace-write sandbox (no network)' },
 }
 export const SETTINGS_FILE = 'spec/SETTINGS.md'
 const TITLE = '# SETTINGS'
@@ -114,6 +116,15 @@ export async function readSettings(options) {
 // The effective value of one key in a checkout. Throws when the file holds an invalid value.
 export async function readSetting(options, key) {
   return (await readSettings(options)).values[key]
+}
+
+// The mode a headless writing session runs with: an explicit --permission-mode wins for that run,
+// else SETTINGS (default bypass — nobody is there to answer a prompt).
+export async function permissionMode(options, root) {
+  const explicit = options.permissionMode
+  if (explicit === undefined) return readSetting({ root }, 'permission-mode')
+  if (!SETTINGS['permission-mode'].accepts(explicit)) fail(`--permission-mode는 ${SETTINGS['permission-mode'].values} 중 하나입니다.`)
+  return explicit
 }
 
 // The branch the repository calls its default (origin/HEAD), else the main checkout's branch.

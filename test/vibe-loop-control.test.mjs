@@ -543,6 +543,9 @@ test('finished summary: level, waiting judgment capped with IDs, parked count an
   assert.equal(failed.level, 'failure'); assert.equal(failed.error, 'loop host exited without finalization'); assert.deepEqual(failed.push, { pushed: false, reason: 'failed' })
   assert.deepEqual(finishedSummary({ status: 'cancelled', reason: 'stop-file', units: 0, publication: { pushed: null, landed: 'def456', target: 'develop' } }).push, { pushed: false, reason: 'local', landed: 'def456', target: 'develop' })
   assert.deepEqual(finishedSummary({ status: 'stopped', reason: 'final-window', units: 3 }).push, { pushed: false, reason: 'not-attempted' })
+  // CI nobody could read is for the owner to check later: it raises the level and names the commit.
+  const unchecked = finishedSummary({ status: 'stopped', reason: 'no-work', units: 1, batches: [{ ci: { outcome: 'unchecked', commit: 'abc123', checkUrl: 'https://github.com/o/p/commit/abc123' } }] })
+  assert.equal(unchecked.level, 'attention'); assert.deepEqual(unchecked.ciUnchecked, [{ commit: 'abc123', url: 'https://github.com/o/p/commit/abc123' }])
 })
 
 test('a run has exactly one finished notice, whoever closes it', async (t) => {

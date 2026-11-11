@@ -1,6 +1,6 @@
 {
   "name": "haeram-spec-creator",
-  "version": "0.12.2",
+  "version": "0.12.3",
   "description": "Versioned Claude and Codex skills distributed through npm.",
   "type": "module",
   "bin": {

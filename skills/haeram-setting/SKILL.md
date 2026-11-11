@@ -3,7 +3,7 @@ name: haeram-setting
 description: >-
   "/haeram-setting, haeram 설정 보여줘, 설정 바꿔줘"에 사용한다. 이 프로젝트에서 haeram-spec-creator가 동작하는 방식을 정하는
   설정(spec/SETTINGS.md)을 표로 보여주고, 사용자가 말한 값만 바꾼다. 예: 브랜치 전략(land·land-via·push·deploy·plan),
-  prune-branches(작업이 끝나면 쓰지 않는 브랜치·worktree를 지울지, 기본 true).
+  prune-branches(작업이 끝나면 쓰지 않는 브랜치·worktree를 지울지, 기본 true), permission-mode(맡김·워커 세션 권한 우회, 기본 bypass).
 ---
 
 # haeram-setting — 패키지 동작 설정

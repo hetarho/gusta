@@ -104,8 +104,9 @@ export function finishedSummary(state, stateText = '') {
   const waiting = judgmentItems('', stateText), status = state.status ?? 'failed', last = state.publication
   const push = last?.pushed ? { pushed: true, commit: last.pushed, target: last.target ?? null }
     : { pushed: false, reason: last?.reason ?? (last?.landed ? 'local' : status === 'stopped' ? 'not-attempted' : status), ...(last?.landed ? { landed: last.landed, target: last.target ?? null } : {}) }
-  return { level: status === 'failed' ? 'failure' : waiting.length ? 'attention' : 'info', status, reason: state.reason ?? null, ...(state.error ? { error: state.error } : {}),
-    units: state.units ?? 0, judgment: capped(waiting), parked: waiting.filter((item) => item.kind === 'parked').length, push, report: state.report ?? null }
+  const ciUnchecked = (state.batches ?? []).filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => ({ commit: entry.ci.commit ?? null, url: entry.ci.checkUrl ?? null }))
+  return { level: status === 'failed' ? 'failure' : waiting.length || ciUnchecked.length ? 'attention' : 'info', status, reason: state.reason ?? null, ...(state.error ? { error: state.error } : {}),
+    units: state.units ?? 0, judgment: capped(waiting), parked: waiting.filter((item) => item.kind === 'parked').length, push, ...(ciUnchecked.length ? { ciUnchecked } : {}), report: state.report ?? null }
 }
 export const judgmentNotice = (unit, task, items) => ({ unit, task: task ?? null, ...capped(items) })
 

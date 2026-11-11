@@ -12,7 +12,7 @@ import { SkillPackageError } from './errors.mjs'
 
 const HELP = `세션 도구 (start-vibe·start-design이 사용)
   vibe loop --tag <tag> --provider claude|codex [--model <name>] [--max-units 100] [--max-hours 8]
-    [--final-reserve-hours <measured>] [--batch-size 3] [--permission-mode acceptEdits|bypass] [--allow-tool <rule> ...]
+    [--final-reserve-hours <measured>] [--batch-size 3] [--permission-mode bypass|acceptEdits] [--allow-tool <rule> ...]
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
     [--tasks 'T001 T002'] [--timeout-ms 3600000]
                                                 끝 예약(실측 전체 검증×2+수정 단위+CI)에는 새 단위 없이 마감 관문·수정 1회만
@@ -53,7 +53,7 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
                                                 STATE·다른 worktree는 건드리지 않음 (커밋은 호출자). verify는 ARCH task·batch 명령 전부를
                                                 미커밋 작업 트리에서 한 번씩. 디자인 중 이 checkout의 push·맡김은 거절
   vibe ab start <slug> [--variants 2] [--base HEAD] [--base-port 4101] [--setup <install command>] [--copy <untracked file> ...]
-  vibe ab run <slug> --variant <a|b|..> --prompt-file <file> [--provider auto|claude|codex] [--model <id>] [--allow-tool <rule> ...] [--timeout-ms 3600000]
+  vibe ab run <slug> --variant <a|b|..> --prompt-file <file> [--provider auto|claude|codex] [--model <id>] [--allow-tool <rule> ...] [--permission-mode bypass|acceptEdits] [--timeout-ms 3600000]
   vibe ab serve <slug> --command '<dev server using $PORT>' [--variant <v>] [--ready-timeout-ms 120000]
   vibe ab exec <slug> --command '<measure or check>' [--repeat 1] [--variant <v>]
   vibe ab status <slug> | pick <slug> --variant <v> [--prune-branches] | stop <slug> [--remove] [--prune-branches]

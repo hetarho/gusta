@@ -63,7 +63,7 @@ runtime는 `<Git common dir>/haeram/v1/loops/<tag>/`다(일반 checkout은 `.git
 `--notify-command '<command>'`를 시작 옵션에 지정하면 호스트와 감시자가 알림 이벤트 JSON을 stdin으로 보낸다. 사람이 볼 일에만 알린다 — 단위 완료·heartbeat 알림은 없다. 모든 알림의 `level`로 거른다:
 - `failure`: 위 실패 이벤트. 기존 필드 그대로.
 - `attention`: `needs-judgment` — 단위가 inbox decided/parked 줄·STATE ssot `[?]` 수 증가를 더했거나 parked를 반환하면 단위당 한 번. `unit`·`task`·`count`·`items`(kind·refs·짧은 text, 10개까지)·`more`.
-- `finished`: 모든 종료(no-work·범위 끝·단위 완료 정지·시간 한도·`--stop`·실패)에 실행당 한 번, host-lost면 감시자가 보낸다. `status`·`reason`·`units`·`judgment`(지금 판단 대기 전체: count·items·more)·`parked`·`push`(`pushed:true`+commit, 아니면 `pushed:false`+reason: `land-unset`·`push-disabled`·`local`·`not-attempted`·종료 status)·`report`(없으면 null). level은 실패 failure, 판단 대기 attention, 그 외 info. 실패면 실패 알림도 따로 간다.
+- `finished`: 모든 종료(no-work·범위 끝·단위 완료 정지·시간 한도·`--stop`·실패)에 실행당 한 번, host-lost면 감시자가 보낸다. `status`·`reason`·`units`·`judgment`(지금 판단 대기 전체: count·items·more)·`parked`·`push`(`pushed:true`+commit, 아니면 `pushed:false`+reason: `land-unset`·`push-disabled`·`local`·`not-attempted`·종료 status)·`report`(없으면 null), 읽지 못한 CI가 있으면 `ciUnchecked`(commit·url — 사람이 나중에 확인). level은 실패 failure, 판단 대기·`ciUnchecked` attention, 그 외 info. 실패면 실패 알림도 따로 간다.
 
 알림은 loop를 막거나 실패시키지 않는다(needs-judgment 훅은 다음 단위와 함께 돈다). 명령은 대상 checkout에서 실행하며 stdout/stderr는 `notification.log`, 제한은 10초다. exit 0만 `delivery:hook-acknowledged`, `deliveredToHook:true`다. 훅 실패는 `delivery:failed`, 미설정은 `pending`이며 둘 다 전달 완료가 아니다. 훅 성공도 외부 사용자 수신 증거는 아니므로 `externalDelivered:false`를 유지한다.
 
