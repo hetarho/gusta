@@ -150,6 +150,7 @@ test('설치된 Claude CLI가 지원하면 헤드리스 세션에 동적 시스�
   const files = { schema: 'schema', result: 'result' }
   const unitArgs = providerArguments('claude', 'unit', files, null, { flags: [SHARED_PROMPT, '--dangerous'] })
   assert.ok(unitArgs.includes(SHARED_PROMPT)); assert.ok(!unitArgs.includes('--dangerous'))
+  for (const role of ['variant', 'scaffold']) assert.ok(providerArguments('claude', role, files, null, { flags: [SHARED_PROMPT] }).includes(SHARED_PROMPT), role)
   assert.ok(!providerArguments('codex', 'worker', files, null, { flags: [SHARED_PROMPT] }).includes(SHARED_PROMPT))
 })
 
@@ -300,4 +301,11 @@ test('A/B 변형 세션은 쓰기 권한·허용 명령으로 실행되고 커�
   // Results without path (older providers or records) open at the root.
   assert.equal(claudeResult(JSON.stringify({ structured_output: { outcome: 'completed', summary: 'x', view: 'home' } }), 'variant').path, '')
   assert.throws(() => claudeResult(JSON.stringify({ structured_output: { outcome: 'completed', summary: 'x', view: 'home', path: 3 } }), 'variant'), /path/)
+  // The mock scaffold writes like a variant but is told it never ships: no switch read by app code.
+  const scaffold = await executeAgentAdapter({ provider: 'claude', job: { schemaVersion: 1, role: 'scaffold', workspace: fixture.root, prompt: 'Screen: /pricing', permissionMode: 'bypass' }, env: fixture.env, log: () => {} })
+  assert.equal(scaffold.path, '/pricing'); assert.equal(scaffold.usage.output_tokens, 4)
+  const sent = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
+  assert.equal(flag(sent.args, '--permission-mode'), 'bypassPermissions')
+  assert.match(sent.text, /never ships/); assert.match(sent.text, /Do NOT add an environment switch/); assert.match(sent.text, /request interception/)
+  assert.match(sent.text, /Do NOT edit the target screen's component, route, loader or style files/); assert.match(sent.text, /Screen: \/pricing$/)
 })

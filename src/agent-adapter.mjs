@@ -25,6 +25,9 @@ export const RESULT_SCHEMAS = {
   // host opens and probes (empty = root); view stays free text. Strict output needs path present.
   variant: object({ outcome: { type: 'string', enum: ['completed', 'blocked'] }, summary: string, view: string, path: string }),
 }
+// The mock scaffold the variants start from answers like a variant: what it did and which screen it renders.
+RESULT_SCHEMAS.scaffold = RESULT_SCHEMAS.variant
+const WRITES = ['worker', 'unit', 'variant', 'scaffold']
 const PROPOSAL = ['title', 'where', 'problem', 'evidence', 'change', 'preserves', 'checks', 'cost', 'risk']
 
 export function validateAgentResult(role, result) {
@@ -41,7 +44,7 @@ export function validateAgentResult(role, result) {
     })
     return { summary: result.summary, proposals }
   }
-  if (role === 'variant') {
+  if (role === 'variant' || role === 'scaffold') {
     if (!['completed', 'blocked'].includes(result.outcome) || typeof result.view !== 'string' || !['string', 'undefined'].includes(typeof result.path)) fail('변형 결과의 outcome/view/path가 올바르지 않습니다.')
     return { outcome: result.outcome, summary: result.summary, view: result.view, path: result.path?.trim() ?? '' }
   }
@@ -145,6 +148,10 @@ async function promptFor(job) {
     if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('변형은 workspace·prompt와 새 세션이 필요합니다.')
     return `You build one variant of an A/B comparison started by an orchestrator. Work only in this workspace (your own git worktree and branch) and implement this variant fully enough for a person to compare it. Do NOT edit spec/ (nothing is decided yet), run git add/commit/push/merge (the host commits your changes), start long-running servers (the host serves each variant on its own port as $PORT), or spawn subagents. ${TASK_CHECKS} Return outcome, summary (what you changed and its trade-offs), view (where a person should look: screen, state or command) and path (the URL path the host opens first, e.g. /settings/profile; empty for root or no screen); outcome blocked only when the variant cannot be built, with the reason in summary.\n\n${job.prompt}`
   }
+  if (job.role === 'scaffold') {
+    if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('scaffold는 workspace·prompt와 새 세션이 필요합니다.')
+    return `You build the shared mock scaffold of an A/B UI comparison, before an orchestrator builds the variants on top of it. Work only in this workspace. Make the target screen render without a backend: realistic, deterministic fixtures and auth stubbed as a signed-in user, wired in directly at the data/auth boundary. Use one of: request interception (a fetch/MSW-style handler module registered from the app entry point or an instrumentation hook), a dev/bundler alias that swaps the data module, or a stub session/auth provider. Do NOT add an environment switch or flag that app code reads: this commit never ships, the host drops it when a variant is adopted. Put fixtures and stubs in new files and keep edits to existing files to that minimal wiring. Do NOT edit the target screen's component, route, loader or style files: the variants redesign those and may not edit your files. Do not redesign the screen. Do NOT edit spec/, run git add/commit/push/merge (the host commits your changes), start long-running servers, or spawn subagents. ${TASK_CHECKS} Return outcome, summary (files, fixture data and stubs you added), view and path (the URL path of the screen); outcome blocked when the screen cannot render without a real service, with the reason in summary.\n\n${job.prompt}`
+  }
   if (!['worker', 'reviewer'].includes(job.role) || !job.workspace || !job.attempt || !job.taskId) fail('실행기 작업 입력이 올바르지 않습니다.')
   const unattended = job.mode === 'autopilot' ? ' Nobody is available to answer questions: never wait for one.' : ''
   const override = job.role === 'worker'
@@ -169,7 +176,7 @@ const WORKER_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep']
 // folders, so the project's own permission allowlist does not apply to them.
 // flags: optional provider flags the installed CLI was found to support (work-providers OPTIONAL_FLAGS).
 export function providerArguments(provider, role, files, model, { allowTools = [], resume = null, session = null, permissionMode = 'acceptEdits', flags = [] } = {}) {
-  const writes = ['worker', 'unit', 'variant'].includes(role)
+  const writes = WRITES.includes(role)
   const sandbox = writes ? 'workspace-write' : 'read-only'
   if (!['acceptEdits', 'bypass'].includes(permissionMode) || (!writes && permissionMode === 'bypass')) fail('지원하지 않는 permission mode입니다.')
   if (provider === 'codex') {
@@ -200,7 +207,7 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     const session = provider === 'claude' ? job.resume ?? randomUUID() : job.resume ?? null
     const remember = (id) => job.sessionFile && id ? writeFile(job.sessionFile, id).catch(() => {}) : null
     await remember(session)
-    const args = providerArguments(provider, job.role, files, model, { allowTools: ['worker', 'unit', 'variant'].includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags })
+    const args = providerArguments(provider, job.role, files, model, { allowTools: WRITES.includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags })
     const childEnv = { ...env }
     // The provider is an independent foreground run, not a nested interactive session.
     delete childEnv.CLAUDECODE
@@ -251,7 +258,7 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     if (provider === 'claude') {
       keep(partial)
       const output = answer || last
-      return { ...claudeResult(output, job.role), session, ...(['unit', 'scout', 'variant'].includes(job.role) ? { usage: claudeEnvelope(output).usage ?? null } : {}) }
+      return { ...claudeResult(output, job.role), session, ...(['unit', 'scout', 'variant', 'scaffold'].includes(job.role) ? { usage: claudeEnvelope(output).usage ?? null } : {}) }
     }
     return { ...validateAgentResult(job.role, JSON.parse(await readFile(files.result, 'utf8'))), session: codexSession(events) ?? job.resume ?? null }
   } finally { await rm(temporary, { recursive: true, force: true }) }
