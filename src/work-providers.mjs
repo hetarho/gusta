@@ -38,20 +38,20 @@ async function probe(provider, cwd, env) {
 }
 
 // The optional flags a provider CLI supports, without a model call: this process's inspection
-// when it ran, else one cached `--help`. A failed probe means none.
-export function providerFlags(provider, { env = process.env, cwd, run = execute } = {}) {
-  if (!OPTIONAL_FLAGS[provider]?.length) return Promise.resolve([])
+// when it ran, else one cached `--help`. A failed probe (even a synchronous spawn error) means none.
+// The cache lives for the process: a CLI updated mid-run keeps its first answer until the next run.
+export async function providerFlags(provider, { env = process.env, cwd, run = execute } = {}) {
+  if (!OPTIONAL_FLAGS[provider]?.length) return []
   const key = knownKey(provider, env)
-  if (!known.has(key)) {
-    const help = run(provider, helpArgs(provider), { cwd, env, timeout: 5000, maxBuffer: 1024 * 1024 })
-    help.child?.stdin?.end()
-    known.set(key, help.then(({ stdout }) => listed(provider, stdout), () => []))
-  }
+  if (!known.has(key)) known.set(key, (async () => {
+    try {
+      const help = run(provider, helpArgs(provider), { cwd, env, timeout: 5000, maxBuffer: 1024 * 1024 })
+      help.child?.stdin?.end()
+      return listed(provider, (await help).stdout)
+    } catch { return [] }
+  })())
   return known.get(key)
 }
-
-// Flags already known in this process (inspection or providerFlags); never starts a probe.
-export const knownFlags = (provider, env = process.env) => known.get(knownKey(provider, env)) ?? Promise.resolve([])
 
 export async function inspectProviders(options = {}) {
   const providers = await Promise.all(supported.map((provider) => probe(provider, options.targetRoot ?? process.cwd(), options.env ?? process.env)))

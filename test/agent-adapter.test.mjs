@@ -5,7 +5,7 @@ import { writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { executeAgentAdapter, claudeResult, claudeEnvelope, providerArguments } from '../src/agent-adapter.mjs'
-import { builtInAdapter, inspectProviders, inspectOrca, providerFlags, knownFlags } from '../src/work-providers.mjs'
+import { builtInAdapter, inspectProviders, inspectOrca, providerFlags } from '../src/work-providers.mjs'
 
 async function stub(t, name, body) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-provider-test-')))
@@ -138,13 +138,14 @@ test('설치된 Claude CLI가 지원하면 헤드리스 세션에 동적 시스�
   const config = await builtInAdapter({ targetRoot: fixture.root, env: fixture.env, provider: 'claude' })
   for (const role of ['worker', 'reviewer']) assert.equal(flag(config.roles[role].args, '--provider-flag'), SHARED_PROMPT)
   const probed = await helpCalls(fixture.root)
-  // Inspection already answered: neither the cached probe nor a session asks --help again.
-  assert.deepEqual(await providerFlags('claude', { env: fixture.env }), [SHARED_PROMPT])
-  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {} })
-  assert.ok(JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8')).includes(SHARED_PROMPT))
+  // Inspection already answered: the cached probe does not ask --help again.
+  const flags = await providerFlags('claude', { env: fixture.env })
+  assert.deepEqual(flags, [SHARED_PROMPT])
   assert.equal(await helpCalls(fixture.root), probed)
-  // Explicit flags win; only known optional flags reach Claude and Codex gets none.
-  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {}, flags: [] })
+  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {}, flags })
+  assert.ok(JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8')).includes(SHARED_PROMPT))
+  // Without flags from its caller a session gets none; only known optional flags reach Claude and Codex gets none.
+  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {} })
   assert.ok(!JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8')).includes(SHARED_PROMPT))
   const files = { schema: 'schema', result: 'result' }
   const unitArgs = providerArguments('claude', 'unit', files, null, { flags: [SHARED_PROMPT, '--dangerous'] })
@@ -154,7 +155,6 @@ test('설치된 Claude CLI가 지원하면 헤드리스 세션에 동적 시스�
 
 test('--help에 없는 선택 flag는 붙이지 않고, 검사 없는 경로는 프로세스당 한 번만 묻는다', async (t) => {
   const fixture = await stub(t, 'claude', claudeCli(''))
-  assert.deepEqual(await knownFlags('claude', fixture.env), [])
   await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {} })
   assert.ok(!JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8')).includes(SHARED_PROMPT))
   assert.equal(await helpCalls(fixture.root), 0, 'a session never starts its own probe')
@@ -163,7 +163,7 @@ test('--help에 없는 선택 flag는 붙이지 않고, 검사 없는 경로는 
   assert.equal(await helpCalls(fixture.root), 1)
   const config = await builtInAdapter({ targetRoot: fixture.root, env: fixture.env, provider: 'claude' })
   assert.ok(!config.roles.worker.args.includes('--provider-flag'))
-  // Injected probe: cached per PATH, a failure means no flag, Codex is never asked.
+  // Injected probe: cached per PATH, a failure (async or a synchronous spawn error) means no flag, Codex is never asked.
   let runs = 0
   const run = async () => { runs++; return { stdout: `--print ${SHARED_PROMPT}` } }
   const env = { PATH: path.join(fixture.root, 'injected') }
@@ -171,6 +171,7 @@ test('--help에 없는 선택 flag는 붙이지 않고, 검사 없는 경로는 
   assert.deepEqual(await providerFlags('claude', { env, run }), [SHARED_PROMPT])
   assert.equal(runs, 1)
   assert.deepEqual(await providerFlags('claude', { env: { PATH: path.join(fixture.root, 'broken') }, run: async () => { throw new Error('old cli') } }), [])
+  assert.deepEqual(await providerFlags('claude', { env: { PATH: path.join(fixture.root, 'unspawnable') }, run: () => { throw new Error('spawn EACCES') } }), [])
   assert.deepEqual(await providerFlags('codex', { env, run: () => assert.fail('codex has no optional flags') }), [])
 })
 
@@ -255,6 +256,12 @@ test('탐색 세션은 timeout에 끝나고 work scout는 실행기 확인·프�
   assert.equal(result.provider, 'codex'); assert.deepEqual(result.proposals, [])
   assert.deepEqual(result.usage, { input: 2, cacheWrite: 0, cacheRead: 9, output: 3 })
   assert.equal(seen.job.role, 'scout'); assert.equal(seen.job.prompt, 'Assigned area: test/'); assert.equal(seen.job.timeoutMs, 900000)
+  assert.deepEqual(seen.flags, [])
+  // The scout asks providerFlags itself and hands the answer to the session.
+  const claude = [{ provider: 'claude', compatible: true }]
+  await workScout({ promptFile, targetRoot: fixture.root }, { inspect: async () => ({ autoProvider: 'claude', providers: claude }),
+    flags: async (provider) => provider === 'claude' ? [SHARED_PROMPT] : [], execute: async (input) => { seen = input; return { summary: 'none', proposals: [] } } })
+  assert.deepEqual(seen.flags, [SHARED_PROMPT])
   await assert.rejects(workScout({ promptFile, provider: 'claude' }, { inspect: async () => ({ autoProvider: 'codex', providers }) }), /사용 가능한 claude/)
   await assert.rejects(workScout({}), /prompt-file/)
 })

@@ -84,6 +84,17 @@ test('start refuses uncommitted user changes; stop --remove keeps branches when 
   assert.equal(again.ok, true)
 })
 
+test('a variant session gets the optional provider flags the installed CLI supports', async (t) => {
+  const { root, temporary } = await fixture(t)
+  await abStart({ targetRoot: root, slug: 'flags', variants: 2, basePort: 4801 })
+  t.after(() => abStop({ targetRoot: root, slug: 'flags', remove: true }).catch(() => {}))
+  const promptFile = path.join(temporary, 'flags.md'); await writeFile(promptFile, 'Make it plain.')
+  let seen
+  await abRun({ targetRoot: root, slug: 'flags', variant: 'a', promptFile }, { inspect: providers,
+    flags: async (provider) => provider === 'claude' ? ['--exclude-dynamic-system-prompt-sections'] : [], execute: async (input) => { seen = input; return session('plain')(input) } })
+  assert.deepEqual(seen.flags, ['--exclude-dynamic-system-prompt-sections'])
+})
+
 test('a server that never listens is reported with its log tail instead of a URL claim', async (t) => {
   const { root } = await fixture(t)
   await abStart({ targetRoot: root, slug: 'crash', variants: 2, basePort: 4791 })

@@ -8,7 +8,7 @@ import { inspectWorkspace, git } from './workspace.mjs'
 import { runtimeRoot, canonicalDestination } from './work-runtime.mjs'
 import { atomicJSON, processAlive } from './loop-control.mjs'
 import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
-import { inspectProviders, availableProvider } from './work-providers.mjs'
+import { inspectProviders, availableProvider, providerFlags } from './work-providers.mjs'
 import { readSetting, permissionMode } from './settings.mjs'
 import { SkillPackageError } from './errors.mjs'
 
@@ -136,7 +136,7 @@ export async function abRun(options = {}, injected = {}) {
   const job = { schemaVersion: 1, role: 'variant', workspace: variant.path, prompt: `Variant ${name} of ${slug}. $PORT for this variant: ${variant.port}.\n\n${prompt}`, timeoutMs,
     allowTools: options.allowTool ?? [], permissionMode: await permissionMode(options, ctx.root) }
   let result
-  try { result = await deps.execute({ provider, model: options.model, job, log: () => {} }) } catch (error) {
+  try { result = await deps.execute({ provider, model: options.model, job, log: () => {}, flags: await (deps.flags ?? providerFlags)(provider, { env: options.env ?? process.env }) }) } catch (error) {
     throw new SkillPackageError(error.message, (error.details ?? []).map((detail) => String(detail).slice(-2000)))
   }
   // The host commits, so the session needs no Git permission and the branch holds exactly this variant.

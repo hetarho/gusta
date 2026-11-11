@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { SkillPackageError } from './errors.mjs'
 import { renderBrief } from './spec-context.mjs'
-import { OPTIONAL_FLAGS, knownFlags } from './work-providers.mjs'
+import { OPTIONAL_FLAGS } from './work-providers.mjs'
 
 const fail = (message) => { throw new SkillPackageError(message) }
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
@@ -183,8 +183,8 @@ export function providerArguments(provider, role, files, model, { allowTools = [
   fail(`지원하지 않는 실행기: ${provider}`)
 }
 
-// flags defaults to what this process already learned about the CLI (inspection), never a new probe.
-export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text), flags }) {
+// flags: the caller's providerFlags answer; none by default (this never probes the CLI).
+export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text), flags = [] }) {
   const prompt = await promptFor(job)
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-agent-'))
   const files = { schema: path.join(temporary, 'schema.json'), result: path.join(temporary, 'result.json') }
@@ -195,7 +195,7 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     const session = provider === 'claude' ? job.resume ?? randomUUID() : job.resume ?? null
     const remember = (id) => job.sessionFile && id ? writeFile(job.sessionFile, id).catch(() => {}) : null
     await remember(session)
-    const args = providerArguments(provider, job.role, files, model, { allowTools: ['worker', 'unit', 'variant'].includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags: flags ?? await knownFlags(provider, env) })
+    const args = providerArguments(provider, job.role, files, model, { allowTools: ['worker', 'unit', 'variant'].includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags })
     const childEnv = { ...env }
     // The provider is an independent foreground run, not a nested interactive session.
     delete childEnv.CLAUDECODE
