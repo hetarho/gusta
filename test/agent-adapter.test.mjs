@@ -229,6 +229,18 @@ test('unit adapters use fresh sessions and permit bypass only when explicitly se
   await assert.rejects(executeAgentAdapter({ provider: 'claude', job: { role: 'unit', workspace: fixture.root, resume: first.session }, env: fixture.env }), /resume 금지/)
 })
 
+// Codex units used to `cat .codex/skills/start-vibe/SKILL.md` first, loading the inlined skill twice.
+test('unit prompt inlines the whole start-vibe skill once and says it is already loaded', async (t) => {
+  const fixture = await stub(t, 'codex', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('prompt.txt',text);const out=process.argv[process.argv.indexOf('--output-last-message')+1];fs.writeFileSync(out,JSON.stringify({kind:'none',id:'',outcome:'no_work',pushed:false,next:''}));});`)
+  await executeAgentAdapter({ provider: 'codex', job: { role: 'unit', workspace: fixture.root, tag: 't061' }, env: fixture.env, log: () => {} })
+  const text = await readFile(path.join(fixture.root, 'prompt.txt'), 'utf8')
+  const skill = await readFile(new URL('../skills/start-vibe/SKILL.md', import.meta.url), 'utf8')
+  const note = text.search(/start-vibe skill is included below and already loaded: do not open its SKILL\.md or call a Skill tool for it/)
+  assert.ok(note >= 0 && note < text.indexOf(skill), 'the no-reload note comes before the skill')
+  assert.match(text, /Load the skills it routes to \(implement-task, create-task, update-ssot/)
+  assert.equal(text.split(skill).length, 2, 'the full skill appears exactly once')
+})
+
 test('탐색 세션은 읽기 전용으로 실행되고 제안 JSON만 돌려준다', async (t) => {
   const proposal = { title: 'Cache parsed config', where: 'src/a.mjs:10', problem: 'parsed per call', evidence: 'profile.log:3', change: 'memoize', touches: ['src/a.mjs'], preserves: 'same output', checks: 'unit a', cost: 'small', risk: 'stale cache' }
   const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('received.json',JSON.stringify({args:process.argv.slice(2),text}));console.log(JSON.stringify({type:'result',is_error:false,usage:{output_tokens:7},structured_output:{summary:'one',proposals:[${JSON.stringify(proposal)}]}}));});`)
