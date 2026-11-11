@@ -608,6 +608,15 @@ test('아카이브된 완료 태스크의 빈 result는 경고다', async () => 
   })
 })
 
+test('템플릿 자리표시자만 남은 아카이브 result는 새 경고를 만들지 않는다', async () => {
+  const placeholders = T001.replace('- done, files created\n', '- outcome: <what works now>\n- verified: <the checks that actually ran>\n')
+  await withFixture({ done: { 'T001.scaffold.md': placeholders } }, async (root) => {
+    const result = await lintSpec({ targetRoot: root })
+    assert.deepEqual(result.errors, [])
+    assert.equal(result.warnings.some((w) => w.includes('T001')), false)
+  })
+})
+
 test('doc-review식 분할: 새 번호를 붙여도 참조·rev·pending·완료 dep이 그대로다', async () => {
   // ARCH-1이 두 정책을 품고 있었다 → 머리 정책은 ARCH-1이 유지하고, 떨어진 정책만 새 번호를 받는다.
   const tidied = ARCH.replace(

@@ -46,8 +46,9 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
   vibe beat --tag <tag> [--mode pair|autopilot] [--doing <T###|->] [--end]
                                                 STATE ## active의 이 세션 행 쓰기·갱신·삭제 (커밋은 호출자)
   vibe task start T### --tag <tag>              단독 선점: 태스크·STATE 행·이 세션 active를 doing@날짜.tag로. todo·dep 완료만
-  vibe task done T### [--at <sha|ref>]          done@날짜·tasks/done/ 이동·STATE 행 삭제·next·log (커밋은 호출자).
-                                                acceptance 미체크·빈 result면 거절
+  vibe task done T### --tag <tag> [--at <sha|ref>] [--force-other]
+                                                done@날짜·tasks/done/ 이동·STATE 행 삭제·next·log (커밋은 호출자).
+                                                acceptance 미체크·빈 result·다른 tag(--force-other는 사용자 지시 때만)면 거절
   vibe checkpoint --tag <tag> [--message <text>] 작업 트리 스냅샷을 wip/<tag>로 push (현재 브랜치는 그대로)
   vibe prune [--tag <tag>] [--work <name>]      마감 정리: 합쳐진 작업 묶음·단위의 worktree·브랜치, 이 세션의 wip/<tag>.
                                                 spec/SETTINGS.md prune-branches가 false면 건너뜀. 안 합쳐진 커밋·미커밋 변경은 보존
@@ -80,7 +81,7 @@ const allowed = {
   awake: ['hours', 'remote'], check: ['tier', 'diff-base', 'task', 'timeout-ms'], design: ['tag', 'scope', 'verify', 'timeout-ms'],
   ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'variant', 'prompt-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
 }
-const flags = { loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep'], ab: ['remove', 'prune-branches'] }
+const flags = { task: ['force-other'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep'], ab: ['remove', 'prune-branches'] }
 const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
   ab: (options) => { if (!Object.hasOwn(AB_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe ab <${Object.keys(AB_STEPS).join('|')}> <slug>`); return AB_STEPS[options.step](options) } }
 

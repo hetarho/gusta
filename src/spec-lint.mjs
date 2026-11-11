@@ -1,7 +1,7 @@
 import { verificationTiers } from './vibe-brief.mjs'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { sections, tableRows, quoteLine, quoteFields, splitRefs, TASK_ID, TASK_ST, EXPLORE, exploreValue, EXIT_LINE, resultLines, SESSION_TAG, ISO_UTC, INBOX_LINE, REPORT_FILE, REPORT_SECTIONS, parseSsot, references, refId } from './spec-format.mjs'
+import { sections, tableRows, quoteLine, quoteFields, splitRefs, TASK_ID, TASK_ST, EXPLORE, exploreValue, EXIT_LINE, SESSION_TAG, ISO_UTC, INBOX_LINE, REPORT_FILE, REPORT_SECTIONS, parseSsot, references, refId } from './spec-format.mjs'
 import { touchesErrors } from './work-policy.mjs'
 import { dependencyErrors, laneErrors, laneValue } from './task-graph.mjs'
 import { parseSettings } from './settings.mjs'
@@ -445,7 +445,8 @@ export async function lintSpec({ targetRoot } = {}) {
       errors.push(`tasks/done/${file}: 아카이브된 태스크의 st가 done@가 아닙니다: ${archivedSt ?? '(없음)'}`)
     }
     // 아카이브는 '그때 무엇을 어떻게 검증했나'를 남기는 역사 기록이다 — 비어 있으면 그 기록이 없다.
-    if (resultLines(content ?? '').length === 0) {
+    const archivedResult = (sections(content ?? '').get('result') ?? []).filter((line) => line.trim() !== '')
+    if (archivedResult.length === 0) {
       warnings.push(`tasks/done/${file}: ## result가 비어 있습니다 — outcome·at·verified·limits를 남기세요.`)
     }
   }

@@ -23,7 +23,7 @@ description: >-
 단독은 태스크 시작 HEAD를 `$HAERAM_DIFF_BASE`로 보존하고 모든 검사에 넘긴다(반복기는 이미 설정). 선점은 `vibe task start T### --tag <tag>`(태스크·STATE·active는 CLI가 쓴다, 거절되면 다른 후보). solo는 첫 작업 커밋에 포함, strict는 start-vibe의 `vibe claim`을 먼저 한다. 같은 checkout에서 동시 쓰기를 하지 않는다.
 
 ## 2. 신선도
-brief의 stale-base와 history(base 이후 chg 줄)가 델타다 — chg를 따로 읽지 않는다. 무관하면 base만 갱신, 영향 있으면 todo 복귀·log 후 create-task로 갱신한다. 완료 전 관련 rev만 다시 확인한다. 워커는 기획 공간에 인계하며 base를 임의로 바꾸지 않는다.
+brief의 stale-base와 history(base 이후 chg 줄)가 델타다 — chg를 따로 읽지 않는다. 무관하면 base만 갱신, 영향 있으면 todo 복귀·log 후 create-task로 갱신한다(손으로 todo·blocked로 돌리면 active 행의 doing도 `vibe beat --doing -`). 완료 전 관련 rev만 다시 확인한다. 워커는 기획 공간에 인계하며 base를 임의로 바꾸지 않는다.
 
 ## 3. 구현
 태스크 완료기준과 인용 결정에 맞춰 구현한다. 코드는 `rg`로 위치를 찾고 필요한 줄 범위만 읽는다. 큰 파일·같은 SSOT 전체를 반복 출력하지 않는다.
@@ -43,5 +43,5 @@ explore는 시작 시각·timebox를 기록하고 측정값을 result에 보존�
 - `lint` 오류·경고는 고친다. reviewHints는 의미 검토 후보라 자동 수정하지 않고 next의 doc-review 또는 result limits로 넘긴다.
 
 ## 5. 마감
-단독 태스크는 acceptance 체크와 result `- outcome:` / `- at:` 검증 SHA / `- verified:` 실제 검사 / `- limits:` 한계 또는 `-` 네 줄을 쓰고 `vibe task done T### [--at <sha>]`로 마감한다(아카이브·STATE·next·log는 CLI, 미체크·빈 result는 거절). 이후에도 지킬 계약은 result에 묻지 말고 update-ssot로 올린다. 태스크마다 출력 files와 관련 파일만 커밋하며 push·보고서는 start-vibe/호스트의 묶음 경계를 따른다. start-vibe 밖 커밋은 요청받았을 때만 한다.
+단독 태스크는 acceptance 체크와 result `- outcome:` / `- at:` 검증 SHA / `- verified:` 실제 검사 / `- limits:` 한계 또는 `-` 네 줄을 쓰고 `vibe task done T### --tag <tag> [--at <sha>]`로 마감한다(아카이브·STATE·next·log는 CLI, 미체크·빈 result·다른 tag는 거절). 이후에도 지킬 계약은 result에 묻지 말고 update-ssot로 올린다. 태스크마다 출력 files와 관련 파일만 커밋하며 push·보고서는 start-vibe/호스트의 묶음 경계를 따른다. start-vibe 밖 커밋은 요청받았을 때만 한다.
 작업 묶음 워커는 acceptance 체크·result·코드만 갱신하고 제출한다. STATE·SSOT·st·아카이브는 CLI/기획 공간이 소유한다. 함께는 단위 완료 시 새 대화로 이어가면 빠르다고 안내한다.
