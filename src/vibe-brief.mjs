@@ -94,7 +94,7 @@ export async function vibeBrief(options = {}) {
 
 export async function vibeFormat(options = {}) {
   const markdown = await readFile(new URL('../skills/create-architecture/assets/FORMAT.md', import.meta.url), 'utf8')
-  const names = { task: ['Notation', 'Skeletons (section order fixed; only (opt) may be omitted; no sections beyond the skeleton)', 'State rules'], state: ['State rules', 'Sessions'], ssot: ['Principles', 'Notation'], report: ['Sessions'], reading: ['Reading'] }
+  const names = { task: ['Notation', 'Skeletons (section order fixed; only (opt) may be omitted; no sections beyond the skeleton)', 'State rules'], state: ['State rules', 'Sessions'], ssot: ['Principles', 'Notation'], report: ['Sessions'], reading: ['Reading'], settings: ['Settings'] }
   const requested = names[options.section] ?? [options.section]
   const map = sections(markdown)
   if (!requested.every((name) => map.has(name))) throw new SkillPackageError(`알 수 없는 FORMAT section: ${options.section}`)

@@ -30,7 +30,7 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
   vibe brief <T###|ID-n|ID|ID@rev ...> [--ref <commit>] [--deep] [--diff-base <task-start-sha>] [--json]
                                                 결정 원문 블록·필수 의존·전역 규칙·flow·constraints·stale base 이후 chg.
                                                 기본은 작업 트리(미커밋 포함), --ref는 그 커밋만. 마크다운이 기본이고 끝에 end 줄
-  vibe format --section task|state|ssot|report|reading  FORMAT 발췌만
+  vibe format --section task|state|ssot|report|reading|settings  FORMAT 발췌만
   vibe status [--tag <tag>] [--no-fetch]        원격의 다른 세션·남은 일·추천 경로(route)
   vibe sync                                     원격 push 브랜치를 HEAD에 반영 (STATE는 섹션 단위 병합)
   vibe plan-sync                                기획 브랜치(SETTINGS plan, 미정이면 land)의 최신을 HEAD에 합침 — 기획·채번 전
