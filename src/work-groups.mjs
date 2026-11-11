@@ -481,11 +481,26 @@ export async function claimNextWork(options) {
   return claimTask(options, true)
 }
 
+// Why the group takes no new unit for owner now, judged on one runtime state; null when it may.
+function claimRefusal(state, group, owner, next) {
+  const local = Object.values(state.attempts).filter((entry) => entry.group === group.id)
+  const limits = workLimits(group.limits)
+  if (local.filter(workerBusy).length >= limits.workers) return 'worker-capacity'
+  if (next && local.some((entry) => workerBusy(entry) && entry.owner === owner)) return 'owner-busy'
+  if (local.some((entry) => entry.status === 'changes_requested')) return 'changes-requested; resume corrections first'
+  if (local.filter(pendingReview).length >= limits.maxPending) return 'review-backpressure'
+  return null
+}
+
 async function claimTask(options, next = false) {
   const context = await repository(options)
   const initial = await readRuntime(context.root)
   const group = groupOf(initial, options.work)
   if (!next && group.taskScope && !group.taskScope.includes(options.task)) fail('승인 범위 밖 태스크입니다. 오케스트레이터의 승인 뒤 범위를 갱신하세요.')
+  // A claim-next the group would refuse anyway answers before reading the board. The transaction
+  // judges the live state again, so a slot freed meanwhile is still taken by the next call.
+  const refused = next ? claimRefusal(initial, group, options.owner, next) : null
+  if (refused) return { idle: true, reason: refused, skipped: [] }
   const commit = await head(context.cwd, `refs/heads/${group.branch}`)
   const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: commit }), group)
   if (!board.ok || board.warnings.length) fail('상위 브랜치의 태스크/STATE를 먼저 정리하고 커밋하세요.', [...board.errors, ...board.warnings])
@@ -527,12 +542,8 @@ async function claimTask(options, next = false) {
     const idle = (reason) => { if (!next) fail(reason); return { idle: true, reason, skipped } }
     if (await head(context.cwd, `refs/heads/${group.branch}`) !== commit || candidates.some((entry) => entry.commit !== commit)) return idle('planning-changed; retry')
     const all = Object.values(state.attempts)
-    const local = all.filter((entry) => entry.group === group.id)
-    const limits = workLimits(live.limits)
-    if (local.filter(workerBusy).length >= limits.workers) return idle('worker-capacity')
-    if (next && local.some((entry) => workerBusy(entry) && entry.owner === owner)) return idle('owner-busy')
-    if (local.some((entry) => entry.status === 'changes_requested')) return idle('changes-requested; resume corrections first')
-    if (local.filter(pendingReview).length >= limits.maxPending) return idle('review-backpressure')
+    const refusal = claimRefusal(state, live, owner, next)
+    if (refusal) return idle(refusal)
     const available = prepared.find(({ current }) => (!live.taskScope || current.unit.ids.every((id) => live.taskScope.includes(id))) && !all.some((entry) => active(entry) &&
       (unitTasks(entry).some((taskId) => current.unit.ids.includes(taskId)) || overlaps(current.unit.touches, entry.touches))))
     if (!available) return idle(next ? 'no-eligible-task' : `${options.task}: 다른 실행이 이미 선점했거나 touches 영역을 사용 중입니다.`)
