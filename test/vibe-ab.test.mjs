@@ -1,11 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, access, mkdtemp, rm } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fixture, git } from './helpers/vibe-fixture.mjs'
 import { abStart, abRun, abServe, abExec, abStatus, abPick, abStop } from '../src/vibe-ab.mjs'
-import { renderHub, viewPath, createHub, readFeedback } from '../src/vibe-ab-hub.mjs'
+import { renderHub, viewPath, createHub, readFeedback, hubMain } from '../src/vibe-ab-hub.mjs'
 
 const exists = (file) => access(file).then(() => true, () => false)
 const providers = async () => ({ autoProvider: 'claude', providers: [{ provider: 'claude', compatible: true }] })
@@ -19,9 +22,19 @@ const post = (url, body, type = 'application/json') => fetch(url, { method: 'POS
 const settle = () => new Promise((resolve) => setTimeout(resolve, 300))
 // A tiny server that answers with the variant's app.js, listening on $PORT.
 const SERVER = `node -e "require('http').createServer((q,s)=>s.end(require('./app.js'))).listen(process.env.PORT)"`
+const PLAIN = `node -e "require('http').createServer((q,s)=>s.end('ok')).listen(process.env.PORT)"`
+// After hooks run in registration order: the stop goes in before the fixture's cleanup removes the
+// record, so a failed assertion cannot leak servers or the hub.
+async function project(t, ...slugs) {
+  let root = null
+  t.after(async () => { for (const slug of root ? slugs : []) await abStop({ targetRoot: root, slug }).catch(() => {}) })
+  const made = await fixture(t)
+  root = made.root
+  return made
+}
 
 test('variants get their own branch, worktree, port and host-made commit, then serve side by side', async (t) => {
-  const { root, temporary } = await fixture(t)
+  const { root, temporary } = await project(t, 'hero')
   await writeFile(path.join(root, '.env.local'), 'SECRET=1\n')
   await writeFile(path.join(root, '.gitignore'), '.env.local\n'); await git(root, 'add', '.gitignore'); await git(root, 'commit', '-q', '-m', 'ignore env')
   const started = await abStart({ targetRoot: root, slug: 'hero', variants: 2, basePort: 4731, copy: ['.env.local'], setup: 'node -e "require(\'fs\').writeFileSync(\'installed\',\'1\')"' })
@@ -32,7 +45,6 @@ test('variants get their own branch, worktree, port and host-made commit, then s
     assert.equal(await readFile(path.join(entry.path, '.env.local'), 'utf8'), 'SECRET=1\n')
     assert.ok(await exists(path.join(entry.path, 'installed')))
   }
-  t.after(() => abStop({ targetRoot: root, slug: 'hero' }).catch(() => {}))
   await assert.rejects(abStart({ targetRoot: root, slug: 'hero' }), /이미/)
   for (const [variant, text, viewAt] of [['a', 'alpha', ''], ['b', 'beta', 'b-screen']]) {
     const promptFile = path.join(temporary, `${variant}.md`); await writeFile(promptFile, `Make it ${text}.`)
@@ -104,22 +116,19 @@ test('start refuses uncommitted user changes; stop --remove keeps branches when 
 })
 
 test('a server that never listens is reported with its log tail instead of a URL claim', async (t) => {
-  const { root } = await fixture(t)
+  const { root } = await project(t, 'crash')
   await abStart({ targetRoot: root, slug: 'crash', variants: 2, basePort: 4791 })
-  t.after(() => abStop({ targetRoot: root, slug: 'crash', remove: true }).catch(() => {}))
   const served = await abServe({ targetRoot: root, slug: 'crash', command: 'node -e "console.error(\'boom\'); process.exit(3)"', readyTimeoutMs: 5000 })
   assert.equal(served.ok, false)
   assert.ok(served.variants.every((entry) => !entry.ready && entry.exited && entry.tail.includes('boom')))
-  await abStop({ targetRoot: root, slug: 'crash' })
 })
 
 // /broken answers 500 (and logs why), /private redirects to sign-in, anything else answers its pid.
 const PROBED = `node -e "require('http').createServer((q,s)=>{if(q.url==='/broken'){console.error('render failed');s.statusCode=500;return s.end('boom')}if(q.url==='/private'){s.writeHead(302,{location:'/login'});return s.end()}s.end(String(process.pid))}).listen(process.env.PORT)"`
 
 test('serve is ready only when the view answers, keeps a live server unless --restart, and stop closes the hub', async (t) => {
-  const { root, temporary } = await fixture(t)
+  const { root, temporary } = await project(t, 'probe')
   await abStart({ targetRoot: root, slug: 'probe', variants: 2, basePort: 4811 })
-  t.after(() => abStop({ targetRoot: root, slug: 'probe', remove: true }).catch(() => {}))
   for (const [variant, viewAt] of [['a', '/broken'], ['b', '/private']]) {
     const promptFile = path.join(temporary, `${variant}.md`); await writeFile(promptFile, 'Build it.')
     await abRun({ targetRoot: root, slug: 'probe', variant, promptFile }, { inspect: providers, execute: session(variant, viewAt) })
@@ -150,7 +159,7 @@ test('hub page escapes session text and frames each variant at URL plus view pat
   assert.deepEqual([...html.matchAll(/<iframe src="([^"]+)"/g)].map((match) => match[1]), ['http://localhost:4101/settings', 'http://localhost:4102'])
   assert.ok(!html.includes('<script>x</script>')); assert.ok(html.includes('cards &lt;script&gt;'))
   assert.ok(html.includes('>larger &lt;b&gt;</textarea>')); assert.match(html, /data-variant="b" class="chosen"/)
-  assert.match(html, /target="_blank"/); assert.match(html, /data-width="390"/); assert.match(html, /not serving/)
+  assert.match(html, /target="_blank"/); assert.match(html, /data-width="390"/); assert.match(html, /not serving/); assert.match(html, /blocks framing/)
 })
 
 test('hub records notes and a choice for known variants only, and ends with its comparison', async (t) => {
@@ -169,6 +178,11 @@ test('hub records notes and a choice for known variants only, and ends with its 
   assert.deepEqual(Object.keys((await readFeedback(feedbackFile)).notes), ['a'])
   assert.equal((await post(`${hub}/choose`, { variant: 'z' })).status, 400)
   assert.equal((await post(`${hub}/note`, { variant: 'a', note: 'x' }, 'text/plain')).status, 415)
+  assert.equal((await post(`${hub}/note`, { variant: 'a', note: 'x'.repeat(20000) })).status, 413)
+  // A rebound DNS name reaching the loopback port is refused.
+  const rebound = await new Promise((resolve, reject) => http.get({ host: '127.0.0.1', port: server.address().port, path: '/', headers: { host: `attacker.example:${server.address().port}` } },
+    (response) => { response.resume(); resolve(response.statusCode) }).on('error', reject))
+  assert.equal(rebound, 403)
   const page = await (await fetch(hub)).text()
   assert.match(page, /<iframe src="http:\/\/localhost:4101\/home"/); assert.match(page, />bigger<\/textarea>/)
   await rm(recordFile)
@@ -185,14 +199,13 @@ const scaffolding = async ({ job, log }) => {
 const capture = (jobs, fake) => async (input) => { jobs.push(input.job); return fake(input) }
 
 test('a scaffold session is the variants\' base, prompts share one prefix, follow-ups carry context, and pick drops the scaffold', async (t) => {
-  const { root, temporary } = await fixture(t)
+  const { root, temporary } = await project(t, 'mock')
   await writeFile(path.join(root, 'data.js'), "module.exports = fetch('/api/user')\n"); await git(root, 'add', 'data.js'); await git(root, 'commit', '-q', '-m', 'data')
   const origin = await git(root, 'rev-parse', 'HEAD')
   const sharedFile = path.join(temporary, 'shared.md'), scaffoldPrompt = path.join(temporary, 'scaffold.md')
   await writeFile(sharedFile, 'Goal: a clearer profile screen. Keep ARCH-1.'); await writeFile(scaffoldPrompt, 'Screen: /profile needs a signed-in user.')
   const jobs = []
   const started = await abStart({ targetRoot: root, slug: 'mock', variants: 2, basePort: 4831, sharedFile, scaffoldPrompt }, { inspect: providers, execute: capture(jobs, scaffolding) })
-  t.after(() => abStop({ targetRoot: root, slug: 'mock', remove: true }).catch(() => {}))
   // The shared file is copied into the record: the coordinator's temporary folder may go.
   await rm(sharedFile)
   assert.equal(started.ok, true, JSON.stringify(started))
@@ -240,7 +253,7 @@ test('a scaffold session is the variants\' base, prompts share one prefix, follo
 })
 
 test('a reused --scaffold skips the session; a variant that edits a scaffold file is refused with both branches untouched', async (t) => {
-  const { root, temporary } = await fixture(t)
+  const { root, temporary } = await project(t, 'reuse')
   const origin = await git(root, 'rev-parse', 'HEAD')
   await git(root, 'checkout', '-q', '-b', 'mock-data')
   await writeFile(path.join(root, 'fixtures.json'), '{"user":"Ada"}\n'); await git(root, 'add', 'fixtures.json'); await git(root, 'commit', '-q', '-m', 'mock')
@@ -250,7 +263,6 @@ test('a reused --scaffold skips the session; a variant that edits a scaffold fil
   await assert.rejects(abStart({ targetRoot: root, slug: 'reuse', scaffold: 'main' }, { inspect: never, execute: never }), /기준.*위의 커밋/)
   await assert.rejects(abStart({ targetRoot: root, slug: 'reuse', scaffold: 'mock-data', scaffoldPrompt: 'x' }), /하나만/)
   const started = await abStart({ targetRoot: root, slug: 'reuse', variants: 2, basePort: 4851, scaffold: 'mock-data' }, { inspect: never, execute: never })
-  t.after(() => abStop({ targetRoot: root, slug: 'reuse', remove: true }).catch(() => {}))
   assert.deepEqual([started.origin, started.scaffold, started.base, started.scaffoldRun], [origin, mock, mock, undefined])
   assert.equal(await git(root, 'branch', '--list', 'ab/reuse/base'), '')
   const promptFile = path.join(temporary, 'a.md'); await writeFile(promptFile, 'Change the data.')
@@ -272,7 +284,7 @@ test('a reused --scaffold skips the session; a variant that edits a scaffold fil
 })
 
 test('a scaffold that does not finish creates no variants and stop --remove cleans its branch', async (t) => {
-  const { root, temporary } = await fixture(t)
+  const { root, temporary } = await project(t, 'stuck')
   const scaffoldPrompt = path.join(temporary, 'scaffold.md'); await writeFile(scaffoldPrompt, 'Screen: /profile.')
   const blocked = async () => ({ outcome: 'blocked', summary: 'needs a real service', view: '', path: '' })
   const started = await abStart({ targetRoot: root, slug: 'stuck', variants: 2, basePort: 4871, scaffoldPrompt }, { inspect: providers, execute: blocked })
@@ -285,9 +297,8 @@ test('a scaffold that does not finish creates no variants and stop --remove clea
 })
 
 test('records from before shared prompts keep working: plain prompt, follow-up without a stored approach', async (t) => {
-  const { root, temporary } = await fixture(t)
+  const { root, temporary } = await project(t, 'old')
   const started = await abStart({ targetRoot: root, slug: 'old', variants: 2, basePort: 4891 })
-  t.after(() => abStop({ targetRoot: root, slug: 'old', remove: true }).catch(() => {}))
   const promptFile = path.join(temporary, 'a.md'); await writeFile(promptFile, 'Make it plain.')
   const seen = []
   const run = await abRun({ targetRoot: root, slug: 'old', variant: 'a', promptFile }, { inspect: providers, execute: capture(seen, session('plain')) })
@@ -300,4 +311,44 @@ test('records from before shared prompts keep working: plain prompt, follow-up w
   await abRun({ targetRoot: root, slug: 'old', variant: 'a', followUpFile }, { inspect: providers, execute: capture(seen, session('plain2')) })
   assert.equal(seen[1].prompt, `Variant a of old. $PORT for this variant: ${started.variants[0].port}.\n\nYour last run's summary: plain variant\n\nYour branch already contains this work; change only what is asked.\n\nFollow-up request:\nTighten spacing.`)
   assert.equal((await abStatus({ targetRoot: root, slug: 'old' })).variants[0].commits, 2)
+})
+
+test('the detached hub reports its port, answers on localhost and exits once its comparison is gone', async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'haeram-ab-hub-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const recordFile = path.join(directory, 'hero.json'), readyFile = path.join(directory, 'hub.json')
+  await writeFile(recordFile, JSON.stringify({ slug: 'hero', variants: { a: { port: 4101, runs: [] } } }))
+  let exited
+  const gone = new Promise((resolve) => { exited = resolve })
+  const hub = await hubMain([recordFile, path.join(directory, 'feedback.json'), readyFile], { exit: exited, checkMs: 20 })
+  t.after(() => hub.close())
+  assert.deepEqual(JSON.parse(await readFile(readyFile, 'utf8')), { pid: process.pid, port: hub.port })
+  assert.equal((await fetch(`http://localhost:${hub.port}`)).status, 200)
+  await rm(recordFile)
+  assert.equal(await gone, 0)
+})
+
+test('serve merges its servers into a run saved while it was starting them', async (t) => {
+  const { root, temporary } = await project(t, 'race')
+  await abStart({ targetRoot: root, slug: 'race', variants: 2, basePort: 4861 })
+  const promptFile = path.join(temporary, 'late.md'); await writeFile(promptFile, 'Build it.')
+  let late = true
+  const served = await abServe({ targetRoot: root, slug: 'race', command: PLAIN, readyTimeoutMs: 20000 }, { spawnServer: async (command, options) => {
+    if (late) { late = false; await abRun({ targetRoot: root, slug: 'race', variant: 'b', promptFile }, { inspect: providers, execute: session('late', '/late') }) }
+    return spawn(command, options)
+  } })
+  assert.equal(served.ok, true, JSON.stringify(served)); assert.match(served.variants[1].url, /\/late$/)
+  const status = await abStatus({ targetRoot: root, slug: 'race' })
+  assert.equal(status.variants[1].last.summary, 'late variant'); assert.ok(status.variants.every((entry) => entry.serving))
+})
+
+const ipv6 = await new Promise((resolve) => { const server = net.createServer().once('error', () => resolve(false)).listen(0, '::1', () => server.close(() => resolve(true))) })
+test('a dev server holding only ::1 (localhost on newer Node) keeps its port and is found ready', { skip: !ipv6 && 'no IPv6 loopback' }, async (t) => {
+  const { root } = await project(t, 'six')
+  const held = await new Promise((resolve) => { const server = net.createServer().once('error', () => resolve(null)).listen(4881, '::1', () => resolve(server)) })
+  let started
+  try { started = await abStart({ targetRoot: root, slug: 'six', variants: 2, basePort: 4881 }) } finally { held?.close() }
+  assert.ok(started.variants.every((entry) => entry.port !== 4881), JSON.stringify(started.variants))
+  const served = await abServe({ targetRoot: root, slug: 'six', command: `node -e "require('http').createServer((q,s)=>s.end('six')).listen(process.env.PORT,'::1')"`, readyTimeoutMs: 20000 })
+  assert.equal(served.ok, true, JSON.stringify(served)); assert.deepEqual(served.variants.map((entry) => entry.http.status), [200, 200])
 })

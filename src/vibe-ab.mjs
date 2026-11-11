@@ -7,7 +7,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { runtimeRoot, canonicalDestination } from './work-runtime.mjs'
-import { atomicJSON, processAlive } from './loop-control.mjs'
+import { atomicJSON, processAlive, controlTransaction } from './loop-control.mjs'
 import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
 import { inspectProviders, availableProvider } from './work-providers.mjs'
 import { readSetting, permissionMode } from './settings.mjs'
@@ -45,31 +45,37 @@ async function load(ctx, slug) {
   return record
 }
 const save = (ctx, record) => atomicJSON(recordFile(ctx, record.slug), record)
-// Another command (a variant run finishing) may have saved since this one loaded: change the live record.
-async function update(ctx, slug, change) {
+// Variant runs and serves change the record from separate processes: every change is a short
+// load-change-save under the record's lock, so none drops another's run or server.
+const locked = (ctx, slug, run) => controlTransaction(`${recordFile(ctx, slug)}.lock`, run)
+const update = (ctx, slug, change) => locked(ctx, slug, async () => {
   const live = await load(ctx, slug)
-  change(live)
+  await change(live)
   await save(ctx, live)
   return live
-}
+})
 function pick(record, options) {
   const names = options.variant ? [options.variant] : Object.keys(record.variants)
   for (const name of names) if (!record.variants[name]) fail(`변형 ${name}이 없습니다: ${Object.keys(record.variants).join(', ')}`)
   return names
 }
 
+// A dev server bound to `localhost` may hold only ::1 (Node 17+ on macOS, Vite by default), so a
+// port is checked on both loopbacks. A host without IPv6 cannot bind ::1 at all: that is not "in use".
+const LOOPBACKS = ['127.0.0.1', '::1']
+const bindable = (port, host) => new Promise((resolve) => {
+  const server = net.createServer().once('error', (error) => resolve(['EADDRNOTAVAIL', 'EAFNOSUPPORT'].includes(error.code))).once('listening', () => server.close(() => resolve(true)))
+  server.listen(port, host)
+})
+const connects = (port, host) => new Promise((resolve) => {
+  const socket = net.connect(port, host)
+  socket.once('connect', () => { socket.destroy(); resolve(true) }).once('error', () => resolve(false))
+  socket.setTimeout(1000, () => { socket.destroy(); resolve(false) })
+})
+const listening = async (port) => (await Promise.all(LOOPBACKS.map((host) => connects(port, host)))).some(Boolean)
 async function portFree(port) {
-  return new Promise((resolve) => {
-    const server = net.createServer().once('error', () => resolve(false)).once('listening', () => server.close(() => resolve(true)))
-    server.listen(port, '127.0.0.1')
-  })
-}
-async function listening(port) {
-  return new Promise((resolve) => {
-    const socket = net.connect(port, '127.0.0.1')
-    socket.once('connect', () => { socket.destroy(); resolve(true) }).once('error', () => resolve(false))
-    socket.setTimeout(1000, () => { socket.destroy(); resolve(false) })
-  })
+  for (const host of LOOPBACKS) if (!(await bindable(port, host))) return false
+  return !(await listening(port))
 }
 
 // One shell command in a variant worktree; output goes to a log, only a tail is returned.
@@ -175,18 +181,20 @@ export async function abStart(options = {}, injected = {}) {
   const brief = options.scaffoldPrompt ? await readFile(path.resolve(options.scaffoldPrompt), 'utf8') : null
   const session = brief ? await sessionOptions(ctx, options, deps) : null
   const record = { schemaVersion: 1, slug, base: origin, createdAt: new Date().toISOString(), variants: {}, ...(shared.trim() ? { shared } : {}) }
+  // start owns the record until it returns; its writes still take the lock so none interleaves with another command's.
+  const store = () => locked(ctx, slug, () => save(ctx, record))
   for (const name of ['feedback.json', 'hub.json']) await rm(fileOf(ctx, slug, name), { force: true })
   const install = (cwd, env, name) => shell(options.setup, cwd, env, fileOf(ctx, slug, `${name}-setup.log`), Number(options.timeoutMs ?? 1200000))
   if (brief) {
     // One session makes the screen render from fixtures on ab/<slug>/base; every variant starts from its commit.
     const tree = record.scaffoldTree = await addTree(ctx, slug, BASE, origin, copies)
-    await save(ctx, record)
+    await store()
     const setup = options.setup ? await install(tree.path, {}, BASE) : null
     if (setup && setup.exitCode !== 0) return { schemaVersion: 1, ok: false, slug, origin, setup: { [BASE]: setupResult(setup) } }
     const prompt = [shared.trim() && `Comparison context (the variants build this; you build only the scaffold):\n${shared.trim()}`, brief].filter(Boolean).join('\n\n')
     const run = record.scaffoldRun = await headless(deps.execute, session, { role: 'scaffold', cwd: tree.path, prompt, log: fileOf(ctx, slug, `${BASE}-run.log`), subject: `ab ${slug}/${BASE}: scaffold` })
     if (run.outcome !== 'completed' || !run.changed) {
-      await save(ctx, record)
+      await store()
       return { schemaVersion: 1, ok: false, slug, origin, error: 'scaffold가 완료되지 않았거나 변경이 없어 변형을 만들지 않았습니다. 확인 후 stop --remove.', scaffoldRun: run }
     }
     scaffold = run.commit
@@ -197,7 +205,7 @@ export async function abStart(options = {}, injected = {}) {
   for (const name of NAMES.slice(0, count)) {
     while (!(await portFree(port))) port++
     record.variants[name] = { ...(await addTree(ctx, slug, name, record.base, copies)), port: port++, server: null, runs: [] }
-    await save(ctx, record)
+    await store()
   }
   // Dependencies install in every worktree at once; a failure keeps the worktrees for a retry.
   const setup = options.setup ? Object.fromEntries(await Promise.all(Object.entries(record.variants).map(async ([name, variant]) =>
@@ -263,25 +271,36 @@ async function readiness(variant, deadline, probe) {
 }
 
 // The hub is detached like the dev servers and reports its own free port. Its URL uses localhost,
-// the variants' host, so their cookies stay same-site inside the hub's frames.
-async function startHub(ctx, slug) {
-  const ready = fileOf(ctx, slug, 'hub.json'), log = fileOf(ctx, slug, 'hub.log')
-  await mkdir(path.dirname(log), { recursive: true })
-  await rm(ready, { force: true })
-  const file = await open(log, 'a', 0o600)
-  const child = spawn(process.execPath, [HUB, recordFile(ctx, slug), fileOf(ctx, slug, 'feedback.json'), ready], { detached: process.platform !== 'win32', stdio: ['ignore', file.fd, file.fd] })
-  child.unref()
-  await file.close()
-  for (const until = Date.now() + 5000; Date.now() < until && processAlive(child.pid); await sleep(100)) {
-    const port = await readFile(ready, 'utf8').then((text) => JSON.parse(text).port, () => null)
-    if (port) return { pid: child.pid, port, url: `http://localhost:${port}`, log, startedAt: new Date().toISOString() }
+// the variants' host, so their cookies stay same-site inside the hub's frames. The start decision
+// is made under the record lock, so two concurrent serves share one hub.
+async function ensureHub(ctx, slug) {
+  const ready = fileOf(ctx, slug, 'hub.json')
+  const hub = await locked(ctx, slug, async () => {
+    const live = await load(ctx, slug)
+    if (live.hub?.pid && processAlive(live.hub.pid)) return live.hub
+    const log = fileOf(ctx, slug, 'hub.log')
+    await mkdir(path.dirname(log), { recursive: true })
+    await rm(ready, { force: true })
+    const file = await open(log, 'a', 0o600)
+    const child = spawn(process.execPath, [HUB, recordFile(ctx, slug), fileOf(ctx, slug, 'feedback.json'), ready], { detached: process.platform !== 'win32', stdio: ['ignore', file.fd, file.fd] })
+    child.unref()
+    await file.close()
+    live.hub = { pid: child.pid, log, startedAt: new Date().toISOString() }
+    await save(ctx, live)
+    return live.hub
+  })
+  if (hub.url) return hub
+  for (const until = Date.now() + 5000; Date.now() < until && processAlive(hub.pid); await sleep(100)) {
+    const port = await readFile(ready, 'utf8').then((text) => { const value = JSON.parse(text); return value.pid === hub.pid ? value.port : null }, () => null)
+    if (port) return (await update(ctx, slug, (live) => { if (live.hub?.pid === hub.pid) live.hub = { ...live.hub, port, url: `http://localhost:${port}` } })).hub
   }
-  stopProcess(child.pid)
+  stopProcess(hub.pid)
+  await update(ctx, slug, (live) => { if (live.hub?.pid === hub.pid) live.hub = null })
   return null
 }
 
 export async function abServe(options = {}, injected = {}) {
-  const deps = { probe: probeView, ...injected }
+  const deps = { probe: probeView, spawnServer: spawn, ...injected }
   const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
   if (!options.command) fail('--command가 필요합니다(개발 서버 명령, 포트는 $PORT).')
   const names = pick(record, options), readyMs = Number(options.readyTimeoutMs ?? 120000)
@@ -297,7 +316,7 @@ export async function abServe(options = {}, injected = {}) {
       const log = fileOf(ctx, slug, `${name}-server.log`)
       await mkdir(path.dirname(log), { recursive: true })
       const file = await open(log, 'a', 0o600)
-      const child = spawn(options.command, { cwd: variant.path, shell: true, detached: process.platform !== 'win32',
+      const child = await deps.spawnServer(options.command, { cwd: variant.path, shell: true, detached: process.platform !== 'win32',
         env: { ...process.env, PORT: String(variant.port), HAERAM_AB_VARIANT: name }, stdio: ['ignore', file.fd, file.fd] })
       child.unref()
       await file.close()
@@ -315,8 +334,7 @@ export async function abServe(options = {}, injected = {}) {
     return { variant: name, url: urlOf(variant), ready, ...(Object.hasOwn(changed, name) ? {} : { kept: true }), ...(answer ? { http } : {}), view: variant.runs.at(-1)?.view ?? null,
       ...(ready ? {} : { exited: !processAlive(variant.server?.pid), tail, log: variant.server?.log ?? null }) }
   }))
-  const hub = live.hub?.pid && processAlive(live.hub.pid) ? live.hub : await startHub(ctx, slug)
-  if (hub !== live.hub) await update(ctx, slug, (current) => { current.hub = hub })
+  const hub = await ensureHub(ctx, slug)
   return { schemaVersion: 1, ok: Boolean(hub) && results.every((entry) => entry.ready), slug, hub: hub?.url ?? null, ...(hub ? {} : { hubLog: fileOf(ctx, slug, 'hub.log') }), variants: results }
 }
 
@@ -351,7 +369,7 @@ export async function abStatus(options = {}) {
     variants.push({ variant: name, branch: variant.branch, path: variant.path, url: urlOf(variant), serving, commits: ahead, last: variant.runs.at(-1) ? { outcome: variant.runs.at(-1).outcome, summary: variant.runs.at(-1).summary, view: variant.runs.at(-1).view } : null })
   }
   // The hub's notes and choice are what the person said; a choice is intent, adopting stays pick.
-  const hub = record.hub?.pid && processAlive(record.hub.pid) ? record.hub.url : null
+  const hub = record.hub?.url && processAlive(record.hub.pid) ? record.hub.url : null
   return { schemaVersion: 1, ok: true, slug, base: record.base, ...(record.scaffold ? { origin: record.origin, scaffold: record.scaffold } : {}), createdAt: record.createdAt, hub, feedback: await readFeedback(fileOf(ctx, slug, 'feedback.json')), variants }
 }
 
