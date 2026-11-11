@@ -44,6 +44,7 @@ hostManaged 실행기에서는 초기화·active·보고서 생성/종료·묶�
 | 새 기능·기획 변경 | create-ssot/update-ssot → create-task 한 조각 |
 | pending·채택 review | create-task 한 조각 |
 | 활성 open/ready ideation | 다음 미반영 도메인 하나 create-ssot/update-ssot → create-task |
+| route repair(issues: FORMAT 밖 st, 손으로 닫은 태스크) | 문서·STATE 상태를 FORMAT에 맞게 복구하고 implement-task 5절 마감(`vibe task start`→`vibe task done`) 후 lint; 정상 완료 기록은 보존 |
 | dep 충족 todo·자기 doing | vibe brief T### → implement-task 1개 |
 | inbox 정리 요청 | status --section inbox로 해당 항목만 반영·log |
 | 원격에서 이어가기·현재 상태 보존만 요청 | `vibe checkpoint --handoff --tag <tag>`; 수정·최종 반영을 시작하지 않고 원격 브랜치·SHA·검증 상태·다음 작업 반환 |

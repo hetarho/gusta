@@ -289,7 +289,9 @@ test('unit prompt inlines the start-vibe body once, without frontmatter, and say
   const [, frontmatter, body] = file.match(/^---\n([\s\S]*?)\n---\n+([\s\S]*)$/)
   const note = text.search(/start-vibe skill is included below and already loaded: do not open its SKILL\.md or call a Skill tool for it/)
   assert.ok(note >= 0 && note < text.indexOf(body), 'the no-reload note comes before the skill')
-  assert.match(text, /Load the skills it routes to \(implement-task, create-task, update-ssot/)
+  // A unit without a task gets no implement-task body, only where its routed skills are installed.
+  assert.match(text, /Other skills it routes to \(update-ssot, create-task\.\.\.\) are not loaded and there is no Skill tool: Read \.codex\/skills\/<name>\/SKILL\.md before acting on one\./)
+  assert.ok(!text.includes('implement-task skill (already loaded)'))
   assert.equal(text.split(body).length, 2, 'the skill body appears exactly once')
   // The trigger description is frontmatter only; none of its lines reach the unit.
   const description = frontmatter.split('\n').filter((line) => /^\s{2}\S/.test(line)).map((line) => line.trim())
@@ -298,6 +300,36 @@ test('unit prompt inlines the start-vibe body once, without frontmatter, and say
   assert.ok(!text.includes('name: start-vibe'))
   assert.equal(skillBody('---\nname: x\n---\n\n# x\nbody\n'), '# x\nbody\n')
   assert.equal(skillBody('# x\n---\nbody\n---\n'), '# x\n---\nbody\n---\n')
+})
+
+// Unit sessions have no Skill tool: a task unit that never saw implement-task closed its task by hand.
+test('a task unit carries the implement-task body and its close; planning recoveries and other units read routed skills', async (t) => {
+  const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('last.txt',text);console.log(JSON.stringify({type:'result',is_error:false,structured_output:{kind:'none',id:'',outcome:'no_work',pushed:false,next:''}}))});`)
+  const prompt = async (extra) => {
+    await executeAgentAdapter({ provider: 'claude', job: { role: 'unit', workspace: fixture.root, tag: 't062', ...extra }, env: fixture.env, log: () => {} })
+    return readFile(path.join(fixture.root, 'last.txt'), 'utf8')
+  }
+  const implement = skillBody(await readFile(new URL('../skills/implement-task/SKILL.md', import.meta.url), 'utf8'))
+  const section = (title) => implement.slice(implement.indexOf(title), implement.indexOf('\n## ', implement.indexOf(title) + 1))
+  for (const job of [{ brief: { taskId: 'T007' } }, { recovery: { reason: 'interrupted', taskId: 'T007', cause: 'unit-timeout' } }, { recovery: { reason: 'spec-gate', taskId: 'T007', violations: ['spec/STATE.md tasks row T007 remains (st done)'] } }]) {
+    const text = await prompt(job)
+    assert.equal(text.split('implement-task skill (already loaded):').length, 2, JSON.stringify(job))
+    // Its sections ride once; its common rules are start-vibe's and are not repeated.
+    for (const title of ['## 1. 선택과 브리핑', '## 5. 마감']) assert.equal(text.split(section(title)).length, 2, title)
+    assert.ok(!implement.includes('(Common rules') && text.includes('(Common rules: as in start-vibe above.)'))
+    assert.equal(text.split('## 공통 규칙').length, 2, 'common rules once (start-vibe)')
+    assert.match(text, /This unit's task is T007: .*cliCommand vibe task done T007 --tag t062.*never close it by hand/)
+    assert.match(text, /Read \.claude\/skills\/<name>\/SKILL\.md before acting on one/)
+  }
+  const repair = await prompt({ recovery: { reason: 'spec-gate', taskId: 'T007', violations: ['spec/tasks/done/T007.<slug>.md is missing (not archived)', 'spec/STATE.md tasks row T007 remains (st done)'] } })
+  assert.match(repair, /Spec repair unit for T007: .*spec check failed: spec\/tasks\/done\/T007\.<slug>\.md is missing \(not archived\); spec\/STATE\.md tasks row T007 remains \(st done\)\..*vibe task start T007 --tag t062.*vibe task done T007 --tag t062/)
+  assert.match(repair, /Preserve a valid dated archive/); assert.match(repair, /Only when archive\/lifecycle evidence is missing or invalid/); assert.match(repair, /Repair only the listed evidence/)
+  // A split or a blocked recovery is planning: no implement-task body.
+  for (const reason of ['split', 'blocked-task']) {
+    const text = await prompt({ brief: { taskId: 'T007' }, recovery: { reason, taskId: 'T007' } })
+    assert.ok(!text.includes('implement-task skill (already loaded)'), reason)
+    assert.match(text, /Read \.claude\/skills\/<name>\/SKILL\.md before acting on one/)
+  }
 })
 
 test('탐색 세션은 읽기 전용으로 실행되고 제안 JSON만 돌려준다', async (t) => {

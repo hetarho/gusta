@@ -12,6 +12,7 @@ import { withHeavyLock } from '../src/check-cache.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 import { vibeDesign } from '../src/vibe-design.mjs'
 import { vibePrune } from '../src/prune.mjs'
+import { archiveTask } from './helpers/vibe-fixture.mjs'
 
 const execute = promisify(execFile)
 const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
@@ -167,7 +168,7 @@ test('push가 거부되면 원격을 가져와 STATE를 섹션 단위로 합치�
     await writeFile(file, (await readFile(file, 'utf8')).replace(from, to))
   }
   await edit(a, '- 261012 create-task ARCH', '- 261013 a: T001 done\n- 261012 create-task ARCH')
-  await edit(a, '| T001 | first | ARCH | - | todo |\n', '')
+  await archiveTask(a, 'T001')
   await writeFile(path.join(a, 'a.txt'), 'a\n')
   await commitAll(a, 'A unit')
   await vibePush({ targetRoot: a })
@@ -278,6 +279,32 @@ test('route: 기획 거리·구현 거리에 따라 planning·implementation·ch
   const empty = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-route-')))
   t.after(() => rm(empty, { recursive: true, force: true }))
   assert.equal((await vibeStatus({ targetRoot: empty })).route, 'architecture')
+})
+
+// A hand close (`done` without a date) used to read as neither todo nor done: settled, ideation-first.
+test('status: a row or task-file st outside FORMAT is an issue, never settled, and routes to repair; valid states keep their route', async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-st-')))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(path.join(root, 'spec/tasks'), { recursive: true })
+  const status = async (rows, files = {}) => {
+    await writeFile(path.join(root, 'spec/STATE.md'), STATE.replace('| T001 | first | ARCH | - | todo |\n| T002 | second | ARCH | - | todo |\n', rows))
+    await rm(path.join(root, 'spec/tasks'), { recursive: true, force: true }); await mkdir(path.join(root, 'spec/tasks'))
+    for (const [id, st] of Object.entries(files)) await writeFile(path.join(root, `spec/tasks/${id}.x.md`), task(id).replace('st:todo', `st:${st}`))
+    return vibeStatus({ targetRoot: root })
+  }
+  const broken = await status('| T001 | first | ARCH | - | done |\n', { T001: 'done' })
+  assert.deepEqual(broken.issues, [{ id: 'T001', where: 'STATE', st: 'done' }, { id: 'T001', where: 'file', st: 'done' }])
+  assert.equal(broken.settled, false); assert.equal(broken.route, 'repair'); assert.deepEqual(broken.runnable, [])
+  // A valid row with a broken file (and the other way round) is still an issue.
+  assert.deepEqual((await status('| T001 | first | ARCH | - | todo |\n', { T001: 'finished' })).issues, [{ id: 'T001', where: 'file', st: 'finished' }])
+  assert.deepEqual((await status('| T001 | first | ARCH | - | doing |\n', { T001: 'doing@261112.ab' })).issues, [{ id: 'T001', where: 'STATE', st: 'doing' }])
+  // Every FORMAT st is valid: the routes are what they were.
+  for (const [st, route, settled] of [['todo', 'implementation', false], ['doing@261112.ab', 'ideation-first', true], ['doing@261112', 'implementation', false], ['blocked@261112', 'ideation-first', true]]) {
+    const valid = await status(`| T001 | first | ARCH | - | ${st} |\n`, { T001: st })
+    assert.deepEqual([valid.issues, valid.route, valid.settled], [[], route, settled], st)
+  }
+  // No task file: lint reports it; status judges the row alone.
+  assert.deepEqual((await status('| T001 | first | ARCH | - | todo |\n')).issues, [])
 })
 
 test('route: 완료 ideation 파일은 새 기획 후보나 기본 읽기 입력이 아니다', async (t) => {
@@ -448,4 +475,46 @@ test('vibe CLI: beat·status는 JSON을, 오류도 JSON을 출력한다', async 
   const failed = await run('beat', '--tag', 'x').catch((error) => error)
   assert.equal(failed.code, 1)
   assert.match(JSON.parse(failed.stdout).error, /세션 tag/)
+})
+
+
+test('final publication rejects invalid spec, while explicit WIP handoff preserves it', async (t) => {
+  const { a, remote } = await machines(t)
+  const before = (await execute('git', ['--git-dir', remote, 'rev-parse', 'main'], { encoding: 'utf8' })).stdout.trim()
+  const file = path.join(a, 'spec/tasks/T001.first.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('st:todo', 'st:done'))
+  await commitAll(a, 'invalid hand close')
+  await assert.rejects(vibePush({ targetRoot: a }), /spec lint 실패/)
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'main'], { encoding: 'utf8' })).stdout.trim(), before)
+  const kept = await vibeCheckpoint({ targetRoot: a, tag: 'keep01', handoff: true })
+  assert.equal(kept.ok, true); assert.deepEqual(kept.verification, { status: 'unverified', checksRun: false })
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'wip/keep01'], { encoding: 'utf8' })).stdout.trim(), kept.commit)
+})
+
+test('local land and PR publication reject invalid candidate spec before advancing refs', async (t) => {
+  const { a, remote } = await machines(t)
+  await git(a, 'branch', 'next')
+  const previous = (await git(a, 'rev-parse', 'next')).stdout.trim()
+  await git(a, 'checkout', '-q', '-b', 'candidate')
+  const file = path.join(a, 'spec/tasks/T001.first.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('st:todo', 'st:finished'))
+  await writeFile(path.join(a, 'spec/SETTINGS.md'), '# SETTINGS\n- land: next\n- push: false\n')
+  await commitAll(a, 'invalid local candidate')
+  await assert.rejects(vibePush({ targetRoot: a }), /spec lint 실패/)
+  assert.equal((await git(a, 'rev-parse', 'next')).stdout.trim(), previous)
+  await writeFile(path.join(a, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- land-via: pr\n- push: true\n')
+  await commitAll(a, 'PR candidate')
+  await assert.rejects(vibePush({ targetRoot: a }), /spec lint 실패/)
+  await assert.rejects(execute('git', ['--git-dir', remote, 'rev-parse', '--verify', 'refs/heads/candidate']))
+})
+
+test('final publication still supports branch settings without spec documents', async (t) => {
+  const { a, remote } = await machines(t)
+  await git(a, 'rm', '-qr', 'spec')
+  await mkdir(path.join(a, 'spec'))
+  await writeFile(path.join(a, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- push: true\n')
+  const candidate = await commitAll(a, 'plain repository')
+  const result = await vibePush({ targetRoot: a })
+  assert.equal(result.pushed, candidate)
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'main'], { encoding: 'utf8' })).stdout.trim(), candidate)
 })

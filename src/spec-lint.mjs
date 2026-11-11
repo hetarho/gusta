@@ -488,6 +488,7 @@ export async function lintSpec({ targetRoot } = {}) {
     for (const key of ['st', 'ssot', 'base', 'dep']) {
       if (!fields.has(key)) errors.push(`tasks/${file}: 인용줄에 ${key}: 필드가 없습니다.`)
     }
+    if (fields.has('st') && !TASK_ST.test(fields.get('st') ?? '')) errors.push(`tasks/${file}: st 형식 오류: ${fields.get('st')} (todo|doing@날짜.tag|done@날짜|blocked@날짜)`)
     if (fields.get('st') && fields.get('st') !== st) {
       warnings.push(`${id}: 파일 st(${fields.get('st')})와 STATE st(${st})가 다릅니다 — 진행 상태의 진실은 STATE.`)
     }

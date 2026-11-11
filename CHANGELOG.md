@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Route out-of-format task statuses to repair instead of treating the
+  specification as settled. Task units receive the implementation skill and
+  provider-specific paths without duplicating common instructions.
+- Accept task completion only with a dated archive, removed STATE row and no
+  new specification lint errors. Give a rejected close one repair unit before
+  parking it for the initiating conversation. Final integration and closing
+  gates reject specification lint errors and unresolved close rejections. The
+  host reconciles actual repaired evidence without a synthetic child report;
+  explicit unverified WIP handoff remains available.
+- Document standalone task start/close commands and the existing A/B scaffold,
+  follow-up, residue and adoption flow.
+
 ## 0.12.4
 
 - The initiating start-vibe conversation remains the orchestrator. CLI loops run

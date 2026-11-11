@@ -4,7 +4,7 @@ import { readFile, writeFile, readdir, realpath, mkdir, mkdtemp, rm } from 'node
 import { spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
-import { fixture, git, execute } from './helpers/vibe-fixture.mjs'
+import { fixture, git, execute, archiveTask } from './helpers/vibe-fixture.mjs'
 import { vibeLoop } from '../src/vibe-loop.mjs'
 import { atomicJSON, readJSON, watchLoop, acquireLoop, releaseLoop, loopEvent, judgmentItems, finishedSummary, finishedEvent } from '../src/loop-control.mjs'
 import { activeRows, appendInbox } from '../src/state-doc.mjs'
@@ -252,7 +252,7 @@ test('independent supervisor observes an actually killed isolated host and emits
   for (let n = 0; n < 400; n++) {
     events = await readFile(path.join(directory, 'events.jsonl'), 'utf8')
     notices = await notify.received()
-    if (notices.some((notice) => notice.type === 'finished')) break
+    if (notices.some((notice) => notice.type === 'finished') && (await readJSON(path.join(directory, 'terminal-event.json')))?.deliveredToHook) break
     await pause(25)
   }
   assert.match(events, /host-lost/)
@@ -261,7 +261,7 @@ test('independent supervisor observes an actually killed isolated host and emits
   const finished = notices[1]
   assert.equal(finished.status, 'failed'); assert.equal(finished.reason, 'host-lost'); assert.equal(finished.units, 0)
   assert.deepEqual(finished.push, { pushed: false, reason: 'failed' }); assert.equal(finished.report, state.report)
-  assert.equal((await readdir(path.join(directory, 'notifications'))).length, 2)
+  assert.equal((await readdir(path.join(directory, 'notifications'))).filter((name) => name.endsWith('.json')).length, 2)
   const result = await vibeLoop({ targetRoot: root, tag: 'ctrl01', recoverMetadata: true })
   assert.equal(result.implementationRestarted, false)
   assert.equal(await git(root, 'status', '--porcelain'), '')
@@ -584,7 +584,10 @@ test('the hook gets one needs-judgment per unit that left judgment, none for oth
       let text = await readFile(file, 'utf8')
       if (n === 1) text = appendInbox(text, '- 261111 decided ARCH-3: Retry policy → exponential (alt: fixed)').replace('| ARCH | 1 | 1 | - | 0 |', '| ARCH | 1 | 1 | - | 1 |')
       if (n === 2) text = appendInbox(text, '- 261111 parked T002: needs production credentials')
+      // The decision the inbox cites and the open question STATE counts exist, so spec lint stays clean.
+      if (n === 1) { const arch = path.join(root, 'spec/ssot/ARCH.md'); await writeFile(arch, (await readFile(arch, 'utf8')).replace('\n\n## chg', '\n- ARCH-3 [o] Retry policy: exponential.\n- ARCH-4 [?] Retry cap.\n\n## chg')) }
       await writeFile(file, text); await writeFile(path.join(root, 'app.js'), `// unit ${n}\n`)
+      if (n !== 2) await archiveTask(root, `T00${n}`)
       await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', `unit ${n}`)
       return { exitCode: 0, result: { kind: 'task', id: `T00${n}`, outcome: n === 2 ? 'parked' : 'completed', pushed: false, next: 'implementation' } }
     }, check: async () => ({ ok: true }),

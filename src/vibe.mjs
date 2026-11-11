@@ -6,7 +6,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { runtimeRoot } from './work-runtime.mjs'
-import { sections, tableRows, quoteLine, quoteFields, exploreValue, yymmdd, INBOX_LINE, SESSION_TAG, TASK_ID } from './spec-format.mjs'
+import { sections, tableRows, quoteLine, quoteFields, exploreValue, yymmdd, INBOX_LINE, SESSION_TAG, TASK_ID, TASK_ST } from './spec-format.mjs'
 import { activeRows, upsertActive, mergeState, taskRow, setTaskSt } from './state-doc.mjs'
 import { designOf } from './interactive-state.mjs'
 import { workingTree, checkKey, cachedPass, recordPass, withHeavyLock } from './check-cache.mjs'
@@ -144,6 +144,17 @@ export async function vibeSync(options = {}) {
   return { schemaVersion: 1, ok: true, action, head: await sha(root, 'HEAD'), target }
 }
 
+// Final integration uses the candidate after sync/merge. A project without spec/ stays supported;
+// an existing but incomplete spec is an error. WIP checkpoint/handoff does not call this gate.
+async function assertSpecClose(root) {
+  const entries = await readdir(path.join(root, 'spec')).catch((error) => { if (error.code === 'ENOENT') return []; throw error })
+  // SETTINGS alone configures branch movement without bootstrapping a spec document tree.
+  if (entries.every((name) => name === 'SETTINGS.md')) return
+  const { errors } = await lintSpec({ targetRoot: root })
+  const issues = await specCloseIssues(root)
+  if (errors.length || issues.length) fail(`${errors.length ? 'spec lint' : 'spec close'} 실패: 문서 구조와 마감 상태를 고친 뒤 최종 반영하세요. 원격 인계는 vibe checkpoint --handoff를 사용하세요.`, [...errors, ...issues.map((issue) => `${issue.where} ${issue.id}: ${issue.reason ?? `invalid st:${issue.st ?? '(none)'}`}`)].slice(0, 10))
+}
+
 // Land HEAD the way SETTINGS says: land-via pr opens a PR into land; push: true publishes to the
 // push branch (a rejection means someone pushed first — sync and retry); otherwise a land branch
 // other than this one takes the work as a local merge. Nothing to do is not an error.
@@ -160,6 +171,7 @@ export async function vibePush(options = {}) {
     const synced = await vibeSync(options)
     const pushed = await sha(context.root, 'HEAD')
     await assertVerified(context.root, options.verifiedCommit, pushed)
+    await assertSpecClose(context.root)
     try {
       const tracking = `refs/remotes/${context.remote}/${context.target}`
       const diffBase = options.diffBase ?? (await exists(context.root, tracking) ? await sha(context.root, tracking) : undefined)
@@ -196,6 +208,7 @@ async function landLocal(context, options) {
   }
   const head = await sha(root, 'HEAD')
   await assertVerified(root, options.verifiedCommit, head)
+  await assertSpecClose(root)
   const moved = await advanceBranch(context, land, head)
   if (['dirty', 'diverged', 'moved'].includes(moved)) fail(`${land}에 반영하지 못했습니다(${moved === 'dirty' ? '그 브랜치 checkout에 커밋하지 않은 변경' : '그 사이 브랜치가 움직임'}). 다시 실행하세요.`, [head])
   return { schemaVersion: 1, ok: true, pushed: null, landed: head, target: land, mode: 'local', merged, local: moved }
@@ -211,6 +224,7 @@ async function landByPR(context, options) {
   if ((await git(root, ['status', '--porcelain', '--untracked-files=no'])).trim()) fail('커밋하지 않은 변경이 있습니다. 먼저 커밋하세요.')
   const head = await sha(root, 'HEAD')
   await assertVerified(root, options.verifiedCommit, head)
+  await assertSpecClose(root)
   await git(root, ['push', '--quiet', remote, `${head}:refs/heads/${branch}`])
   const gh = (args) => execute('gh', args, { cwd: root, encoding: 'utf8', timeout: 60000, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }).then((result) => result.stdout.trim())
   let pr = null, prError = null
@@ -378,21 +392,36 @@ function summarize(text) {
   return { tasks, pending, reviews, ideation, inbox }
 }
 
-// explore timeboxes of the STATE rows, in row order. One listing serves every row (a row's file is
-// the first listed `<id>.…`); the files are read in parallel.
-export async function exploreTimeboxes(root, tasks) {
-  const names = await readdir(path.join(root, 'spec/tasks')).catch(() => [])
-  const byId = new Map()
-  for (const name of names) {
-    const dot = name.indexOf('.')
-    if (dot >= 0 && !byId.has(name.slice(0, dot))) byId.set(name.slice(0, dot), name)
-  }
-  const timeboxes = await Promise.all(tasks.map(async ({ id }) => {
-    const file = id.includes('.') ? names.find((name) => name.startsWith(`${id}.`)) : byId.get(id)
-    const content = file ? await readOptional(path.join(root, 'spec/tasks', file)) : null
-    return exploreValue(quoteFields(quoteLine(content ?? '') ?? '').get('explore'))
-  }))
-  return tasks.flatMap(({ id }, index) => timeboxes[index] ? [{ id, timebox: timeboxes[index] }] : [])
+// Read active task quote fields once. Archived history stays filename-only; an active file without
+// a STATE row remains visible as a repair issue instead of silently becoming settled work.
+async function taskFields(root) {
+  const names = (await readdir(path.join(root, 'spec/tasks')).catch(() => [])).filter((name) => name.endsWith('.md') && /^T\d+\./.test(name))
+  return new Map(await Promise.all(names.map(async (name) => {
+    const content = await readOptional(path.join(root, 'spec/tasks', name))
+    return [name.split('.')[0], quoteFields(quoteLine(content ?? '') ?? '')]
+  })))
+}
+const timeboxesOf = (tasks, fields) => tasks.flatMap(({ id }) => {
+  const timebox = exploreValue(fields.get(id)?.get('explore'))
+  return timebox ? [{ id, timebox }] : []
+})
+// explore timeboxes of the STATE rows, in row order.
+export const exploreTimeboxes = async (root, tasks) => timeboxesOf(tasks, await taskFields(root))
+const stIssues = (tasks, fields) => {
+  const rows = new Set(tasks.map(({ id }) => id))
+  const issues = tasks.flatMap((task) => {
+    const file = fields.get(task.id)?.get('st')
+    return [...(TASK_ST.test(task.st ?? '') ? (/^done@/.test(task.st) ? [{ id: task.id, where: 'STATE', st: task.st, reason: 'stale-done-row' }] : []) : [{ id: task.id, where: 'STATE', st: task.st ?? null }]),
+      ...(!fields.has(task.id) ? [] : !TASK_ST.test(file ?? '') ? [{ id: task.id, where: 'file', st: file ?? null }] : /^done@/.test(file) ? [{ id: task.id, where: 'file', st: file, reason: 'unarchived-done' }] : [])]
+  })
+  for (const [id, values] of fields) if (TASK_ID.test(id) && !rows.has(id)) issues.push({ id, where: 'file', st: values.get('st') ?? null, reason: 'missing-state-row' })
+  return issues
+}
+
+// Shared final-close status check, without remote ownership/report scans or archived history reads.
+export async function specCloseIssues(root) {
+  const state = (await readOptional(path.join(root, 'spec/STATE.md'))) ?? ''
+  return stIssues(summarize(state).tasks, await taskFields(root))
 }
 
 // What a session needs before its first question: who else is working (as the remote sees
@@ -444,7 +473,8 @@ export async function vibeStatus(options = {}) {
   }
   const local = summarize(text)
   const design = await designOf(workspace)
-  const explore = await exploreTimeboxes(root, local.tasks)
+  const fields = await taskFields(root)
+  const explore = timeboxesOf(local.tasks, fields), issues = stIssues(local.tasks, fields)
   const reports = (await readdir(path.join(root, 'spec/reports')).catch(() => [])).filter((name) => name.endsWith('.md'))
   const reportTo = await Promise.all(reports.map(async (file) => quoteFields(quoteLine((await readOptional(path.join(root, 'spec/reports', file))) ?? '') ?? '').get('to')))
   const openReports = reports.filter((file, index) => reportTo[index] === '-').map((file) => `spec/reports/${file}`)
@@ -465,11 +495,12 @@ export async function vibeStatus(options = {}) {
     next: (sections(text).get('next') ?? []).filter((line) => line.startsWith('- ')).slice(0, 3),
     counts: { inbox: local.inbox.length, parked: local.inbox.filter((entry) => entry.kind === 'parked').length, remaining: local.tasks.length },
     remaining: local.tasks.map((task) => ({ ...task, title: task.title.slice(0, 120) })), runnable: runnable.map((task) => task.id),
-    settled: !hasImplementation && !hasPlanning, parkedOnly: !runnable.length && !local.pending.length && !local.reviews.length && !hasPlanning && (parked.size > 0 || implementation.blocked.length > 0),
+    issues, settled: !hasImplementation && !hasPlanning && !issues.length, parkedOnly: !runnable.length && !local.pending.length && !local.reviews.length && !hasPlanning && (parked.size > 0 || implementation.blocked.length > 0),
     implementation, planning, inbox: local.inbox.slice(0, 3).map(({ date, kind, refs, text }) => ({ date, kind, refs, text: text.slice(0, 220) })), inboxMore: local.inbox.length > 3, openReports,
     design,
-    // An open design comes first: its edits are uncommitted until the user ends it.
-    route: design ? 'design' : hasImplementation && hasPlanning ? 'choose' : hasImplementation ? 'implementation' : hasPlanning ? 'planning' : 'ideation-first' }
+    // An open design comes first: its edits are uncommitted until the user ends it. A broken st
+    // (a hand close) is fixed before anything else is chosen: implement-task's close, then lint.
+    route: design ? 'design' : issues.length ? 'repair' : hasImplementation && hasPlanning ? 'choose' : hasImplementation ? 'implementation' : hasPlanning ? 'planning' : 'ideation-first' }
 }
 
 const which = (command) => execute('sh', ['-c', `command -v ${command}`], { timeout: 5000 }).then(() => true, () => false)

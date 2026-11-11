@@ -1,18 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, writeFile, readdir } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { fixture, git } from './helpers/vibe-fixture.mjs'
+import { fixture, git, archiveTask } from './helpers/vibe-fixture.mjs'
 import { vibeLoop, improvingGate } from '../src/vibe-loop.mjs'
 import { runVibeCheck } from '../src/vibe-check.mjs'
 
 const options = (root) => ({ targetRoot: root, tag: 'reliable', provider: 'codex', maxUnits: 8, pushEachUnit: true })
 const passed = async () => ({ ok: true, checks: [] })
 async function complete(root, id, n) {
-  const name = (await readdir(path.join(root, 'spec/tasks'))).find((name) => name.startsWith(`${id}.`))
-  await git(root, 'mv', `spec/tasks/${name}`, `spec/tasks/done/${name}`)
-  const file = path.join(root, 'spec/STATE.md')
-  await writeFile(file, (await readFile(file, 'utf8')).split('\n').filter((line) => !line.startsWith(`| ${id} |`)).join('\n'))
+  await archiveTask(root, id)
   await writeFile(path.join(root, 'app.js'), `// implementation ${n}\n`)
   await git(root, 'add', 'spec', 'app.js'); await git(root, 'commit', '-qm', `complete ${id}`)
   return { exitCode: 0, result: { kind: 'task', id, outcome: 'completed', pushed: false, next: 'implementation' } }
