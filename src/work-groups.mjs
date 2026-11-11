@@ -3,7 +3,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
-import { inspectWorkspace, git } from './workspace.mjs'
+import { inspectWorkspace, git, batchShow } from './workspace.mjs'
 import { readTaskBoard } from './task-board.mjs'
 import { quoteLine, quoteFields, sections, splitRefs, TASK_ID, INBOX_LINE, yymmdd } from './spec-format.mjs'
 import { closeTasks } from './state-doc.mjs'
@@ -58,6 +58,16 @@ const head = async (root, ref = 'HEAD') => (await git(root, ['rev-parse', '--ver
 const ancestor = async (root, old, next) => (await git(root, ['merge-base', '--is-ancestor', old, next], [1])) !== null
 const clean = async (root) => !(await git(root, ['status', '--porcelain', '--untracked-files=all'])).trim()
 const blob = (root, commit, file) => git(root, ['show', `${commit}:${file}`], [128])
+// blob() for `files` at one commit, read together in one batch; anything the batch cannot answer
+// exactly, and any other file, is read on demand as before. Held by one call only.
+async function blobsAt(root, commit, files) {
+  const unique = [...new Set(files)]
+  const answers = await batchShow(root, unique.map((file) => `${commit}:${file}`))
+  const known = new Map(unique.flatMap((file, index) => answers[index] === undefined ? [] : [[file, answers[index]]]))
+  return async (file) => known.has(file) ? known.get(file) : blob(root, commit, file)
+}
+const ssotFile = (base) => { const parsed = base.match(/^([A-Z]{2,6})@(\d+)$/); return parsed ? [`spec/ssot/${parsed[1]}.md`] : [] }
+const unitFiles = (tasks) => tasks.flatMap((task) => [...task.base.flatMap(ssotFile), task.file])
 
 async function repository(options) {
   const workspace = await inspectWorkspace(options)
@@ -146,16 +156,17 @@ async function currentUnit(context, group, ids, snapshot) {
   if (tasks.some((task) => task?.st !== 'todo')) fail(`${ids.join(' ')}: todo 상태이며 상위 브랜치에서 dep이 충족된 태스크만 배정할 수 있습니다.`)
   const waiting = [...new Set(tasks.flatMap((task) => task.waitingOn.filter((dep) => !ids.includes(dep))))]
   if (waiting.length) fail(`${ids.join(' ')}: dep ${waiting.join(' ')}이 상위 브랜치에 아직 통합되지 않았습니다.`)
+  const read = snapshot?.read ?? await blobsAt(context.cwd, commit, unitFiles(tasks))
   for (const task of tasks) {
     for (const base of task.base) {
       const parsed = base.match(/^([A-Z]{2,6})@(\d+)$/)
       if (!parsed) fail(`${task.id}: 잘못된 SSOT base: ${base}`)
-      const ssot = await blob(context.cwd, commit, `spec/ssot/${parsed[1]}.md`)
+      const ssot = await read(`spec/ssot/${parsed[1]}.md`)
       const revision = quoteLine(ssot ?? '')?.match(/^r(\d+)\b/)?.[1]
       if (revision !== parsed[2]) fail(`${task.id}: ${base}가 현재 SSOT와 다릅니다. 기획 공간에서 신선도를 확인하고 태스크를 갱신하세요.`)
     }
   }
-  return { commit, board, tasks: await Promise.all(tasks.map(async (task) => ({ task, content: await blob(context.cwd, commit, task.file) }))) }
+  return { commit, board, read, tasks: await Promise.all(tasks.map(async (task) => ({ task, content: await read(task.file) }))) }
 }
 
 function incomplete(task, content) {
@@ -176,8 +187,10 @@ async function checkWorker(context, group, attempt, workingTree = false) {
   const ids = unitTasks(attempt)
   const position = ids.indexOf(attempt.taskId)
   if (position === -1) fail('실행 기록의 현재 태스크가 배정 단위에 없습니다.')
-  const current = await currentUnit(context, group, ids)
-  const read = (file) => workingTree ? readFile(path.join(attempt.workspace, file), 'utf8').catch(() => null) : blob(context.cwd, workspace.git.head, file)
+  const { read: upstream, ...current } = await currentUnit(context, group, ids)
+  const domains = [...new Set(current.tasks.flatMap(({ task }) => task.base.map((base) => base.split('@')[0])))]
+  const read = workingTree ? (file) => readFile(path.join(attempt.workspace, file), 'utf8').catch(() => null)
+    : await blobsAt(context.cwd, workspace.git.head, [...current.tasks.map(({ task }) => task.file), ...domains.map((domain) => `spec/ssot/${domain}.md`)])
   let reach = position
   for (const [index, { task, content: upstream }] of current.tasks.entries()) {
     const content = await read(task.file)
@@ -186,9 +199,9 @@ async function checkWorker(context, group, attempt, workingTree = false) {
     if (index <= position && problem) fail(problem)
     if (index === reach + 1 && !problem) reach = index
   }
-  for (const domain of new Set(current.tasks.flatMap(({ task }) => task.base.map((base) => base.split('@')[0])))) {
+  for (const domain of domains) {
     const file = `spec/ssot/${domain}.md`
-    const canonical = await blob(context.cwd, current.commit, file)
+    const canonical = await upstream(file)
     if (!canonical || canonical !== await read(file)) fail(`${domain}: 상위 브랜치의 SSOT가 달라졌습니다. 동기화 후 다시 검증하세요.`)
   }
   const common = (await git(context.cwd, ['merge-base', current.commit, workspace.git.head])).trim()
@@ -486,12 +499,15 @@ async function claimTask(options, next = false) {
   const units = rankedUnits(planUnits(board.tasks, board.doneIds, claimed), board.tasks)
   const candidates = []
   const skipped = []
-  for (const unit of units.filter((entry) => next ? entry.ready : entry.ids.includes(options.task))) {
+  const considered = units.filter((entry) => next ? entry.ready : entry.ids.includes(options.task))
+  // Every candidate's task and SSOT files at the one commit, in one batch.
+  const read = await blobsAt(context.cwd, commit, unitFiles(board.tasks.filter((task) => considered.some((unit) => !unit.mainSession && unit.ids.includes(task.id)))))
+  for (const unit of considered) {
     if (unit.mainSession) {
       if (!next) fail(`${options.task}: explore 태스크와 그 후속은 작업 묶음에 배정하지 않습니다. 메인 세션에서 단독으로 진행하세요.`)
       continue
     }
-    try { candidates.push({ unit, ...await currentUnit(context, group, unit.ids, { commit, board }) }) } catch (error) {
+    try { candidates.push({ unit, ...await currentUnit(context, group, unit.ids, { commit, board, read }) }) } catch (error) {
       if (!next) throw error
       skipped.push({ task: unit.ids.join(' '), reason: error.message })
     }

@@ -1,6 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { inspectWorkspace, git } from './workspace.mjs'
+import { inspectWorkspace, git, showMany } from './workspace.mjs'
 import { quoteLine, quoteFields, sections, tableRows, splitRefs, TASK_ID, TASK_ST, EXPLORE, exploreValue } from './spec-format.mjs'
 import { touchesErrors } from './work-policy.mjs'
 import { dependencyErrors, laneErrors, laneValue } from './task-graph.mjs'
@@ -37,12 +37,14 @@ export async function readTaskBoard(options = {}) {
   const warnings = [...workspace.warnings]
   const tasksRoot = path.join(root, 'spec', 'tasks')
   const commit = options.ref ? (await git(root, ['rev-parse', '--verify', '--end-of-options', `${options.ref}^{commit}`])).trim() : null
-  const names = async (directory) => (await git(root, ['ls-tree', '--name-only', '-z', `${commit}:${directory}`], [128]))?.split('\0').filter(Boolean) ?? []
-  const read = async (relative) => commit
-    ? git(root, ['show', `${commit}:${relative}`], [128])
-    : optionalRead(path.join(root, relative))
-  const files = commit ? (await names('spec/tasks')).filter((name) => name.endsWith('.md')) : await taskFiles(tasksRoot, errors)
-  const archive = commit ? (await names('spec/tasks/done')).filter((name) => name.endsWith('.md')) : await taskFiles(path.join(tasksRoot, 'done'), errors, true)
+  // One listing for spec/tasks and spec/tasks/done: the direct entries of each, as `ls-tree <commit>:<dir>` gives them.
+  const listing = commit ? (await git(root, ['ls-tree', '-r', '-t', '--name-only', '-z', `${commit}:spec/tasks`], [128]))?.split('\0').filter(Boolean) ?? [] : null
+  const files = commit ? listing.filter((name) => !name.includes('/') && name.endsWith('.md')) : await taskFiles(tasksRoot, errors)
+  const archive = commit ? listing.filter((name) => /^done\/[^/]+$/.test(name)).map((name) => name.slice(5)).filter((name) => name.endsWith('.md')) : await taskFiles(path.join(tasksRoot, 'done'), errors, true)
+  // Every task file and STATE at the commit in one batch; a working tree is read file by file.
+  const wanted = [...files.map((file) => `spec/tasks/${file}`), 'spec/STATE.md']
+  const committed = commit ? new Map((await showMany(root, wanted.map((file) => `${commit}:${file}`))).map((content, index) => [wanted[index], content])) : null
+  const read = async (relative) => commit ? committed.get(relative) : optionalRead(path.join(root, relative))
   for (const file of [...files, ...archive]) {
     if (!/^T\d{3,}\.[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(file)) errors.push(`태스크 파일명 형식 오류: ${file}`)
   }

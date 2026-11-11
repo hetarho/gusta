@@ -4,18 +4,68 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 
 const execute = promisify(execFile)
+const gitEnv = () => ({ ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0' })
+const SHOW_LIMIT = 4 * 1024 * 1024
 
 export async function git(cwd, args, allowedCodes = []) {
   try {
-    const { stdout } = await execute('git', ['-C', cwd, ...args], {
-      encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0' },
-    })
+    const { stdout } = await execute('git', ['-C', cwd, ...args], { encoding: 'utf8', maxBuffer: SHOW_LIMIT, env: gitEnv() })
     return stdout
   } catch (error) {
     if (allowedCodes.includes(error.code)) return null
     throw error
   }
+}
+
+// Git with `input` on stdin; stdout as bytes, since object sizes are byte counts.
+export function gitInput(cwd, args, input) {
+  return new Promise((resolve, reject) => {
+    const child = execFile('git', ['-C', cwd, ...args], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, env: gitEnv() },
+      (error, stdout) => error ? reject(error) : resolve(stdout))
+    child.stdin.on('error', () => {})
+    child.stdin.end(input)
+  })
+}
+
+// `git cat-file --batch` output for `count` requests, in order: { type, size, content } for an
+// object, null for "<name> missing", undefined for any other answer (ambiguous, unparsable).
+export function parseBatch(output, count) {
+  const entries = []
+  let offset = 0
+  for (let index = 0; index < count; index += 1) {
+    const end = output.indexOf(10, offset)
+    if (end < 0) { entries.push(undefined); continue }
+    const header = output.toString('utf8', offset, end)
+    offset = end + 1
+    const found = header.match(/^[0-9a-f]{40,64} (\S+) (\d+)$/)
+    if (!found) { entries.push(header.endsWith(' missing') ? null : undefined); continue }
+    const size = Number(found[2])
+    entries.push({ type: found[1], size, content: output.toString('utf8', offset, offset + size) })
+    offset += size + 1
+  }
+  return entries
+}
+
+// What `git show <spec>` (exit 128 → null) prints, for many specs in one `git cat-file --batch`.
+// Only answers show would give byte for byte are taken: a blob within show's output limit, or a
+// missing object. Everything else (a tree, a spec that does not fit on one line, a failed batch)
+// stays undefined, for the caller to show on its own exactly as before.
+export async function batchShow(cwd, specs, batch = gitInput) {
+  const answers = new Array(specs.length).fill(undefined)
+  const queued = specs.flatMap((spec, index) => /[\r\n]/.test(spec) ? [] : [index])
+  if (!queued.length) return answers
+  const output = await batch(cwd, ['cat-file', '--batch'], queued.map((index) => `${specs[index]}\n`).join('')).catch(() => null)
+  if (!output) return answers
+  for (const [position, entry] of parseBatch(output, queued.length).entries()) {
+    if (entry === null) answers[queued[position]] = null
+    else if (entry?.type === 'blob' && entry.size <= SHOW_LIMIT) answers[queued[position]] = entry.content
+  }
+  return answers
+}
+
+export async function showMany(cwd, specs, { batch = gitInput, show = (spec) => git(cwd, ['show', spec], [128]) } = {}) {
+  const answers = await batchShow(cwd, specs, batch)
+  return Promise.all(answers.map((answer, index) => answer === undefined ? show(specs[index]) : answer))
 }
 
 function parseWorktrees(output) {
