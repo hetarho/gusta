@@ -54,6 +54,20 @@ export const timeboxMs = (value) => {
   const match = String(value ?? '').match(/^(\d+(?:\.\d+)?)(m|h)$/)
   return match ? Number(match[1]) * (match[2] === 'h' ? 3600000 : 60000) : null
 }
+// The status a unit's assignment carries. A unit with a chosen task reads that task's brief: it gets
+// the totals, the first few runnable/todo IDs and its own row, not every remaining row. A planning
+// unit (nothing chosen, or a split/blocked recovery that rewrites tasks and deps) keeps the full list.
+export const UNIT_LISTED = 5
+export function unitStatus(status, selected, recovery) {
+  if (!selected || !status.remaining || ['split', 'blocked-task'].includes(recovery?.reason)) return status
+  const { remaining, runnable = [], implementation, counts, ...rest } = status
+  // The unit's own task leads a cut list, so the cut never hides it.
+  const cut = (ids) => (ids.includes(selected) ? [selected, ...ids.filter((id) => id !== selected)] : ids).slice(0, UNIT_LISTED)
+  return { ...rest, counts: { ...counts, runnable: runnable.length, todo: implementation?.todo?.length ?? 0 },
+    task: remaining.find((task) => task.id === selected) ?? null, runnable: cut(runnable),
+    ...(implementation ? { implementation: { ...implementation, todo: cut(implementation.todo ?? []) } } : {}),
+    listed: `remaining rows omitted, runnable and implementation.todo cut to ${UNIT_LISTED}, task first (totals in counts): vibe status --tag ${status.tag} --no-fetch --json lists all` }
+}
 // The last publication, compact: a later call that published nothing keeps an earlier push.
 const published = (result, previous) => result.pushed || !previous?.pushed ? { pushed: result.pushed ?? null, target: result.target ?? null, ...(result.landed ? { landed: result.landed } : {}), ...(result.reason ? { reason: result.reason } : {}) } : previous
 const depIds = (dep) => String(dep ?? '').split(/[\s,]+/).filter((id) => TASK_ID.test(id))
@@ -576,13 +590,14 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (status.concurrency === 'strict' && context.target) {
         await metadataCommit(`vibe ${options.tag}: session presence`)
         await deps.claim({ ...options, targetRoot: root, task: selected })
-        status = await deps.status({ ...options, targetRoot: root, tag: options.tag })
+        // The claim fetched and pushed the target just now: re-read locally.
+        status = await deps.status({ ...options, targetRoot: root, tag: options.tag, fetch: false })
       }
       const before = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
       await metadata.assertClean()
       const brief = selected ? await vibeBrief({ targetRoot: root, task: selected, diffBase: before.head }) : null
       const dispatched = recovery
-      const job = { schemaVersion: 1, role: 'unit', mode: 'autopilot', workspaceMode: 'single', workspace: root, tag: options.tag, report, status, brief,
+      const job = { schemaVersion: 1, role: 'unit', mode: 'autopilot', workspaceMode: 'single', workspace: root, tag: options.tag, report, status: unitStatus(status, selected, recovery), brief,
         cliCommand: [process.execPath, cli], allowTools: allowTool, permissionMode: mode, diffBase: before.head, hostManaged: true,
         timeLimit: { minutes: Math.max(1, Math.round(limitMs / 60000)), cutAt: new Date(Date.now() + limitMs).toISOString() },
         ...(recovery ? { recovery } : {}) }
@@ -661,7 +676,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (failureStreak >= 2) { reason = 'session-failures'; break }
       if (noProgress >= 2) { reason = 'no-progress'; break }
       if (failed) continue
-      const afterStatus = await deps.status({ ...options, targetRoot: root, tag: options.tag })
+      // Local rows only; the next boundary's status fetches before any remote-dependent decision.
+      const afterStatus = await deps.status({ ...options, targetRoot: root, tag: options.tag, fetch: false })
       if (priorityTask && afterStatus.remaining && !afterStatus.remaining.some((task) => task.id === priorityTask)) priorityTask = null
       if (count >= maxUnits) { reason = 'max-units'; break }
       const completed = pending.filter((entry) => ['task', 'fix'].includes(entry.result?.kind) && entry.result.outcome === 'completed').length
