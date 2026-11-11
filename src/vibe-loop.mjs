@@ -17,6 +17,7 @@ import { appendInbox } from './state-doc.mjs'
 import { SESSION_TAG, TASK_ID } from './spec-format.mjs'
 import { sections, tableRows } from './spec-format.mjs'
 import { validateAgentResult, compactUsage } from './agent-adapter.mjs'
+import { adapterArgs, providerFlags } from './work-providers.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { permissionMode, SETTINGS } from './settings.mjs'
 import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive } from './loop-control.mjs'
@@ -24,7 +25,6 @@ import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine } from './loop-time.mjs'
 
 const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
-const adapter = fileURLToPath(new URL('../bin/haeram-agent-adapter.mjs', import.meta.url))
 const present = (file) => access(file).then(() => true, () => false)
 const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
 // The closing reserve is what the last gate really costs: the measured suite, one repair
@@ -67,8 +67,9 @@ const positive = (value, fallback, label, integer = false) => {
 // persisted before parsing a result; retries never resume a previous context.
 export async function executeVibeUnit(options, job, directory, limits = {}) {
   const id = randomUUID(), logPath = path.join(directory, `${id}.log`), sessionFile = path.join(directory, `${id}.session`), checkLog = path.join(directory, `${id}.checks.jsonl`)
-  let config = { command: process.execPath, args: [adapter, '--provider', options.provider, ...(options.model ? ['--model', options.model] : [])] }
-  if (options.adapter) {
+  let config
+  if (!options.adapter) config = { command: process.execPath, args: adapterArgs(options.provider, options.model, await providerFlags(options.provider, { env: { ...process.env, ...options.env } })) }
+  else {
     const file = path.resolve(options.adapter)
     config = JSON.parse(await readFile(file, 'utf8'))
     if (!config?.command || !Array.isArray(config.args) || config.args.some((value) => typeof value !== 'string')) throw new SkillPackageError('adapter에는 command와 문자열 args 배열이 필요합니다.')
