@@ -445,16 +445,19 @@ for (const pushEachUnit of [false, true]) test(`strict concurrency runs one fina
 
 test('unit assignment status: a task unit drops the remaining rows, a planning unit keeps them', () => {
   const ids = Array.from({ length: 8 }, (_, i) => `T00${i + 1}`)
-  const status = { route: 'implementation', parkedOnly: false, concurrency: 'solo', next: ['- implement-task T001'],
+  const status = { tag: 't060', route: 'implementation', parkedOnly: false, concurrency: 'solo', next: ['- implement-task T001'],
     counts: { inbox: 2, parked: 0, remaining: 8 }, remaining: ids.map((id) => ({ id, title: `task ${id}`, dep: '-', st: 'todo' })), runnable: ids,
     implementation: { todo: ids, resume: [], blocked: [], pending: [], reviews: [], explore: [{ id: 'T008', timebox: '1h' }] }, planning: { ideation: [] } }
   const trimmed = unitStatus(status, 'T007', null)
   assert.equal(trimmed.remaining, undefined)
   assert.deepEqual(trimmed.task, { id: 'T007', title: 'task T007', dep: '-', st: 'todo' })
-  assert.deepEqual(trimmed.runnable, ids.slice(0, UNIT_LISTED)); assert.deepEqual(trimmed.implementation.todo, ids.slice(0, UNIT_LISTED))
+  // The cut keeps the unit's own task (past the first five here) at the head of each list.
+  const head = ['T007', ...ids.slice(0, UNIT_LISTED - 1)]
+  assert.deepEqual(trimmed.runnable, head); assert.deepEqual(trimmed.implementation.todo, head)
+  assert.deepEqual(unitStatus(status, 'T002', null).runnable, ['T002', 'T001', 'T003', 'T004', 'T005'])
   assert.deepEqual(trimmed.counts, { inbox: 2, parked: 0, remaining: 8, runnable: 8, todo: 8 })
   assert.deepEqual(trimmed.implementation.explore, status.implementation.explore)
-  assert.match(trimmed.listed, /vibe status --no-fetch --json/)
+  assert.match(trimmed.listed, /vibe status --tag t060 --no-fetch --json/)
   for (const key of ['route', 'parkedOnly', 'concurrency', 'next', 'planning']) assert.deepEqual(trimmed[key], status[key])
   // A continuation still implements its task; a planning unit, a split and a blocked recovery rewrite tasks and deps.
   assert.equal(unitStatus(status, 'T007', { reason: 'interrupted', taskId: 'T007' }).remaining, undefined)

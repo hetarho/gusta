@@ -61,10 +61,12 @@ export const UNIT_LISTED = 5
 export function unitStatus(status, selected, recovery) {
   if (!selected || !status.remaining || ['split', 'blocked-task'].includes(recovery?.reason)) return status
   const { remaining, runnable = [], implementation, counts, ...rest } = status
+  // The unit's own task leads a cut list, so the cut never hides it.
+  const cut = (ids) => (ids.includes(selected) ? [selected, ...ids.filter((id) => id !== selected)] : ids).slice(0, UNIT_LISTED)
   return { ...rest, counts: { ...counts, runnable: runnable.length, todo: implementation?.todo?.length ?? 0 },
-    task: remaining.find((task) => task.id === selected) ?? null, runnable: runnable.slice(0, UNIT_LISTED),
-    ...(implementation ? { implementation: { ...implementation, todo: (implementation.todo ?? []).slice(0, UNIT_LISTED) } } : {}),
-    listed: `remaining rows omitted, runnable and implementation.todo cut to ${UNIT_LISTED} (totals in counts): vibe status --no-fetch --json lists all` }
+    task: remaining.find((task) => task.id === selected) ?? null, runnable: cut(runnable),
+    ...(implementation ? { implementation: { ...implementation, todo: cut(implementation.todo ?? []) } } : {}),
+    listed: `remaining rows omitted, runnable and implementation.todo cut to ${UNIT_LISTED}, task first (totals in counts): vibe status --tag ${status.tag} --no-fetch --json lists all` }
 }
 // The last publication, compact: a later call that published nothing keeps an earlier push.
 const published = (result, previous) => result.pushed || !previous?.pushed ? { pushed: result.pushed ?? null, target: result.target ?? null, ...(result.landed ? { landed: result.landed } : {}), ...(result.reason ? { reason: result.reason } : {}) } : previous
