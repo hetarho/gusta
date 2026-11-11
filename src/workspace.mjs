@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { realpath } from 'node:fs/promises'
+import { access, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
@@ -61,6 +61,48 @@ export async function batchShow(cwd, specs, batch = gitInput) {
     else if (entry?.type === 'blob' && entry.size <= SHOW_LIMIT) answers[queued[position]] = entry.content
   }
   return answers
+}
+
+const PSEUDO_REFS = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']
+const REBASE_DIRS = ['rebase-merge', 'rebase-apply']
+
+async function exists(file) {
+  try { await access(file); return true } catch (error) {
+    if (error.code === 'ENOENT') return false
+    throw error
+  }
+}
+
+// The Git operation in progress in root's worktree, checked in this order: MERGE_HEAD,
+// CHERRY_PICK_HEAD, REVERT_HEAD (a ref that resolves) or rebase-merge, rebase-apply (a directory
+// that exists); null when none. Two processes, not five: cat-file --batch-check resolves the refs
+// as rev-parse --verify does, and one rev-parse prints every --git-path. cat-file also calls a ref
+// to a lost object missing, so a missing ref whose file exists is verified on its own as before;
+// any other answer takes the one-call-per-marker path.
+export async function gitOperation(root, { run = git, batch = gitInput, present = exists } = {}) {
+  const one = async () => {
+    for (const name of PSEUDO_REFS) if (await run(root, ['rev-parse', '--verify', '--quiet', name], [1])) return name
+    for (const name of REBASE_DIRS) if (await present(path.resolve(root, (await run(root, ['rev-parse', '--git-path', name])).replace(/\r?\n$/, '')))) return name
+    return null
+  }
+  let listed, checked
+  try {
+    [listed, checked] = await Promise.all([
+      run(root, ['rev-parse', ...[...PSEUDO_REFS, ...REBASE_DIRS].flatMap((name) => ['--git-path', name])]),
+      batch(root, ['cat-file', '--batch-check'], PSEUDO_REFS.map((name) => `${name}\n`).join('')),
+    ])
+  } catch { return one() }
+  const paths = listed.split('\n').map((line) => line.replace(/\r$/, ''))
+  const refs = checked.toString('utf8').split('\n')
+  if (paths.length !== 6 || paths[5] !== '' || refs.length !== 4 || refs[3] !== '') return one()
+  for (const [index, name] of PSEUDO_REFS.entries()) {
+    if (/^[0-9a-f]{40,64} /.test(refs[index])) return name
+    if (refs[index] !== `${name} missing`) return one()
+    const file = await present(path.resolve(root, paths[index])).catch(() => true)
+    if (file && await run(root, ['rev-parse', '--verify', '--quiet', name], [1])) return name
+  }
+  for (const [offset, name] of REBASE_DIRS.entries()) if (await present(path.resolve(root, paths[PSEUDO_REFS.length + offset]))) return name
+  return null
 }
 
 export async function showMany(cwd, specs, { batch = gitInput, show = (spec) => git(cwd, ['show', spec], [128]) } = {}) {

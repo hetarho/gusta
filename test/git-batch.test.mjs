@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
-import { parseBatch, batchShow, showMany, git, inspectWorkspace } from '../src/workspace.mjs'
+import { parseBatch, batchShow, showMany, git, gitOperation, inspectWorkspace } from '../src/workspace.mjs'
 import { readTaskBoard } from '../src/task-board.mjs'
 
 const execute = promisify(execFile)
@@ -87,4 +87,75 @@ test('readTaskBoard at a commit lists tasks and the done archive like the checko
   const reused = await readTaskBoard({ targetRoot: root, workspace: inspected, ref: 'HEAD' })
   assert.equal(reused.workspace, inspected)
   assert.deepEqual(pick(reused), pick(committed))
+})
+
+const markerPaths = '.git/MERGE_HEAD\n.git/CHERRY_PICK_HEAD\n.git/REVERT_HEAD\n.git/rebase-merge\n.git/rebase-apply\n'
+function fakeGit({ refs = [], files = [], verified = [], failBatch = false } = {}) {
+  const calls = []
+  return {
+    calls,
+    run: async (root, args) => {
+      calls.push(args.join(' '))
+      if (args[1] === '--verify') return verified.includes(args[3]) ? `${sha}\n` : null
+      return args.length === 3 ? `.git/${args[2]}\n` : markerPaths
+    },
+    batch: async (root, args, input) => {
+      calls.push(args.join(' '))
+      if (failBatch) throw Object.assign(new Error('fatal'), { code: 128 })
+      return Buffer.from(input.split('\n').filter(Boolean).map((name) => refs.includes(name) ? `${sha} commit 1` : `${name} missing`).join('\n') + '\n')
+    },
+    present: async (file) => files.some((name) => file.endsWith(`/.git/${name}`)),
+  }
+}
+
+test('gitOperation: two processes find the first operation in the original order', async () => {
+  const idle = fakeGit()
+  assert.equal(await gitOperation('/repo', idle), null)
+  assert.deepEqual(idle.calls, ['rev-parse --git-path MERGE_HEAD --git-path CHERRY_PICK_HEAD --git-path REVERT_HEAD --git-path rebase-merge --git-path rebase-apply', 'cat-file --batch-check'])
+  assert.equal(await gitOperation('/repo', fakeGit({ refs: ['REVERT_HEAD', 'CHERRY_PICK_HEAD'], files: ['rebase-merge'] })), 'CHERRY_PICK_HEAD')
+  assert.equal(await gitOperation('/repo', fakeGit({ files: ['rebase-apply', 'rebase-merge'] })), 'rebase-merge')
+  // A ref file whose object is lost: cat-file says missing, rev-parse --verify decides as before.
+  const lost = fakeGit({ files: ['MERGE_HEAD'], verified: ['MERGE_HEAD'] })
+  assert.equal(await gitOperation('/repo', lost), 'MERGE_HEAD')
+  assert.equal(lost.calls.at(-1), 'rev-parse --verify --quiet MERGE_HEAD')
+  assert.equal(await gitOperation('/repo', fakeGit({ files: ['MERGE_HEAD'] })), null)
+  // A failed batch takes the one-call-per-marker path.
+  const fallback = fakeGit({ failBatch: true, files: ['rebase-apply'] })
+  assert.equal(await gitOperation('/repo', fallback), 'rebase-apply')
+  assert.deepEqual(fallback.calls.slice(2), ['rev-parse --verify --quiet MERGE_HEAD', 'rev-parse --verify --quiet CHERRY_PICK_HEAD', 'rev-parse --verify --quiet REVERT_HEAD', 'rev-parse --git-path rebase-merge', 'rev-parse --git-path rebase-apply'])
+})
+
+test('gitOperation agrees with one rev-parse per marker in a real repository and linked worktree', async (t) => {
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-batch-op-')))
+  t.after(() => rm(temporary, { recursive: true, force: true }))
+  const root = path.join(temporary, 'repo')
+  await execute('git', ['init', '-q', '-b', 'trunk', root])
+  await execute('git', ['-C', root, '-c', 'user.name=T', '-c', 'user.email=t@e', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'c'])
+  const linked = path.join(temporary, 'linked tree')
+  await execute('git', ['-C', root, 'worktree', 'add', '-q', '-b', 'side', linked])
+  const commit = (await git(root, ['rev-parse', 'HEAD'])).trim()
+  const original = async (where) => {
+    for (const marker of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']) if (await git(where, ['rev-parse', '--verify', '--quiet', marker], [1])) return marker
+    for (const marker of ['rebase-merge', 'rebase-apply']) {
+      const location = (await git(where, ['rev-parse', '--git-path', marker])).replace(/\r?\n$/, '')
+      if (await access(path.resolve(where, location)).then(() => true, () => false)) return marker
+    }
+    return null
+  }
+  const gitDir = (await git(linked, ['rev-parse', '--absolute-git-dir'])).trim()
+  const states = [
+    [root, null, async () => {}],
+    [root, 'MERGE_HEAD', () => writeFile(path.join(root, '.git/MERGE_HEAD'), `${commit}\n`)],
+    [root, 'MERGE_HEAD', () => writeFile(path.join(root, '.git/MERGE_HEAD'), `${'1'.repeat(40)}\n`)],
+    [root, null, () => writeFile(path.join(root, '.git/MERGE_HEAD'), 'garbage\n')],
+    [root, 'REVERT_HEAD', async () => { await rm(path.join(root, '.git/MERGE_HEAD')); await writeFile(path.join(root, '.git/REVERT_HEAD'), `${commit}\n`) }],
+    [linked, null, async () => {}],
+    [linked, 'rebase-apply', () => mkdir(path.join(gitDir, 'rebase-apply'))],
+    [linked, 'CHERRY_PICK_HEAD', () => writeFile(path.join(gitDir, 'CHERRY_PICK_HEAD'), `${commit}\n`)],
+  ]
+  for (const [where, expected, change] of states) {
+    await change()
+    assert.equal(await original(where), expected)
+    assert.equal(await gitOperation(where), expected)
+  }
 })

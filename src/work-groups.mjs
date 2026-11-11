@@ -3,7 +3,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
-import { inspectWorkspace, git, batchShow } from './workspace.mjs'
+import { inspectWorkspace, git, batchShow, gitOperation } from './workspace.mjs'
 import { readTaskBoard } from './task-board.mjs'
 import { quoteLine, quoteFields, sections, splitRefs, TASK_ID, INBOX_LINE, yymmdd } from './spec-format.mjs'
 import { closeTasks } from './state-doc.mjs'
@@ -123,13 +123,8 @@ async function requireClean(root) {
 }
 
 async function requireNoGitOperation(root) {
-  for (const marker of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']) {
-    if (await git(root, ['rev-parse', '--verify', '--quiet', marker], [1])) fail(`Git ${marker} 작업이 진행 중입니다.`, [root])
-  }
-  for (const marker of ['rebase-merge', 'rebase-apply']) {
-    const location = (await git(root, ['rev-parse', '--git-path', marker])).replace(/\r?\n$/, '')
-    try { await access(path.resolve(root, location)); fail('Git rebase 작업이 진행 중입니다.', [root]) } catch (error) { if (error.code !== 'ENOENT') throw error }
-  }
+  const marker = await gitOperation(root)
+  if (marker) fail(marker.startsWith('rebase-') ? 'Git rebase 작업이 진행 중입니다.' : `Git ${marker} 작업이 진행 중입니다.`, [root])
 }
 
 async function assertWorkspace(context, entry) {
