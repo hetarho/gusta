@@ -158,9 +158,10 @@ function relative(files = [], flag) {
 const LOCKFILES = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb']
 const committedBytes = (cwd, spec) => execFileAsync('git', ['-C', cwd, 'show', spec], { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 }).then((result) => result.stdout, () => null)
 // Only git-ignored dirs: a copy over a tracked dir (src) would replace the variant's own files.
+// check-ignore exits 128 for a path it cannot judge (beyond a symlinked dir): not ignored either.
 async function ignoredDirs(root, dirs) {
   const tracked = []
-  for (const dir of dirs) if ((await git(root, ['check-ignore', '-q', `${dir}/`], [1])) === null) tracked.push(dir)
+  for (const dir of dirs) if ((await git(root, ['check-ignore', '-q', `${dir}/`], [1]).catch(() => null)) === null) tracked.push(dir)
   if (tracked.length) fail(`--reuse는 git이 무시하는 의존성 폴더(node_modules 등)만 받습니다: ${tracked.join(', ')}`)
   return dirs
 }
@@ -186,13 +187,14 @@ async function reuseBlocker(root, dir, base) {
 }
 const reuseBlockers = async (root, dirs, base) => Object.fromEntries(await Promise.all(dirs.map(async (dir) => [dir, await reuseBlocker(root, dir, base)])))
 // Clone one dependency dir. fs.cp walks the tree in JS (minutes for a real node_modules), so the platform
-// cp clones it natively first: macOS `cp -c` (clonefile), GNU `--reflink=auto`, both keeping relative
-// symlinks as they are. BSD cp nests the source inside an existing destination, so that case is fs.cp.
+// cp clones it natively first: macOS `/bin/cp -c` (clonefile; GNU cp first on PATH reads -c as
+// --preserve=context), GNU `--reflink=auto`, both keeping relative symlinks as they are. BSD cp nests the
+// source inside an existing destination, so that case is fs.cp.
 export async function copyTree(source, destination, { platform = process.platform, run = execFileAsync } = {}) {
   await mkdir(path.dirname(destination), { recursive: true })
-  const native = { darwin: ['-c', '-R'], linux: ['-R', '--reflink=auto', '--no-dereference'] }[platform]
+  const native = { darwin: ['/bin/cp', '-c', '-R'], linux: ['cp', '-R', '--reflink=auto', '--no-dereference'] }[platform]
   if (native && !(await exists(destination))) {
-    try { await run('cp', [...native, source, destination]); return } catch { await rm(destination, { recursive: true, force: true }) }
+    try { await run(native[0], [...native.slice(1), source, destination]); return } catch { await rm(destination, { recursive: true, force: true }) }
   }
   await cp(source, destination, { recursive: true, mode: constants.COPYFILE_FICLONE, verbatimSymlinks: true })
 }

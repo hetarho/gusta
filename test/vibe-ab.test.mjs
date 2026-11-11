@@ -169,7 +169,14 @@ test('copyTree clones natively and falls back to fs.cp when the platform cp fail
     assert.ok(!(await lstat(destination)).isSymbolicLink())
   }
   // Only darwin tried the platform cp, and only into a destination that did not exist yet.
-  assert.deepEqual(calls, [['cp', '-c', '-R', source, path.join(directory, 'fallback', 'node_modules')]])
+  assert.deepEqual(calls, [['/bin/cp', '-c', '-R', source, path.join(directory, 'fallback', 'node_modules')]])
+})
+
+test('--reuse refuses a dir git cannot judge (beyond a symlinked dir) with the same message', async (t) => {
+  const { root } = await fixture(t)
+  await mkdir(path.join(root, 'apps')); await writeFile(path.join(root, 'apps/keep'), ''); await symlink('apps', path.join(root, 'linked'))
+  await git(root, 'add', 'apps', 'linked'); await git(root, 'commit', '-q', '-m', 'linked')
+  await assert.rejects(abStart({ targetRoot: root, slug: 'linked', reuse: ['linked/node_modules'] }), (error) => error.name === 'SkillPackageError' && /무시하는.*linked\/node_modules/.test(error.message))
 })
 
 test('start refuses uncommitted user changes; stop --remove keeps branches when prune-branches is false unless forced', async (t) => {
