@@ -1,14 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, writeFile, access, mkdtemp, mkdir, rm, lstat, readlink, symlink, realpath } from 'node:fs/promises'
+import { readFile, writeFile, access, mkdtemp, mkdir, rm, lstat, readlink, symlink, realpath, stat, readdir } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fixture, git } from './helpers/vibe-fixture.mjs'
-import { abStart, abAdd, abRun, abServe, abExec, abStatus, abPick, abStop, copyTree } from '../src/vibe-ab.mjs'
-import { renderHub, viewPath, createHub, readFeedback, hubMain } from '../src/vibe-ab-hub.mjs'
+import { abStart, abAdd, abRun, abServe, abExec, abStatus, abPick, abStop, copyTree, scaffoldWarnings } from '../src/vibe-ab.mjs'
+import { renderHub, hubModel, viewPath, createHub, readFeedback, hubMain } from '../src/vibe-ab-hub.mjs'
 
 const exists = (file) => access(file).then(() => true, () => false)
 const providers = async () => ({ autoProvider: 'claude', providers: [{ provider: 'claude', compatible: true }] })
@@ -98,6 +98,9 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   assert.match(await git(root, 'log', '-1', '--format=%s'), /ab hero: adopt b/)
   assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before); assert.equal(await git(root, 'rev-parse', 'HEAD^2'), winner)
   for (const entry of started.variants) assert.equal(await exists(entry.path), false)
+  // The emptied sibling worktree folders go; with pruning, so do the comparison's logs, feedback and prompts.
+  assert.equal(await exists(path.join(temporary, '.haeram-worktrees')), false)
+  assert.equal(await exists(path.dirname(measured.variants[0].log)), false)
   // prune-branches defaults to true: no variant branch outlives the pick.
   assert.deepEqual(adopted.branches, [])
   assert.equal(await git(root, 'branch', '--list', 'ab/hero/*'), '')
@@ -169,7 +172,14 @@ test('copyTree clones natively and falls back to fs.cp when the platform cp fail
     assert.ok(!(await lstat(destination)).isSymbolicLink())
   }
   // Only darwin tried the platform cp, and only into a destination that did not exist yet.
-  assert.deepEqual(calls, [['cp', '-c', '-R', source, path.join(directory, 'fallback', 'node_modules')]])
+  assert.deepEqual(calls, [['/bin/cp', '-c', '-R', source, path.join(directory, 'fallback', 'node_modules')]])
+})
+
+test('--reuse refuses a dir git cannot judge (beyond a symlinked dir) with the same message', async (t) => {
+  const { root } = await fixture(t)
+  await mkdir(path.join(root, 'apps')); await writeFile(path.join(root, 'apps/keep'), ''); await symlink('apps', path.join(root, 'linked'))
+  await git(root, 'add', 'apps', 'linked'); await git(root, 'commit', '-q', '-m', 'linked')
+  await assert.rejects(abStart({ targetRoot: root, slug: 'linked', reuse: ['linked/node_modules'] }), (error) => error.name === 'SkillPackageError' && /무시하는.*linked\/node_modules/.test(error.message))
 })
 
 test('start refuses uncommitted user changes; stop --remove keeps branches when prune-branches is false unless forced', async (t) => {
@@ -189,12 +199,16 @@ test('start refuses uncommitted user changes; stop --remove keeps branches when 
   await git(started.variants[0].path, 'add', 'pending.txt'); await git(started.variants[0].path, 'commit', '-q', '-m', 'wip')
   await assert.rejects(abPick({ targetRoot: root, slug: 'nav', variant: 'b' }), /커밋이 없습니다/)
   await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- prune-branches: false\n'); await git(root, 'add', 'spec/SETTINGS.md'); await git(root, 'commit', '-q', '-m', 'keep branches')
+  const logs = path.dirname((await abExec({ targetRoot: root, slug: 'nav', variant: 'a', command: 'node -e 1' })).variants[0].log)
   const stopped = await abStop({ targetRoot: root, slug: 'nav', remove: true })
   assert.deepEqual(stopped.branches, ['ab/nav/a', 'ab/nav/b', 'ab/nav/c'])
   assert.match(await git(root, 'branch', '--list', 'ab/nav/*'), /ab\/nav\/a/)
+  // Without pruning the logs stay; the emptied worktree folder goes either way.
+  assert.ok(await exists(logs)); assert.equal(await exists(path.dirname(started.variants[0].path)), false)
   const again = await abStart({ targetRoot: root, slug: 'nav2', variants: 2, basePort: 4771 })
+  const logs2 = path.dirname((await abExec({ targetRoot: root, slug: 'nav2', variant: 'a', command: 'node -e 1' })).variants[0].log)
   await abStop({ targetRoot: root, slug: 'nav2', remove: true, pruneBranches: true })
-  assert.equal(await git(root, 'branch', '--list', 'ab/nav2/*'), '')
+  assert.equal(await git(root, 'branch', '--list', 'ab/nav2/*'), ''); assert.equal(await exists(logs2), false)
   assert.equal(again.ok, true)
 })
 
@@ -275,7 +289,7 @@ test('serve is ready only when the view answers, keeps a live server unless --re
 test('hub page escapes session text and frames each variant at URL plus view path', () => {
   assert.deepEqual(['', '/', 'settings', '/a/b', 'http://localhost:3000/x?y=1', 'the settings page'].map(viewPath), ['', '', '/settings', '/a/b', '/x?y=1', ''])
   const html = renderHub({ slug: 'hero', feedback: { notes: { a: { note: 'larger <b>', at: 'now' } }, chosen: { variant: 'b', at: 'now' } }, variants: [
-    { name: 'a', url: 'http://localhost:4101/settings', summary: 'cards <script>x</script>\nsecond line', view: 'settings tab', serving: true },
+    { name: 'a', url: 'http://localhost:4101/settings', approach: 'Cards <first>', summary: 'cards <script>x</script>\nsecond line', view: 'settings tab', serving: true },
     { name: 'b', from: 'a', url: 'http://localhost:4102', summary: 'list', view: '', serving: false, exec: { command: 'bench', medianMs: 812, exitCodes: [0, 1], last: '<b>done</b>' } }] })
   assert.ok(html.includes('<p class="measure bad" title="bench">median 812 ms · exit 0,1 · <code>&lt;b&gt;done&lt;/b&gt;</code></p>'))
   // Numbers from different commands do not compare: then each line names its command.
@@ -286,6 +300,11 @@ test('hub page escapes session text and frames each variant at URL plus view pat
   assert.ok(!same.includes('<code>npm test</code>'))
   assert.deepEqual([...html.matchAll(/<iframe src="([^"]+)"/g)].map((match) => match[1]), ['http://localhost:4101/settings', 'http://localhost:4102'])
   assert.ok(!html.includes('<script>x</script>')); assert.ok(html.includes('cards &lt;script&gt;'))
+  // The approach titles the variant; the latest summary (a follow-up's says only what changed) sits below it.
+  assert.ok(html.includes('<p class="approach" title="Cards &lt;first&gt;">Cards &lt;first&gt;</p><p title="cards &lt;script&gt;'))
+  assert.ok(!html.includes('class="approach" title=""'))
+  const model = hubModel({ slug: 'hero', variants: { a: { port: 1, approach: '# Cards first\n\nThree columns.', runs: [{ summary: 'prices are bold now' }] } } }, {}, () => false)
+  assert.deepEqual([model.variants[0].approach, model.variants[0].summary], ['Cards first', 'prices are bold now'])
   assert.ok(html.includes('>larger &lt;b&gt;</textarea>')); assert.match(html, /data-variant="b" class="chosen"/)
   assert.match(html, /target="_blank"/); assert.match(html, /data-width="390"/); assert.match(html, /not serving/); assert.match(html, /blocks framing/); assert.match(html, /<strong>b<\/strong><span class="muted">from a<\/span>/)
 })
@@ -349,9 +368,17 @@ test('a scaffold session is the variants\' base, prompts share one prefix, follo
     prompts[variant] = seen[0].prompt
     assert.equal(runs[variant].ok, true); assert.equal(runs[variant].scaffoldTouched, undefined)
   }
-  // Everything before the variant line is identical: shared text and the scaffold's read-only files.
+  // Everything before the variant line is identical: shared text and the scaffold rule with its own notes.
   const prefix = (variant) => prompts[variant].slice(0, prompts[variant].indexOf(`Variant ${variant} of mock`))
-  assert.equal(prefix('a'), prefix('b')); assert.match(prefix('a'), /clearer profile/); assert.match(prefix('a'), /read-only.*data\.js, fixtures\.json/)
+  assert.equal(prefix('a'), prefix('b')); assert.match(prefix('a'), /clearer profile/); assert.match(prefix('a'), /Read-only: fixtures\.json\./)
+  assert.match(prefix('a'), /You may edit data\.js except the scaffold's lines and the lines right around them \(data\.js: 1\)\./)
+  assert.match(prefix('a'), /Scaffold notes: fixtures for the profile screen/); assert.match(prefix('a'), /data states.*name them in view/)
+  // The full prompt each session got is kept next to its log, private; results carry only its path.
+  for (const file of [runs.a.promptPath, started.scaffoldRun.promptPath]) assert.equal((await stat(file)).mode & 0o777, 0o600)
+  assert.equal(runs.a.promptPath, runs.a.log.replace(/\.log$/, '.prompt.md'))
+  assert.match(await readFile(runs.a.promptPath, 'utf8'), /^You build one variant[\s\S]*Approach: make it alpha\.$/)
+  assert.match(await readFile(started.scaffoldRun.promptPath, 'utf8'), /^You build the shared mock scaffold[\s\S]*signed-in user\.$/)
+  assert.ok(!JSON.stringify(runs.a).includes('You build one variant'))
   assert.match(prompts.a, /\$PORT for this variant: \d+\.\n\nApproach: make it alpha\.$/)
   // A follow-up repeats the first prompt, then adds the last summary, the hub note written since and the request.
   await writeFile(path.join(path.dirname(runs.a.log), 'feedback.json'), JSON.stringify({ notes: { a: { note: 'bigger title', at: new Date(Date.now() + 60000).toISOString() } }, chosen: null }))
@@ -397,6 +424,167 @@ test('a scaffold that deletes an existing file or turns it into a directory gets
   assert.equal(await readFile(path.join(root, 'session.js'), 'utf8'), 'module.exports = realSession\n')
 })
 
+// A page whose entry the scaffold had to edit: one mock <script> line (line 7), the rest of the file the variants' to change.
+const page = ({ head = '', body = '<body>', app = '<div id="app"></div>', mock = '', script = '<script src="app.js"></script>', after = '' } = {}) =>
+  `<html>\n<head>\n<title>Profile</title>\n${head}</head>\n${body}\n${app}\n${mock}${script}\n${after}</body>\n</html>\n`
+const MOCK = '<script src="mocks/mock.js"></script>\n'
+const register = async ({ job }) => {
+  await mkdir(path.join(job.workspace, 'mocks'), { recursive: true }); await writeFile(path.join(job.workspace, 'mocks/mock.js'), "import { ready } from '../util.js'\nif (window.mock) {\n  window.fetch = mockFetch\n}\n")
+  await writeFile(path.join(job.workspace, 'index.html'), page({ mock: MOCK }))
+  return { outcome: 'completed', summary: 'mock fetch; ?mock=empty shows no items', view: 'home', path: '' }
+}
+const edit = (parts, extra = {}) => async ({ job }) => {
+  await writeFile(path.join(job.workspace, 'index.html'), page(parts))
+  for (const [file, text] of Object.entries(extra)) await writeFile(path.join(job.workspace, file), text)
+  return { outcome: 'completed', summary: 'edited', view: 'home', path: '' }
+}
+const AROUND = { head: '<style>.card{display:grid}</style>\n', body: '<body class="cards">', after: '<p>footer</p>\n' }
+
+test('the scaffold lock is per line: edits with an unchanged line between adopt; edits on or next to its line and copies of it are refused', async (t) => {
+  const { root, temporary } = await project(t, 'lines')
+  await writeFile(path.join(root, 'index.html'), page()); await writeFile(path.join(root, 'util.js'), "export const ready = true\nimport { ready } from '../util.js'\n")
+  await git(root, 'add', 'index.html', 'util.js'); await git(root, 'commit', '-q', '-m', 'page')
+  const origin = await git(root, 'rev-parse', 'HEAD')
+  const scaffoldPrompt = path.join(temporary, 'scaffold.md'); await writeFile(scaffoldPrompt, 'Screen: / with items.')
+  const started = await abStart({ targetRoot: root, slug: 'lines', variants: 6, basePort: 5021, scaffoldPrompt }, { inspect: providers, flags: noFlags, execute: register })
+  assert.equal(started.ok, true, JSON.stringify(started))
+  assert.deepEqual(started.scaffoldFiles, { added: ['mocks/mock.js'], modified: ['index.html'] }); assert.match(started.scaffoldWarnings[0], /likely UI files: index\.html/)
+  const promptDir = path.join(temporary, 'prompts'); await mkdir(promptDir)
+  for (const name of 'abcdef') await writeFile(path.join(promptDir, `${name}.md`), `Approach ${name}.`)
+  const sessions = {
+    // a: <style> in <head>, a class two lines above the mock line (3-way) and a line after the app script: one unchanged line between each.
+    a: edit({ ...AROUND, mock: MOCK }),
+    b: edit({ mock: '<script src="mocks/other.js"></script>\n' }), // the scaffold line itself
+    c: edit({ app: '<div id="app" class="x"></div>', mock: MOCK }), // the line directly before it
+    d: edit({ mock: MOCK, script: '<script src="app.js" defer></script>' }), // the line directly after it
+    // e: copies the mock line into <head> and imports the mock file from a new file: both would ship pointing at a deleted file.
+    e: edit({ head: MOCK, mock: MOCK }, { 'boot.js': "import './mocks/mock.js'\n" }),
+    // f: a lone `}` and an import, both also lines of the scaffold's own new file: only its wiring lines and paths mark residue.
+    f: edit({ mock: MOCK }, { 'app.css': '.card {\n  color: red;\n}\n', 'view.js': "import { ready } from '../util.js'\n" }),
+  }
+  const jobs = []
+  const ran = await abRun({ targetRoot: root, slug: 'lines', all: true, promptDir }, { inspect: providers, flags: noFlags, execute: capture(jobs, (input) => sessions[input.job.workspace.slice(-1)](input)) })
+  const result = Object.fromEntries(ran.variants.map((entry) => [entry.variant, entry]))
+  assert.deepEqual(ran.variants.map((entry) => [entry.variant, entry.ok]), [['a', true], ['b', false], ['c', false], ['d', false], ['e', false], ['f', true]])
+  for (const name of 'bcd') assert.deepEqual(result[name].scaffoldTouched, ['index.html'], name)
+  assert.deepEqual(result.e.scaffoldResidue, [{ file: 'boot.js', line: "import './mocks/mock.js'" }, { file: 'index.html', line: MOCK.trim() }]); assert.equal(result.e.scaffoldTouched, undefined)
+  for (const name of 'af') assert.equal(result[name].scaffoldResidue, undefined, name)
+  assert.match(jobs.find((job) => job.workspace.endsWith('a')).prompt, /Read-only: mocks\/mock\.js\. You may edit index\.html except the scaffold's lines and the lines right around them \(index\.html: 7\)\./)
+  const head = await git(root, 'rev-parse', 'HEAD')
+  for (const name of 'bcd') await assert.rejects(abPick({ targetRoot: root, slug: 'lines', variant: name }), (error) => /scaffold의 줄·파일을 바꿨거나 그 줄에 너무 붙여/.test(error.message) && error.details.join() === 'index.html', name)
+  await assert.rejects(abPick({ targetRoot: root, slug: 'lines', variant: 'e' }), (error) => /mock 줄·경로/.test(error.message) && error.details.join('|') === `boot.js: import './mocks/mock.js'|index.html: ${MOCK.trim()}`)
+  // Every refusal came before anything stopped or moved.
+  assert.equal(await git(root, 'rev-parse', 'HEAD'), head); assert.equal((await abStatus({ targetRoot: root, slug: 'lines' })).variants.length, 6)
+  await abPick({ targetRoot: root, slug: 'lines', variant: 'a' })
+  assert.equal(await git(root, 'rev-parse', 'HEAD^1'), head); assert.equal(await git(root, 'rev-parse', 'HEAD^2^'), origin)
+  assert.equal(await readFile(path.join(root, 'index.html'), 'utf8'), page(AROUND))
+  assert.equal(await exists(path.join(root, 'mocks')), false); assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'index.html')
+})
+
+// An app with real modules next to the scaffold's mock ones: residue marks must tell them apart.
+const APP = { 'src/api/client.js': 'export const get = (url) => fetch(url)\n', 'src/data/index.js': 'export const rows = await get()\n',
+  'src/app.js': "import { get } from './api/client'\nexport const app = get\n", 'src/main.js': "import './app'\n" }
+const mocking = async ({ job }) => {
+  const files = { 'src/mocks/api/client.js': 'export const get = async () => ({ items: [] })\n', 'src/mocks/data/index.js': 'export const rows = []\n',
+    'src/mocks/AuthStub.jsx': "import { useEffect, useState } from 'react'\nexport function AuthStub({ children }) {\n  const [user, setUser] = useState(null)\n  useEffect(() => setUser({ name: 'Ada' }), [])\n  return children\n}\n",
+    'src/mocks/handlers.js': 'export const handlers = []\n', 'src/mocks/index.js': "import { handlers } from './handlers'\nexport default handlers\n", 'fixtures.json': '{"user":"Ada"}\n',
+    // The wiring: an entry import, plus an import origin already has elsewhere (common code, not a mark).
+    'src/main.js': "import './mocks'\nimport { get } from './api/client'\nimport './app'\n" }
+  for (const [file, text] of Object.entries(files)) { await mkdir(path.dirname(path.join(job.workspace, file)), { recursive: true }); await writeFile(path.join(job.workspace, file), text) }
+  return { outcome: 'completed', summary: 'mock api, data and auth', view: 'home', path: '' }
+}
+const writing = (files) => async ({ job }) => {
+  for (const [file, text] of Object.entries(files)) { await mkdir(path.dirname(path.join(job.workspace, file)), { recursive: true }); await writeFile(path.join(job.workspace, file), text) }
+  return { outcome: 'completed', summary: 'built', view: 'home', path: '' }
+}
+
+test('residue marks the scaffold\'s wiring and paths, not imports of real modules or boilerplate in its new files', async (t) => {
+  const { root, temporary } = await project(t, 'marks')
+  for (const [file, text] of Object.entries(APP)) { await mkdir(path.dirname(path.join(root, file)), { recursive: true }); await writeFile(path.join(root, file), text) }
+  await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', 'app')
+  const scaffoldPrompt = path.join(temporary, 'scaffold.md'); await writeFile(scaffoldPrompt, 'Screen: /profile.')
+  const started = await abStart({ targetRoot: root, slug: 'marks', variants: 4, basePort: 5061, scaffoldPrompt }, { inspect: providers, flags: noFlags, execute: mocking })
+  assert.equal(started.ok, true, JSON.stringify(started))
+  const promptDir = path.join(temporary, 'prompts'); await mkdir(promptDir)
+  for (const name of 'abcd') await writeFile(path.join(promptDir, `${name}.md`), `Approach ${name}.`)
+  const sessions = {
+    // a: the real client (an alias swap probe), the real data/index, the stub's React boilerplate and an import origin already has.
+    a: writing({ 'src/components/Profile.jsx': "import { useEffect, useState } from 'react'\nimport { get } from '../api/client'\nimport { rows } from '../data/index'\nexport function Profile({ children }) {\n  const [user, setUser] = useState(null)\n  useEffect(() => { get('/me').then(setUser) }, [])\n  return children\n}\n",
+      'src/feed.js': "import { get } from './api/client'\nimport { rows } from './data/index'\nexport const feed = () => get('/feed')\n" }),
+    b: writing({ 'src/components/List.jsx': "import { handlers } from '../mocks/handlers'\nexport const List = () => handlers\n" }),
+    c: writing({ 'src/components/Boot.js': "import '../mocks'\n" }), // the mocks directory, through its index.js
+    d: writing({ 'seed.js': "import data from './fixtures'\nexport default data\n" }), // a root fixture without its extension
+  }
+  const ran = await abRun({ targetRoot: root, slug: 'marks', all: true, promptDir }, { inspect: providers, flags: noFlags, execute: (input) => sessions[input.job.workspace.slice(-1)](input) })
+  const result = Object.fromEntries(ran.variants.map((entry) => [entry.variant, entry]))
+  assert.equal(result.a.ok, true, JSON.stringify(result.a.scaffoldResidue)); assert.equal(result.a.scaffoldResidue, undefined)
+  assert.deepEqual(result.b.scaffoldResidue, [{ file: 'src/components/List.jsx', line: "import { handlers } from '../mocks/handlers'" }])
+  assert.deepEqual(result.c.scaffoldResidue, [{ file: 'src/components/Boot.js', line: "import '../mocks'" }])
+  assert.deepEqual(result.d.scaffoldResidue, [{ file: 'seed.js', line: "import data from './fixtures'" }])
+  // Marks are computed once per origin and scaffold and kept in the runtime.
+  const runtime = path.dirname(result.a.log)
+  const cached = (await readdir(runtime)).filter((name) => name.startsWith('marks-'))
+  assert.equal(cached.length, 1)
+  const marks = JSON.parse(await readFile(path.join(runtime, cached[0]), 'utf8')), texts = marks.paths.map((mark) => mark.text)
+  assert.deepEqual(marks.lines, ["import './mocks'"])
+  for (const mark of ['mocks/handlers', 'mocks/api/client', 'mocks/data/index', 'fixtures', 'mocks']) assert.ok(texts.includes(mark), mark)
+  for (const mark of ['api/client', 'data/index', 'data', 'index', 'handlers']) assert.ok(!texts.includes(mark), mark)
+  assert.deepEqual(marks.paths.filter((mark) => mark.quoted).map((mark) => mark.text), ['fixtures.json', 'fixtures', 'mocks'])
+  await assert.rejects(abPick({ targetRoot: root, slug: 'marks', variant: 'c' }), /--accept-residue/)
+  await abPick({ targetRoot: root, slug: 'marks', variant: 'a' })
+  assert.equal(await readFile(path.join(root, 'src/main.js'), 'utf8'), APP['src/main.js']); assert.equal(await exists(path.join(root, 'src/mocks')), false)
+  assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'src/components/Profile.jsx\nsrc/feed.js')
+})
+
+test('pick --accept-residue adopts a variant despite residue the person accepted and lists it', async (t) => {
+  const { root, temporary } = await project(t, 'accept')
+  await mockBranch(root)
+  await abStart({ targetRoot: root, slug: 'accept', variants: 2, basePort: 5081, scaffold: 'mock-data' }, { inspect: never, execute: never })
+  const promptFile = path.join(temporary, 'a.md'); await writeFile(promptFile, 'Read the fixtures.')
+  const run = await abRun({ targetRoot: root, slug: 'accept', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: writing({ 'app.js': "module.exports = require('./fixtures.json')\n" }) })
+  const residue = [{ file: 'app.js', line: "module.exports = require('./fixtures.json')" }]
+  assert.equal(run.ok, false); assert.deepEqual(run.scaffoldResidue, residue)
+  await assert.rejects(abPick({ targetRoot: root, slug: 'accept', variant: 'a' }), (error) => error.details.join() === `app.js: ${residue[0].line}`)
+  const adopted = await abPick({ targetRoot: root, slug: 'accept', variant: 'a', acceptResidue: true })
+  assert.deepEqual(adopted.scaffoldResidue, residue); assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), "module.exports = require('./fixtures.json')\n")
+  assert.equal(await exists(path.join(root, 'fixtures.json')), false)
+})
+
+test('a binary scaffold file comes back byte for byte; renaming a scaffold-modified file is refused', async (t) => {
+  const { root, temporary } = await project(t, 'bin')
+  const logo = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3, 0, 255])
+  await writeFile(path.join(root, 'logo.png'), logo); await writeFile(path.join(root, 'index.html'), page())
+  await git(root, 'add', 'logo.png', 'index.html'); await git(root, 'commit', '-q', '-m', 'page')
+  const scaffoldPrompt = path.join(temporary, 'scaffold.md'); await writeFile(scaffoldPrompt, 'Screen: / with photos.')
+  const binary = async (input) => {
+    await writeFile(path.join(input.job.workspace, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 9, 9, 9, 0, 255]))
+    await mkdir(path.join(input.job.workspace, 'mocks')); await writeFile(path.join(input.job.workspace, 'mocks/photo.png'), Buffer.from([0, 1, 0, 2, 255]))
+    return register(input)
+  }
+  const started = await abStart({ targetRoot: root, slug: 'bin', variants: 2, basePort: 5041, scaffoldPrompt }, { inspect: providers, flags: noFlags, execute: binary })
+  assert.deepEqual(started.scaffoldFiles, { added: ['mocks/mock.js', 'mocks/photo.png'], modified: ['index.html', 'logo.png'] })
+  const promptFile = path.join(temporary, 'p.md'); await writeFile(promptFile, 'Build it.')
+  const seen = []
+  assert.equal((await abRun({ targetRoot: root, slug: 'bin', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: capture(seen, session('alpha')) })).ok, true)
+  // A binary file has no line locations: it is read-only like the added files.
+  assert.match(seen[0].prompt, /Read-only: logo\.png, mocks\/mock\.js, mocks\/photo\.png\. You may edit index\.html /)
+  const moved = async ({ job }) => {
+    await writeFile(path.join(job.workspace, 'main.html'), await readFile(path.join(job.workspace, 'index.html'))); await rm(path.join(job.workspace, 'index.html'))
+    return { outcome: 'completed', summary: 'renamed the page', view: 'home', path: '' }
+  }
+  assert.deepEqual((await abRun({ targetRoot: root, slug: 'bin', variant: 'b', promptFile }, { inspect: providers, flags: noFlags, execute: moved })).scaffoldTouched, ['index.html'])
+  await assert.rejects(abPick({ targetRoot: root, slug: 'bin', variant: 'b' }), (error) => error.details.join() === 'index.html')
+  await abPick({ targetRoot: root, slug: 'bin', variant: 'a' })
+  assert.deepEqual(await readFile(path.join(root, 'logo.png')), logo); assert.equal(await readFile(path.join(root, 'index.html'), 'utf8'), page())
+  assert.equal(await exists(path.join(root, 'mocks')), false); assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'app.js')
+})
+
+test('scaffoldWarnings names modified files that look like UI or screen files', () => {
+  assert.deepEqual(scaffoldWarnings(['src/data.js', 'vite.config.ts', 'pages', 'src/api/client.ts']), [])
+  const [warning] = scaffoldWarnings(['index.html', 'src/data.js', 'styles/main.SCSS', 'src/Components/Card.ts', 'app/layout.js', 'src/views/x.svelte'])
+  assert.match(warning, /: index\.html, styles\/main\.SCSS, src\/Components\/Card\.ts, app\/layout\.js, src\/views\/x\.svelte — redo the scaffold/)
+})
+
 // A scaffold commit made outside the comparison (mock-data on top of main), and sessions that edit it.
 async function mockBranch(root) {
   await git(root, 'checkout', '-q', '-b', 'mock-data')
@@ -431,7 +619,7 @@ test('a reused --scaffold skips the session; a scaffold edit is flagged by run a
   const served = await abServe({ targetRoot: root, slug: 'reuse', command: PLAIN, readyTimeoutMs: 20000 })
   assert.equal(served.ok, true, JSON.stringify(served))
   const head = await git(root, 'rev-parse', 'HEAD'), tip = await git(root, 'rev-parse', 'ab/reuse/a')
-  await assert.rejects(abPick({ targetRoot: root, slug: 'reuse', variant: 'a' }), (error) => /scaffold 파일/.test(error.message) && error.details.includes('fixtures.json'))
+  await assert.rejects(abPick({ targetRoot: root, slug: 'reuse', variant: 'a' }), (error) => /scaffold의 줄·파일/.test(error.message) && error.details.includes('fixtures.json'))
   // The refusal came first: servers and the hub still show the comparison, both branches are as they were.
   const status = await abStatus({ targetRoot: root, slug: 'reuse' })
   assert.equal(status.hub, served.hub); assert.ok(status.variants.every((entry) => entry.serving))

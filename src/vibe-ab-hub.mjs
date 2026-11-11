@@ -15,6 +15,12 @@ export function viewPath(value) {
   return text.startsWith('/') ? text : `/${text}`
 }
 export const urlOf = (variant) => `http://localhost:${variant.port}${viewPath(variant.runs?.at(-1)?.path)}`
+// The first line a variant was asked to build, without markdown markers, cut to about 100 characters: the
+// hub's title for it and, unless pick gets --approach, the approach in the STATE adoption line.
+export function approachLine(text) {
+  const line = String(text ?? '').split('\n').map((entry) => entry.replace(/^(?:#+|[-*>])\s+/, '').trim()).find(Boolean) ?? ''
+  return line.length > 100 ? `${line.slice(0, 99).trimEnd()}…` : line
+}
 
 const EMPTY = () => ({ notes: {}, chosen: null })
 export async function readFeedback(file) {
@@ -38,11 +44,13 @@ export function applyFeedback(feedback, action, body, names, at) {
   return next
 }
 
-// What the page shows for each variant, from the comparison record.
+// What the page shows for each variant, from the comparison record: its approach stays the title after
+// follow-ups, whose summaries say only what changed.
 export function hubModel(record, feedback, alive = processAlive) {
   return { slug: record.slug, feedback, variants: Object.entries(record.variants).map(([name, variant]) => {
     const last = variant.runs?.at(-1)
-    return { name, from: variant.from ?? '', url: urlOf(variant), summary: last?.summary ?? '', view: last?.view ?? '', serving: Boolean(variant.server?.pid && alive(variant.server.pid)), exec: variant.exec ?? null }
+    return { name, from: variant.from ?? '', url: urlOf(variant), approach: approachLine(variant.approach), summary: last?.summary ?? '', view: last?.view ?? '',
+      serving: Boolean(variant.server?.pid && alive(variant.server.pid)), exec: variant.exec ?? null }
   }) }
 }
 
@@ -58,7 +66,7 @@ main{display:grid;grid-template-columns:repeat(var(--n),minmax(320px,1fr));gap:1
 .mobile main{grid-template-columns:repeat(var(--n),390px)}
 section{display:flex;flex-direction:column;min-width:0;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 section.chosen{border-color:var(--chosen);box-shadow:0 0 0 1px var(--chosen)}
-.head,.foot{display:flex;flex-direction:column;gap:4px;padding:8px 10px}.head p{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.head,.foot{display:flex;flex-direction:column;gap:4px;padding:8px 10px}.head p{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.head .approach{font-weight:600}
 .frame{height:72vh;overflow:hidden;background:#fff;border-block:1px solid var(--line)}iframe{display:block;border:0;transform-origin:0 0}
 textarea{width:100%;min-height:56px;font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:6px;resize:vertical}
 .row{display:flex;gap:8px;align-items:center}.measure{margin:0;overflow-wrap:anywhere}.measure.bad{color:var(--bad)}`
@@ -87,7 +95,7 @@ export function renderHub({ slug, variants, feedback = EMPTY() }) {
     const summary = variant.summary.split('\n')[0]
     return `<section data-variant="${escape(variant.name)}"${variant.name === chosen ? ' class="chosen"' : ''}>
 <div class="head"><div class="row"><strong>${escape(variant.name)}</strong>${variant.from ? `<span class="muted">from ${escape(variant.from)}</span>` : ''}<a href="${escape(variant.url)}" target="_blank" rel="noopener">open in new tab ↗</a>${variant.serving ? '' : '<span class="muted">not serving</span>'}</div>
-<p title="${escape(variant.summary)}">${escape(summary) || '<span class="muted">no run yet</span>'}</p>${variant.view ? `<p class="muted" title="${escape(variant.view)}">view: ${escape(variant.view)}</p>` : ''}</div>
+${variant.approach ? `<p class="approach" title="${escape(variant.approach)}">${escape(variant.approach)}</p>` : ''}<p title="${escape(variant.summary)}">${escape(summary) || '<span class="muted">no run yet</span>'}</p>${variant.view ? `<p class="muted" title="${escape(variant.view)}">view: ${escape(variant.view)}</p>` : ''}</div>
 <div class="frame"><iframe src="${escape(variant.url)}" title="variant ${escape(variant.name)}"></iframe></div>
 <div class="foot">${measured(variant.exec, mixed)}<textarea data-variant="${escape(variant.name)}" placeholder="note for ${escape(variant.name)}">${escape(feedback.notes?.[variant.name]?.note ?? '')}</textarea>
 <div class="row"><button class="choose" data-variant="${escape(variant.name)}">choose ${escape(variant.name)}</button><span class="saved muted"></span></div></div>
