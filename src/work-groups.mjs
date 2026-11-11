@@ -476,9 +476,10 @@ export async function claimWork(options) {
   return claimTask(options)
 }
 
-export async function claimNextWork(options) {
+// context: the caller's repository() for this same claim (the runner's slot pass), else a new one.
+export async function claimNextWork(options, context = null) {
   if (!options.owner?.trim()) fail('claim-next에는 --owner가 필요합니다.')
-  return claimTask(options, true)
+  return claimTask(options, true, context)
 }
 
 // Why the group takes no new unit for owner now, judged on one runtime state; null when it may.
@@ -492,8 +493,8 @@ function claimRefusal(state, group, owner, next) {
   return null
 }
 
-async function claimTask(options, next = false) {
-  const context = await repository(options)
+async function claimTask(options, next = false, given = null) {
+  const context = given ?? await repository(options)
   const initial = await readRuntime(context.root)
   const group = groupOf(initial, options.work)
   if (!next && group.taskScope && !group.taskScope.includes(options.task)) fail('승인 범위 밖 태스크입니다. 오케스트레이터의 승인 뒤 범위를 갱신하세요.')
