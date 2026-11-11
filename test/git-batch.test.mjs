@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
-import { parseBatch, batchShow, showMany, git } from '../src/workspace.mjs'
+import { parseBatch, batchShow, showMany, git, inspectWorkspace } from '../src/workspace.mjs'
 import { readTaskBoard } from '../src/task-board.mjs'
 
 const execute = promisify(execFile)
@@ -82,4 +82,9 @@ test('readTaskBoard at a commit lists tasks and the done archive like the checko
   assert.deepEqual(pick(committed), pick(await readTaskBoard({ targetRoot: root })))
   assert.deepEqual(committed.doneIds, ['T001'])
   assert.deepEqual(committed.tasks.map((entry) => [entry.id, entry.waitingOn]), [['T002', []], ['T003', ['T002']]])
+  // A caller's inspection of the same root, made in the same operation, is used instead of a new one.
+  const inspected = await inspectWorkspace({ targetRoot: root })
+  const reused = await readTaskBoard({ targetRoot: root, workspace: inspected, ref: 'HEAD' })
+  assert.equal(reused.workspace, inspected)
+  assert.deepEqual(pick(reused), pick(committed))
 })

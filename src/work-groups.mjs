@@ -150,7 +150,7 @@ function taskContract(content) {
 // implemented in order in the same workspace and never wait for integration.
 async function currentUnit(context, group, ids, snapshot) {
   const commit = snapshot?.commit ?? await head(context.cwd, `refs/heads/${group.branch}`)
-  const board = scopedBoard(snapshot?.board ?? await readTaskBoard({ targetRoot: context.cwd, ref: commit }), group)
+  const board = scopedBoard(snapshot?.board ?? await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: commit }), group)
   if (!board.ok || board.warnings.length) fail('상위 브랜치의 태스크/STATE를 먼저 정리하고 커밋하세요.', [...board.errors, ...board.warnings])
   const tasks = ids.map((id) => board.tasks.find((item) => item.id === id))
   if (tasks.some((task) => task?.st !== 'todo')) fail(`${ids.join(' ')}: todo 상태이며 상위 브랜치에서 dep이 충족된 태스크만 배정할 수 있습니다.`)
@@ -438,7 +438,7 @@ export async function startWork(options) {
   const target = adopted ? context.cwd : await destination(context, `${options.name}-plan`, options.path)
   const group = { id: options.name, branch, baseRef, baseCommit, path: target, managed: !adopted, status: 'preparing', creator: creator(), createdAt: now(), limits: workLimits(options), verify: storedChecks(options),
     review: 'risky', ...storedPolicy(options) }
-  if (group.taskScope) scopedBoard(await readTaskBoard({ targetRoot: context.cwd, ref: baseCommit }), group)
+  if (group.taskScope) scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: baseCommit }), group)
   await transaction(context.root, (state) => {
     if (Object.hasOwn(state.groups, group.id)) fail('같은 이름의 작업 묶음이 이미 있습니다. work status를 확인하세요.')
     if (Object.values(state.groups).some((entry) => entry.branch === branch || entry.path === target)) fail('이미 사용 중인 기획 브랜치 또는 작업 공간입니다.')
@@ -463,7 +463,7 @@ export async function configureWork(options) {
   const policy = storedPolicy(options)
   if (!Object.keys(verify).length && !Object.keys(policy).length) fail('저장할 설정을 --tasks, --task-verify, --verify, --group-verify, --push, --review, --review-path, --review-lines, --allow-tool로 지정하세요.')
   const context = await repository(options)
-  const board = policy.taskScope ? await readTaskBoard({ targetRoot: context.cwd, ref: `refs/heads/${groupOf(await readRuntime(context.root), options.work).branch}` }) : null
+  const board = policy.taskScope ? await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: `refs/heads/${groupOf(await readRuntime(context.root), options.work).branch}` }) : null
   return transaction(context.root, (state) => {
     const group = groupOf(state, options.work)
     if (policy.taskScope) {
@@ -492,7 +492,7 @@ async function claimTask(options, next = false) {
   const group = groupOf(initial, options.work)
   if (!next && group.taskScope && !group.taskScope.includes(options.task)) fail('승인 범위 밖 태스크입니다. 오케스트레이터의 승인 뒤 범위를 갱신하세요.')
   const commit = await head(context.cwd, `refs/heads/${group.branch}`)
-  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, ref: commit }), group)
+  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: commit }), group)
   if (!board.ok || board.warnings.length) fail('상위 브랜치의 태스크/STATE를 먼저 정리하고 커밋하세요.', [...board.errors, ...board.warnings])
   // Read/validate immutable task snapshots before the short allocation transaction.
   const claimed = new Set(Object.values(initial.attempts).filter(active).flatMap(unitTasks))
@@ -695,8 +695,8 @@ export async function submitWork(options) {
     const covered = ids.slice(ids.indexOf(attempt.taskId), current.reach + 1)
     const verification = await verify(attempt.workspace, checks, current.workerCommit, options.signal, timeout,
       { TIER: 'task', DIFF_BASE: diffBase, TASK: covered.at(-1), TASKS: covered.join(' ') }, { runtime: context.root })
-    await assertWorkspace(context, reservation.attempt)
     // Another unit may integrate meanwhile; the contract and SSOT must still match the new target.
+    // checkWorker re-inspects the workspace first, as its own first step.
     const latest = await checkWorker(context, reservation.group, reservation.attempt)
     if (latest.workerCommit !== current.workerCommit) fail('검증 중 워커 HEAD가 바뀌었습니다. 다시 제출하세요.')
     options.signal?.throwIfAborted()
@@ -972,7 +972,7 @@ export async function workBoard(options) {
   const context = await repository(options)
   const state = await readRuntime(context.root)
   const group = groupOf(state, options.work)
-  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, ref: `refs/heads/${group.branch}` }), group)
+  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: `refs/heads/${group.branch}` }), group)
   const attempts = Object.values(state.attempts)
   const live = attempts.filter(active)
   const units = planUnits(board.tasks, board.doneIds, new Set(live.flatMap(unitTasks)))
@@ -1028,7 +1028,7 @@ export async function finishWork(options) {
     await assertWorkspace(context, group)
     await requireClean(group.path)
     const commit = await head(group.path)
-    const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, ref: commit }), group)
+    const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: commit }), group)
     if (!board.ok || board.warnings.length) fail('작업 브랜치의 태스크/STATE를 먼저 정리하세요.', [...board.errors, ...board.warnings])
     const deferred = mainSessionTasks(board.tasks)
     const remaining = board.tasks.filter((task) => !task.st?.startsWith('blocked@') && !deferred.has(task.id))

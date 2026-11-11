@@ -72,7 +72,7 @@ async function kickGate(context, options, id) {
   if (approved && group.verify?.unit?.length) args = ['integrate', '--attempt', approved.id, '--auto-correct']
   else if (!attempts.some(activeAttempt) && group.verify?.group?.length) {
     const target = await head(context.cwd, `refs/heads/${group.branch}`)
-    const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, ref: target }), group)
+    const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: target }), group)
     const deferred = mainSessionTasks(board.tasks)
     if (board.ok && !board.warnings.length && board.tasks.every((task) => task.st?.startsWith('blocked@') || deferred.has(task.id)) &&
         !(await groupVerification(context, group))?.current && group.finishFailure?.commit !== target) args = ['finish', '--work', group.id]
@@ -105,7 +105,7 @@ async function outlook(context, id, owner) {
   const state = await readRuntime(context.root)
   const group = groupOf(state, id)
   const target = await head(context.cwd, `refs/heads/${group.branch}`)
-  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, ref: target }), group)
+  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: target }), group)
   const live = Object.values(state.attempts).filter((entry) => entry.group === group.id && activeAttempt(entry))
   const owned = new Set(live.flatMap(unitTasks))
   // Explore tasks and their dependents belong to the main session, never to this group.

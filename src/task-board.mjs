@@ -30,8 +30,9 @@ async function taskFiles(directory, errors, optional = false) {
   }
 }
 
+// options.workspace: the caller's own inspection of targetRoot, made in the same operation.
 export async function readTaskBoard(options = {}) {
-  const workspace = await inspectWorkspace(options)
+  const workspace = options.workspace ?? await inspectWorkspace(options)
   const root = workspace.git?.root ?? workspace.targetRoot
   const errors = []
   const warnings = [...workspace.warnings]
