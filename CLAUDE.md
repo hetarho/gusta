@@ -10,7 +10,7 @@
   3. 빠른 구현: 시간은 구현에 쓴다. 태스크=영향 단위 테스트+빠른 검사, 전체 스위트·e2e·CI는 대상 브랜치 push 직전 조정자가 한 번. 시간 한도가 있는 맡김은 끝 구간을 마감 관문에 예약한다 — 고정 비율이 아니라 실측(전체 검증 2회+수정 단위 1회+CI)으로.
 - **코드**: 낮은 결합·높은 응집으로 단위 테스트가 쉬운 구조를 만든다(바깥 세계는 경계에서 주입). 테스트가 무거워지면 테스트가 아니라 구조를 고친다. 이 패키지의 `src/`도 같다 — 새 로직은 주입 가능한 의존성(`deps`·`injected`)으로 테스트한다.
 
-스펙 주도 개발 스킬셋을 npm으로 배포하는 저장소. **산출물은 `skills/`의 SKILL.md들**이고, `src/`·`bin/`은 Claude(.claude/skills)·Codex(.codex/skills) 설치/검증, 세션 도구(`vibe`: 진행 표시·마감 검증과 선택적 push·체크포인트·검증 캐시·`vibe loop`), 선택적 작업 묶음·worktree 실행 기록을 제공하는 CLI다.
+스펙 주도 개발 스킬셋을 npm으로 배포하는 저장소. **산출물은 `skills/`의 SKILL.md들**이고, `src/`·`bin/`은 Claude(.claude/skills)·Codex(.codex/skills) 설치/검증, 세션 도구(`vibe`: 진행 표시·단독 태스크 st 기록(`vibe task`)·마감 검증과 선택적 push·체크포인트·검증 캐시·`vibe loop`), 선택적 작업 묶음·worktree 실행 기록을 제공하는 CLI다.
 
 ## 구조
 - `skills/<name>/SKILL.md` — 스킬 본문 (frontmatter `name`=폴더명, `description` 필수)
