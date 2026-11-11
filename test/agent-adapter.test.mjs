@@ -306,5 +306,6 @@ test('A/B 변형 세션은 쓰기 권한·허용 명령으로 실행되고 커�
   assert.equal(scaffold.path, '/pricing'); assert.equal(scaffold.usage.output_tokens, 4)
   const sent = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
   assert.equal(flag(sent.args, '--permission-mode'), 'bypassPermissions')
-  assert.match(sent.text, /never ships/); assert.match(sent.text, /Do NOT add an environment switch/); assert.match(sent.text, /Screen: \/pricing$/)
+  assert.match(sent.text, /never ships/); assert.match(sent.text, /Do NOT add an environment switch/); assert.match(sent.text, /request interception/)
+  assert.match(sent.text, /Do NOT edit the target screen's component, route, loader or style files/); assert.match(sent.text, /Screen: \/pricing$/)
 })

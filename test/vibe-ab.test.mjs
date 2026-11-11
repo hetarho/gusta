@@ -31,6 +31,7 @@ const scaffolding = async ({ job, log }) => {
   return { outcome: 'completed', summary: 'fixtures for the profile screen', view: 'profile', path: '/profile', usage: { input_tokens: 1, output_tokens: 1 } }
 }
 const capture = (jobs, fake) => async (input) => { jobs.push(input.job); return fake(input) }
+const noFlags = async () => []
 // After hooks run in registration order: the stop goes in before the fixture's cleanup removes the
 // record, so a failed assertion cannot leak servers or the hub.
 async function project(t, ...slugs) {
@@ -216,7 +217,7 @@ test('a scaffold session is the variants\' base, prompts share one prefix, follo
   const sharedFile = path.join(temporary, 'shared.md'), scaffoldPrompt = path.join(temporary, 'scaffold.md')
   await writeFile(sharedFile, 'Goal: a clearer profile screen. Keep ARCH-1.'); await writeFile(scaffoldPrompt, 'Screen: /profile needs a signed-in user.')
   const jobs = []
-  const started = await abStart({ targetRoot: root, slug: 'mock', variants: 2, basePort: 4831, sharedFile, scaffoldPrompt }, { inspect: providers, execute: capture(jobs, scaffolding) })
+  const started = await abStart({ targetRoot: root, slug: 'mock', variants: 2, basePort: 4831, sharedFile, scaffoldPrompt }, { inspect: providers, flags: noFlags, execute: capture(jobs, scaffolding) })
   // The shared file is copied into the record: the coordinator's temporary folder may go.
   await rm(sharedFile)
   assert.equal(started.ok, true, JSON.stringify(started))
@@ -224,7 +225,8 @@ test('a scaffold session is the variants\' base, prompts share one prefix, follo
   const scaffold = await git(root, 'rev-parse', 'ab/mock/base')
   assert.deepEqual([started.origin, started.scaffold, started.base], [origin, scaffold, scaffold])
   assert.equal(await git(root, 'rev-parse', `${scaffold}^`), origin)
-  assert.deepEqual(started.scaffoldFiles, ['data.js', 'fixtures.json']); assert.equal(started.scaffoldRun.path, '/profile')
+  // Modified existing files are listed apart, so the coordinator can spot the target screen among them.
+  assert.deepEqual(started.scaffoldFiles, { added: ['fixtures.json'], modified: ['data.js'] }); assert.equal(started.scaffoldRun.path, '/profile')
   for (const entry of started.variants) {
     assert.equal(await git(entry.path, 'rev-parse', 'HEAD'), scaffold)
     assert.ok(await exists(path.join(entry.path, 'fixtures.json')))
@@ -236,25 +238,26 @@ test('a scaffold session is the variants\' base, prompts share one prefix, follo
   const runs = {}, prompts = {}
   for (const [variant, text] of [['a', 'alpha'], ['b', 'beta']]) {
     const seen = []
-    runs[variant] = await abRun({ targetRoot: root, slug: 'mock', variant, promptFile: await promptFile(`${variant}.md`, `Approach: make it ${text}.`) }, { inspect: providers, execute: capture(seen, session(text)) })
+    runs[variant] = await abRun({ targetRoot: root, slug: 'mock', variant, promptFile: await promptFile(`${variant}.md`, `Approach: make it ${text}.`) }, { inspect: providers, flags: noFlags, execute: capture(seen, session(text)) })
     prompts[variant] = seen[0].prompt
+    assert.equal(runs[variant].ok, true); assert.equal(runs[variant].scaffoldTouched, undefined)
   }
   // Everything before the variant line is identical: shared text and the scaffold's read-only files.
   const prefix = (variant) => prompts[variant].slice(0, prompts[variant].indexOf(`Variant ${variant} of mock`))
   assert.equal(prefix('a'), prefix('b')); assert.match(prefix('a'), /clearer profile/); assert.match(prefix('a'), /read-only.*data\.js, fixtures\.json/)
   assert.match(prompts.a, /\$PORT for this variant: \d+\.\n\nApproach: make it alpha\.$/)
-  // A follow-up repeats the first prompt, then adds the last summary, the hub note and the request.
-  await writeFile(path.join(path.dirname(runs.a.log), 'feedback.json'), JSON.stringify({ notes: { a: { note: 'bigger title', at: 'T' } }, chosen: null }))
+  // A follow-up repeats the first prompt, then adds the last summary, the hub note written since and the request.
+  await writeFile(path.join(path.dirname(runs.a.log), 'feedback.json'), JSON.stringify({ notes: { a: { note: 'bigger title', at: new Date(Date.now() + 60000).toISOString() } }, chosen: null }))
   const seen = []
-  const followed = await abRun({ targetRoot: root, slug: 'mock', variant: 'a', followUpFile: await promptFile('follow.md', 'Make the title bigger.') }, { inspect: providers, execute: capture(seen, session('alpha2')) })
+  const followed = await abRun({ targetRoot: root, slug: 'mock', variant: 'a', followUpFile: await promptFile('follow.md', 'Make the title bigger.') }, { inspect: providers, flags: noFlags, execute: capture(seen, session('alpha2')) })
   assert.equal(followed.followUp, true); assert.equal(followed.changed, true)
   const next = seen[0].prompt
   assert.ok(next.startsWith(prompts.a), 'follow-up keeps the first run prompt as its prefix')
   for (const part of [/Your last run's summary: alpha variant/, /note on this variant: bigger title/, /already contains this work/, /Make the title bigger\.$/]) assert.match(next, part)
-  // Adoption replays a's commits onto the start base without the scaffold commit.
+  // Adoption is one commit on the start base: a's net change with every scaffold path as origin had it.
   const before = await git(root, 'rev-parse', 'HEAD')
   const adopted = await abPick({ targetRoot: root, slug: 'mock', variant: 'a' })
-  assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before)
+  assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before); assert.equal(await git(root, 'rev-parse', 'HEAD^2^'), origin)
   assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'app.js')
   assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "alpha2"\n')
   assert.equal(await readFile(path.join(root, 'data.js'), 'utf8'), "module.exports = fetch('/api/user')\n")
@@ -263,63 +266,111 @@ test('a scaffold session is the variants\' base, prompts share one prefix, follo
   assert.equal(await git(root, 'branch', '--list', 'ab/mock/*'), '')
 })
 
-test('a reused --scaffold skips the session; a variant that edits a scaffold file is refused with both branches untouched', async (t) => {
-  const { root, temporary } = await project(t, 'reuse')
-  const origin = await git(root, 'rev-parse', 'HEAD')
+// A scaffold commit made outside the comparison (mock-data on top of main), and sessions that edit it.
+async function mockBranch(root) {
   await git(root, 'checkout', '-q', '-b', 'mock-data')
   await writeFile(path.join(root, 'fixtures.json'), '{"user":"Ada"}\n'); await git(root, 'add', 'fixtures.json'); await git(root, 'commit', '-q', '-m', 'mock')
   const mock = await git(root, 'rev-parse', 'HEAD')
   await git(root, 'checkout', '-q', 'main')
-  const never = async () => { throw new Error('no session for a reused scaffold') }
+  return mock
+}
+const tamper = (text) => async ({ job }) => {
+  await writeFile(path.join(job.workspace, 'fixtures.json'), '{"user":"Grace"}\n')
+  await writeFile(path.join(job.workspace, 'app.js'), `module.exports = ${JSON.stringify(text)}\n`)
+  return { outcome: 'completed', summary: 'changed the fixtures', view: 'home', path: '' }
+}
+const restore = async ({ job }) => {
+  await writeFile(path.join(job.workspace, 'fixtures.json'), '{"user":"Ada"}\n')
+  return { outcome: 'completed', summary: 'restored the fixtures', view: 'home', path: '' }
+}
+const never = async () => { throw new Error('no session for a reused scaffold') }
+
+test('a reused --scaffold skips the session; a scaffold edit is flagged by run and refused by pick before anything stops', async (t) => {
+  const { root, temporary } = await project(t, 'reuse')
+  const origin = await git(root, 'rev-parse', 'HEAD'), mock = await mockBranch(root)
   await assert.rejects(abStart({ targetRoot: root, slug: 'reuse', scaffold: 'main' }, { inspect: never, execute: never }), /기준.*위의 커밋/)
   await assert.rejects(abStart({ targetRoot: root, slug: 'reuse', scaffold: 'mock-data', scaffoldPrompt: 'x' }), /하나만/)
   const started = await abStart({ targetRoot: root, slug: 'reuse', variants: 2, basePort: 4851, scaffold: 'mock-data' }, { inspect: never, execute: never })
   assert.deepEqual([started.origin, started.scaffold, started.base, started.scaffoldRun], [origin, mock, mock, undefined])
+  assert.deepEqual(started.scaffoldFiles, { added: ['fixtures.json'], modified: [] })
   assert.equal(await git(root, 'branch', '--list', 'ab/reuse/base'), '')
   const promptFile = path.join(temporary, 'a.md'); await writeFile(promptFile, 'Change the data.')
-  const tamper = async ({ job }) => {
-    await writeFile(path.join(job.workspace, 'fixtures.json'), '{"user":"Grace"}\n')
-    await writeFile(path.join(job.workspace, 'app.js'), 'module.exports = 1\n')
-    return { outcome: 'completed', summary: 'changed the fixtures', view: 'home', path: '' }
-  }
-  await abRun({ targetRoot: root, slug: 'reuse', variant: 'a', promptFile }, { inspect: providers, execute: tamper })
+  const run = await abRun({ targetRoot: root, slug: 'reuse', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: tamper('edited') })
+  assert.equal(run.outcome, 'completed'); assert.equal(run.ok, false); assert.deepEqual(run.scaffoldTouched, ['fixtures.json'])
+  const served = await abServe({ targetRoot: root, slug: 'reuse', command: PLAIN, readyTimeoutMs: 20000 })
+  assert.equal(served.ok, true, JSON.stringify(served))
   const head = await git(root, 'rev-parse', 'HEAD'), tip = await git(root, 'rev-parse', 'ab/reuse/a')
   await assert.rejects(abPick({ targetRoot: root, slug: 'reuse', variant: 'a' }), (error) => /scaffold 파일/.test(error.message) && error.details.includes('fixtures.json'))
+  // The refusal came first: servers and the hub still show the comparison, both branches are as they were.
+  const status = await abStatus({ targetRoot: root, slug: 'reuse' })
+  assert.equal(status.hub, served.hub); assert.ok(status.variants.every((entry) => entry.serving))
   assert.equal(await git(root, 'rev-parse', 'HEAD'), head); assert.equal(await git(root, 'status', '--porcelain'), '')
   assert.equal(await git(root, 'rev-parse', 'ab/reuse/a'), tip)
-  assert.equal(await git(started.variants[0].path, 'rev-parse', '--abbrev-ref', 'HEAD'), 'ab/reuse/a')
   // stop --remove prunes what the comparison made; the reused scaffold ref belongs to the caller.
   await abStop({ targetRoot: root, slug: 'reuse', remove: true })
   assert.equal(await git(root, 'branch', '--list', 'ab/reuse/*'), '')
   assert.equal(await git(root, 'rev-parse', 'mock-data'), mock)
 })
 
-test('a scaffold that does not finish creates no variants and stop --remove cleans its branch', async (t) => {
-  const { root, temporary } = await project(t, 'stuck')
+test('a scaffold edit reverted by a follow-up adopts cleanly; a merge conflict leaves the current branch and the comparison', async (t) => {
+  const { root, temporary } = await project(t, 'revert')
+  const origin = await git(root, 'rev-parse', 'HEAD')
+  await mockBranch(root)
+  await abStart({ targetRoot: root, slug: 'revert', variants: 2, basePort: 4911, scaffold: 'mock-data' }, { inspect: never, execute: never })
+  const promptFile = path.join(temporary, 'a.md'), followUpFile = path.join(temporary, 'f.md')
+  await writeFile(promptFile, 'Make it first.'); await writeFile(followUpFile, 'Put the fixtures back.')
+  assert.deepEqual((await abRun({ targetRoot: root, slug: 'revert', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: tamper('first') })).scaffoldTouched, ['fixtures.json'])
+  const reverted = await abRun({ targetRoot: root, slug: 'revert', variant: 'a', followUpFile }, { inspect: providers, flags: noFlags, execute: restore })
+  assert.equal(reverted.ok, true); assert.equal(reverted.scaffoldTouched, undefined)
+  // The current branch moved on and wrote app.js too: the adopt merge conflicts and is undone.
+  await writeFile(path.join(root, 'app.js'), 'module.exports = "main"\n'); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'main app')
+  const head = await git(root, 'rev-parse', 'HEAD'), tip = await git(root, 'rev-parse', 'ab/revert/a')
+  await assert.rejects(abPick({ targetRoot: root, slug: 'revert', variant: 'a' }), /충돌/)
+  assert.equal(await git(root, 'rev-parse', 'HEAD'), head); assert.equal(await git(root, 'status', '--porcelain'), '')
+  assert.equal(await git(root, 'rev-parse', 'ab/revert/a'), tip)
+  assert.equal((await abStatus({ targetRoot: root, slug: 'revert' })).variants[0].commits, 2)
+  await git(root, 'reset', '-q', '--hard', 'HEAD~1')
+  const adopted = await abPick({ targetRoot: root, slug: 'revert', variant: 'a' })
+  assert.equal(await git(root, 'rev-parse', 'HEAD^1'), origin); assert.equal(adopted.merged, await git(root, 'rev-parse', 'HEAD'))
+  assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'app.js')
+  assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "first"\n')
+  assert.equal(await exists(path.join(root, 'fixtures.json')), false)
+})
+
+test('a scaffold that does not finish creates no variants; stop --remove cleans its branch and discards a thrown session\'s mock work', async (t) => {
+  const { root, temporary } = await project(t, 'stuck', 'thrown')
   const scaffoldPrompt = path.join(temporary, 'scaffold.md'); await writeFile(scaffoldPrompt, 'Screen: /profile.')
   const blocked = async () => ({ outcome: 'blocked', summary: 'needs a real service', view: '', path: '' })
-  const started = await abStart({ targetRoot: root, slug: 'stuck', variants: 2, basePort: 4871, scaffoldPrompt }, { inspect: providers, execute: blocked })
+  const started = await abStart({ targetRoot: root, slug: 'stuck', variants: 2, basePort: 4871, scaffoldPrompt }, { inspect: providers, flags: noFlags, execute: blocked })
   assert.equal(started.ok, false); assert.equal(started.scaffoldRun.summary, 'needs a real service'); assert.equal(started.variants, undefined)
   assert.equal((await abStatus({ targetRoot: root, slug: 'stuck' })).variants.length, 0)
   const stopped = await abStop({ targetRoot: root, slug: 'stuck', remove: true })
-  assert.deepEqual(stopped.branches, [])
+  assert.deepEqual(stopped.branches, []); assert.equal(stopped.note, undefined)
   assert.equal(await git(root, 'branch', '--list', 'ab/stuck/*'), '')
   assert.equal((await git(root, 'worktree', 'list')).includes('ab-stuck-base'), false)
+  // A session that dies mid-edit leaves its worktree dirty: that mock work is thrown away, not guarded.
+  const crash = async ({ job }) => { await writeFile(path.join(job.workspace, 'fixtures.json'), '{}\n'); throw new Error('provider crashed') }
+  await assert.rejects(abStart({ targetRoot: root, slug: 'thrown', variants: 2, basePort: 4871, scaffoldPrompt }, { inspect: providers, flags: noFlags, execute: crash }), /provider crashed/)
+  const dropped = await abStop({ targetRoot: root, slug: 'thrown', remove: true })
+  assert.match(dropped.note, /scaffold/); assert.equal((await git(root, 'worktree', 'list')).includes('ab-thrown-base'), false)
+  assert.equal(await git(root, 'branch', '--list', 'ab/thrown/*'), '')
 })
 
-test('records from before shared prompts keep working: plain prompt, follow-up without a stored approach', async (t) => {
+test('records from before shared prompts keep working: plain prompt, follow-up without a stored approach or a new note', async (t) => {
   const { root, temporary } = await project(t, 'old')
   const started = await abStart({ targetRoot: root, slug: 'old', variants: 2, basePort: 4891 })
   const promptFile = path.join(temporary, 'a.md'); await writeFile(promptFile, 'Make it plain.')
   const seen = []
-  const run = await abRun({ targetRoot: root, slug: 'old', variant: 'a', promptFile }, { inspect: providers, execute: capture(seen, session('plain')) })
+  const run = await abRun({ targetRoot: root, slug: 'old', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: capture(seen, session('plain')) })
   assert.equal(seen[0].prompt, `Variant a of old. $PORT for this variant: ${started.variants[0].port}.\n\nMake it plain.`)
   const recordFile = path.join(path.dirname(run.log), '..', 'old.json')
   const record = JSON.parse(await readFile(recordFile, 'utf8'))
   delete record.variants.a.approach
   await writeFile(recordFile, JSON.stringify(record))
+  // A note older than the last run was already answered by it: the follow-up leaves it out.
+  await writeFile(path.join(path.dirname(run.log), 'feedback.json'), JSON.stringify({ notes: { a: { note: 'stale', at: '2000-01-01T00:00:00.000Z' } }, chosen: null }))
   const followUpFile = path.join(temporary, 'f.md'); await writeFile(followUpFile, 'Tighten spacing.')
-  await abRun({ targetRoot: root, slug: 'old', variant: 'a', followUpFile }, { inspect: providers, execute: capture(seen, session('plain2')) })
+  await abRun({ targetRoot: root, slug: 'old', variant: 'a', followUpFile }, { inspect: providers, flags: noFlags, execute: capture(seen, session('plain2')) })
   assert.equal(seen[1].prompt, `Variant a of old. $PORT for this variant: ${started.variants[0].port}.\n\nYour last run's summary: plain variant\n\nYour branch already contains this work; change only what is asked.\n\nFollow-up request:\nTighten spacing.`)
   assert.equal((await abStatus({ targetRoot: root, slug: 'old' })).variants[0].commits, 2)
 })

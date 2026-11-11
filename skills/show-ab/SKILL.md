@@ -28,12 +28,13 @@ description: >-
 `vibe ab start <slug> --variants <n> --shared-file <공통> [--scaffold-prompt <file> | --scaffold <ref>] [--setup '<의존성 설치>'] [--copy <미추적 파일> ...] --json`
 - 변형마다 `ab/<slug>/<a|b|…>` 브랜치·형제 worktree·포트가 생긴다. 미커밋 변경이 있으면 거절된다 — 사용자 변경은 임의로 커밋하지 않고 묻는다.
 - shared에는 변형 공통 글을 한 번만: 목표·제약·지킬 결정(`vibe brief` 블록)·볼 화면·완료 기준.
-- scaffold: 세션 하나가 `ab/<slug>/base`에 화면을 결정적 mock 데이터·인증 stub으로 띄우는 커밋을 만들고 변형은 그 위에서 시작한다. 프롬프트에는 볼 화면·필요한 데이터만, 있는 커밋은 `--scaffold <ref>`. ok:false면 보고하고 `stop --remove`.
+- scaffold: 세션 하나가 `ab/<slug>/base`에 화면을 결정적 mock 데이터·인증 stub으로 띄우는 커밋을 만들고 변형은 그 위에서 시작한다. 프롬프트에는 볼 화면·필요한 데이터만, 있는 커밋은 `--scaffold <ref>`. ok:false면 보고하고 `stop --remove`. scaffoldFiles.modified에 대상 화면의 UI 파일이 있으면 scaffold부터 다시.
 - setup은 lockfile에 맞는 설치(`npm ci` 등)로 worktree마다 병렬 실행된다. `--copy`는 `.env.local`처럼 git에 없지만 실행에 필요한 파일만.
 
 ## 3. 병렬 구현 — 하위 세션
 변형마다 이 변형의 접근만 프롬프트 파일에 쓰고 동시에 띄운다:
 - 기본(헤드리스): 변형마다 `vibe ab run <slug> --variant <v> --prompt-file <file> --provider <claude|codex> [--allow-tool '<태스크 검사 명령 규칙>'] --json`을 백그라운드로 실행한다. 세션은 자기 worktree만 고치고, CLI가 shared를 앞에 붙이고 끝나면 변형 브랜치에 커밋한다. 돌아오는 것은 summary·view·path(볼 곳·URL 경로)뿐이다.
+- run이 scaffoldTouched를 주면 보여 주기 전에 되돌리는 follow-up을 보낸다(데이터 변경은 summary로).
 - 네이티브 하위 세션 도구를 써도 된다(worktree 경로·shared+접근을 주고 커밋·서버·scaffold 수정은 하지 않게). 같은 대화에서 역할만 바꿔 변형을 직접 만들지 않는다.
 - 변형은 영향 단위 테스트와 빠른 검사만 돌린다(전체 스위트는 합친 뒤 마감 관문에서 한 번).
 
@@ -47,7 +48,7 @@ description: >-
 
 ## 5. 채택과 정리
 - `vibe ab pick <slug> --variant <v> --json`: 서버·hub를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리한다. 변형 브랜치는 spec/SETTINGS.md `prune-branches`(기본 true)대로 지운다. false여도 `--prune-branches`를 주면 지운다. 충돌이면 현재 브랜치는 그대로 두고 보고한다.
-- scaffold는 pick이 빼고 합친다(scaffold 파일을 고친 변형은 거절). todo(실제 데이터 연결)는 create-task로.
+- scaffold는 pick이 빼고 합친다. todo(실제 데이터 연결)는 create-task로.
 - 채택 기록은 디자인 마감과 같다: STATE log `- YYMMDD ab <slug>: adopt <v> — <approach>`를 merge 직후 커밋 하나로 남기고, 채택안이 SSOT 규칙을 바꿨으면 이어서 update-ssot(대안=고르지 않은 변형, 이유=사용자 선택 근거).
 - 합친 뒤에는 평소대로 영향 검사, push 직전 마감 관문(start-vibe 4절).
 - 고르지 않고 끝내면 `vibe ab stop <slug> --remove`(브랜치는 pick과 같은 설정을 따른다). 나중에 보겠다면 서버·hub를 두고 `vibe ab status <slug>`의 hub URL을 다시 준다.
