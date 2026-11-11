@@ -70,7 +70,7 @@ test('command adapter runs one new process/session per task, preflights once, an
 })
 
 for (const [name, execute, expected] of [
-  ['unchanged HEAD/STATE', async () => unit(), 'no-progress'],
+  ['unchanged HEAD/STATE', async () => ({ exitCode: 0, result: { kind: 'none', id: '', outcome: 'no_work', pushed: false, next: 'implementation' } }), 'no-progress'],
   ['repeated session errors', async () => ({ exitCode: 1, result: null }), 'session-failures'],
 ]) test(`loop stops after two ${name}`, async (t) => {
   const { root } = await fixture(t)
@@ -432,7 +432,7 @@ for (const pushEachUnit of [false, true]) test(`strict concurrency runs one fina
   const result = await vibeLoop({ ...opts(root), maxUnits: 3, pushEachUnit }, { preflight: passed,
     status: async (options) => ({ ...await vibeStatus(options), concurrency: 'strict' }),
     claim: async () => ({ ok: true }),
-    execute: async () => { await writeFile(path.join(root, 'app.js'), `// ${++n}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit() },
+    execute: async (_options, job) => completeTask(root, job.brief.taskId, `// ${++n}\n`),
     sync: async () => ({ ok: true }),
     check: async () => { checks++; return { ok: true } }, push: async (options) => { pushes++; assert.ok(options.verifiedCommit); return { ok: true, pushed: null } },
   })
@@ -481,10 +481,10 @@ test('one fetch per unit boundary: the post-claim and post-unit status stay loca
 })
 
 test('hourly snapshots span fresh unit sessions instead of resetting at each launch', async (t) => {
-  const { root } = await fixture(t)
+  const { root } = await fixture(t, 4)
   let now = Date.now(), n = 0, snapshots = 0
   const result = await vibeLoop({ ...opts(root), maxUnits: 4, maxHours: 5 }, { preflight: passed, now: () => now,
-    execute: async () => { now += 30 * 60000; await writeFile(path.join(root, 'app.js'), `// ${++n}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit() },
+    execute: async (_options, job) => { now += 30 * 60000; return completeTask(root, job.brief.taskId, `// ${++n}\n`) },
     checkpoint: async () => { snapshots++ }, check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: null }),
   })
   assert.equal(result.ok, true, result.error); assert.equal(result.units, 4); assert.equal(snapshots, 2)
@@ -508,8 +508,8 @@ test('the loop result, manifest and closing report carry the time breakdown', as
   const { root } = await fixture(t)
   let calls = 0
   const result = await vibeLoop({ ...opts(root), maxUnits: 2 }, { preflight: passed,
-    execute: async () => { calls++; await writeFile(path.join(root, 'app.js'), `// ${calls}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task')
-      return { ...unit(), checks: { runs: 1, cached: 0, ms: 1000 }, usage: { input: 1, cacheWrite: 2, cacheRead: 3, output: 4 } } },
+    execute: async (_options, job) => ({ ...(await completeTask(root, job.brief.taskId, `// ${++calls}\n`)),
+      checks: { runs: 1, cached: 0, ms: 1000 }, usage: { input: 1, cacheWrite: 2, cacheRead: 3, output: 4 } }),
     check: async () => ({ ok: true, ms: 120000 }),
   })
   assert.equal(result.ok, true, result.error)

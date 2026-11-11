@@ -21,11 +21,17 @@ async function hook(temporary) {
   await writeFile(handler, `let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>require('node:fs').appendFileSync(process.argv[2],input.trim()+'\\n'));`)
   return { command: [process.execPath, handler, received].map(shellQuote).join(' '), received: async () => (await readFile(received, 'utf8').catch(() => '')).split('\n').filter(Boolean).map((line) => JSON.parse(line)) }
 }
-async function code(root, n = 1) {
+// Successful unit fixtures close their selected task; verification mutations change code only.
+async function code(root, n = 1, { close = true } = {}) {
+  const done = structuredClone(receipt)
+  if (close) {
+    const name = (await readdir(path.join(root, 'spec/tasks'))).find((name) => /^T\d+\..*\.md$/.test(name))
+    if (name) { done.result.id = name.split('.')[0]; await archiveTask(root, done.result.id) }
+  }
   await writeFile(path.join(root, 'app.js'), `// unit ${n}\n`)
-  await git(root, 'add', 'app.js')
+  await git(root, 'add', 'app.js', ...(close ? ['spec'] : []))
   await git(root, 'commit', '-q', '-m', `unit ${n}`)
-  return structuredClone(receipt)
+  return done
 }
 
 test('immediate cancellation after a successful unit never runs closing verification or dirties the report', async (t) => {
@@ -104,7 +110,7 @@ test('unit completion -> owned report commit -> configuration acknowledgement ->
   assert.equal(await git(root, 'status', '--porcelain'), '')
 })
 
-for (const file of ['app.js', 'spec/ssot/ARCH.md', 'spec/tasks/T001.example.md', 'spec/STATE.md', 'owner-notes.txt']) {
+for (const file of ['app.js', 'spec/ssot/ARCH.md', 'spec/tasks/T002.example.md', 'spec/STATE.md', 'owner-notes.txt']) {
   test(`unknown changes are preserved and prevent publication/next unit: ${file}`, async (t) => {
     const { root } = await fixture(t)
     let calls = 0, expected
@@ -336,7 +342,7 @@ for (const changeAfterVerification of [false, true]) test(`isolated bare publica
     check: async ({ signal }) => {
       assert.equal(signal.aborted, false)
       verified.push(await git(root, 'rev-parse', 'HEAD'))
-      if (changeAfterVerification) await code(root, 'changed-after-check')
+      if (changeAfterVerification) await code(root, 'changed-after-check', { close: false })
       return { ok: true }
     },
     push: async (config) => {
