@@ -1,5 +1,5 @@
-import { mkdir, readFile, copyFile, open, access, rm } from 'node:fs/promises'
-import { writeSync } from 'node:fs'
+import { mkdir, readFile, copyFile, cp, open, access, rm } from 'node:fs/promises'
+import { writeSync, constants } from 'node:fs'
 import { spawn, execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import net from 'node:net'
@@ -131,7 +131,65 @@ async function addTree(ctx, slug, name, from, copies) {
   }
   return { branch, path: destination }
 }
+// A variant: a worktree on ab/<slug>/<name> from `from` and the first free port from `port` no other variant holds.
+async function addVariant(ctx, record, name, from, copies, port) {
+  const used = new Set(Object.values(record.variants).map((variant) => variant.port))
+  while (used.has(port) || !(await portFree(port))) port++
+  return { ...(await addTree(ctx, record.slug, name, from, copies)), port, server: null, runs: [] }
+}
 const setupResult = (entry) => entry.exitCode === 0 ? { ok: true, ms: entry.ms } : { ok: false, ms: entry.ms, tail: entry.tail, log: entry.log }
+function relative(files = [], flag) {
+  return files.map((file) => {
+    const normal = path.posix.normalize(String(file).replaceAll('\\', '/')).replace(/\/+$/, '')
+    if (path.posix.isAbsolute(normal) || normal === '.' || normal === '..' || normal.startsWith('../')) fail(`${flag}는 checkout 안의 상대 경로입니다: ${file}`)
+    return normal
+  })
+}
+
+const LOCKFILES = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb']
+const committedBytes = (cwd, spec) => execFileAsync('git', ['-C', cwd, 'show', spec], { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 }).then((result) => result.stdout, () => null)
+// A --reuse dir is reusable at `base` when it exists in this checkout and the nearest lockfile above it
+// is byte-identical in `base`: the copy is then what that lockfile installs. Returns why not, or null.
+async function reuseBlocker(root, dir, base) {
+  if (!(await exists(path.join(root, dir)))) return 'not in this checkout'
+  for (let parent = path.posix.dirname(dir); ; parent = path.posix.dirname(parent)) {
+    for (const name of LOCKFILES) {
+      const file = path.posix.join(parent, name), local = await readFile(path.join(root, file)).catch(() => null)
+      if (!local) continue
+      const committed = await committedBytes(root, `${base}:${file}`)
+      return committed && local.equals(committed) ? null : `${file} differs at base`
+    }
+    if (parent === '.') return 'no lockfile'
+  }
+}
+const reuseBlockers = async (root, dirs, base) => Object.fromEntries(await Promise.all(dirs.map(async (dir) => [dir, await reuseBlocker(root, dir, base)])))
+// Dependencies of one worktree: each reusable --reuse dir is cloned from this checkout (copy-on-write
+// where the filesystem can). Never a symlink: an install in the variant would write into this checkout,
+// and bundlers resolve real paths outside the worktree. Anything not reused runs --setup instead.
+async function prepare(ctx, slug, options, { name, path: cwd, port }, blockers) {
+  const reuse = []
+  for (const dir of Object.keys(blockers)) {
+    let reason = blockers[dir]
+    const started = Date.now()
+    if (!reason) {
+      try {
+        await mkdir(path.dirname(path.join(cwd, dir)), { recursive: true })
+        await cp(path.join(ctx.root, dir), path.join(cwd, dir), { recursive: true, mode: constants.COPYFILE_FICLONE, verbatimSymlinks: true })
+      } catch (error) { reason = `copy failed: ${error.code ?? error.message}` }
+    }
+    reuse.push(reason ? { dir, reused: false, reason } : { dir, reused: true, ms: Date.now() - started })
+  }
+  const install = options.setup && (!reuse.length || reuse.some((entry) => !entry.reused))
+  const setup = install ? await shell(options.setup, cwd, port ? { PORT: String(port) } : {}, fileOf(ctx, slug, `${name}-setup.log`), Number(options.timeoutMs ?? 1200000)) : null
+  return { reuse, setup }
+}
+// start/add report: setup per worktree that ran it, reuse per worktree when --reuse was given.
+function depsReport(prepared) {
+  const entries = Object.entries(prepared)
+  const setup = entries.filter(([, entry]) => entry.setup).map(([name, entry]) => [name, setupResult(entry.setup)])
+  const reuse = entries.filter(([, entry]) => entry.reuse.length).map(([name, entry]) => [name, entry.reuse])
+  return { ok: setup.every(([, entry]) => entry.ok), report: { ...(setup.length ? { setup: Object.fromEntries(setup) } : {}), ...(reuse.length ? { reuse: Object.fromEntries(reuse) } : {}) } }
+}
 
 async function sessionOptions(ctx, options, deps) {
   const timeoutMs = Number(options.timeoutMs ?? 3600000)
@@ -183,13 +241,12 @@ export async function abStart(options = {}, injected = {}) {
   const count = Number(options.variants ?? 2)
   if (!Number.isInteger(count) || count < 2 || count > NAMES.length) fail(`variants는 2~${NAMES.length}입니다.`)
   if ((await git(ctx.root, ['status', '--porcelain'])).trim()) fail('미커밋 변경이 있습니다. 변형은 커밋된 기준에서 시작합니다 — 사용자 변경을 먼저 정리하세요.')
-  const copies = options.copy ?? []
-  for (const file of copies) if (path.isAbsolute(file) || file.split(/[\\/]/).includes('..')) fail(`--copy는 checkout 안의 상대 경로입니다: ${file}`)
+  const copies = relative(options.copy, '--copy'), reuse = relative(options.reuse, '--reuse')
   if (options.scaffold && options.scaffoldPrompt) fail('--scaffold(있는 커밋)와 --scaffold-prompt(새로 만들기) 중 하나만 줍니다.')
   const origin = (await git(ctx.root, ['rev-parse', '--verify', `${options.base ?? 'HEAD'}^{commit}`])).trim()
   let scaffold = options.scaffold ? (await git(ctx.root, ['rev-parse', '--verify', `${options.scaffold}^{commit}`])).trim() : null
   if (scaffold && (scaffold === origin || (await git(ctx.root, ['merge-base', '--is-ancestor', origin, scaffold], [1])) === null)) fail(`scaffold ${options.scaffold}는 기준(${options.base ?? 'HEAD'}) 위의 커밋이어야 합니다. --base로 그 기준을 주세요.`)
-  let port = Number(options.basePort ?? 4101)
+  const port = Number(options.basePort ?? 4101)
   if (!Number.isInteger(port) || port < 1024 || port > 65000) fail('base-port는 1024~65000입니다.')
   // Read now: the coordinator's temporary files may be gone before the variants run.
   const shared = options.sharedFile ? await readFile(path.resolve(options.sharedFile), 'utf8') : ''
@@ -199,13 +256,12 @@ export async function abStart(options = {}, injected = {}) {
   // start owns the record until it returns; its writes still take the lock so none interleaves with another command's.
   const store = () => locked(ctx, slug, () => save(ctx, record))
   for (const name of ['feedback.json', 'hub.json']) await rm(fileOf(ctx, slug, name), { force: true })
-  const install = (cwd, env, name) => shell(options.setup, cwd, env, fileOf(ctx, slug, `${name}-setup.log`), Number(options.timeoutMs ?? 1200000))
   if (brief) {
     // One session makes the screen render from fixtures on ab/<slug>/base; every variant starts from its commit.
     const tree = record.scaffoldTree = await addTree(ctx, slug, BASE, origin, copies)
     await store()
-    const setup = options.setup ? await install(tree.path, {}, BASE) : null
-    if (setup && setup.exitCode !== 0) return { schemaVersion: 1, ok: false, slug, origin, setup: { [BASE]: setupResult(setup) } }
+    const prepared = depsReport({ [BASE]: await prepare(ctx, slug, options, { name: BASE, path: tree.path }, await reuseBlockers(ctx.root, reuse, origin)) })
+    if (!prepared.ok) return { schemaVersion: 1, ok: false, slug, origin, ...prepared.report }
     const prompt = [shared.trim() && `Comparison context (the variants build this; you build only the scaffold):\n${shared.trim()}`, brief].filter(Boolean).join('\n\n')
     const run = record.scaffoldRun = await headless(deps.execute, session, { role: 'scaffold', cwd: tree.path, prompt, log: fileOf(ctx, slug, `${BASE}-run.log`), subject: `ab ${slug}/${BASE}: scaffold` })
     if (run.outcome !== 'completed' || !run.changed) {
@@ -218,20 +274,17 @@ export async function abStart(options = {}, injected = {}) {
   }
   if (scaffold) Object.assign(record, { base: scaffold, origin, scaffold })
   for (const name of NAMES.slice(0, count)) {
-    while (!(await portFree(port))) port++
-    record.variants[name] = { ...(await addTree(ctx, slug, name, record.base, copies)), port: port++, server: null, runs: [] }
+    record.variants[name] = await addVariant(ctx, record, name, record.base, copies, port)
     await store()
   }
-  // Dependencies install in every worktree at once; a failure keeps the worktrees for a retry.
-  const setup = options.setup ? Object.fromEntries(await Promise.all(Object.entries(record.variants).map(async ([name, variant]) =>
-    [name, await install(variant.path, { PORT: String(variant.port) }, name)]))) : null
-  const ok = !setup || Object.values(setup).every((entry) => entry.exitCode === 0)
+  // Dependencies go into every worktree at once; a failure keeps the worktrees for a retry.
+  const blockers = await reuseBlockers(ctx.root, reuse, record.base)
+  const installed = depsReport(Object.fromEntries(await Promise.all(Object.entries(record.variants).map(async ([name, variant]) => [name, await prepare(ctx, slug, options, { name, ...variant }, blockers)]))))
   const run = record.scaffoldRun
   const files = await scaffoldFiles(ctx.root, record)
-  return { schemaVersion: 1, ok, slug, base: record.base, ...(scaffold ? { origin, scaffold, scaffoldFiles: { added: files.added, modified: files.modified } } : {}),
+  return { schemaVersion: 1, ok: installed.ok, slug, base: record.base, ...(scaffold ? { origin, scaffold, scaffoldFiles: { added: files.added, modified: files.modified } } : {}),
     ...(run ? { scaffoldRun: { summary: run.summary, view: run.view, path: run.path, ms: run.ms, usage: run.usage, log: run.log } } : {}),
-    variants: Object.entries(record.variants).map(([name, variant]) => ({ variant: name, branch: variant.branch, path: variant.path, port: variant.port, url: urlOf(variant) })),
-    ...(setup ? { setup: Object.fromEntries(Object.entries(setup).map(([name, entry]) => [name, setupResult(entry)])) } : {}) }
+    variants: Object.entries(record.variants).map(([name, variant]) => ({ variant: name, branch: variant.branch, path: variant.path, port: variant.port, url: urlOf(variant) })), ...installed.report }
 }
 
 // [scaffold rule][shared text] then [variant line][approach][follow-up]: everything before the variant

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, writeFile, access, mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { readFile, writeFile, access, mkdtemp, mkdir, rm, lstat, readlink, symlink } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import net from 'node:net'
@@ -99,6 +99,37 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   await assert.rejects(fetch(served.variants[0].url))
   await assert.rejects(fetch(served.hub))
   await assert.rejects(abStatus({ targetRoot: root, slug: 'hero' }), /없습니다/)
+})
+
+test('--reuse clones a dependency dir whose lockfile is unchanged at the base and installs where it changed', async (t) => {
+  const { root } = await project(t, 'deps', 'stale')
+  await writeFile(path.join(root, '.gitignore'), 'node_modules\n'); await writeFile(path.join(root, 'package-lock.json'), '{"lock":1}\n')
+  await git(root, 'add', '.gitignore', 'package-lock.json'); await git(root, 'commit', '-q', '-m', 'lock 1')
+  await writeFile(path.join(root, 'package-lock.json'), '{"lock":2}\n'); await git(root, 'commit', '-q', '-am', 'lock 2')
+  await mkdir(path.join(root, 'node_modules/pkg'), { recursive: true }); await mkdir(path.join(root, 'node_modules/.bin'))
+  await writeFile(path.join(root, 'node_modules/pkg/index.js'), 'module.exports = 2\n'); await symlink('../pkg/index.js', path.join(root, 'node_modules/.bin/pkg'))
+  const setup = 'node -e "require(\'fs\').writeFileSync(\'installed\',\'1\')"'
+  await assert.rejects(abStart({ targetRoot: root, slug: 'deps', reuse: ['../node_modules'] }), /--reuse/)
+  const started = await abStart({ targetRoot: root, slug: 'deps', variants: 2, basePort: 4951, setup, reuse: ['node_modules/', 'apps/web/node_modules'] })
+  assert.equal(started.ok, true, JSON.stringify(started))
+  // A dir this checkout lacks cannot be reused, so setup still runs for that worktree.
+  assert.deepEqual(started.reuse.a.map((entry) => [entry.dir, entry.reused, entry.reason]), [['node_modules', true, undefined], ['apps/web/node_modules', false, 'not in this checkout']])
+  assert.deepEqual(Object.keys(started.setup), ['a', 'b'])
+  const only = await abStart({ targetRoot: root, slug: 'stale', variants: 2, basePort: 4961, setup, reuse: ['node_modules'] })
+  assert.equal(only.setup, undefined); assert.ok(only.reuse.b[0].reused && only.reuse.b[0].ms >= 0)
+  for (const entry of only.variants) {
+    // A real copy, never a link into this checkout: an install in the variant must not reach it.
+    const copied = path.join(entry.path, 'node_modules')
+    assert.ok((await lstat(copied)).isDirectory()); assert.equal(await readlink(path.join(copied, '.bin/pkg')), '../pkg/index.js')
+    assert.equal(await exists(path.join(entry.path, 'installed')), false)
+    await writeFile(path.join(copied, 'pkg/index.js'), 'module.exports = "variant"\n')
+  }
+  assert.equal(await readFile(path.join(root, 'node_modules/pkg/index.js'), 'utf8'), 'module.exports = 2\n')
+  await abStop({ targetRoot: root, slug: 'stale', remove: true })
+  // Started from the commit before the lockfile changed, the copy would be the wrong install: setup runs.
+  const old = await abStart({ targetRoot: root, slug: 'stale', variants: 2, basePort: 4961, setup, reuse: ['node_modules'], base: 'HEAD~1' })
+  assert.deepEqual(old.reuse.a, [{ dir: 'node_modules', reused: false, reason: 'package-lock.json differs at base' }]); assert.equal(old.setup.a.ok, true)
+  for (const entry of old.variants) { assert.ok(await exists(path.join(entry.path, 'installed'))); assert.equal(await exists(path.join(entry.path, 'node_modules')), false) }
 })
 
 test('start refuses uncommitted user changes; stop --remove keeps branches when prune-branches is false unless forced', async (t) => {

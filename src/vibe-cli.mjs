@@ -85,7 +85,7 @@ const allowed = {
   claim: ['tag', 'task', 'remote'], task: ['tag', 'at'],
   checkpoint: ['tag', 'message', 'remote'], prune: ['tag', 'work', 'remote'], settings: ['set'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
   awake: ['hours', 'remote'], check: ['tier', 'diff-base', 'task', 'timeout-ms'], design: ['tag', 'scope', 'verify', 'timeout-ms'],
-  ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'shared-file', 'scaffold-prompt', 'scaffold', 'variant', 'prompt-file', 'follow-up-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
+  ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'reuse', 'shared-file', 'scaffold-prompt', 'scaffold', 'variant', 'prompt-file', 'follow-up-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
 }
 const flags = { task: ['force-other'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep'], ab: ['remove', 'prune-branches', 'restart'] }
 const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
@@ -124,7 +124,7 @@ export async function runVibeCLI(args) {
     const value = equals === -1 ? args.shift() : argument.slice(equals + 1)
     if (value === undefined || (value.startsWith('--') && name !== 'probe')) throw new SkillPackageError(`${argument} 값이 필요합니다.`)
     const field = name === 'target' ? 'targetRoot' : name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())
-    if (['allow-tool', 'verify', 'copy', 'set'].includes(name) || (action === 'plan-push' && name === 'commit')) (options[field] ??= []).push(value)
+    if (['allow-tool', 'verify', 'copy', 'reuse', 'set'].includes(name) || (action === 'plan-push' && name === 'commit')) (options[field] ??= []).push(value)
     else options[field] = value
   }
   if (action === 'check') {
