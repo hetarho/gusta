@@ -49,6 +49,6 @@ description: >-
 ## 5. 채택과 정리
 - `vibe ab pick <slug> --variant <v> --json`: 서버·hub를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리한다. 변형 브랜치는 spec/SETTINGS.md `prune-branches`(기본 true)대로 지운다. false여도 `--prune-branches`를 주면 지운다. 충돌이면 현재 브랜치는 그대로 두고 보고한다.
 - scaffold는 pick이 빼고 합친다. todo(실제 데이터 연결)는 create-task로.
-- 채택 기록은 디자인 마감과 같다: STATE log `- YYMMDD ab <slug>: adopt <v> — <approach>`를 merge 직후 커밋 하나로 남기고, 채택안이 SSOT 규칙을 바꿨으면 이어서 update-ssot(대안=고르지 않은 변형, 이유=사용자 선택 근거).
+- 채택 기록: pick이 쓴 STATE log 줄(files)을 커밋 하나로 남기고, 채택안이 SSOT 규칙을 바꿨으면 이어서 update-ssot(대안=고르지 않은 변형, 이유=사용자 선택 근거).
 - 합친 뒤에는 평소대로 영향 검사, push 직전 마감 관문(start-vibe 4절).
 - 고르지 않고 끝내면 `vibe ab stop <slug> --remove`(브랜치는 pick과 같은 설정을 따른다). 나중에 보겠다면 서버·hub를 두고 `vibe ab status <slug>`의 hub URL을 다시 준다.

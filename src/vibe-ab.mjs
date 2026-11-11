@@ -1,4 +1,4 @@
-import { mkdir, readFile, copyFile, cp, open, access, rm } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, copyFile, cp, open, access, rm } from 'node:fs/promises'
 import { writeSync, constants } from 'node:fs'
 import { spawn, execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -12,6 +12,8 @@ import { atomicJSON, processAlive, controlTransaction } from './loop-control.mjs
 import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
 import { inspectProviders, availableProvider, providerFlags } from './work-providers.mjs'
 import { readSetting, permissionMode } from './settings.mjs'
+import { closeTasks } from './state-doc.mjs'
+import { yymmdd } from './spec-format.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { urlOf, readFeedback } from './vibe-ab-hub.mjs'
 
@@ -557,8 +559,12 @@ async function withoutScaffold(ctx, record, name, files) {
   } finally { await rm(index, { force: true }) }
 }
 
-// Adoption merges exactly one variant into the checkout that started the comparison. Recording the
-// decision (update-ssot when a rule changed, STATE log otherwise) stays with the calling skill.
+// The adoption log line as FORMAT writes it; the approach is the first line the variant was asked to build.
+const firstLine = (text) => String(text ?? '').split('\n').map((line) => line.replace(/^(?:#+|[-*>])\s+/, '').trim()).find(Boolean) ?? ''
+const STATE = 'spec/STATE.md'
+
+// Adoption merges exactly one variant into the checkout that started the comparison and logs it in
+// STATE, uncommitted like vibe beat. update-ssot, when the choice changed a rule, stays with the skill.
 export async function abPick(options = {}) {
   const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
   if (!options.variant) fail('--variant가 필요합니다.')
@@ -587,7 +593,10 @@ export async function abPick(options = {}) {
   const prune = await pruning(ctx, options)
   if (prune) await pruneBranches(ctx, trees)
   await rm(recordFile(ctx, slug), { force: true })
-  return { schemaVersion: 1, ok: true, slug, adopted: name, merged, summary: winner.runs.at(-1)?.summary ?? null, branches: prune ? [] : trees.map(([, tree]) => tree.branch),
+  const state = await readFile(path.join(ctx.root, STATE), 'utf8').catch(() => null), approach = firstLine(winner.approach ?? winner.runs.at(-1)?.summary)
+  const logLine = state === null ? null : `- ${yymmdd()} ab ${slug}: adopt ${name}${approach ? ` — ${approach}` : ''}`
+  if (logLine) await writeFile(path.join(ctx.root, STATE), closeTasks(state, [], { log: logLine }).text)
+  return { schemaVersion: 1, ok: true, slug, adopted: name, merged, logLine, files: logLine ? [STATE] : [], summary: winner.runs.at(-1)?.summary ?? null, branches: prune ? [] : trees.map(([, tree]) => tree.branch),
     ...(record.scaffold ? { scaffold: record.scaffold, scaffoldFiles: { added: files.added, modified: files.modified }, todo: '채택한 UI는 mock 데이터 위에서 만들어졌습니다(scaffold는 빠짐). 실제 데이터 연결이 남았습니다.' } : {}) }
 }
 

@@ -89,6 +89,9 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   const before = await git(root, 'rev-parse', 'HEAD'), winner = await git(root, 'rev-parse', 'ab/hero/b')
   const adopted = await abPick({ targetRoot: root, slug: 'hero', variant: 'b' })
   assert.equal(adopted.adopted, 'b'); assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "beta"\n')
+  // The adoption is logged in STATE and left for the session to commit.
+  assert.match(adopted.logLine, /^- \d{6} ab hero: adopt b — Make it beta\.$/); assert.deepEqual(adopted.files, ['spec/STATE.md'])
+  assert.equal(await git(root, 'status', '--porcelain'), 'M spec/STATE.md')
   assert.match(await git(root, 'log', '-1', '--format=%s'), /ab hero: adopt b/)
   assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before); assert.equal(await git(root, 'rev-parse', 'HEAD^2'), winner)
   for (const entry of started.variants) assert.equal(await exists(entry.path), false)
@@ -480,6 +483,29 @@ test('records from before shared prompts keep working: plain prompt, follow-up w
   await abRun({ targetRoot: root, slug: 'old', variant: 'a', followUpFile }, { inspect: providers, flags: noFlags, execute: capture(seen, session('plain2')) })
   assert.equal(seen[1].prompt, `Variant a of old. $PORT for this variant: ${started.variants[0].port}.\n\nYour last run's summary: plain variant\n\nYour branch already contains this work; change only what is asked.\n\nFollow-up request:\nTighten spacing.`)
   assert.equal((await abStatus({ targetRoot: root, slug: 'old' })).variants[0].commits, 2)
+})
+
+test('pick logs the adoption on top of a STATE log kept to 20 lines, and writes nothing without spec/', async (t) => {
+  const { root, temporary } = await project(t, 'logged', 'bare')
+  const state = await readFile(path.join(root, 'spec/STATE.md'), 'utf8')
+  const old = Array.from({ length: 20 }, (_, index) => `- 2601${String(index + 10).padStart(2, '0')} entry ${index}`)
+  await writeFile(path.join(root, 'spec/STATE.md'), `${state.trimEnd()}\n${old.join('\n')}\n`); await git(root, 'commit', '-q', '-am', 'full log')
+  const promptFile = path.join(temporary, 'a.md'); await writeFile(promptFile, '# Cards first\n\nThree columns, price on top.')
+  for (const slug of ['logged', 'bare']) {
+    await abStart({ targetRoot: root, slug, variants: 2, basePort: 4991 })
+    await abRun({ targetRoot: root, slug, variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: session(slug) })
+    if (slug === 'bare') { await git(root, 'rm', '-q', '-r', 'spec'); await git(root, 'commit', '-q', '-m', 'no spec') }
+    const adopted = await abPick({ targetRoot: root, slug, variant: 'a' })
+    if (slug === 'bare') {
+      assert.deepEqual([adopted.logLine, adopted.files], [null, []]); assert.equal(await exists(path.join(root, 'spec/STATE.md')), false)
+      assert.equal(await git(root, 'status', '--porcelain'), '')
+      continue
+    }
+    assert.match(adopted.logLine, /^- \d{6} ab logged: adopt a — Cards first$/)
+    const log = (await readFile(path.join(root, 'spec/STATE.md'), 'utf8')).split('## log\n')[1].trimEnd().split('\n')
+    assert.deepEqual(log, [adopted.logLine, ...old.slice(0, 19)])
+    await git(root, 'commit', '-q', '-am', 'log adoption')
+  }
 })
 
 test('the detached hub reports its port, answers on localhost and exits once its comparison is gone', async (t) => {
