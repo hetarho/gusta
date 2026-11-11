@@ -126,8 +126,10 @@ test('readTaskBoard at a commit lists tasks and the done archive like the checko
 const markerPaths = '.git\n.git/MERGE_HEAD\n.git/CHERRY_PICK_HEAD\n.git/REVERT_HEAD\n.git/rebase-merge\n.git/rebase-apply\n'
 function fakeGit({ refs = [], files = [], verified = [], failBatch = false, packed = null } = {}) {
   const calls = []
+  const reads = []
   return {
     calls,
+    reads,
     run: async (root, args) => {
       calls.push(args.join(' '))
       if (args[1] === '--verify') return verified.includes(args[3]) ? `${sha}\n` : null
@@ -139,7 +141,7 @@ function fakeGit({ refs = [], files = [], verified = [], failBatch = false, pack
       return Buffer.from(input.split('\n').filter(Boolean).map((name) => refs.includes(name) ? `${sha} commit 1` : `${name} missing`).join('\n') + '\n')
     },
     present: async (file) => files.some((name) => file.endsWith(`/.git/${name}`)),
-    read: async (file) => file.endsWith('/.git/packed-refs') ? packed : null,
+    read: async (file) => { reads.push(file); return file.endsWith('/.git/packed-refs') ? packed : null },
   }
 }
 
@@ -160,9 +162,20 @@ test('gitOperation: two processes find the first operation in the original order
     assert.equal(await gitOperation('/repo', asked), 'MERGE_HEAD')
     assert.equal(asked.calls.at(-1), 'rev-parse --verify --quiet MERGE_HEAD')
   }
-  const unrelated = fakeGit({ packed: `${sha} refs/heads/main\n${sha} refs/heads/MERGE_HEAD-old\n` })
+  const unrelated = fakeGit({ packed: `${sha} refs/heads/main\n${sha} refs/heads/MERGE_HEAD-old\n${sha} refs/heads/x REVERT_HEAD\n` })
   assert.equal(await gitOperation('/repo', unrelated), null)
   assert.equal(unrelated.calls.length, 2)
+  // packed-refs is read once per call, and only when a missing marker gets that far.
+  assert.equal(unrelated.reads.length, 1)
+  const found = fakeGit({ refs: ['MERGE_HEAD'], packed: '' })
+  assert.equal(await gitOperation('/repo', found), 'MERGE_HEAD')
+  assert.equal(found.reads.length, 0)
+  // The first line, CRLF and a last line without a newline still count.
+  for (const packed of [`${sha} refs/heads/REVERT_HEAD\n`, `# pack-refs with: peeled\r\n${sha} refs/remotes/REVERT_HEAD/HEAD\r\n`, `${sha} refs/heads/main\n${sha} refs/REVERT_HEAD`]) {
+    const asked = fakeGit({ packed, verified: ['REVERT_HEAD'] })
+    assert.equal(await gitOperation('/repo', asked), 'REVERT_HEAD', JSON.stringify(packed))
+    assert.equal(asked.reads.length, 1)
+  }
   // A failed batch takes the one-call-per-marker path.
   const fallback = fakeGit({ failBatch: true, files: ['rebase-apply'] })
   assert.equal(await gitOperation('/repo', fallback), 'rebase-apply')

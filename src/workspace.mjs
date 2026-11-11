@@ -83,18 +83,32 @@ async function readText(file) {
 // The refs a pseudo-ref name abbreviates besides itself, in rev-parse's lookup order.
 const abbreviated = (name) => [`refs/${name}`, `refs/tags/${name}`, `refs/heads/${name}`, `refs/remotes/${name}`, `refs/remotes/${name}/HEAD`]
 
+// Whether packed-refs text has a "<oid> <ref>" line for ref: " <ref>" ending its line (LF, CRLF
+// or the end of the file). Refnames hold no spaces, so the space marks where the name starts.
+function packedRef(text, ref) {
+  const needle = ` ${ref}`
+  for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1)) {
+    const end = at + needle.length
+    if (end === text.length || text[end] === '\n' || (text[end] === '\r' && (end + 1 === text.length || text[end + 1] === '\n'))) return true
+  }
+  return false
+}
+
 // cat-file calls a name missing both when nothing resolves it and when a ref resolves it to a lost
 // object, where rev-parse --verify still succeeds. Only an absent ref settles it without asking:
 // no pseudo-ref file, no loose or packed ref the name abbreviates, and the files backend (no
-// reftable). Anything that cannot be ruled out, or read, is undecided.
-async function undecided(name, file, common, { present, read }) {
+// reftable). Anything that cannot be ruled out, or read, is undecided. One checker serves one
+// gitOperation call: reftable is looked up and packed-refs read at most once, and only when a
+// missing marker gets that far.
+function refChecker(common, { present, read }) {
   const maybe = (target) => present(target).catch(() => true)
-  if (await maybe(file) || await maybe(path.join(common, 'reftable'))) return true
-  for (const ref of abbreviated(name)) if (await maybe(path.join(common, ref))) return true
-  let packed
-  try { packed = await read(path.join(common, 'packed-refs')) } catch { return true }
-  const refs = new Set(abbreviated(name))
-  return (packed ?? '').split('\n').some((line) => refs.has(line.replace(/\r$/, '').split(' ')[1]))
+  let reftable, packed
+  return async (name, file) => {
+    if (await maybe(file) || await (reftable ??= maybe(path.join(common, 'reftable')))) return true
+    for (const ref of abbreviated(name)) if (await maybe(path.join(common, ref))) return true
+    const text = await (packed ??= read(path.join(common, 'packed-refs')).then((value) => value ?? '', () => null))
+    return text === null || abbreviated(name).some((ref) => packedRef(text, ref))
+  }
 }
 
 // The Git operation in progress in root's worktree, checked in this order: MERGE_HEAD,
@@ -119,10 +133,11 @@ export async function gitOperation(root, { run = git, batch = gitInput, present 
   const [common, ...paths] = listed.split('\n').map((line) => path.resolve(root, line.replace(/\r$/, '')))
   const refs = checked.toString('utf8').split('\n')
   if (paths.length !== 6 || !listed.endsWith('\n') || refs.length !== 4 || refs[3] !== '') return one()
+  const undecided = refChecker(common, { present, read })
   for (const [index, name] of PSEUDO_REFS.entries()) {
     if (/^[0-9a-f]{40,64} /.test(refs[index])) return name
     if (refs[index] !== `${name} missing`) return one()
-    if (await undecided(name, paths[index], common, { present, read }) && await run(root, ['rev-parse', '--verify', '--quiet', name], [1])) return name
+    if (await undecided(name, paths[index]) && await run(root, ['rev-parse', '--verify', '--quiet', name], [1])) return name
   }
   for (const [offset, name] of REBASE_DIRS.entries()) if (await present(paths[PSEUDO_REFS.length + offset])) return name
   return null
