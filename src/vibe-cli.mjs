@@ -3,7 +3,7 @@ import { vibePlanSync, vibePlanPush } from './vibe-plan.mjs'
 import { vibeLoop } from './vibe-loop.mjs'
 import { vibeCIWait } from './vibe-ci.mjs'
 import { AB_STEPS } from './vibe-ab.mjs'
-import { vibeBrief, vibeFormat } from './vibe-brief.mjs'
+import { vibeBrief, vibeFormat, renderBriefView } from './vibe-brief.mjs'
 import { vibeDesign } from './vibe-design.mjs'
 import { renderBrief } from './spec-context.mjs'
 import { vibeSettings } from './settings.mjs'
@@ -13,22 +13,23 @@ import { SkillPackageError } from './errors.mjs'
 
 const HELP = `세션 도구 (start-vibe·start-design이 사용)
   vibe loop --tag <tag> --provider claude|codex [--model <name>] [--max-units 100] [--max-hours 8]
-    [--final-reserve-hours <measured>] [--batch-size 3] [--permission-mode bypass|acceptEdits] [--allow-tool <rule> ...]
+    [--deadline <ISO>] [--final-reserve-hours <measured>] [--max-gate-attempts 3] [--batch-size 3] [--permission-mode bypass|acceptEdits] [--allow-tool <rule> ...]
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
     [--tasks 'T001 T002'] [--timeout-ms 3600000]
-                                                끝 예약(실측 전체 검증×2+수정 단위+CI)에는 새 단위 없이 마감 관문·수정 1회만
+                                                끝 예약(실측 전체 검증×2+수정 단위+CI)에는 새 단위 없이 마감 관문·수정. 2회 이후는 실패 집합 감소·시간·전체 시도 상한을 충족할 때만 연장
                                                 --tasks: 그 태스크(와 이번 실행이 그것을 위해 만든 태스크)만, 끝나면 마감 관문
                                                 --timeout-ms: 단위 하나의 상한(explore는 timebox+30분). 넘기면 미커밋 변경을
                                                 스냅샷해 새 단위가 이어받고, 다시 넘기면 쪼개고, 그래도 넘기면 주차. loop는 계속
   vibe loop --tag <tag> --stop                  정지 파일 기록; 실행 중인 단위도 종료
   vibe loop --tag <tag> --stop-after-unit       현재 단위·마감 검증 완료 후 정지
-  vibe loop --tag <tag> --configure --push-each-unit|--no-push-each-unit [--wait-ms <ms>]
+  vibe loop --tag <tag> --configure [--deadline <ISO>] [--final-reserve-hours <n>] [--push-each-unit|--no-push-each-unit] [--wait-ms <ms>]
                                                 현재 단위 완료 후 같은 호스트에 설정 적용; receipt로 적용 확인
   vibe loop --tag <tag> --status               heartbeat·요청/적용 설정·운영 오류 확인
   vibe loop --tag <tag> --recover-metadata     종료된 호스트의 정확히 소유한 메타데이터만 복구; 작업 재시작 없음
   vibe ci wait [--commit HEAD] [--branch <branch>] [--repo owner/repo]
     [--diff-base <sha>] [--timeout-ms 3600000] [--no-run-ms 120000] [--poll-ms 15000]
   vibe brief <T###|ID-n|ID|ID@rev ...> [--ref <commit>] [--deep] [--diff-base <task-start-sha>] [--json]
+    [--summary | --section tasks|decisions|sections|history|refs|referrers|inbox|issues|guidance] [--offset <n>] [--limit 20] [--snapshot <sha256>]
                                                 결정 원문 블록·필수 의존·전역 규칙·flow·constraints·stale base 이후 chg.
                                                 기본은 작업 트리(미커밋 포함), --ref는 그 커밋만. 마크다운이 기본이고 끝에 end 줄
   vibe format --section task|state|ssot|report|reading|settings  FORMAT 발췌만
@@ -49,7 +50,8 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
   vibe task done T### --tag <tag> [--at <sha|ref>] [--force-other]
                                                 done@날짜·tasks/done/ 이동·STATE 행 삭제·next·log (커밋은 호출자).
                                                 acceptance 미체크·빈 result·다른 tag(--force-other는 사용자 지시 때만)면 거절
-  vibe checkpoint --tag <tag> [--message <text>] 작업 트리 스냅샷을 wip/<tag>로 push (현재 브랜치는 그대로)
+  vibe checkpoint --tag <tag> [--message <text>] [--handoff] [--next <text>]
+                                                작업 트리 스냅샷을 wip/<tag>로 보존. --handoff는 최종 검증 없이 명시한 원격 인계(push false여도 WIP만 push)
   vibe prune [--tag <tag>] [--work <name>]      마감 정리: 합쳐진 작업 묶음·단위의 worktree·브랜치, 이 세션의 wip/<tag>.
                                                 spec/SETTINGS.md prune-branches가 false면 건너뜀. 안 합쳐진 커밋·미커밋 변경은 보존
   vibe settings [--set <key>=<value> ...]       spec/SETTINGS.md의 유효 설정(없으면 기본값) 보기·바꾸기 (커밋은 호출자)
@@ -87,15 +89,15 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
 `
 
 const allowed = {
-  loop: ['tag', 'provider', 'model', 'max-units', 'max-hours', 'final-reserve-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
-  ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref'], format: ['section'],
+  loop: ['tag', 'provider', 'model', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'max-gate-attempts', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
+  ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref', 'section', 'offset', 'limit', 'snapshot'], format: ['section'],
   status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host'],
   claim: ['tag', 'task', 'remote'], task: ['tag', 'at'],
-  checkpoint: ['tag', 'message', 'remote'], prune: ['tag', 'work', 'remote'], settings: ['set'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
+  checkpoint: ['tag', 'message', 'remote', 'next'], prune: ['tag', 'work', 'remote'], settings: ['set'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
   awake: ['hours', 'remote'], check: ['tier', 'diff-base', 'task', 'timeout-ms'], design: ['tag', 'scope', 'verify', 'timeout-ms'],
   ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'reuse', 'from', 'shared-file', 'scaffold-prompt', 'scaffold', 'variant', 'approach', 'prompt-file', 'prompt-dir', 'follow-up-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
 }
-const flags = { task: ['force-other'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'] }
+const flags = { task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'] }
 const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
   ab: (options) => { if (!Object.hasOwn(AB_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe ab <${Object.keys(AB_STEPS).join('|')}> <slug>`); return AB_STEPS[options.step](options) } }
 
@@ -142,8 +144,8 @@ export async function runVibeCLI(args) {
   try {
     const result = await actions[action](options)
     // A brief is read by a model: markdown with an end line unless JSON is asked for.
-    process.stdout.write(action === 'brief' && !options.json ? renderBrief(result) : `${JSON.stringify(result, null, 2)}\n`)
-    if (result.ok === false || (action === 'brief' && result.complete === false)) process.exitCode = 1
+    process.stdout.write(action === 'brief' && !options.json ? (result.view ? renderBriefView(result) : renderBrief(result)) : `${JSON.stringify(result, null, 2)}\n`)
+    if (result.ok === false || (action === 'brief' && (result.view ? result.sourceComplete === false : result.complete === false))) process.exitCode = 1
   } catch (error) {
     if (!(error instanceof SkillPackageError)) throw error
     process.stdout.write(`${JSON.stringify({ schemaVersion: 1, ok: false, error: error.message, details: error.details ?? [] }, null, 2)}\n`)

@@ -1,6 +1,6 @@
 # 실행기 연결
 
-작업 목록·배정·리뷰 승인·완료의 기준은 haeram runtime이다. 실행기는 에이전트를 시작하고 결과를 전달한다. 같은 clone의 worktree 사이에서 사용하며, 원격 clone 간 조정은 제공하지 않는다.
+작업 목록·배정·리뷰 승인·완료 기록의 기준은 haeram runtime이다. 사용자 목표는 시작 대화가 조정하고, 실행기는 에이전트를 시작해 결과를 전달한다. 실행기 종료 뒤에도 남은 목표를 확인하고 회복 가능한 문제는 원래 마감·전체 예산·검증 범위 안에서 새 하위 단위/일반 스킬로 이어간다. 같은 clone의 worktree 사이에서 사용하며, 원격 clone 간 조정은 제공하지 않는다.
 
 ## 일반 터미널: work run
 
@@ -16,7 +16,7 @@ npx haeram-spec-creator work run --work feature --provider codex --reviewer-prov
 기존 그룹은 기록된 한도를 사용하고, 한도 기록이 없는 그룹은 4/1/8을 사용한다.
 
 ### 분리 실행
-터미널·채팅이 끝나도 이어 가야 하면 같은 옵션에 `--detach`를 붙인다. 분리된 호스트가 runner 기록을 잡은 뒤에만 `{runId,pid,log}`를 반환한다(호스트 출력 `logs/run-<runId>.log`). 묶음당 runner는 하나라 두 번째 시작은 거부한다.
+`--detach`는 시작 대화로 완료 결과와 후속 실행을 돌려주는 실제 연결이 있을 때만 쓴다. 연결이 없으면 foreground 실행을 도구/하네스 완료 대기로 기다리고 자동 채팅 통지를 약속하지 않는다. 분리된 호스트가 runner 기록을 잡은 뒤에만 `{runId,pid,log}`를 반환한다(호스트 출력 `logs/run-<runId>.log`). 묶음당 runner는 하나라 두 번째 시작은 거부한다.
 - `work run --work <w> --status`: 파일만 읽어 호스트 상태(`running`·`host-lost`·`heartbeat-stale`·`unknown-host`·`stopped`)·PID·로그 경로·진행 중 dispatch(ID·로그 경로)를, 끝난 뒤에는 결과 요약(전체는 `logs/run-<runId>.json`)을 준다. 로그 내용은 싣지 않는다.
 - `work run --work <w> --stop`: 호스트에 SIGTERM을 보내 Ctrl-C와 같은 종료 경로(자식 중단·기록 보존)를 탄다. 맡김은 `kill` 대신 이것만 쓴다. `host-lost`면 신호 없이 `work runner-recover`로, heartbeat가 60초 넘게 멈췄거나 다른 호스트면 거부한다(PID 재사용 방지).
 

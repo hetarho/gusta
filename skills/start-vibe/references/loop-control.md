@@ -1,6 +1,6 @@
 # 실행 중 제어·종료·메타데이터 복구
 
-이 계약은 loop 호스트가 소유한다. Claude/Codex/command 워커는 호스트 보고서를 편집하거나 마감하지 않고 배정된 단위 결과만 반환한다. 다른 프로세스의 npm 캐시나 실행 중 소스를 고쳐서 동작을 바꾸지 않는다. 기존 호스트를 중단하거나 새 호스트로 자동 인계하지 않는다.
+이 계약의 실행·기록은 loop 호스트가 맡고, 사용자 목표의 오케스트레이션은 시작 대화가 소유한다. Claude/Codex/command 워커는 호스트 보고서를 편집하거나 마감하지 않고 배정된 단위 결과만 반환한다. 호스트 종료는 시작 대화가 읽을 영수증이며 사용자 작업 완료가 아니다. 회복 가능한 실행기 결함 뒤에는 시작 대화가 원래 마감·전체 예산·누적 이력을 유지해 일반 스킬/새 하위 단위로 이어간다. 다른 프로세스의 npm 캐시나 실행 중 소스를 고쳐서 동작을 바꾸지 않는다. 살아 있는 호스트를 중단·대체하는 전환기는 만들지 않는다.
 
 ## 세 동작
 
@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `--stop`, SIGINT, SIGTERM | 즉시 취소 | 시작하지 않음 | 메타데이터만; 새 검증/push 없음 |
 | `--stop-after-unit` | 현재 단위와 최종 관문 완료; 원래 deadline 우선 | 시작하지 않음 | 검증 성공분 게시 가능 |
-| `--configure --push-each-unit` 또는 `--no-push-each-unit` | 취소하지 않음 | 같은 호스트에서 새 설정으로 한 번 시작 | 시간·단위 한도 유지 |
+| `--configure` + push·deadline·예약 옵션 | 취소하지 않음 | 같은 호스트에서 적용된 설정 사용 | 명시한 시간 설정만 변경; 소비한 단위·이력 유지 |
 
 시간 한도는 두 단계다. `workDeadline`(deadline − 실측 마감 예약, [검증 절차](verification.md#시간-예산))부터는 수정 단위 외에는 시작하지 않고 `reason:final-window`로 마감 관문을 정상 실행한다 — 취소가 아니다. `deadline` 도달은 기존처럼 즉시 취소이며 진행 중 검증은 `cancelled`로 남는다.
 
@@ -16,16 +16,17 @@
 
 ## 요청과 확인
 
-실행 중인 checkout에서 같은 tag로 요청한다. `--configure`에는 push 옵션 하나가 필요하다. 이 옵션은 SETTINGS push의 게시 권한을 대신하지 않는다.
+실행 중인 checkout에서 같은 tag로 요청한다. `--configure`에는 push 옵션·`--deadline`·`--final-reserve-hours` 중 하나 이상이 필요하다. push 옵션은 SETTINGS push의 게시 권한을 대신하지 않는다. deadline은 `Z` 또는 offset이 있는 절대 ISO 시각이며, 예약 시간은 마감 전 관문에 남길 길이다.
 
 ```sh
 npx haeram-spec-creator vibe loop --tag k3f9 --configure --push-each-unit --wait-ms 30000 --json
+npx haeram-spec-creator vibe loop --tag k3f9 --configure --deadline '<ISO with Z or offset>' --final-reserve-hours 1 --wait-ms 30000 --json
 npx haeram-spec-creator vibe loop --tag k3f9 --status --json
 ```
 
-접수 응답의 `applied:false`·`request.status:pending`은 완료 확인이 아니다. `requests/<id>.json`의 `status:applied`, `actual.pushEachUnit`, `appliedAt`, `afterUnit`이 설정 적용 완료 확인이다. `--wait-ms`는 그 시간만 receipt를 기다리며, 시간 초과가 요청 취소/적용을 뜻하지 않는다. 여러 요청은 잠금 안에서 발급한 `sequence` 순서로 적용한다. 단위 완료 정지의 applied는 단위 경계에서 마감을 시작했다는 뜻이며, 호스트 종료는 `--status`의 `running:false`로 확인한다. 종료 전에 적용되지 못한 요청은 `cancelled`와 이유를 남긴다. 적용을 저장한 뒤 응답 기록에 실패해도 마지막 정리에서 적용 이력으로 receipt를 복원한다. 호스트가 죽으면 미확인 요청을 취소하며 작업을 재실행하지 않는다.
+접수 응답의 `applied:false`·`request.status:pending`은 완료 확인이 아니다. `requests/<id>.json`의 `status:applied`, `actual`의 실제 push·deadline·workDeadline·예약 값, `appliedAt`, `afterUnit`으로 적용을 확인한 뒤에만 사용자에게 설정됐다고 말한다. 요청 시 이미 지난 마감은 유효성 오류로 거절하고, 단위 경계에서 마감이 지났거나 예약을 확보할 수 없으면 실패 영수증을 남긴다. push 주기 변경은 마감 설정이 아니다. `--wait-ms`는 receipt 대기 길이이며 시간 초과가 취소/적용을 뜻하지 않는다. 여러 요청은 잠금 안에서 발급한 `sequence` 순서로 적용한다. 단위 완료 정지의 applied는 단위 경계에서 마감을 시작했다는 뜻이며, 호스트 종료는 `--status`의 `running:false`로 확인한다. 종료 전에 적용되지 못한 요청은 `cancelled`와 이유를 남긴다. 적용 저장 뒤 응답 기록에 실패하면 적용 이력으로 receipt를 복원한다. 호스트가 죽으면 미확인 요청을 취소하며 작업을 재실행하지 않는다.
 
-단위 완료 → journal로 식별한 보고서/active 정리·커밋 → 미확인 사용자 변경 확인 → 요청 설정 적용·manifest/receipt 저장 → 필요하면 검증 SHA로 push·게시 SHA의 CI 대기 → 다음 단위 순서다. `runId`, PID, `startedAt`, `deadline`, `limits`, `units`는 설정 변경으로 초기화하지 않는다. 현재 단위가 실패했거나 사용자가 취소하면 재시작 전환기를 붙이지 않는다. 파일 전체가 dirty라는 이유만으로 일반 복구 모델을 부르지 않는다.
+단위 완료 → journal로 식별한 보고서/active 정리·커밋 → 미확인 사용자 변경 확인 → 요청 설정 적용·manifest/receipt 저장 → 필요하면 검증 SHA로 push·게시 SHA의 CI 대기 → 다음 단위 순서다. `runId`, PID, `startedAt`, 소비한 `units`·회복 이력은 초기화하지 않고 deadline·예약은 명시한 값만 바꾼다. 현재 단위가 실패했거나 사용자가 취소하면 재시작 전환기를 붙이지 않는다. 파일 전체가 dirty라는 이유만으로 일반 복구 모델을 부르지 않는다.
 
 checkout Git 디렉터리의 소유권 lock은 한 호스트만 허용한다. 모든 제어는 manifest의 checkout·tag·runId를 확인한다. detach 응답은 자식의 소유권 기록을 확인한 뒤 반환하며 preflight 완료는 status에서 별도 확인한다. 호스트는 독립 감시자의 준비 응답도 확인한 뒤 단위를 시작한다. 인계·새 워커 재시도·복구 실행기는 없다.
 
@@ -47,13 +48,16 @@ npx haeram-spec-creator vibe loop --tag k3f9 --recover-metadata --json
 ## 상태와 알림
 
 runtime는 `<Git common dir>/haeram/v1/loops/<tag>/`다(일반 checkout은 `.git/haeram/v1/loops/<tag>/`).
+시작 응답/status의 알림 capability·terminal 이벤트/receipt 경로를 확인한다. 시작 대화는 이 이벤트를 실제 후속 실행/통지 연결로 소비한다. 훅 미설정이면 로컬 기록만 남고 자동 사용자 통지가 불가능함을 실행 전에 밝힌다. 파일이 생겼다는 이유로 이 대화에 알림을 보냈다고 보고하지 않는다.
 
 | 파일/필드 | 계약 |
 |---|---|
 | `loop.json` | 원자적 교체. runId/host/PID, phase/status, startedAt/workDeadline/deadline/endedAt, units, requestedConfig/appliedConfig, configHistory, reason/stopReason, error/operationalErrors, publication(마지막 반영) |
 | `heartbeatAt` | 약 1초마다 기록. 60초 지연은 건강하지 않은 상태이며 살아 있는 소유권을 탈취하지 않음 |
 | `terminal.json` | 최종 manifest 쓰기 실패의 별도 종료 기록. `--status`는 같은 runId일 때 병합 |
-| `events.jsonl` | started/configuration-applied/stopped, unit-cut/unit-leftover/task-parked(알림 아님), 알림: failed/metadata-error/host-lost/heartbeat-stale/supervisor-error·needs-judgment·finished 등 |
+| `gate`·`continuation` | 전체 관문 시도·누적 실패/상한·남은 수정 태스크, 남은 시간/단위와 중단 경계. `objectiveComplete:false`이며 사용자 목표 완료는 시작 대화가 판단 |
+| `terminal-event.json` | 같은 runId의 최종 알림과 outbox receipt 경로. 상위 연결이 소비할 수 있지만 파일 생성은 사용자 전달 증거가 아님 |
+| `events.jsonl` | started/configuration-applied/stopped, unit-cut/unit-leftover/task-parked(알림 아님), 알림: failed/metadata-error/host-lost/heartbeat-stale/supervisor-error·needs-judgment·finished 등; 상위 연결이 소비할 종료 근거 |
 | `notifications/<event-id>.json` | 알림 이벤트의 내구성 있는 outbox와 실제 훅 시도 결과 |
 | `<dispatch>.log` | 단위 로그. 어댑터 stdout/stderr(Claude stream-json·Codex JSONL)를 도착 즉시 덧붙인다 — 실행 중 단위는 가장 최근 파일을 `tail -f`. 끝난 단위는 `dispatches[].log` |
 
@@ -65,6 +69,6 @@ runtime는 `<Git common dir>/haeram/v1/loops/<tag>/`다(일반 checkout은 `.git
 - `attention`: `needs-judgment` — 단위가 inbox decided/parked 줄·STATE ssot `[?]` 수 증가를 더했거나 parked를 반환하면 단위당 한 번. `unit`·`task`·`count`·`items`(kind·refs·짧은 text, 10개까지)·`more`.
 - `finished`: 모든 종료(no-work·범위 끝·단위 완료 정지·시간 한도·`--stop`·실패)에 실행당 한 번, host-lost면 감시자가 보낸다. `status`·`reason`·`units`·`judgment`(지금 판단 대기 전체: count·items·more)·`parked`·`push`(`pushed:true`+commit, 아니면 `pushed:false`+reason: `land-unset`·`push-disabled`·`local`·`not-attempted`·종료 status)·`report`(없으면 null), 읽지 못한 CI가 있으면 `ciUnchecked`(commit·url — 사람이 나중에 확인). level은 실패 failure, 판단 대기·`ciUnchecked` attention, 그 외 info. 실패면 실패 알림도 따로 간다.
 
-알림은 loop를 막거나 실패시키지 않는다(needs-judgment 훅은 다음 단위와 함께 돈다). 명령은 대상 checkout에서 실행하며 stdout/stderr는 `notification.log`, 제한은 10초다. exit 0만 `delivery:hook-acknowledged`, `deliveredToHook:true`다. 훅 실패는 `delivery:failed`, 미설정은 `pending`이며 둘 다 전달 완료가 아니다. 훅 성공도 외부 사용자 수신 증거는 아니므로 `externalDelivered:false`를 유지한다.
+알림은 loop를 막거나 실패시키지 않는다(needs-judgment 훅은 다음 단위와 함께 돈다). 명령은 대상 checkout에서 실행하며 stdout/stderr는 `notification.log`, 제한은 10초다. exit 0만 `delivery:hook-acknowledged`, `deliveredToHook:true`다. 훅 실패는 `delivery:failed`, 미설정은 `delivery:recorded-locally`이며 둘 다 전달 완료가 아니다. 훅 성공도 외부 사용자 수신 증거는 아니므로 `externalDelivered:false`를 유지한다. 시작 대화가 종료 영수증을 받으면 검증 시도·남은 수정 태스크·반영/WIP 보존 여부를 확인해 작업을 이어가거나 실제 중단 사유를 사용자에게 전달한다.
 
 전체 시스템 종료·재부팅·감시자까지 함께 종료되면 새 알림 생성은 보장하지 않는다. 다음 `--status`는 사망/오래된 heartbeat를 판별하지만 독립 OS 서비스 설치는 하지 않는다. 비정상 종료 후 구현 프로세스가 살아 있을 수도 있으므로 메타데이터 복구 외 자동 작업 재시작은 하지 않는다. 기존 버전 호스트에는 새 제어 프로토콜이 없으며 패키지 설치만으로 이미 실행 중인 프로세스가 바뀌지 않는다.

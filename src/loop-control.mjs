@@ -81,6 +81,32 @@ export async function releaseLoop(lock, runId) {
 export const NOTIFY_LEVELS = { failed: 'failure', 'host-lost': 'failure', 'heartbeat-stale': 'failure', 'metadata-error': 'failure', 'supervisor-error': 'failure', 'needs-judgment': 'attention', finished: 'info' }
 export const NOTIFY_CAP = 10
 
+// A hook is a bridge candidate, not proof that a person (or the parent chat) received anything.
+export const notificationCapability = (directory, command) => ({ transport: command ? 'command' : 'local-file', hookConfigured: Boolean(command),
+  userDelivery: command ? 'unconfirmed' : 'unavailable', externalDelivered: false,
+  directory: path.join(directory, 'notifications'), terminalEvent: path.join(directory, 'terminal-event.json') })
+
+export function loopDeadline(value) {
+  if (typeof value !== 'string' || !/T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value) || !Number.isFinite(Date.parse(value))) throw new SkillPackageError('--deadline에는 시간대가 포함된 ISO 날짜·시간이 필요합니다.')
+  return Date.parse(value)
+}
+
+export function requestedLoopConfig(options) {
+  const requested = {}
+  if (options.pushEachUnit !== undefined) {
+    if (typeof options.pushEachUnit !== 'boolean') throw new SkillPackageError('push-each-unit은 boolean이어야 합니다.')
+    requested.pushEachUnit = options.pushEachUnit
+  }
+  if (options.deadline !== undefined) requested.deadline = new Date(loopDeadline(options.deadline)).toISOString()
+  if (options.finalReserveHours !== undefined) {
+    const hours = Number(options.finalReserveHours)
+    if (!Number.isFinite(hours) || hours < 0) throw new SkillPackageError('final-reserve-hours: 0 이상의 값이 필요합니다.')
+    requested.finalReserveHours = hours
+  }
+  if (!Object.keys(requested).length) throw new SkillPackageError('--configure에는 --deadline, --final-reserve-hours 또는 --[no-]push-each-unit이 필요합니다.')
+  return requested
+}
+
 // What a unit left for the owner to judge, from STATE before/after: inbox decided/parked lines it
 // added, open decisions ([?] count per SSOT row) it added, and a task it reported parked without an
 // inbox line. With before='' it is everything awaiting judgment now.
@@ -106,7 +132,9 @@ export function finishedSummary(state, stateText = '') {
     : { pushed: false, reason: last?.reason ?? (last?.landed ? 'local' : status === 'stopped' ? 'not-attempted' : status), ...(last?.landed ? { landed: last.landed, target: last.target ?? null } : {}) }
   const ciUnchecked = (state.batches ?? []).filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => ({ commit: entry.ci.commit ?? null, url: entry.ci.checkUrl ?? null }))
   return { level: status === 'failed' ? 'failure' : waiting.length || ciUnchecked.length ? 'attention' : 'info', status, reason: state.reason ?? null, ...(state.error ? { error: state.error } : {}),
-    units: state.units ?? 0, judgment: capped(waiting), parked: waiting.filter((item) => item.kind === 'parked').length, push, ...(ciUnchecked.length ? { ciUnchecked } : {}), report: state.report ?? null }
+    units: state.units ?? 0, judgment: capped(waiting), parked: waiting.filter((item) => item.kind === 'parked').length, push, ...(ciUnchecked.length ? { ciUnchecked } : {}), report: state.report ?? null,
+    ...(state.gate ? { verification: state.gate } : {}), ...(state.continuation ? { objectiveComplete: false, continuation: state.continuation } : {}),
+    ...(state.deadline ? { deadline: state.deadline, workDeadline: state.workDeadline, reserve: state.reserve } : {}) }
 }
 export const judgmentNotice = (unit, task, items) => ({ unit, task: task ?? null, ...capped(items) })
 
@@ -131,7 +159,7 @@ export async function loopEvent(directory, state, type, detail = {}, { id = rand
   // This local, durable outbox is the notification transport. No external delivery is claimed.
   if (level) {
     const receiptPath = path.join(directory, 'notifications', `${event.id}.json`)
-    let receipt = { ...event, transport: state.notifyCommand ? 'command' : 'local-file', delivery: 'pending', deliveredToHook: false, externalDelivered: false }
+    let receipt = { ...event, transport: state.notifyCommand ? 'command' : 'local-file', delivery: state.notifyCommand ? 'pending' : 'recorded-locally', deliveredToHook: false, externalDelivered: false }
     await atomicJSON(receiptPath, receipt)
     const summary = type === 'needs-judgment' ? `${detail.count} item(s)` : type === 'finished' ? `${detail.status} (${detail.reason})` : detail.error ?? detail.reason ?? ''
     process.stderr.write(`vibe loop ${state.tag}: ${type}: ${summary} (${directory})\n`)
@@ -154,6 +182,7 @@ export async function loopEvent(directory, state, type, detail = {}, { id = rand
       } finally { await log.close() }
       await atomicJSON(receiptPath, receipt)
     }
+    if (type === 'finished') await atomicJSON(path.join(directory, 'terminal-event.json'), { ...receipt, receipt: receiptPath })
   }
   return event
 }
@@ -173,7 +202,9 @@ export async function inspectLoop(directory, root) {
   const requests = await readRequests(directory, state.runId)
   if (['running', 'heartbeat-stale'].includes(health) && state.supervisor?.pid && !processAlive(state.supervisor.pid)) health = 'supervisor-lost'
   const requestedConfig = requests.filter((request) => request.status === 'pending' && request.type === 'configure').at(-1)?.requested ?? state.requestedConfig
-  return { ...state, requestedConfig, health, running: health === 'host-lost' ? false : state.running, requests, ok: !['host-lost', 'heartbeat-stale', 'unknown-host', 'supervisor-lost'].includes(health) && state.status !== 'failed' && !state.error && !(state.operationalErrors?.length), notification: { transport: state.notifyCommand ? 'command' : 'local-file', directory: path.join(directory, 'notifications'), externalDelivered: false } }
+  const terminalEvent = await readJSON(path.join(directory, 'terminal-event.json'))
+  const delivery = terminalEvent && terminalEvent.runId === state.runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}
+  return { ...state, requestedConfig, health, running: health === 'host-lost' ? false : state.running, requests, ok: !['host-lost', 'heartbeat-stale', 'unknown-host', 'supervisor-lost'].includes(health) && state.status !== 'failed' && !state.error && !(state.operationalErrors?.length), notification: { ...notificationCapability(directory, state.notifyCommand), ...delivery } }
 }
 export async function readRequests(directory, runId) {
   const dir = path.join(directory, 'requests')
@@ -196,9 +227,11 @@ export async function requestControl(directory, root, options) {
     if (state.controlVersion !== 1 || !state.runId) throw new SkillPackageError('이 호스트는 실행 중 제어를 지원하지 않습니다. 기존 실행을 보존하고 다음 명시적 실행부터 새 버전을 사용하세요.')
     if (!state.running || state.health !== 'running') throw new SkillPackageError('실행 중인 건강한 loop에만 요청할 수 있습니다.', [state.health])
     const type = options.stopAfterUnit ? 'stop-after-unit' : 'configure'
-    if (type === 'configure' && typeof options.pushEachUnit !== 'boolean') throw new SkillPackageError('--configure에는 --push-each-unit 또는 --no-push-each-unit이 필요합니다.')
+    const requested = type === 'configure' ? requestedLoopConfig(options) : null
+    if (state.host !== os.hostname()) throw new SkillPackageError('동일 호스트의 loop에만 제어 요청을 적용합니다.')
+    if (requested?.deadline && loopDeadline(requested.deadline) <= Date.now()) throw new SkillPackageError('--deadline은 미래여야 합니다.')
     const sequence = Math.max(0, ...state.requests.map((request) => request.sequence ?? 0)) + 1
-    const request = { schemaVersion: 1, id: `${String(sequence).padStart(8, '0')}-${randomUUID()}`, sequence, runId: state.runId, type, requestedAt: new Date().toISOString(), status: 'pending', ...(type === 'configure' ? { requested: { pushEachUnit: options.pushEachUnit } } : {}) }
+    const request = { schemaVersion: 1, id: `${String(sequence).padStart(8, '0')}-${randomUUID()}`, sequence, runId: state.runId, type, requestedAt: new Date().toISOString(), status: 'pending', ...(requested ? { requested } : {}) }
     await atomicJSON(requestPath(directory, request), request)
     return request
   })
@@ -210,7 +243,7 @@ export async function requestControl(directory, root, options) {
     const current = await inspectLoop(directory, root)
     if (!current.running) break
   }
-  return { schemaVersion: 1, ok: !['cancelled', 'failed'].includes(receipt.status), runId: request.runId, request: receipt, applied: receipt.status === 'applied', receipt: requestPath(directory, request) }
+  return { schemaVersion: 1, ok: !['cancelled', 'failed'].includes(receipt.status), runId: request.runId, request: receipt, applied: receipt.status === 'applied', effectiveAt: 'unit-boundary', receipt: requestPath(directory, request) }
 }
 
 // Independent process: observes a host, never restarts a worker or clears a stop request.

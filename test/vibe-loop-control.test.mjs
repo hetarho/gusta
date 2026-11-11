@@ -192,7 +192,7 @@ test('exhausted metadata retries record a distinct operational error; explicit r
   const notifications = await readdir(path.join(directory, 'notifications'))
   assert.ok(notifications.length)
   const notification = await readJSON(path.join(directory, 'notifications', notifications[0]))
-  assert.equal(notification.externalDelivered, false); assert.equal(notification.delivery, 'pending')
+  assert.equal(notification.externalDelivered, false); assert.equal(notification.delivery, 'recorded-locally')
   await writeFile(path.join(root, 'owner-notes.txt'), 'preserve me\n')
   const recovered = await vibeLoop({ targetRoot: root, tag: 'ctrl01', recoverMetadata: true })
   assert.equal(recovered.implementationRestarted, false)

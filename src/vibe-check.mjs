@@ -92,7 +92,9 @@ export async function runVibeCheck(options = {}, command) {
     if (final && !options.signal?.aborted) await recordTiming(runtime, timingKey('final', command), ms)
     const slow = scope.TIER === 'task' && ms > TASK_SLOW_MS
     return { schemaVersion: 1, ok: code === 0 && !stale, exitCode: stale ? 1 : code, cached: false, timedOut, stale, ms, scope, commit, tree, log,
-      failedTests: [...failedTests], tail: tail.trimEnd().split('\n').slice(-8),
+      // Human-readable output is diagnostic evidence, never an authoritative complete failure set.
+      // Only an explicit check adapter with structured identities may certify completeness.
+      failedTests: [...failedTests], failureSetComplete: false, tail: tail.trimEnd().split('\n').slice(-8),
       ...(slow ? { slow: true, hint: 'task check exceeded 5 min: run only the unit tests affected since HAERAM_DIFF_BASE; move integration/e2e/full suites to the batch gate.' } : {}) }
   }
   // Read the tree and cache only after acquiring the lock: a second caller reuses

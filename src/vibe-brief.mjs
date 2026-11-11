@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { readTaskBoard } from './task-board.mjs'
 import { sections, TASK_ID } from './spec-format.mjs'
@@ -67,8 +68,10 @@ export async function vibeBrief(options = {}) {
   const roots = options.roots ?? (options.task ? [options.task] : [])
   const source = await specSource({ targetRoot: options.targetRoot, ref: options.ref })
   const brief = await assembleBrief({ source, roots, deep: Boolean(options.deep) })
+  const view = options.summary || options.section
+  if (!view && (options.offset !== undefined || options.limit !== undefined || options.snapshot !== undefined)) throw new SkillPackageError('--offset·--limit·--snapshot은 --summary 또는 --section과 함께 사용하세요.')
   const single = roots.length === 1 && TASK_ID.test(roots[0]) ? roots[0] : null
-  if (!single) return brief
+  if (!single) return view ? briefView(brief, options) : brief
   const board = await readTaskBoard({ targetRoot: source.root, ...(source.commit ? { ref: source.commit } : {}) })
   const task = board.tasks.find((entry) => entry.id === single) ?? null
   if (!task && !brief.tasks.length) throw new SkillPackageError(`태스크를 찾을 수 없습니다: ${single}`)
@@ -84,12 +87,45 @@ export async function vibeBrief(options = {}) {
   }
   const revs = new Map(brief.domains.map((domain) => [domain.id, domain.rev]))
   const base = task?.base ?? []
-  return { schemaVersion: 1, taskId: single, commit: source.head, diffBase, task,
+  const result = { schemaVersion: 1, taskId: single, commit: source.head, diffBase, task,
     decisions: brief.decisions,
     freshness: base.map((entry) => { const [domain, rev] = entry.split('@'); return { domain, base: Number(rev), current: revs.get(domain) ?? null, stale: Number(rev) !== revs.get(domain) } }),
     verify: await readVerification(source.root, (await source.read('spec/ssot/ARCH.md')) ?? ''), touches: task?.touches ?? [],
     reading: 'This brief is the reading scope: whole decision blocks the task cites or needs, global rules, flow·constraints and changes since a stale base. Do not re-read STATE, FORMAT or ARCH in full. Open an original only for what issues, unfollowed or related name and the task needs.',
     ...brief }
+  return view ? briefView(result, options) : result
+}
+
+// Discovery and paging are explicit views of the same assembled closure. Pages contain
+// whole blocks; their end marker never pretends that a partial reading is complete.
+function briefView(brief, options) {
+  const collections = { tasks: brief.tasks, decisions: brief.decisions, sections: brief.sections, history: brief.history,
+    refs: Object.entries(brief.refs).flatMap(([kind, entries]) => entries.map((entry) => ({ kind, ...entry }))),
+    referrers: brief.referrers, inbox: brief.inbox, issues: brief.issues, guidance: brief.verify?.guidance ?? [] }
+  const section = options.section ?? 'decisions'
+  if (!Object.hasOwn(collections, section)) throw new SkillPackageError(`brief --section: ${Object.keys(collections).join('|')}`)
+  const offset = Number(options.offset ?? 0), limit = Number(options.limit ?? 20)
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new SkillPackageError('--offset은 0 이상 정수, --limit은 1-100 정수입니다.')
+  const snapshot = createHash('sha256').update(JSON.stringify(brief)).digest('hex')
+  if (options.snapshot && options.snapshot !== snapshot) throw new SkillPackageError('brief 원본이 변경됐습니다. --summary로 새 snapshot과 읽기 범위를 확인하세요.')
+  const entries = collections[section].slice(offset, offset + limit)
+  const describe = (entry) => typeof entry === 'string' ? { chars: entry.length } : {
+    ...Object.fromEntries(['id', 'domain', 'name', 'file', 'path', 'sha256', 'kind', 'level', 'code'].filter((key) => entry[key] !== undefined).map((key) => [key, entry[key]])),
+    chars: (entry.text ?? entry.content ?? entry.message ?? entry.lines?.join('\n') ?? '').length }
+  return { schemaVersion: 1, view: options.summary ? 'summary' : 'page', roots: brief.roots, source: brief.source, snapshot,
+    ...(brief.taskId ? { taskId: brief.taskId, commit: brief.commit, diffBase: brief.diffBase, freshness: brief.freshness, touches: brief.touches,
+      verify: { task: brief.verify.task, batch: brief.verify.batch, ci: brief.verify.ci, declared: brief.verify.declared, guidanceCount: brief.verify.guidance.length, guidanceSection: 'guidance' } } : {}),
+    complete: false, readingComplete: false, sourceComplete: brief.complete, scope: brief.scope, size: brief.size,
+    counts: Object.fromEntries(Object.entries(collections).map(([name, list]) => [name, list.length])),
+    page: { section, offset, limit, total: collections[section].length, returned: entries.length,
+      remaining: Math.max(0, collections[section].length - offset - entries.length), nextOffset: offset + entries.length < collections[section].length ? offset + entries.length : null },
+    entries: options.summary ? entries.map(describe) : entries,
+    reading: 'Discovery or partial page only. Read all required whole blocks and supporting sections (including global rules, flow, constraints, history, issues and verification guidance) from this snapshot before implementation. No context was removed from the full brief.',
+    next: `vibe brief ${brief.roots.join(' ')} --section <section> --offset <n> --limit ${limit} --snapshot ${snapshot}${brief.source.commit ? ` --ref ${brief.source.commit}` : ''}; omit view flags for the complete brief.` }
+}
+
+export function renderBriefView(view) {
+  return `# BRIEF ${view.roots.join(' ')}\n> view:${view.view} | readingComplete:no | sourceComplete:${view.sourceComplete ? 'yes' : 'no'}\n\n\`\`\`json\n${JSON.stringify(view, null, 2)}\n\`\`\`\n\nend ${view.roots.join(' ')} view:${view.view} readingComplete:no snapshot:${view.snapshot}\n`
 }
 
 export async function vibeFormat(options = {}) {

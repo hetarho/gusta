@@ -20,7 +20,7 @@ import { validateAgentResult, compactUsage } from './agent-adapter.mjs'
 import { adapterArgs, providerFlags } from './work-providers.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { permissionMode, readSetting, SETTINGS } from './settings.mjs'
-import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive } from './loop-control.mjs'
+import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive, notificationCapability, loopDeadline, requestedLoopConfig } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine } from './loop-time.mjs'
 
@@ -31,6 +31,29 @@ const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
 // unit and the suite's re-run, plus the measured CI wait when code is pushed. Only before
 // the gate has ever been measured does a run fall back to a share of max-hours.
 export const UNMEASURED_RESERVE_SHARE = 0.2
+// A smaller count is insufficient: retries need complete, stable identities from the same gate.
+export function improvingGate(previous, current) {
+  if (!previous || (previous.plan ?? previous.command) !== (current.plan ?? current.command) || previous.evidence !== current.evidence || !previous.failureSetComplete || !current.failureSetComplete || previous.timedOut || current.timedOut || previous.stale || current.stale) return false
+  const was = previous.identities ?? previous.failedTests, now = current.identities ?? current.failedTests
+  if (!Array.isArray(was) || !Array.isArray(now) || [...was, ...now].some((id) => typeof id !== 'string' || !id.trim())) return false
+  const before = new Set(was), after = new Set(now)
+  if (before.size !== was.length || after.size !== now.length) return false
+  return after.size > 0 && after.size < before.size && [...after].every((id) => before.has(id))
+}
+
+// Every command in the fixed plan must finish. Its exit receipt is authoritative even when its
+// human-readable test output is not; a single command's internal shrinking failures need a typed adapter.
+function gateEvidence(commands, round, head) {
+  const failures = round.filter((entry) => !entry.checked.ok), first = failures[0]
+  if (!first) return null
+  const complete = round.length === commands.length && round.every(({ checked }) => typeof checked.ok === 'boolean' && !checked.timedOut && !checked.stale && !checked.cancelled)
+  const tests = failures.every(({ checked }) => checked.failureSetComplete === true && Array.isArray(checked.failedTests) && checked.failedTests.length > 0)
+  const identities = failures.flatMap(({ command, index, checked }) => tests ? checked.failedTests.map((id) => `${index}:${command}\n${id}`) : [`${index}:${command}`])
+  return { head, command: first.command, plan: JSON.stringify(commands), log: first.checked.log ?? null,
+    failedTests: failures.flatMap(({ checked }) => checked.failedTests ?? []).slice(0, 20), failedCommands: failures.map(({ command, index }) => ({ index, command })),
+    identities, evidence: tests ? 'adapter-tests' : 'commands', failureSetComplete: complete && (tests || round.every(({ checked }) => checked.ok || Number.isInteger(checked.exitCode))),
+    timedOut: round.some(({ checked }) => checked.timedOut), stale: round.some(({ checked }) => checked.stale), ms: round.reduce((sum, { checked }) => sum + (Number.isFinite(checked.ms) ? checked.ms : 0), 0) }
+}
 export function closingReserve({ timings, commands, push = false, hours, timeoutMs, optionHours }) {
   if (optionHours !== undefined) return { ms: optionHours * 3600000, source: 'option' }
   const gates = commands.map((command) => measured(timings, timingKey('final', command)))
@@ -154,10 +177,12 @@ export async function vibeLoop(options = {}, injected = {}) {
   if (!control.length && !options.adapter && !['claude', 'codex'].includes(options.provider)) throw new SkillPackageError('--provider claude|codex가 필요합니다.')
   if (options.permissionMode !== undefined && !SETTINGS['permission-mode'].accepts(options.permissionMode)) throw new SkillPackageError('--permission-mode는 bypass 또는 acceptEdits입니다.')
   if (options.notifyCommand !== undefined && (typeof options.notifyCommand !== 'string' || !options.notifyCommand.trim())) throw new SkillPackageError('--notify-command에는 실행 가능한 명령이 필요합니다.')
-  const maxUnits = positive(options.maxUnits, 100, 'max-units', true), hours = positive(options.maxHours, 8, 'max-hours')
+  const maxUnits = positive(options.maxUnits, 100, 'max-units', true)
+  let hours = positive(options.maxHours, 8, 'max-hours')
+  const maxGateAttempts = positive(options.maxGateAttempts, 3, 'max-gate-attempts', true)
+  if (maxGateAttempts < 2 || maxGateAttempts > 5) throw new SkillPackageError('--max-gate-attempts에는 2-5 정수가 필요합니다.')
   const batchSize = positive(options.batchSize, 3, 'batch-size', true), timeoutMs = positive(options.timeoutMs, 3600000, 'timeout-ms')
-  const optionHours = options.finalReserveHours === undefined ? undefined : Number(options.finalReserveHours)
-  if (optionHours !== undefined && (!Number.isFinite(optionHours) || optionHours < 0 || optionHours >= hours)) throw new SkillPackageError('final-reserve-hours: 0 이상 max-hours 미만이 필요합니다.')
+  let optionHours = options.finalReserveHours === undefined ? undefined : Number(options.finalReserveHours)
   const scopeIds = options.tasks === undefined ? null : approvedTasks(Array.isArray(options.tasks) ? options.tasks : String(options.tasks).replaceAll(',', ' '))
   const context = await vibeSession(options), root = context.root
   // Units are headless: SETTINGS permission-mode (default bypass) unless this run names one.
@@ -189,6 +214,11 @@ export async function vibeLoop(options = {}, injected = {}) {
       }
     } finally { await releaseLoop(lock, owner.runId) }
   }
+  const start = deps.now()
+  let deadline = options.deadline === undefined ? start + hours * 3600000 : loopDeadline(options.deadline)
+  hours = (deadline - start) / 3600000
+  if (hours <= 0) throw new SkillPackageError('--deadline은 미래여야 합니다.')
+  if (optionHours !== undefined && (!Number.isFinite(optionHours) || optionHours < 0 || optionHours >= hours)) throw new SkillPackageError('final-reserve-hours: 0 이상 실행 시간 미만이 필요합니다.')
   const state = await deps.status({ ...options, tag: options.tag })
   // --tasks: the run works only these tasks (and what it creates for them). Checked up front, so an
   // unattended night never waits on a prerequisite nobody is going to finish.
@@ -210,7 +240,8 @@ export async function vibeLoop(options = {}, injected = {}) {
   let reserve = await estimateReserve()
   if (reserve.ms >= hours * 3600000) throw new SkillPackageError(`마감 관문 실측(전체 검증 2회+수정 1회+CI)이 ${(reserve.ms / 3600000).toFixed(2)}시간이라 max-hours 안에 구현 시간이 없습니다. --max-hours를 늘리거나 --final-reserve-hours를 지정하세요.`)
   const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? 'command', permissionMode: mode, headlessMcp: mcp,
-    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS }, scope: scopeIds, reserve, verify, batchVerify,
+    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS, maxGateAttempts }, scope: scopeIds, reserve, verify, batchVerify,
+    deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), notification: notificationCapability(directory, options.notifyCommand),
     directory, stopFile, manifest, freshSessionPerUnit: true, pushEachUnit: Boolean(options.pushEachUnit), notifyCommand: options.notifyCommand ?? null }
   if (options.dryRun) return { ...plan, dryRun: true, modelRequests: 0 }
   if ((await inspectWork({ targetRoot: root })).mode !== 'single') throw new SkillPackageError('vibe loop는 단독 checkout에서 실행하세요. 활성 work 공간은 work run을 사용합니다.')
@@ -228,7 +259,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       const readyUntil = Date.now() + 10000
       while (Date.now() < readyUntil) {
         const ready = await readJSON(manifest)
-        if (ready?.runId === runId) return { ...plan, ok: true, detached: true, runId, pid: child.pid, ready: true, status: ready.status, log: logPath }
+        if (ready?.runId === runId) return { ...plan, limits: ready.limits, deadline: ready.deadline, workDeadline: ready.workDeadline, reserve: ready.reserve, ok: true, detached: true, runId, pid: child.pid, ready: true, status: ready.status, log: logPath }
         if (child.exitCode !== null) throw new SkillPackageError('loop host failed before ownership acknowledgement', [logPath])
         await new Promise((resolve) => setTimeout(resolve, 50))
       }
@@ -237,7 +268,6 @@ export async function vibeLoop(options = {}, injected = {}) {
   }
   const runId = options.runId ?? randomUUID()
   await acquireLoop(lock, { pid: process.pid, host: os.hostname(), tag: options.tag, runId })
-  const start = deps.now(), deadline = start + hours * 3600000
   const report = `spec/reports/${new Date(start).toISOString().slice(2, 10).replaceAll('-', '')}-${options.tag}.md`
   const reportPath = path.join(root, report)
   let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false, pruned = null, publication = null
@@ -257,7 +287,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   }
   let priorityTask = /^T\d+$/.test(previous?.priorityTask ?? '') && inScope(previous.priorityTask) ? previous.priorityTask : null
   // repairTask: the gate/CI repair this run queued. failedGate: the code a gate last failed on.
-  let repairTask = null, failedGate = null, gateFailures = 0
+  let repairTask = null, failedGate = null, gateFailures = 0, gateAttempts = 0, gateRetryAllowed = true, gateStopReason = null, verifiedCommit = null
   let recovery = ['blocked-task', 'interrupted', 'split'].includes(previous?.recovery?.reason) && /^T\d+$/.test(previous.recovery.taskId ?? '') && inScope(previous.recovery.taskId) ? previous.recovery : null
   // ladder: per task, units that ended before finishing it since its last split, and whether it was
   // split. snapshots: the uncommitted work those units left.
@@ -265,7 +295,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const snapshots = recovery?.snapshot ? [{ ...recovery.snapshot, task: recovery.taskId }] : []
   const dispatches = [], batches = []
   const operationalErrors = [], configHistory = []
-  const appliedConfig = { pushEachUnit: Boolean(options.pushEachUnit) }
+  const appliedConfig = { pushEachUnit: Boolean(options.pushEachUnit), ...(options.deadline === undefined ? {} : { deadline: new Date(deadline).toISOString() }), ...(optionHours === undefined ? {} : { finalReserveHours: optionHours }) }
   let requestedConfig = { ...appliedConfig }, phase = 'preflight', heartbeatAt = new Date().toISOString(), supervisor = null, closing = false
   const metadata = new LoopMetadata(root, directory, report, options.tag, runId, { fault: deps.fault })
   const controller = new AbortController()
@@ -303,10 +333,19 @@ export async function vibeLoop(options = {}, injected = {}) {
   }
   const stop = (why) => { stopped = true; stopReason ??= why; controller.abort(stopReason) }
   const interrupted = () => stop('signal')
-  const snapshot = () => ({ ...plan, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
+  const gateState = () => ({ attempts: gateAttempts, failures: gateFailures, maxFailedAttempts: maxGateAttempts, retryAllowed: gateRetryAllowed, stopReason: gateStopReason,
+    verifiedCommit, failedCommit: failedGate?.head ?? null, failedTests: failedGate?.failedTests ?? [], failedCommands: failedGate?.failedCommands ?? [], evidence: failedGate?.evidence ?? null, failureSetComplete: failedGate?.failureSetComplete ?? null,
+    pendingRepairTasks: repairTask ? [repairTask] : [] })
+  const continuation = () => {
+    const remainingMs = Math.max(0, deadline - deps.now()), remainingUnits = Math.max(0, maxUnits - count)
+    const hardStop = remainingMs === 0 || remainingUnits === 0 || ['max-hours', 'max-units', 'stop-file', 'signal', 'stop-after-unit', 'cancelled'].includes(stopReason ?? reason)
+    return { objectiveComplete: false, recoverable: !hardStop, hardStop, reason, remainingMs, remainingUnits, deadline: new Date(deadline).toISOString(),
+      pendingRepairTasks: repairTask ? [repairTask] : [], next: hardStop ? 'report stop and preserve remaining work' : repairTask ? 'delegate the pending repair within the existing session budget, then verify before publication' : 'reconcile the result with the user objective and continue within the existing session budget' }
+  }
+  const snapshot = () => ({ ...plan, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, scope: scope ? [...scope] : null, snapshots, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -354,7 +393,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     const kept = snapshots.filter((snapshot) => !snapshot.dropped).map((snapshot) => `- uncommitted work kept: ${snapshot.ref} (${snapshot.task ?? '-'}, ${snapshot.fileCount} files)\n`).join('')
     // CI the run could not read waits for the owner, not for the run.
     const ciLater = batches.filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => `- check CI later: ${entry.ci.commit ?? '-'} ${entry.ci.checkUrl ?? ''}`.trimEnd() + '\n').join('')
-    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${ciLater}${kept}`)
+    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}\n- verification: ${gateAttempts} rounds, ${gateFailures} failed, failed-round cap ${maxGateAttempts}; pending repair: ${repairTask ?? '-'}; code pushed: ${codePushed}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${ciLater}${kept}`)
     await metadata.writeReport(text)
   }
   const recordReport = (closing) => metadataStep('report-write', () => updateReport(closing))
@@ -372,13 +411,28 @@ export async function vibeLoop(options = {}, injected = {}) {
         reason = 'stop-after-unit'
         return
       }
-      if (request.type !== 'configure' || typeof request.requested?.pushEachUnit !== 'boolean') throw new Error('invalid loop configuration request')
-      requestedConfig = { ...request.requested }
+      if (request.type !== 'configure') throw new Error('invalid loop configuration request')
+      requestedConfig = requestedLoopConfig(request.requested ?? {})
       await save()
       // Faults before/after mutation remain in this same host; no worker handoff.
       await deps.fault('config-before-apply')
+      let nextDeadline = deadline, nextHours = hours, nextReserve = reserve
+      const timingChanged = requestedConfig.deadline !== undefined || requestedConfig.finalReserveHours !== undefined
+      if (timingChanged) {
+        nextDeadline = requestedConfig.deadline === undefined ? deadline : loopDeadline(requestedConfig.deadline)
+        nextHours = (nextDeadline - start) / 3600000
+        const nextOption = requestedConfig.finalReserveHours ?? optionHours
+        nextReserve = closingReserve({ timings: await readTimings(context.runtime), commands: batchVerify, push: Boolean(context.target), hours: nextHours, timeoutMs, optionHours: nextOption })
+        if (nextDeadline <= deps.now() || nextReserve.ms >= nextDeadline - deps.now()) {
+          await atomicJSON(requestPath(directory, request), { ...request, status: 'failed', reason: 'deadline leaves insufficient final reserve at unit boundary', afterUnit: count, actual: { ...appliedConfig, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve } })
+          await event('configuration-rejected', { requestId: request.id, afterUnit: count })
+          continue
+        }
+      }
+      deadline = nextDeadline; hours = nextHours; reserve = nextReserve
+      if (requestedConfig.finalReserveHours !== undefined) optionHours = requestedConfig.finalReserveHours
       Object.assign(appliedConfig, requestedConfig)
-      const acknowledgement = { ...request, status: 'applied', actual: { ...appliedConfig }, appliedAt: new Date().toISOString(), afterUnit: count }
+      const acknowledgement = { ...request, status: 'applied', actual: { ...appliedConfig, ...(timingChanged ? { deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve } : {}) }, appliedAt: new Date().toISOString(), afterUnit: count }
       configHistory.push(acknowledgement)
       await save()
       await deps.fault('config-after-apply')
@@ -457,25 +511,34 @@ export async function vibeLoop(options = {}, injected = {}) {
         if (closing) throw new SkillPackageError(`묶음 검증 실패: ${failedGate.command}`, [failedGate.log ?? ''])
         return false
       }
-      for (const command of batchVerify) {
+      gateAttempts++
+      const round = []
+      for (const [index, command] of batchVerify.entries()) {
         await ensureActive()
         let checked
         // The gate may use its whole reserve even when a unit's timeout is shorter.
         try { checked = await deps.check({ targetRoot: root, tier: 'batch', diffBase: base, heavy: true, signal: controller.signal, timeoutMs: Math.min(Math.max(timeoutMs, reserve.ms), Math.max(1, deadline - deps.now())) }, command) }
         catch (caught) { batches.push({ command, ok: false, cancelled: controller.signal.aborted, error: caught.message }); throw caught }
         batches.push({ command, ...checked, ...(!checked.ok && controller.signal.aborted ? { cancelled: true } : {}) })
+        round.push({ command, index, checked })
         await ensureActive()
-        if (!checked.ok) {
-          failedGate = { head, command, log: checked.log ?? null }; gateFailures++
-          await queueRepair('fix-gate', 'Fix final gate failure', `Make \`${command}\` pass on ${head}; preserve existing contracts.`,
-            [`Log: ${checked.log ?? '-'}`, `Failed tests: ${JSON.stringify(checked.failedTests ?? [])}`, `Tail: ${JSON.stringify(checked.tail ?? [])}`])
-          await recordReport(closing)
-          await metadataCommit(`vibe ${options.tag}: record checks`)
-          if (closing) throw new SkillPackageError(`묶음 검증 실패: ${command}`, [checked.log ?? ''])
-          return false
-        }
       }
-      failedGate = null; gateFailures = 0
+      const current = gateEvidence(batchVerify, round, head)
+      if (current) {
+        const improved = improvingGate(failedGate, current)
+        const gateMs = reserve.gateMs ?? (current.ms > 0 ? current.ms : timeoutMs)
+        const retryFits = deadline - deps.now() > gateMs + (reserve.fixMs ?? timeoutMs) + (reserve.ciMs ?? 0)
+        failedGate = current; gateFailures++
+        gateRetryAllowed = gateFailures < 2 || (gateFailures < maxGateAttempts && improved && retryFits)
+        gateStopReason = gateRetryAllowed ? null : gateFailures >= maxGateAttempts ? 'attempt-limit' : !improved ? 'failure-set-not-improving' : 'insufficient-time'
+        await queueRepair('fix-gate', 'Fix final gate failure', `Make the failed final-gate commands pass on ${head}; preserve existing contracts.`,
+          round.filter(({ checked }) => !checked.ok).flatMap(({ command, checked }) => [`Command: ${command}`, `Log: ${checked.log ?? '-'}`, `Failed tests: ${JSON.stringify(checked.failedTests ?? [])}`, `Tail: ${JSON.stringify(checked.tail ?? [])}`]))
+        await recordReport(closing)
+        await metadataCommit(`vibe ${options.tag}: record checks`)
+        if (closing) throw new SkillPackageError(`묶음 검증 실패: ${current.command}`, [current.log ?? ''])
+        return false
+      }
+      verifiedCommit = head; failedGate = null; gateRetryAllowed = true; gateStopReason = null
     }
     await recordReport(closing)
     await metadataCommit(`vibe ${options.tag}: record checks`)
@@ -515,7 +578,8 @@ export async function vibeLoop(options = {}, injected = {}) {
     if (await present(stopFile)) { stop('stop-file'); throw new Error('loop stopped before preflight') }
     try { supervisor = await deps.monitor(directory, runId) }
     catch (caught) { await event('supervisor-error', { error: caught.message }); throw caught }
-    await event('started')
+    await event('started', { notification: plan.notification, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString() })
+    if (!options.notifyCommand) process.stderr.write(`vibe loop ${options.tag}: user notification unavailable; parent must await this run or read ${plan.notification.terminalEvent}\n`)
     // Never adopt pre-existing source, SSOT, STATE, report or index changes.
     if ((await git(root, ['status', '--porcelain'])).trim()) throw new SkillPackageError('loop 시작 전 미커밋 변경을 보존합니다. 먼저 정리하세요.')
     const allowTool = [...new Set(['Bash(git *)', `Bash(${process.execPath} ${cli} *)`, ...(options.allowTool ?? [])])]
@@ -540,8 +604,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (await present(stopFile)) { reason = 'stop-file'; break }
       if (deps.now() >= deadline) { reason = 'max-hours'; break }
       if (count >= maxUnits) { reason = 'max-units'; break }
-      // The gate failed again after its repair: the closing flush reports it, nothing re-runs.
-      if (gateFailures >= 2) { reason = 'gate-failures'; break }
+      // Extra repair is earned only by complete strictly shrinking failures, within the hard cap.
+      if (!gateRetryAllowed) { reason = 'gate-failures'; break }
       phase = 'boundary'
       await applyRequests()
       if (reason) break
@@ -567,7 +631,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (deps.now() >= deadline - reserve.ms - MIN_UNIT_MS) {
         const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
         if (head !== base && !(failedGate && !(await codeChanged(failedGate.head, head)))) { await flush(false, true); continue }
-        repairMs = deadline - deps.now() - (reserve.gateMs ?? 0)
+        repairMs = deadline - deps.now() - (reserve.gateMs ?? (failedGate?.ms > 0 ? failedGate.ms : 0)) - (reserve.ciMs ?? 0)
         if (!repairTask || !status.runnable?.includes(repairTask) || repairMs <= 0) { reason = 'final-window'; break }
       }
       const runnable = (status.runnable ?? []).filter(inScope)
@@ -736,6 +800,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     const closed = { ...snapshot(), report: await present(reportPath) ? report : null }
     await notify(async () => finishedEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, finishedSummary(closed, await readFile(stateFile, 'utf8').catch(() => ''))))
   }
-  return { ...plan, reserve, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
+  const terminalEvent = await readJSON(plan.notification.terminalEvent).catch(() => null)
+  return { ...plan, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
     time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }) }
 }

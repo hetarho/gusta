@@ -413,6 +413,29 @@ export async function inspectWork(options = {}) {
     currentAttempt, currentReview, currentGroup, groups, attempts, lock: await readLock(root) }
 }
 
+// CLI discovery must not recursively print saved briefs, dispatches and review history.
+// Internal callers keep inspectWork's complete records; explicit --details opens them.
+export async function workStatus(options = {}) {
+  const state = await inspectWork(options)
+  if (options.work && !state.groups.some((group) => group.id === options.work)) fail(`작업 묶음을 찾을 수 없습니다: ${options.work}`)
+  const groups = state.groups.filter((group) => options.work ? group.id === options.work : ['active', 'preparing', 'failed'].includes(group.status))
+  const groupIds = new Set(groups.map((group) => group.id))
+  const attempts = state.attempts.filter((attempt) => groupIds.has(attempt.group) && (options.work || !['integrated', 'released'].includes(attempt.status)) && !attempt.cleanedAt)
+  if (options.details) return options.work ? { ...state, groups, attempts: state.attempts.filter((attempt) => attempt.group === options.work) } : state
+  const pick = (record, fields) => record ? Object.fromEntries(fields.filter((field) => record[field] !== undefined).map((field) => [field, record[field]])) : null
+  const group = (entry) => pick(entry, ['id', 'branch', 'path', 'status', 'createdAt'])
+  const review = (entry) => pick(entry, ['id', 'owner', 'status', 'workspace', 'commit'])
+  const attempt = (entry) => entry ? { ...pick(entry, ['id', 'group', 'owner', 'tag', 'workspace', 'branch', 'taskId', 'lane', 'status', 'heartbeatAt']), tasks: unitTasks(entry),
+    reason: typeof entry.reason === 'string' ? entry.reason.slice(0, 800) : null, reasonTruncated: typeof entry.reason === 'string' && entry.reason.length > 800,
+    dispatch: pick(entry.dispatch, ['id', 'role', 'provider', 'status', 'pid', 'host', 'log']), review: review(entry.review) } : null
+  return { schemaVersion: state.schemaVersion, mode: state.mode, view: 'summary',
+    currentAttempt: attempt(state.currentAttempt), currentReview: review(state.currentReview), currentGroup: group(state.currentGroup),
+    groups: groups.map(group), attempts: attempts.map(attempt), lock: state.lock,
+    counts: { groups: state.groups.length, attempts: state.attempts.length, shownGroups: groups.length, shownAttempts: attempts.length },
+    detail: 'work status --details [--work <name>]', history: 'work history --work <name> [--task <id>]',
+    next: state.currentAttempt ? `work brief --attempt ${state.currentAttempt.id}` : state.currentGroup ? `work board --work ${state.currentGroup.id}` : 'Use work board --work <name> for a group, or vibe status for standalone work.' }
+}
+
 export async function startWork(options) {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(options.name ?? '') || options.name.length > 60) fail('작업 이름은 60자 이하의 kebab-case로 지정하세요.')
   const context = await repository(options)

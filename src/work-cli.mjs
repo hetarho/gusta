@@ -1,4 +1,4 @@
-import { inspectWork, startWork, configureWork, claimWork, claimNextWork, updateWork, releaseWork, submitWork, integrateWork, finishWork, cleanupWork, recoverWork, workBoard, workHistory, syncWork, unlockWork, workBrief } from './work-groups.mjs'
+import { workStatus, startWork, configureWork, claimWork, claimNextWork, updateWork, releaseWork, submitWork, integrateWork, finishWork, cleanupWork, recoverWork, workBoard, workHistory, syncWork, unlockWork, workBrief } from './work-groups.mjs'
 import { finishReview, releaseReview, updateReview, resumeWork } from './work-review.mjs'
 import { nextWork, claimReviewWaiting } from './work-wait.mjs'
 import { workRun, recoverRunner } from './work-runner.mjs'
@@ -30,7 +30,7 @@ const HELP = `작업 묶음 (Orca 등 외부 도구 없이도 사용 가능)
   work runner-recover --work <name>
   work scout --prompt-file <file> [--provider auto|codex|claude] [--model <id>] [--timeout-ms 900000]
                                     읽기 전용 헤드리스 탐색 세션 1개 — 제안 JSON만 반환(오케스트레이터는 코드를 직접 읽지 않는다)
-  work status
+  work status [--work <name>] [--details]     기본은 소유권·현재 태스크 요약; 전체 기록은 --details
   work board --work <name>
   work brief --attempt <id>
   work history --work <name> [--task <T###>]
@@ -77,12 +77,12 @@ const allowed = {
   doctor: [], run: ['work', 'adapter', 'verify', 'task-verify', 'group-verify', 'verify-timeout-ms', 'provider', 'providers', 'reviewer-provider', 'model', 'reviewer-model', 'timeout-ms', 'max-dispatches', 'max-task-runs', 'decision-wait-ms', 'checkpoint-ms', 'permission-mode'], 'runner-recover': ['work'],
   scout: ['prompt-file', 'provider', 'model', 'timeout-ms'],
   history: ['work', 'task'], sync: ['work'],
-  status: [], board: ['work'], brief: ['attempt'], update: ['attempt', 'status', 'reason', 'decision-file', 'note'],
+  status: ['work'], board: ['work'], brief: ['attempt'], update: ['attempt', 'status', 'reason', 'decision-file', 'note'],
   submit: ['attempt', 'verify', 'verify-timeout-ms'], integrate: ['attempt', 'verify', 'verify-timeout-ms'], finish: ['work', 'verify', 'verify-timeout-ms'], release: ['attempt', 'reason'],
   cleanup: ['attempt'], recover: ['attempt', 'work'], unlock: ['lock-id'],
 }
 const actions = { doctor: workDoctor, configure: configureWork, 'claim-next': claimNextWork, next: nextWork, resume: resumeWork, 'review-claim': claimReviewWaiting, 'review-finish': finishReview,
-  'review-update': updateReview, 'review-release': releaseReview, run: workRun, 'runner-recover': recoverRunner, scout: workScout, start: startWork, claim: claimWork, status: inspectWork, board: workBoard,
+  'review-update': updateReview, 'review-release': releaseReview, run: workRun, 'runner-recover': recoverRunner, scout: workScout, start: startWork, claim: claimWork, status: workStatus, board: workBoard,
   history: workHistory, sync: syncWork, brief: workBrief, update: updateWork, submit: submitWork, integrate: integrateWork, finish: finishWork, release: releaseWork,
   cleanup: cleanupWork, recover: recoverWork, unlock: unlockWork }
 
@@ -98,6 +98,7 @@ async function dispatch(args) {
   while (args.length) {
     const argument = args.shift()
     if (argument === '--dry-run' && action === 'run') { options.dryRun = true; continue }
+    if (argument === '--details' && action === 'status') { options.details = true; continue }
     if (['--detach', '--status', '--stop'].includes(argument) && action === 'run') { options[argument.slice(2)] = true; continue }
     if (argument === '--start' && action === 'next') { options.start = true; continue }
     if (argument === '--coordinator' && action === 'next') { options.coordinator = true; continue }

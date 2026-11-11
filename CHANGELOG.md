@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.12.4
+
+- The initiating start-vibe conversation remains the orchestrator. CLI loops run
+  fresh units and return durable results; a helper exit or its automatic repair
+  limit does not complete the user's objective. The session re-plans recoverable
+  failures within the original deadline and total budget, preserves cumulative
+  attempts and required verification, and records CLI defects for later package
+  maintenance. Detaching requires a real parent continuation connection.
+- Bound final-gate recovery by progress: the default three-failed-round cap allows
+  an extra repair for a strictly shrinking failed-command set in the same fully
+  observed plan, or complete test IDs certified by a structured check adapter.
+  Generic test logs remain diagnostic. New, unknown or interrupted failures do
+  not earn an extension. Results expose
+  attempts, pending repair tasks and actual publication. Add an explicit absolute
+  `--deadline` and live deadline/reserve configuration with applied receipts;
+  changing push frequency never establishes a deadline.
+- Expose termination notification capability and parent-readable terminal
+  evidence. Local outbox records and acknowledged hooks remain distinct from
+  confirmed user delivery; launchers disclose missing automatic chat delivery.
+- Add `vibe checkpoint --handoff` for remote continuation without final repair or
+  integration. It preserves WIP on its own remote branch even when final push is
+  disabled, retries an unchanged snapshot's remote push, and returns its ref,
+  commit, unverified status and next action.
+- Default `work status` to current ownership/work summaries; request history with
+  `--details` and optionally `--work`. Add brief `--summary` and whole-block
+  section paging without cutting required SSOT context. Skills select needed
+  blocks/report sections instead of printing nested briefs and whole histories.
+- Probe standalone execution in its actual checkout. Preflight distinguishes
+  missing dependencies, network restrictions and permission failures; launcher
+  instructions avoid redundant probes and irrelevant workspace installs.
+
 ## 0.12.3
 
 - Headless sessions no longer stall on permissions. A `vibe loop` stopped at preflight because its Codex worker, in the default workspace-write sandbox, could not reach the network, and start-vibe allowed `--permission-mode bypass` only on the owner's explicit request — so an unattended run waited for a person who was not there. SETTINGS gains `permission-mode` (`bypass`|`acceptEdits`, default `bypass`) for every headless session the CLI starts to write code: `vibe loop` units, `work run` workers (new `work run --permission-mode`), show-ab variants and the `vibe preflight --probe` worker. `bypass` runs Claude with bypassPermissions and Codex with `--dangerously-bypass-approvals-and-sandbox`; `acceptEdits` keeps the old allow-list/sandbox behavior. An explicit `--permission-mode` overrides it for that run; reviewers stay read-only. A resumed Codex worker in bypass mode now keeps its session (`exec resume <id>`); it used to start a new one.

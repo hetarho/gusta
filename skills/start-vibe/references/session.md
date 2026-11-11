@@ -4,13 +4,15 @@
 
 함께는 `vibe status --section inbox --no-fetch --json`으로 결정함만 확인받는다. 승인 항목은 삭제+log, 수정은 update-ssot 후 삭제. 열린 보고서는 to를 채운다. 결정은 cfg.level에 맞춰 모아 묻는다.
 
-맡김으로 전환하면 preflight(push 브랜치가 있으면 push 권한·명령 가용성·실제 헤드리스 권한)를 한 번 돌려 사람이 고쳐야 할 실패를 떠나기 전 확인한다. 그 뒤 직렬은 `vibe loop --detach`가 active·보고서·절전 방지를 준비하고(SKILL 1절), 작업 묶음 조정자만 이 세션에서 active·보고서·awake를 준비한다.
+맡김도 이 대화가 목표·마감·총 회복 예산을 소유한다. 직렬 loop가 실제 checkout에서 preflight·active·보고서·절전 방지를 준비하므로 동일 점검을 앞에서 반복하지 않는다. 독립 probe가 필요하면 `vibe preflight --probe-workspace current --probe '<태스크 단계 명령>' --json`으로 실제 실행 공간을 확인한다. 의존성 부재·네트워크 제한·권한 거부를 구분하고, 네트워크 실패만으로 별도 worktree 의존성 설치를 반복하지 않는다. 작업 묶음 조정자는 실제 워커 공간에 맞는 probe를 쓰며 이 세션에서 active·보고서·awake를 준비한다.
 
 ## loop 옵션
 
-시간 한도의 끝 구간은 마감 관문 전용이라 새 단위를 시작하지 않는다(`final-window`). 길이는 CLI가 실측으로 정한다(전체 검증×2+수정 단위+CI). 사용자가 마감 시간을 정해 주면 `--final-reserve-hours`로 넘긴다. 맡길 태스크를 정했으면 `--tasks '<T### ...>'`로 넘긴다(next 줄에 기대지 않음, 끝나면 `scope-done`). 단위 상한(`--timeout-ms`, 기본 1시간·explore는 timebox+30분)에 끊긴 단위는 CLI가 스냅샷→이어가기→쪼개기→parked로 처리하고 loop는 계속된다. `--permission-mode`는 사용자가 그 실행만 바꿀 때 넘긴다. 실제 실행 권한은 시작 probe로 확인한다.
+시간 한도의 끝 구간은 마감 관문 전용이라 새 단위를 시작하지 않는다(`final-window`). 길이는 CLI가 실측으로 정한다(전체 검증×2+수정 단위+CI). 사용자의 마감 시각은 시간대를 확인해 `--deadline '<ISO with Z or offset>'`으로 넘긴다. `--final-reserve-hours`는 마감 전 검증·수정·CI 예약 **길이**이며 마감 시각이 아니다. 시작 응답/status의 실제 deadline·workDeadline·예약 시간을 확인한 뒤에만 마감이 설정됐다고 말한다. 맡길 태스크는 `--tasks '<T### ...>'`로 넘긴다(next 줄에 기대지 않음, 끝나면 `scope-done`). 단위 상한(`--timeout-ms`, 기본 1시간·explore는 timebox+30분)에 끊긴 단위는 CLI가 스냅샷→이어가기→쪼개기→parked로 처리하고 loop는 계속된다. `--permission-mode`는 사용자가 그 실행만 바꿀 때 넘긴다. 실제 실행 권한은 시작 probe로 확인한다.
 
-실행 중 단위별 push 변경은 `vibe loop --tag <tag> --configure --push-each-unit|--no-push-each-unit`으로 요청하고 applied receipt를 확인한다. 즉시 취소와 단위 완료 후 정지는 별개다. 중단·재시작 전환기를 만들지 않고 [실행 중 제어·복구 계약](loop-control.md)을 따른다.
+실행 중에는 `vibe loop --tag <tag> --configure --deadline '<ISO with Z or offset>' --final-reserve-hours <hours> --wait-ms 30000 --json`으로 같은 호스트의 마감·예약을 바꾼다. 단위별 push는 `--push-each-unit|--no-push-each-unit`이며 마감 변경을 대신하지 않는다. applied receipt의 실제 값으로 확인한다. 즉시 취소와 단위 완료 후 정지는 별개다. [실행 중 제어·복구 계약](loop-control.md)을 따른다.
+
+보통 foreground loop를 도구/하네스 완료 대기로 기다리고 종료 영수증을 받아 이어간다. 모델의 sleep→status 반복은 하지 않는다. detach는 상위 대화의 실제 후속 실행 연결이 있을 때만 쓴다. 시작 때 알림 연결 여부를 보고하며, 훅 미설정/상위 연결 부재면 자동 채팅 통지가 안 된다고 밝힌다. CLI가 끝나도 회복 가능한 문제가 남으면 새 하위 단위나 일반 스킬로 목표를 이어서 처리한다(원래 마감·총 한도 유지). CLI 결함은 보고서에 남기고 현재 프로젝트에서 패키지를 고치지 않는다.
 
 ## 배포와 strict 선점
 

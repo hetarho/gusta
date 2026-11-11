@@ -331,28 +331,33 @@ export async function vibeCheckpoint(options = {}) {
   if (!SESSION_TAG.test(options.tag ?? '')) fail('--tag에는 세션 tag가 필요합니다.')
   const context = await vibeSession(options)
   const { root, remote } = context
+  if (options.handoff && !remote) fail('원격 인계에는 Git remote가 필요합니다. --remote로 지정하세요.')
+  const publish = Boolean(remote && (context.target || options.handoff))
   const local = `refs/heads/wip/${options.tag}`
   const tracking = remote ? `refs/remotes/${remote}/wip/${options.tag}` : null
-  if (remote && context.target) await fetchBranch(root, remote, `refs/heads/wip/${options.tag}`, tracking).catch(() => false)
+  let fetchError = null
+  if (publish) await fetchBranch(root, remote, `refs/heads/wip/${options.tag}`, tracking).catch((error) => { fetchError = [error.message, ...(error.details ?? [])].join('\n') })
   const known = []
   for (const ref of [local, tracking].filter(Boolean)) if (await exists(root, ref)) known.push(await sha(root, ref))
   let previous = known[0] ?? null
   if (known.length === 2 && known[0] !== known[1] && await ancestor(root, known[0], known[1])) previous = known[1]
   const tree = await workingTree(root)
   const head = await sha(root, 'HEAD')
-  if (previous && (await git(root, ['rev-parse', `${previous}^{tree}`])).trim() === tree && await ancestor(root, head, previous)) {
-    return { schemaVersion: 1, changed: false, commit: previous, branch: `wip/${options.tag}` }
-  }
+  const changed = !(previous && (await git(root, ['rev-parse', `${previous}^{tree}`])).trim() === tree && await ancestor(root, head, previous))
   const parents = previous ? [previous] : []
   if (!previous || !(await ancestor(root, head, previous))) parents.push(head)
   const message = `checkpoint ${options.tag}: ${options.message ?? 'work in progress'}`
-  const commit = (await git(root, ['commit-tree', tree, ...parents.flatMap((parent) => ['-p', parent]), '-m', message])).trim()
+  const commit = changed ? (await git(root, ['commit-tree', tree, ...parents.flatMap((parent) => ['-p', parent]), '-m', message])).trim() : previous
   await git(root, ['update-ref', local, commit])
   let pushed = false, pushError = null
-  if (remote && context.target) {
+  if (publish) {
     try { await git(root, ['push', '--quiet', remote, `${local}:refs/heads/wip/${options.tag}`]); pushed = true } catch (error) { pushError = error.stderr || error.message }
   }
-  return { schemaVersion: 1, changed: true, commit, tree, branch: `wip/${options.tag}`, pushed, pushError }
+  const branch = `wip/${options.tag}`
+  return { schemaVersion: 1, ...(options.handoff ? { ok: pushed, purpose: 'handoff' } : {}), changed, commit, tree, branch, remote,
+    remoteBranch: remote ? `${remote}/${branch}` : null, pushed, pushError, ...(fetchError ? { fetchError } : {}),
+    verification: { status: 'unverified', checksRun: false },
+    next: options.next ?? `Continue unfinished work from ${pushed ? `${remote}/${branch}` : branch}; inspect remaining tasks and verification failures before final integration.` }
 }
 
 const minutesSince = (iso) => iso ? (Date.now() - Date.parse(iso)) / 60000 : Infinity
@@ -471,6 +476,7 @@ const which = (command) => execute('sh', ['-c', `command -v ${command}`], { time
 
 // Everything autopilot needs before the user leaves. needsUser lists what only a person can fix.
 export async function vibePreflight(options = {}) {
+  if (options.probeWorkspace !== undefined && !['current', 'new'].includes(options.probeWorkspace)) fail('--probe-workspace는 current 또는 new입니다.')
   const context = await vibeSession(options)
   const checks = []
   const add = (name, ok, detail, needsUser = false) => checks.push({ name, ok, detail, needsUser: !ok && needsUser })
@@ -525,18 +531,25 @@ export async function vibePreflight(options = {}) {
 const PROBE_SCHEMA = { type: 'object', additionalProperties: false, required: ['ran', 'exitCode', 'denied', 'note'],
   properties: { ran: { type: 'boolean' }, exitCode: { type: 'integer' }, denied: { type: 'boolean' }, note: { type: 'string' } } }
 
+export function probeFailureKind({ denied = false, note = '', code } = {}) {
+  if (denied || /EACCES|EPERM|permission denied|operation not permitted|sandbox.*(?:denied|blocked)|approval.*(?:denied|required)/i.test(note)) return 'permission'
+  if (/ENOTFOUND|EAI_AGAIN|ECONN(?:REFUSED|RESET)|ETIMEDOUT|network (?:is )?(?:unreachable|access|error|restricted)|could not resolve|unable to resolve|fetch failed/i.test(note)) return 'network'
+  if (code === 'ENOENT' || /MODULE_NOT_FOUND|ERR_MODULE_NOT_FOUND|cannot find (?:module|package)|command not found|missing (?:dependencies|dependency)|node_modules.*(?:missing|not found|ENOENT)/i.test(note)) return 'dependency'
+  return 'command'
+}
+
 // Runs the command once through a real headless worker in a fresh, never-trusted worktree —
 // the same place work-group workers run — so a permission gap shows before the user leaves.
 async function probeWorker(context, options) {
   const provider = options.provider ?? (await which('claude') ? 'claude' : 'codex')
   const allow = options.allowTool ?? []
-  const place = await workInternals.destination({ workspace: context.workspace, cwd: context.root }, `probe-${randomUUID().slice(0, 8)}`)
+  const place = options.probeWorkspace === 'current' ? null : await workInternals.destination({ workspace: context.workspace, cwd: context.root }, `probe-${randomUUID().slice(0, 8)}`)
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-probe-'))
   const bypass = options.permissionMode === 'bypass'
-  const probeRoot = options.probeWorkspace === 'current' ? context.root : place
-  if (probeRoot === place) await git(context.root, ['worktree', 'add', '--detach', '--quiet', place, 'HEAD'])
+  const probeRoot = place ?? context.root
+  if (place) await git(context.root, ['worktree', 'add', '--detach', '--quiet', place, 'HEAD'])
   try {
-    const prompt = `Run exactly this shell command once with your shell tool from the current directory, and nothing else:\n${options.probe}\nThen report JSON {"ran":bool,"exitCode":int,"denied":bool,"note":string}; denied=true when the tool call was refused for permission.`
+    const prompt = `Run exactly this shell command once with your shell tool from the current directory, and nothing else:\n${options.probe}\nThen report JSON {"ran":bool,"exitCode":int,"denied":bool,"note":string}; denied=true when the tool call was refused for permission. In note, include the exact failure code and a short diagnostic distinguishing missing dependencies, network failure, permission denial, or command failure. Do not install dependencies, retry, or change permissions.`
     const schemaFile = path.join(temporary, 'schema.json')
     const resultFile = path.join(temporary, 'result.json')
     await writeFile(schemaFile, JSON.stringify(PROBE_SCHEMA))
@@ -567,11 +580,14 @@ async function probeWorker(context, options) {
     })
     const result = provider === 'claude' ? JSON.parse(output).structured_output : JSON.parse(await readFile(resultFile, 'utf8'))
     const ok = Boolean(result?.ran) && !result.denied && result.exitCode === 0
-    return { name: 'worker-probe', ok, needsUser: !ok, permissionMode: options.permissionMode, detail: `${provider} ${options.permissionMode}: ${result?.denied ? 'denied' : `exit ${result?.exitCode}`} — ${result?.note ?? ''}`.trim(), allowTool: allow, workspace: probeRoot, projectSettings: probeRoot === context.root ? 'main checkout: project settings available; trust and effective permissions verified by this probe' : 'new worktree: project allowlist may not apply' }
+    return { name: 'worker-probe', ok, needsUser: !ok, failureKind: ok ? null : probeFailureKind(result), ran: Boolean(result?.ran), exitCode: result?.exitCode ?? null, permissionMode: options.permissionMode,
+      detail: `${provider} ${options.permissionMode}: ${result?.denied ? 'denied' : `exit ${result?.exitCode}`} — ${result?.note ?? ''}`.trim(), allowTool: allow, workspace: probeRoot, workspaceMode: place ? 'new' : 'current',
+      projectSettings: probeRoot === context.root ? 'current checkout: project settings available; effective permissions checked by this probe' : 'new worktree: project allowlist and installed dependencies may differ' }
   } catch (error) {
-    return { name: 'worker-probe', ok: false, needsUser: true, detail: error.message }
+    return { name: 'worker-probe', ok: false, needsUser: true, failureKind: probeFailureKind({ note: error.message, code: error.code }), permissionMode: options.permissionMode,
+      workspace: probeRoot, workspaceMode: place ? 'new' : 'current', detail: error.message }
   } finally {
-    if (probeRoot === place) await git(context.root, ['worktree', 'remove', '--force', place], [128]).catch(() => {})
+    if (place) await git(context.root, ['worktree', 'remove', '--force', place], [128]).catch(() => {})
     await rm(temporary, { recursive: true, force: true })
   }
 }
