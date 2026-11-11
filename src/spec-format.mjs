@@ -58,8 +58,9 @@ export const EXIT_LINE = /^- \[[ v]\] exit: \S/
 // FORMAT date: YYMMDD in UTC.
 export const yymmdd = (date = new Date()) => date.toISOString().slice(2, 10).replaceAll('-', '')
 
-// A task's ## result counts only lines someone filled: blank lines and untouched template
-// placeholders (`- outcome: <what works now>`) are empty.
+// The `vibe task done` gate: a task's ## result counts only lines someone filled — blank lines and
+// untouched template placeholders (`- outcome: <what works now>`) are empty. Lint keeps its own
+// non-blank check: archived history is never re-judged.
 const RESULT_PLACEHOLDER = /^- [\w-]+: <[^>]*>$/
 export const resultLines = (content) => (sections(content).get('result') ?? []).map((line) => line.trim())
   .filter((line) => line !== '' && !RESULT_PLACEHOLDER.test(line))

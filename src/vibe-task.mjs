@@ -16,9 +16,11 @@ const STATE = 'spec/STATE.md'
 const NEXT_LIMIT = 3
 // next lines this command writes, replaced on its next run.
 const GENERATED_NEXT = /^- (implement-task T\d{3,}( T\d{3,})*|no runnable task\b.*)$/
+// outcome and verified still holding the template text.
+const UNFILLED = /^- (outcome|verified): <[^>]*>$/
 
 export async function vibeTask(options = {}, { now = () => new Date() } = {}) {
-  if (!['start', 'done'].includes(options.step) || !TASK_ID.test(options.task ?? '')) fail('vibe task start T### --tag <tag> | vibe task done T### [--at <sha>]')
+  if (!['start', 'done'].includes(options.step) || !TASK_ID.test(options.task ?? '')) fail('vibe task start T### --tag <tag> | vibe task done T### --tag <tag> [--at <sha>] [--force-other]')
   const board = await readTaskBoard({ targetRoot: options.targetRoot })
   const root = board.root
   const state = await readFile(path.join(root, STATE), 'utf8').catch((error) => {
@@ -64,11 +66,19 @@ async function done({ options, board, root, state, id, date }) {
     fail('tasks/에 그 태스크 파일이 없습니다.', [id])
   }
   if (!task.st?.startsWith('doing@')) fail('doing 태스크만 완료합니다 — 먼저 vibe task start.', [id, task.st])
+  // Another session's task closes only on the user's instruction.
+  if (!options.forceOther) {
+    if (!SESSION_TAG.test(options.tag ?? '')) fail('--tag에는 선점한 세션 tag가 필요합니다.')
+    if (task.st.split('.')[1] !== options.tag) fail('다른 세션이 선점한 태스크입니다 — 사용자가 지시했을 때만 --force-other.', [id, task.st])
+  }
   if (!taskRow(state, id)) fail('STATE tasks 표에 그 태스크 행이 없습니다.', [id])
   let content = await readFile(path.join(root, task.file), 'utf8')
-  if (options.at !== undefined) content = withResultLine(content, 'at', await commitOf(root, options.at))
-  const problems = [...openChecks(content).map((line) => `acceptance ${line}`), ...(resultLines(content).length ? [] : ['result: empty'])]
+  // The result is judged as the model wrote it: the `at` line --at writes proves nothing.
+  const filled = resultLines(content).filter((line) => !line.startsWith('- at:'))
+  const unfilled = (sections(content).get('result') ?? []).map((line) => line.trim()).filter((line) => UNFILLED.test(line))
+  const problems = [...openChecks(content).map((line) => `acceptance ${line}`), ...(filled.length ? [] : ['result: empty']), ...unfilled.map((line) => `result ${line}`)]
   if (problems.length) fail('acceptance를 모두 체크하고 result를 채운 뒤 다시 실행하세요.', problems)
+  if (options.at !== undefined) content = withResultLine(content, 'at', await commitOf(root, options.at))
   const archived = await archiveTaskFile(root, task.file, withSt(content, `done@${date}`))
   const parked = new Set((sections(state).get('inbox') ?? []).map((line) => line.trim().match(INBOX_LINE))
     .filter((entry) => entry?.[2] === 'parked').flatMap((entry) => entry[3].split(/\s+/)))
