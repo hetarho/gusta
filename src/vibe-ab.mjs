@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import net from 'node:net'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { runtimeRoot, canonicalDestination } from './work-runtime.mjs'
 import { atomicJSON, processAlive } from './loop-control.mjs'
@@ -11,6 +12,7 @@ import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
 import { inspectProviders, availableProvider } from './work-providers.mjs'
 import { readSetting, permissionMode } from './settings.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { urlOf, readFeedback } from './vibe-ab-hub.mjs'
 
 // A/B comparison: one problem, 2..6 variants, each on its own branch, sibling worktree and
 // port. Sessions build the variants; this host owns the mechanical parts a model should not
@@ -20,6 +22,8 @@ const NAMES = 'abcdef'
 const SLUG = /^[a-z0-9][a-z0-9-]{0,39}$/
 const exists = (file) => access(file).then(() => true, () => false)
 const tailOf = (text) => text.trimEnd().split('\n').slice(-8)
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const HUB = fileURLToPath(new URL('../bin/haeram-ab-hub.mjs', import.meta.url))
 
 async function context(options) {
   const workspace = await inspectWorkspace(options)
@@ -29,6 +33,7 @@ async function context(options) {
   return { root: workspace.git.root, main, identity, runtime: runtimeRoot(workspace) }
 }
 const recordFile = (ctx, slug) => path.join(ctx.runtime, 'ab', `${slug}.json`)
+const fileOf = (ctx, slug, name) => path.join(ctx.runtime, 'ab', slug, name)
 function slugOf(options) {
   if (!SLUG.test(options.slug ?? '')) fail('비교 이름(slug)은 소문자·숫자·하이픈 40자 이내입니다: vibe ab <step> <slug>')
   return options.slug
@@ -39,12 +44,18 @@ async function load(ctx, slug) {
   return record
 }
 const save = (ctx, record) => atomicJSON(recordFile(ctx, record.slug), record)
+// Another command (a variant run finishing) may have saved since this one loaded: change the live record.
+async function update(ctx, slug, change) {
+  const live = await load(ctx, slug)
+  change(live)
+  await save(ctx, live)
+  return live
+}
 function pick(record, options) {
   const names = options.variant ? [options.variant] : Object.keys(record.variants)
   for (const name of names) if (!record.variants[name]) fail(`변형 ${name}이 없습니다: ${Object.keys(record.variants).join(', ')}`)
   return names
 }
-const urlOf = (variant) => `http://localhost:${variant.port}`
 
 async function portFree(port) {
   return new Promise((resolve) => {
@@ -80,13 +91,23 @@ async function shell(command, cwd, env, log, timeoutMs) {
   } finally { await file.close() }
 }
 
+// A server or hub runs as its own process group; true when something was running.
+function stopProcess(pid) {
+  if (!pid || !processAlive(pid)) return false
+  const group = process.platform === 'win32' ? pid : -pid
+  try { process.kill(group, 'SIGTERM') } catch {}
+  setTimeout(() => { try { if (processAlive(pid)) process.kill(group, 'SIGKILL') } catch {} }, 2000).unref()
+  return true
+}
 function stopServer(variant) {
-  const pid = variant.server?.pid
-  if (pid && processAlive(pid)) {
-    try { process.kill(process.platform === 'win32' ? pid : -pid, 'SIGTERM') } catch {}
-    setTimeout(() => { try { if (processAlive(pid)) process.kill(process.platform === 'win32' ? pid : -pid, 'SIGKILL') } catch {} }, 2000).unref()
-  }
+  const stopped = stopProcess(variant.server?.pid)
   variant.server = null
+  return stopped
+}
+function stopAll(record) {
+  for (const variant of Object.values(record.variants)) stopServer(variant)
+  stopProcess(record.hub?.pid)
+  record.hub = null
 }
 
 export async function abStart(options = {}) {
@@ -101,6 +122,7 @@ export async function abStart(options = {}) {
   let port = Number(options.basePort ?? 4101)
   if (!Number.isInteger(port) || port < 1024 || port > 65000) fail('base-port는 1024~65000입니다.')
   const record = { schemaVersion: 1, slug, base, createdAt: new Date().toISOString(), variants: {} }
+  for (const name of ['feedback.json', 'hub.json']) await rm(fileOf(ctx, slug, name), { force: true })
   for (const name of NAMES.slice(0, count)) {
     while (!(await portFree(port))) port++
     const branch = `ab/${slug}/${name}`
@@ -135,10 +157,14 @@ export async function abRun(options = {}, injected = {}) {
   const started = Date.now()
   const job = { schemaVersion: 1, role: 'variant', workspace: variant.path, prompt: `Variant ${name} of ${slug}. $PORT for this variant: ${variant.port}.\n\n${prompt}`, timeoutMs,
     allowTools: options.allowTool ?? [], permissionMode: await permissionMode(options, ctx.root) }
+  // The session transcript goes to a runtime file; results name its path, never its content.
+  const log = fileOf(ctx, slug, `${name}-run-${variant.runs.length + 1}.log`)
+  await mkdir(path.dirname(log), { recursive: true })
+  const file = await open(log, 'w', 0o600)
   let result
-  try { result = await deps.execute({ provider, model: options.model, job, log: () => {} }) } catch (error) {
-    throw new SkillPackageError(error.message, (error.details ?? []).map((detail) => String(detail).slice(-2000)))
-  }
+  try { result = await deps.execute({ provider, model: options.model, job, log: (text) => { try { writeSync(file.fd, text) } catch {} } }) } catch (error) {
+    throw new SkillPackageError(error.message, [...(error.details ?? []).map((detail) => String(detail).slice(-2000)), `log: ${log}`])
+  } finally { await file.close() }
   // The host commits, so the session needs no Git permission and the branch holds exactly this variant.
   const changed = (await git(variant.path, ['status', '--porcelain'])).trim() !== ''
   if (changed) {
@@ -146,44 +172,91 @@ export async function abRun(options = {}, injected = {}) {
     await git(variant.path, ['commit', '-q', '-m', `ab ${slug}/${name}: ${result.summary.split('\n')[0].slice(0, 72)}`])
   }
   const commit = (await git(variant.path, ['rev-parse', 'HEAD'])).trim()
-  const run = { at: new Date().toISOString(), provider, model: options.model ?? null, outcome: result.outcome, summary: result.summary, view: result.view, commit, changed, ms: Date.now() - started, usage: compactUsage(result.usage) }
-  const live = await load(ctx, slug)
-  live.variants[name].runs.push(run)
-  await save(ctx, live)
-  return { schemaVersion: 1, ok: result.outcome === 'completed', slug, variant: name, url: urlOf(variant), ...run }
+  const run = { at: new Date().toISOString(), provider, model: options.model ?? null, outcome: result.outcome, summary: result.summary, view: result.view, path: result.path ?? '',
+    commit, changed, ms: Date.now() - started, usage: compactUsage(result.usage), log }
+  const live = await update(ctx, slug, (current) => { current.variants[name].runs.push(run) })
+  return { schemaVersion: 1, ok: result.outcome === 'completed', slug, variant: name, url: urlOf(live.variants[name]), ...run }
 }
 
-export async function abServe(options = {}) {
+// Ready means the screen answers: after the port listens, one GET of the variant's view path. A 5xx
+// or no answer is not ready; 3xx/4xx is (sign-in redirects are normal) and its status is reported.
+export async function probeView(url, timeoutMs) {
+  const started = Date.now()
+  try {
+    const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) })
+    await response.body?.cancel().catch(() => {})
+    const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null
+    return { ok: response.status < 500, status: response.status, ms: Date.now() - started, ...(location ? { location } : {}) }
+  } catch (error) {
+    return { ok: false, error: error.name === 'TimeoutError' ? 'timeout' : String(error.cause?.code ?? error.message), ms: Date.now() - started }
+  }
+}
+
+async function readiness(variant, deadline, probe) {
+  let up = false
+  while (!up && Date.now() < deadline && processAlive(variant.server?.pid)) {
+    up = await listening(variant.port)
+    if (!up) await sleep(500)
+  }
+  return up ? probe(urlOf(variant), Math.max(5000, deadline - Date.now())) : null
+}
+
+// The hub is detached like the dev servers and reports its own free port. Its URL uses localhost,
+// the variants' host, so their cookies stay same-site inside the hub's frames.
+async function startHub(ctx, slug) {
+  const ready = fileOf(ctx, slug, 'hub.json'), log = fileOf(ctx, slug, 'hub.log')
+  await mkdir(path.dirname(log), { recursive: true })
+  await rm(ready, { force: true })
+  const file = await open(log, 'a', 0o600)
+  const child = spawn(process.execPath, [HUB, recordFile(ctx, slug), fileOf(ctx, slug, 'feedback.json'), ready], { detached: process.platform !== 'win32', stdio: ['ignore', file.fd, file.fd] })
+  child.unref()
+  await file.close()
+  for (const until = Date.now() + 5000; Date.now() < until && processAlive(child.pid); await sleep(100)) {
+    const port = await readFile(ready, 'utf8').then((text) => JSON.parse(text).port, () => null)
+    if (port) return { pid: child.pid, port, url: `http://localhost:${port}`, log, startedAt: new Date().toISOString() }
+  }
+  stopProcess(child.pid)
+  return null
+}
+
+export async function abServe(options = {}, injected = {}) {
+  const deps = { probe: probeView, ...injected }
   const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
   if (!options.command) fail('--command가 필요합니다(개발 서버 명령, 포트는 $PORT).')
   const names = pick(record, options), readyMs = Number(options.readyTimeoutMs ?? 120000)
-  for (const name of names) {
-    const variant = record.variants[name]
-    stopServer(variant)
-    if (!(await portFree(variant.port))) fail(`포트 ${variant.port}를 다른 프로세스가 쓰고 있습니다 (변형 ${name}).`)
-    const log = path.join(ctx.runtime, 'ab', slug, `${name}-server.log`)
-    await mkdir(path.dirname(log), { recursive: true })
-    const file = await open(log, 'a', 0o600)
-    const child = spawn(options.command, { cwd: variant.path, shell: true, detached: process.platform !== 'win32',
-      env: { ...process.env, PORT: String(variant.port), HAERAM_AB_VARIANT: name }, stdio: ['ignore', file.fd, file.fd] })
-    child.unref()
-    await file.close()
-    variant.server = { pid: child.pid, command: options.command, log, startedAt: new Date().toISOString() }
-  }
-  await save(ctx, record)
-  const deadline = Date.now() + readyMs
-  const results = []
-  for (const name of names) {
-    const variant = record.variants[name]
-    let ready = false
-    while (!ready && Date.now() < deadline && processAlive(variant.server.pid)) {
-      ready = await listening(variant.port)
-      if (!ready) await new Promise((resolve) => setTimeout(resolve, 500))
+  const changed = {}
+  try {
+    for (const name of names) {
+      const variant = record.variants[name]
+      // A live server of the same command keeps serving (hot reload shows a rerun); --restart replaces it.
+      if (!options.restart && variant.server?.command === options.command && processAlive(variant.server.pid)) continue
+      if (stopServer(variant)) for (const until = Date.now() + 5000; Date.now() < until && !(await portFree(variant.port));) await sleep(200)
+      changed[name] = null
+      if (!(await portFree(variant.port))) fail(`포트 ${variant.port}를 다른 프로세스가 쓰고 있습니다 (변형 ${name}).`)
+      const log = fileOf(ctx, slug, `${name}-server.log`)
+      await mkdir(path.dirname(log), { recursive: true })
+      const file = await open(log, 'a', 0o600)
+      const child = spawn(options.command, { cwd: variant.path, shell: true, detached: process.platform !== 'win32',
+        env: { ...process.env, PORT: String(variant.port), HAERAM_AB_VARIANT: name }, stdio: ['ignore', file.fd, file.fd] })
+      child.unref()
+      await file.close()
+      changed[name] = variant.server = { pid: child.pid, command: options.command, log, startedAt: new Date().toISOString() }
     }
-    const tail = ready ? [] : tailOf(await readFile(variant.server.log, 'utf8').catch(() => ''))
-    results.push({ variant: name, url: urlOf(variant), ready, view: variant.runs.at(-1)?.view ?? null, ...(ready ? {} : { exited: !processAlive(variant.server.pid), tail, log: variant.server.log }) })
+  } finally {
+    // Merge into the live record: a variant run may have finished while servers started.
+    if (Object.keys(changed).length) await update(ctx, slug, (live) => { for (const [name, server] of Object.entries(changed)) live.variants[name].server = server })
   }
-  return { schemaVersion: 1, ok: results.every((entry) => entry.ready), slug, variants: results }
+  const live = await load(ctx, slug), deadline = Date.now() + readyMs
+  const results = await Promise.all(names.map(async (name) => {
+    const variant = live.variants[name], answer = await readiness(variant, deadline, deps.probe)
+    const ready = Boolean(answer?.ok), { ok, ...http } = answer ?? {}
+    const tail = ready ? [] : tailOf(await readFile(variant.server?.log ?? '', 'utf8').catch(() => ''))
+    return { variant: name, url: urlOf(variant), ready, ...(Object.hasOwn(changed, name) ? {} : { kept: true }), ...(answer ? { http } : {}), view: variant.runs.at(-1)?.view ?? null,
+      ...(ready ? {} : { exited: !processAlive(variant.server?.pid), tail, log: variant.server?.log ?? null }) }
+  }))
+  const hub = live.hub?.pid && processAlive(live.hub.pid) ? live.hub : await startHub(ctx, slug)
+  if (hub !== live.hub) await update(ctx, slug, (current) => { current.hub = hub })
+  return { schemaVersion: 1, ok: Boolean(hub) && results.every((entry) => entry.ready), slug, hub: hub?.url ?? null, ...(hub ? {} : { hubLog: fileOf(ctx, slug, 'hub.log') }), variants: results }
 }
 
 // Variants run one after another and alternate per repetition (a b a b ...), so drift in the
@@ -216,7 +289,9 @@ export async function abStatus(options = {}) {
     const serving = Boolean(variant.server?.pid && processAlive(variant.server.pid))
     variants.push({ variant: name, branch: variant.branch, path: variant.path, url: urlOf(variant), serving, commits: ahead, last: variant.runs.at(-1) ? { outcome: variant.runs.at(-1).outcome, summary: variant.runs.at(-1).summary, view: variant.runs.at(-1).view } : null })
   }
-  return { schemaVersion: 1, ok: true, slug, base: record.base, createdAt: record.createdAt, variants }
+  // The hub's notes and choice are what the person said; a choice is intent, adopting stays pick.
+  const hub = record.hub?.pid && processAlive(record.hub.pid) ? record.hub.url : null
+  return { schemaVersion: 1, ok: true, slug, base: record.base, createdAt: record.createdAt, hub, feedback: await readFeedback(fileOf(ctx, slug, 'feedback.json')), variants }
 }
 
 async function removeWorktrees(ctx, record, names) {
@@ -233,10 +308,8 @@ async function pruneBranches(ctx, record, names) {
 const pruning = async (ctx, options) => options.pruneBranches || await readSetting({ root: ctx.root }, 'prune-branches')
 
 export async function abStop(options = {}) {
-  const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
+  const ctx = await context(options), slug = slugOf(options), record = await update(ctx, slug, stopAll)
   const names = Object.keys(record.variants)
-  for (const name of names) stopServer(record.variants[name])
-  await save(ctx, record)
   const prune = options.remove && await pruning(ctx, options)
   if (options.remove) {
     await removeWorktrees(ctx, record, names)
@@ -254,8 +327,7 @@ export async function abPick(options = {}) {
   const [name] = pick(record, options), names = Object.keys(record.variants)
   if (names.some((other) => record.variants[other].path === ctx.root)) fail('변형 worktree가 아니라 비교를 시작한 checkout에서 실행하세요.')
   if ((await git(ctx.root, ['status', '--porcelain'])).trim()) fail('합칠 checkout에 미커밋 변경이 있습니다.')
-  for (const other of names) stopServer(record.variants[other])
-  await save(ctx, record)
+  await update(ctx, slug, stopAll)
   const winner = record.variants[name]
   if (Number((await git(ctx.root, ['rev-list', '--count', `${record.base}..${winner.branch}`])).trim()) === 0) fail(`변형 ${name}에 커밋이 없습니다.`)
   try { await git(ctx.root, ['merge', '--no-ff', '-m', `ab ${slug}: adopt ${name}`, winner.branch]) } catch (error) {

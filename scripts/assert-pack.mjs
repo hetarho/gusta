@@ -23,6 +23,7 @@ const requiredCoreFiles = [
   'bin/haeram-vibe-loop.mjs',
   'bin/haeram-vibe-watch.mjs',
   'bin/haeram-work-run.mjs',
+  'bin/haeram-ab-hub.mjs',
   'src/vibe-loop.mjs',
   'src/loop-control.mjs',
   'src/loop-metadata.mjs',

@@ -30,18 +30,20 @@ description: >-
 
 ## 3. 병렬 구현 — 하위 세션
 변형마다 세션 임시 폴더에 프롬프트 파일을 쓴다: 목표, 이 변형의 접근, 지킬 결정(`vibe brief` 블록 또는 SSOT ID), 볼 화면·완료 기준. 그리고 동시에 띄운다:
-- 기본(헤드리스): 변형마다 `vibe ab run <slug> --variant <v> --prompt-file <file> --provider <claude|codex> [--allow-tool '<태스크 검사 명령 규칙>'] --json`을 백그라운드로 실행한다. 세션은 자기 worktree만 고치고, 끝나면 CLI가 변형 브랜치에 커밋한다. 돌아오는 것은 summary·view(어디를 보면 되는지)뿐이다.
+- 기본(헤드리스): 변형마다 `vibe ab run <slug> --variant <v> --prompt-file <file> --provider <claude|codex> [--allow-tool '<태스크 검사 명령 규칙>'] --json`을 백그라운드로 실행한다. 세션은 자기 worktree만 고치고, 끝나면 CLI가 변형 브랜치에 커밋한다. 돌아오는 것은 summary·view·path(볼 곳·URL 경로)뿐이다.
 - 네이티브 하위 세션 도구를 써도 된다(worktree 경로 지정, 커밋·서버 실행은 하지 않게). 같은 대화에서 역할만 바꿔 변형을 직접 만들지 않는다.
 - 변형은 영향 단위 테스트와 빠른 검사만 돌린다. 전체 스위트는 채택한 변형을 합친 뒤 평소의 마감 관문에서 한 번.
 
 ## 4. 보여 주기
-- 화면이 있으면 `vibe ab serve <slug> --command '<개발 서버, 포트는 $PORT>' --json`: 변형마다 자기 포트에 띄우고 준비될 때까지 기다린다. 명령은 ARCH·package.json의 dev 스크립트로 고르고 포트 인자가 필요하면 `$PORT`를 넘긴다(예 `npm run dev -- --port $PORT`). 준비 실패는 로그 tail로 원인을 보고하고 URL이 있다고 말하지 않는다.
+- 화면이 있으면 `vibe ab serve <slug> --command '<개발 서버, 포트는 $PORT>' --json`: 변형마다 자기 포트에 띄우고 path가 응답하면 비교 페이지(hub)를 띄운다. 명령은 ARCH·package.json의 dev 스크립트로 고르고 포트 인자가 필요하면 `$PORT`를 넘긴다(예 `npm run dev -- --port $PORT`). 준비 실패(5xx·무응답)는 로그 tail로 원인을 보고하고 URL이 있다고 말하지 않는다. 3xx·4xx면 그 status를 함께 말한다.
+- 사용자에게는 hub URL 하나만 준다 — 변형이 나란히 보이고 거기서 메모·choose를 남길 수 있다고 한 줄로.
 - 성능·동작 비교는 `vibe ab exec <slug> --command '<측정 명령>' --repeat 3 --json`: 변형을 번갈아 실행해 중앙값·최소·종료 코드·마지막 줄을 모은다. 실행 사이의 흔들림보다 작은 차이는 차이라고 하지 않는다.
-- 비교표 하나로 보여 준다: 변형 | 접근 | URL 또는 측정값 | 볼 곳(view) | 장단점·위험. 판정은 사용자 몫이고 추천은 근거와 함께 한 줄만.
-- 특정 변형을 고쳐 달라고 하면 그 변형에만 `vibe ab run`을 다시 돌린다(새 프롬프트에는 요청만). 서버는 `vibe ab serve <slug> --variant <v>`로 그 변형만 다시 띄운다.
+- 비교표 하나로 보여 준다: 변형 | 접근 | 측정값 | 볼 곳(view) | 장단점·위험. 판정은 사용자 몫이고 추천은 근거와 함께 한 줄만.
+- 사용자가 다 봤다고 하면 `vibe ab status <slug> --json`의 feedback(메모·chosen)을 읽는다. chosen은 의사 표시일 뿐 — 확인받고 pick한다.
+- 특정 변형을 고쳐 달라고 하면(말 또는 메모) 그 변형에만 `vibe ab run`을 다시 돌린다(새 프롬프트에는 요청·메모만). 이어 `vibe ab serve <slug> --variant <v> --command …`는 살아 있는 서버를 두고 응답만 확인한다(hot reload가 없으면 `--restart`).
 
 ## 5. 채택과 정리
-- `vibe ab pick <slug> --variant <v> --json`: 서버를 모두 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리한다. 변형 브랜치는 spec/SETTINGS.md `prune-branches`(기본 true)대로 지운다. false여도 `--prune-branches`를 주면 지운다. 충돌이면 현재 브랜치는 그대로 두고 보고한다.
+- `vibe ab pick <slug> --variant <v> --json`: 서버·hub를 모두 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리한다. 변형 브랜치는 spec/SETTINGS.md `prune-branches`(기본 true)대로 지운다. false여도 `--prune-branches`를 주면 지운다. 충돌이면 현재 브랜치는 그대로 두고 보고한다.
 - 채택 기록은 디자인 마감과 같다: STATE log `- YYMMDD ab <slug>: adopt <v> — <approach>`를 merge 직후 커밋 하나로 남기고, 채택안이 SSOT 규칙을 바꿨으면 이어서 update-ssot(대안=고르지 않은 변형, 이유=사용자 선택 근거).
 - 합친 뒤에는 평소대로 영향 검사, push 직전 마감 관문(start-vibe 4절).
-- 고르지 않고 끝내면 `vibe ab stop <slug> --remove`(브랜치는 pick과 같은 설정을 따른다). 나중에 보겠다면 서버만 두고 `vibe ab status <slug>`로 다시 보여 준다.
+- 고르지 않고 끝내면 `vibe ab stop <slug> --remove`(브랜치는 pick과 같은 설정을 따른다). 나중에 보겠다면 서버·hub를 두고 `vibe ab status <slug>`의 hub URL을 다시 준다.

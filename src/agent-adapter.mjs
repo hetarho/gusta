@@ -20,8 +20,9 @@ export const RESULT_SCHEMAS = {
   // A scout reads and proposes; its whole return is what reaches the orchestrator's context.
   scout: object({ summary: string, proposals: { type: 'array', items: object({ title: string, where: string, problem: string, evidence: string,
     change: string, touches: { type: 'array', items: string }, preserves: string, checks: string, cost: string, risk: string }) } }),
-  // One A/B variant: what was built and where a person should look at it.
-  variant: object({ outcome: { type: 'string', enum: ['completed', 'blocked'] }, summary: string, view: string }),
+  // One A/B variant: what was built and where a person should look at it. path is the URL path the
+  // host opens and probes (empty = root); view stays free text. Strict output needs path present.
+  variant: object({ outcome: { type: 'string', enum: ['completed', 'blocked'] }, summary: string, view: string, path: string }),
 }
 const PROPOSAL = ['title', 'where', 'problem', 'evidence', 'change', 'preserves', 'checks', 'cost', 'risk']
 
@@ -40,8 +41,8 @@ export function validateAgentResult(role, result) {
     return { summary: result.summary, proposals }
   }
   if (role === 'variant') {
-    if (!['completed', 'blocked'].includes(result.outcome) || typeof result.view !== 'string') fail('변형 결과의 outcome/view가 올바르지 않습니다.')
-    return { outcome: result.outcome, summary: result.summary, view: result.view }
+    if (!['completed', 'blocked'].includes(result.outcome) || typeof result.view !== 'string' || !['string', 'undefined'].includes(typeof result.path)) fail('변형 결과의 outcome/view/path가 올바르지 않습니다.')
+    return { outcome: result.outcome, summary: result.summary, view: result.view, path: result.path?.trim() ?? '' }
   }
   if (role === 'worker') {
     if (!['completed', 'blocked'].includes(result.outcome)) fail('워커 결과의 outcome이 올바르지 않습니다.')
@@ -137,7 +138,7 @@ async function promptFor(job) {
   }
   if (job.role === 'variant') {
     if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('변형은 workspace·prompt와 새 세션이 필요합니다.')
-    return `You build one variant of an A/B comparison started by an orchestrator. Work only in this workspace (your own git worktree and branch) and implement this variant fully enough for a person to compare it. Do NOT edit spec/ (nothing is decided yet), run git add/commit/push/merge (the host commits your changes), start long-running servers (the host serves each variant on its own port as $PORT), or spawn subagents. ${TASK_CHECKS} Return outcome, summary (what you changed and its trade-offs) and view (where a person should look: URL path, screen or command); outcome blocked only when the variant cannot be built, with the reason in summary.\n\n${job.prompt}`
+    return `You build one variant of an A/B comparison started by an orchestrator. Work only in this workspace (your own git worktree and branch) and implement this variant fully enough for a person to compare it. Do NOT edit spec/ (nothing is decided yet), run git add/commit/push/merge (the host commits your changes), start long-running servers (the host serves each variant on its own port as $PORT), or spawn subagents. ${TASK_CHECKS} Return outcome, summary (what you changed and its trade-offs), view (where a person should look: screen, state or command) and path (the URL path the host opens first, e.g. /settings/profile; empty for root or no screen); outcome blocked only when the variant cannot be built, with the reason in summary.\n\n${job.prompt}`
   }
   if (!['worker', 'reviewer'].includes(job.role) || !job.workspace || !job.attempt || !job.taskId) fail('실행기 작업 입력이 올바르지 않습니다.')
   const unattended = job.mode === 'autopilot' ? ' Nobody is available to answer questions: never wait for one.' : ''
@@ -242,7 +243,7 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     if (provider === 'claude') {
       keep(partial)
       const output = answer || last
-      return { ...claudeResult(output, job.role), session, ...(['unit', 'scout'].includes(job.role) ? { usage: claudeEnvelope(output).usage ?? null } : {}) }
+      return { ...claudeResult(output, job.role), session, ...(['unit', 'scout', 'variant'].includes(job.role) ? { usage: claudeEnvelope(output).usage ?? null } : {}) }
     }
     return { ...validateAgentResult(job.role, JSON.parse(await readFile(files.result, 'utf8'))), session: codexSession(events) ?? job.resume ?? null }
   } finally { await rm(temporary, { recursive: true, force: true }) }
