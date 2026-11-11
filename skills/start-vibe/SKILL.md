@@ -44,6 +44,7 @@ hostManaged 실행기에서는 초기화·active·보고서 생성/종료·묶�
 | 새 기능·기획 변경 | create-ssot/update-ssot → create-task 한 조각 |
 | pending·채택 review | create-task 한 조각 |
 | 활성 open/ready ideation | 다음 미반영 도메인 하나 create-ssot/update-ssot → create-task |
+| route repair(issues: FORMAT 밖 st, 손으로 닫은 태스크) | 그 태스크를 todo로 되돌리고 implement-task 5절 마감(`vibe task start`→`vibe task done`) 후 lint |
 | dep 충족 todo·자기 doing | vibe brief T### → implement-task 1개 |
 | inbox 정리 요청 | status --section inbox로 해당 항목만 반영·log |
 | 기획·기술 판단으로 blocked | 맡김은 추천안으로 기획 한 조각을 끝내고 해당 태스크를 재개 가능하게 복구 |

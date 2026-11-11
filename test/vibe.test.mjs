@@ -280,6 +280,32 @@ test('route: 기획 거리·구현 거리에 따라 planning·implementation·ch
   assert.equal((await vibeStatus({ targetRoot: empty })).route, 'architecture')
 })
 
+// A hand close (`done` without a date) used to read as neither todo nor done: settled, ideation-first.
+test('status: a row or task-file st outside FORMAT is an issue, never settled, and routes to repair; valid states keep their route', async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-st-')))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(path.join(root, 'spec/tasks'), { recursive: true })
+  const status = async (rows, files = {}) => {
+    await writeFile(path.join(root, 'spec/STATE.md'), STATE.replace('| T001 | first | ARCH | - | todo |\n| T002 | second | ARCH | - | todo |\n', rows))
+    await rm(path.join(root, 'spec/tasks'), { recursive: true, force: true }); await mkdir(path.join(root, 'spec/tasks'))
+    for (const [id, st] of Object.entries(files)) await writeFile(path.join(root, `spec/tasks/${id}.x.md`), task(id).replace('st:todo', `st:${st}`))
+    return vibeStatus({ targetRoot: root })
+  }
+  const broken = await status('| T001 | first | ARCH | - | done |\n', { T001: 'done' })
+  assert.deepEqual(broken.issues, [{ id: 'T001', where: 'STATE', st: 'done' }, { id: 'T001', where: 'file', st: 'done' }])
+  assert.equal(broken.settled, false); assert.equal(broken.route, 'repair'); assert.deepEqual(broken.runnable, [])
+  // A valid row with a broken file (and the other way round) is still an issue.
+  assert.deepEqual((await status('| T001 | first | ARCH | - | todo |\n', { T001: 'finished' })).issues, [{ id: 'T001', where: 'file', st: 'finished' }])
+  assert.deepEqual((await status('| T001 | first | ARCH | - | doing |\n', { T001: 'doing@261112.ab' })).issues, [{ id: 'T001', where: 'STATE', st: 'doing' }])
+  // Every FORMAT st is valid: the routes are what they were.
+  for (const [st, route, settled] of [['todo', 'implementation', false], ['doing@261112.ab', 'ideation-first', true], ['doing@261112', 'implementation', false], ['blocked@261112', 'ideation-first', true], ['done@261112', 'ideation-first', true]]) {
+    const valid = await status(`| T001 | first | ARCH | - | ${st} |\n`, { T001: st })
+    assert.deepEqual([valid.issues, valid.route, valid.settled], [[], route, settled], st)
+  }
+  // No task file: lint reports it; status judges the row alone.
+  assert.deepEqual((await status('| T001 | first | ARCH | - | todo |\n')).issues, [])
+})
+
 test('route: 완료 ideation 파일은 새 기획 후보나 기본 읽기 입력이 아니다', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'haeram-ideation-route-'))
   t.after(() => rm(root, { recursive: true, force: true }))

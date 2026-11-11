@@ -6,7 +6,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { runtimeRoot } from './work-runtime.mjs'
-import { sections, tableRows, quoteLine, quoteFields, exploreValue, yymmdd, INBOX_LINE, SESSION_TAG, TASK_ID } from './spec-format.mjs'
+import { sections, tableRows, quoteLine, quoteFields, exploreValue, yymmdd, INBOX_LINE, SESSION_TAG, TASK_ID, TASK_ST } from './spec-format.mjs'
 import { activeRows, upsertActive, mergeState, taskRow, setTaskSt } from './state-doc.mjs'
 import { designOf } from './interactive-state.mjs'
 import { workingTree, checkKey, cachedPass, recordPass, withHeavyLock } from './check-cache.mjs'
@@ -373,22 +373,33 @@ function summarize(text) {
   return { tasks, pending, reviews, ideation, inbox }
 }
 
-// explore timeboxes of the STATE rows, in row order. One listing serves every row (a row's file is
-// the first listed `<id>.…`); the files are read in parallel.
-export async function exploreTimeboxes(root, tasks) {
+// Quote-line fields of the STATE rows' task files, in row order (null: no file). One listing serves
+// every row (a row's file is the first listed `<id>.…`); the files are read in parallel.
+async function taskFields(root, tasks) {
   const names = await readdir(path.join(root, 'spec/tasks')).catch(() => [])
   const byId = new Map()
   for (const name of names) {
     const dot = name.indexOf('.')
     if (dot >= 0 && !byId.has(name.slice(0, dot))) byId.set(name.slice(0, dot), name)
   }
-  const timeboxes = await Promise.all(tasks.map(async ({ id }) => {
+  return Promise.all(tasks.map(async ({ id }) => {
     const file = id.includes('.') ? names.find((name) => name.startsWith(`${id}.`)) : byId.get(id)
     const content = file ? await readOptional(path.join(root, 'spec/tasks', file)) : null
-    return exploreValue(quoteFields(quoteLine(content ?? '') ?? '').get('explore'))
+    return content === null ? null : quoteFields(quoteLine(content) ?? '')
   }))
-  return tasks.flatMap(({ id }, index) => timeboxes[index] ? [{ id, timebox: timeboxes[index] }] : [])
 }
+const timeboxesOf = (tasks, fields) => tasks.flatMap(({ id }, index) => {
+  const timebox = exploreValue(fields[index]?.get('explore'))
+  return timebox ? [{ id, timebox }] : []
+})
+// explore timeboxes of the STATE rows, in row order.
+export const exploreTimeboxes = async (root, tasks) => timeboxesOf(tasks, await taskFields(root, tasks))
+// A row or task-file st outside FORMAT's set is neither todo nor done: it is reported, never settled.
+const stIssues = (tasks, fields) => tasks.flatMap((task, index) => {
+  const file = fields[index]?.get('st')
+  return [...(TASK_ST.test(task.st ?? '') ? [] : [{ id: task.id, where: 'STATE', st: task.st ?? null }]),
+    ...(file === undefined || TASK_ST.test(file) ? [] : [{ id: task.id, where: 'file', st: file }])]
+})
 
 // What a session needs before its first question: who else is working (as the remote sees
 // it), what is left, and which way to go.
@@ -439,7 +450,8 @@ export async function vibeStatus(options = {}) {
   }
   const local = summarize(text)
   const design = await designOf(workspace)
-  const explore = await exploreTimeboxes(root, local.tasks)
+  const fields = await taskFields(root, local.tasks)
+  const explore = timeboxesOf(local.tasks, fields), issues = stIssues(local.tasks, fields)
   const reports = (await readdir(path.join(root, 'spec/reports')).catch(() => [])).filter((name) => name.endsWith('.md'))
   const reportTo = await Promise.all(reports.map(async (file) => quoteFields(quoteLine((await readOptional(path.join(root, 'spec/reports', file))) ?? '') ?? '').get('to')))
   const openReports = reports.filter((file, index) => reportTo[index] === '-').map((file) => `spec/reports/${file}`)
@@ -460,11 +472,12 @@ export async function vibeStatus(options = {}) {
     next: (sections(text).get('next') ?? []).filter((line) => line.startsWith('- ')).slice(0, 3),
     counts: { inbox: local.inbox.length, parked: local.inbox.filter((entry) => entry.kind === 'parked').length, remaining: local.tasks.length },
     remaining: local.tasks.map((task) => ({ ...task, title: task.title.slice(0, 120) })), runnable: runnable.map((task) => task.id),
-    settled: !hasImplementation && !hasPlanning, parkedOnly: !runnable.length && !local.pending.length && !local.reviews.length && !hasPlanning && (parked.size > 0 || implementation.blocked.length > 0),
+    issues, settled: !hasImplementation && !hasPlanning && !issues.length, parkedOnly: !runnable.length && !local.pending.length && !local.reviews.length && !hasPlanning && (parked.size > 0 || implementation.blocked.length > 0),
     implementation, planning, inbox: local.inbox.slice(0, 3).map(({ date, kind, refs, text }) => ({ date, kind, refs, text: text.slice(0, 220) })), inboxMore: local.inbox.length > 3, openReports,
     design,
-    // An open design comes first: its edits are uncommitted until the user ends it.
-    route: design ? 'design' : hasImplementation && hasPlanning ? 'choose' : hasImplementation ? 'implementation' : hasPlanning ? 'planning' : 'ideation-first' }
+    // An open design comes first: its edits are uncommitted until the user ends it. A broken st
+    // (a hand close) is fixed before anything else is chosen: implement-task's close, then lint.
+    route: design ? 'design' : issues.length ? 'repair' : hasImplementation && hasPlanning ? 'choose' : hasImplementation ? 'implementation' : hasPlanning ? 'planning' : 'ideation-first' }
 }
 
 const which = (command) => execute('sh', ['-c', `command -v ${command}`], { timeout: 5000 }).then(() => true, () => false)

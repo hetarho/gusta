@@ -53,12 +53,13 @@ runtime는 `<Git common dir>/haeram/v1/loops/<tag>/`다(일반 checkout은 `.git
 | `loop.json` | 원자적 교체. runId/host/PID, phase/status, startedAt/workDeadline/deadline/endedAt, units, requestedConfig/appliedConfig, configHistory, reason/stopReason, error/operationalErrors, publication(마지막 반영) |
 | `heartbeatAt` | 약 1초마다 기록. 60초 지연은 건강하지 않은 상태이며 살아 있는 소유권을 탈취하지 않음 |
 | `terminal.json` | 최종 manifest 쓰기 실패의 별도 종료 기록. `--status`는 같은 runId일 때 병합 |
-| `events.jsonl` | started/configuration-applied/stopped, unit-cut/unit-leftover/task-parked(알림 아님), 알림: failed/metadata-error/host-lost/heartbeat-stale/supervisor-error·needs-judgment·finished 등 |
+| `events.jsonl` | started/configuration-applied/stopped, unit-cut/unit-leftover/task-parked/spec-gate(알림 아님), 알림: failed/metadata-error/host-lost/heartbeat-stale/supervisor-error·needs-judgment·finished 등 |
 | `notifications/<event-id>.json` | 알림 이벤트의 내구성 있는 outbox와 실제 훅 시도 결과 |
 | `<dispatch>.log` | 단위 로그. 어댑터 stdout/stderr(Claude stream-json·Codex JSONL)를 도착 즉시 덧붙인다 — 실행 중 단위는 가장 최근 파일을 `tail -f`. 끝난 단위는 `dispatches[].log` |
 
 독립 감시 프로세스는 호스트가 비정상 종료되면 `status:failed`, `reason:host-lost`, `running:false`를 기록하고 미적용 요청을 취소한다. 호스트는 감시자가 사라져도 운영 오류로 중단한다. `--status`는 원시 running 플래그만 믿지 않고 PID·heartbeat·감시자·terminal을 확인한다. 다른 host 소유권이나 살아 있는 PID는 자동 탈취하지 않는다. 사용자 취소·no-work·원래 시간/단위 한도를 감시자가 되돌리지 않는다.
 단위 상한(`--timeout-ms`, explore는 timebox+30분, 어느 쪽이든 마감 구간 시작까지)·출력 한도로 끊긴 단위는 성공으로 반환하지 않는다: `unit-cut` 이벤트와 보고서 `cut (...)` 줄로 남기되 loop는 계속한다. 실패·절단 단위의 미커밋 변경은 `refs/haeram/units/<tag>/<run>-<n>`에 스냅샷하고(스테이징만 된 내용은 둘째 부모, push 안 함) 그 경로만 HEAD로 되돌린 뒤 새 단위에 넘긴다 — 같은 태스크는 이어가기→한 번 쪼개기→inbox parked(`unit-leftover`·`task-parked`). 이어받은 태스크가 끝나면 그 ref를 지우고, 남은 ref는 보고서 next에 적는다. 변경 없는 절단만 실패로 세며 연속 2회면 `session-failures`로 멈추지만 앞 단위가 커밋한 코드는 마감 관문·push를 거친다. 성공을 보고한 단위 뒤의 미커밋 변경은 사람의 것일 수 있어 그대로 두고 다음 단위·게시를 멈춘다. 사용자 취소는 트리를 건드리지 않는다. 체크포인트·절전 방지 종료 실패도 운영 오류로 남기며 조용히 버리지 않는다.
+태스크 완료 보고는 주장이고 spec 마감이 증거다: 호스트는 그 태스크가 tasks/done에 `done@날짜`로 보관되고 STATE 행이 사라졌으며 단위가 더한 lint 오류가 없는지 본다(경고는 막지 않는다). 어기면 완료로 세지 않고(보고서 `rejected by spec gate`) 위반 목록과 `vibe task start/done` 마감 지시를 담은 수리 단위 하나를 주고, 다시 어기면 inbox parked 후 다른 일을 계속한다(`spec-gate`). FORMAT 밖 st가 남은 태스크(`vibe status` issues·route repair)도 같은 수리 단위 하나로 시작한다. 모든 게시·마감 관문은 spec lint를 먼저 본다: 오류가 있으면 push하지 않고 `spec lint: fail` 검사로 남기며, 마감은 no-work가 아니라 실패로 끝난다.
 
 `--notify-command '<command>'`를 시작 옵션에 지정하면 호스트와 감시자가 알림 이벤트 JSON을 stdin으로 보낸다. 사람이 볼 일에만 알린다 — 단위 완료·heartbeat 알림은 없다. 모든 알림의 `level`로 거른다:
 - `failure`: 위 실패 이벤트. 기존 필드 그대로.
