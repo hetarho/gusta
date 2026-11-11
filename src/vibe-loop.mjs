@@ -17,14 +17,14 @@ import { appendInbox } from './state-doc.mjs'
 import { SESSION_TAG, TASK_ID } from './spec-format.mjs'
 import { sections, tableRows } from './spec-format.mjs'
 import { validateAgentResult, compactUsage } from './agent-adapter.mjs'
+import { adapterArgs, providerFlags } from './work-providers.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { permissionMode, SETTINGS } from './settings.mjs'
+import { permissionMode, readSetting, SETTINGS } from './settings.mjs'
 import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine } from './loop-time.mjs'
 
 const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
-const adapter = fileURLToPath(new URL('../bin/haeram-agent-adapter.mjs', import.meta.url))
 const present = (file) => access(file).then(() => true, () => false)
 const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
 // The closing reserve is what the last gate really costs: the measured suite, one repair
@@ -54,6 +54,20 @@ export const timeboxMs = (value) => {
   const match = String(value ?? '').match(/^(\d+(?:\.\d+)?)(m|h)$/)
   return match ? Number(match[1]) * (match[2] === 'h' ? 3600000 : 60000) : null
 }
+// The status a unit's assignment carries. A unit with a chosen task reads that task's brief: it gets
+// the totals, the first few runnable/todo IDs and its own row, not every remaining row. A planning
+// unit (nothing chosen, or a split/blocked recovery that rewrites tasks and deps) keeps the full list.
+export const UNIT_LISTED = 5
+export function unitStatus(status, selected, recovery) {
+  if (!selected || !status.remaining || ['split', 'blocked-task'].includes(recovery?.reason)) return status
+  const { remaining, runnable = [], implementation, counts, ...rest } = status
+  // The unit's own task leads a cut list, so the cut never hides it.
+  const cut = (ids) => (ids.includes(selected) ? [selected, ...ids.filter((id) => id !== selected)] : ids).slice(0, UNIT_LISTED)
+  return { ...rest, counts: { ...counts, runnable: runnable.length, todo: implementation?.todo?.length ?? 0 },
+    task: remaining.find((task) => task.id === selected) ?? null, runnable: cut(runnable),
+    ...(implementation ? { implementation: { ...implementation, todo: cut(implementation.todo ?? []) } } : {}),
+    listed: `remaining rows omitted, runnable and implementation.todo cut to ${UNIT_LISTED}, task first (totals in counts): vibe status --tag ${status.tag} --no-fetch --json lists all` }
+}
 // The last publication, compact: a later call that published nothing keeps an earlier push.
 const published = (result, previous) => result.pushed || !previous?.pushed ? { pushed: result.pushed ?? null, target: result.target ?? null, ...(result.landed ? { landed: result.landed } : {}), ...(result.reason ? { reason: result.reason } : {}) } : previous
 const depIds = (dep) => String(dep ?? '').split(/[\s,]+/).filter((id) => TASK_ID.test(id))
@@ -67,8 +81,9 @@ const positive = (value, fallback, label, integer = false) => {
 // persisted before parsing a result; retries never resume a previous context.
 export async function executeVibeUnit(options, job, directory, limits = {}) {
   const id = randomUUID(), logPath = path.join(directory, `${id}.log`), sessionFile = path.join(directory, `${id}.session`), checkLog = path.join(directory, `${id}.checks.jsonl`)
-  let config = { command: process.execPath, args: [adapter, '--provider', options.provider, ...(options.model ? ['--model', options.model] : [])] }
-  if (options.adapter) {
+  let config
+  if (!options.adapter) config = { command: process.execPath, args: adapterArgs(options.provider, options.model, await providerFlags(options.provider, { env: { ...process.env, ...options.env } })) }
+  else {
     const file = path.resolve(options.adapter)
     config = JSON.parse(await readFile(file, 'utf8'))
     if (!config?.command || !Array.isArray(config.args) || config.args.some((value) => typeof value !== 'string')) throw new SkillPackageError('adapter에는 command와 문자열 args 배열이 필요합니다.')
@@ -147,6 +162,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const context = await vibeSession(options), root = context.root
   // Units are headless: SETTINGS permission-mode (default bypass) unless this run names one.
   const mode = control.length ? null : await permissionMode(options, root)
+  const mcp = control.length ? null : await readSetting({ root }, 'headless-mcp')
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'haeram-vibe-loop.lock')
   const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, now: Date.now, monitor: startLoopMonitor, fault: async () => {}, ...injected }
@@ -193,7 +209,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const estimateReserve = async () => closingReserve({ timings: await readTimings(context.runtime), commands: batchVerify, push: Boolean(context.target), hours, timeoutMs, optionHours })
   let reserve = await estimateReserve()
   if (reserve.ms >= hours * 3600000) throw new SkillPackageError(`마감 관문 실측(전체 검증 2회+수정 1회+CI)이 ${(reserve.ms / 3600000).toFixed(2)}시간이라 max-hours 안에 구현 시간이 없습니다. --max-hours를 늘리거나 --final-reserve-hours를 지정하세요.`)
-  const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? 'command', permissionMode: mode,
+  const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? 'command', permissionMode: mode, headlessMcp: mcp,
     cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS }, scope: scopeIds, reserve, verify, batchVerify,
     directory, stopFile, manifest, freshSessionPerUnit: true, pushEachUnit: Boolean(options.pushEachUnit), notifyCommand: options.notifyCommand ?? null }
   if (options.dryRun) return { ...plan, dryRun: true, modelRequests: 0 }
@@ -575,14 +591,15 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (status.concurrency === 'strict' && context.target) {
         await metadataCommit(`vibe ${options.tag}: session presence`)
         await deps.claim({ ...options, targetRoot: root, task: selected })
-        status = await deps.status({ ...options, targetRoot: root, tag: options.tag })
+        // The claim fetched and pushed the target just now: re-read locally.
+        status = await deps.status({ ...options, targetRoot: root, tag: options.tag, fetch: false })
       }
       const before = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
       await metadata.assertClean()
       const brief = selected ? await vibeBrief({ targetRoot: root, task: selected, diffBase: before.head }) : null
       const dispatched = recovery
-      const job = { schemaVersion: 1, role: 'unit', mode: 'autopilot', workspaceMode: 'single', workspace: root, tag: options.tag, report, status, brief,
-        cliCommand: [process.execPath, cli], allowTools: allowTool, permissionMode: mode, diffBase: before.head, hostManaged: true,
+      const job = { schemaVersion: 1, role: 'unit', mode: 'autopilot', workspaceMode: 'single', workspace: root, tag: options.tag, report, status: unitStatus(status, selected, recovery), brief,
+        cliCommand: [process.execPath, cli], allowTools: allowTool, permissionMode: mode, headlessMcp: mcp, diffBase: before.head, hostManaged: true,
         timeLimit: { minutes: Math.max(1, Math.round(limitMs / 60000)), cutAt: new Date(Date.now() + limitMs).toISOString() },
         ...(recovery ? { recovery } : {}) }
       // A continuation consumes its snapshot; once the task is done the ref is dropped.
@@ -660,7 +677,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (failureStreak >= 2) { reason = 'session-failures'; break }
       if (noProgress >= 2) { reason = 'no-progress'; break }
       if (failed) continue
-      const afterStatus = await deps.status({ ...options, targetRoot: root, tag: options.tag })
+      // Local rows only; the next boundary's status fetches before any remote-dependent decision.
+      const afterStatus = await deps.status({ ...options, targetRoot: root, tag: options.tag, fetch: false })
       if (priorityTask && afterStatus.remaining && !afterStatus.remaining.some((task) => task.id === priorityTask)) priorityTask = null
       if (count >= maxUnits) { reason = 'max-units'; break }
       const completed = pending.filter((entry) => ['task', 'fix'].includes(entry.result?.kind) && entry.result.outcome === 'completed').length

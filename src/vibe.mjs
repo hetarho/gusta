@@ -14,10 +14,12 @@ import { lintSpec } from './spec-lint.mjs'
 import { workInternals } from './work-groups.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { readSettings, branchPlan, defaultBranch, permissionMode } from './settings.mjs'
+import { readSettings, readSetting, branchPlan, defaultBranch, permissionMode } from './settings.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { vibeCIWait, githubRepository } from './vibe-ci.mjs'
+import { providerFlags } from './work-providers.mjs'
+import { claudeOptionalFlags } from './agent-adapter.mjs'
 
 const execute = promisify(execFile)
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
@@ -371,6 +373,23 @@ function summarize(text) {
   return { tasks, pending, reviews, ideation, inbox }
 }
 
+// explore timeboxes of the STATE rows, in row order. One listing serves every row (a row's file is
+// the first listed `<id>.…`); the files are read in parallel.
+export async function exploreTimeboxes(root, tasks) {
+  const names = await readdir(path.join(root, 'spec/tasks')).catch(() => [])
+  const byId = new Map()
+  for (const name of names) {
+    const dot = name.indexOf('.')
+    if (dot >= 0 && !byId.has(name.slice(0, dot))) byId.set(name.slice(0, dot), name)
+  }
+  const timeboxes = await Promise.all(tasks.map(async ({ id }) => {
+    const file = id.includes('.') ? names.find((name) => name.startsWith(`${id}.`)) : byId.get(id)
+    const content = file ? await readOptional(path.join(root, 'spec/tasks', file)) : null
+    return exploreValue(quoteFields(quoteLine(content ?? '') ?? '').get('explore'))
+  }))
+  return tasks.flatMap(({ id }, index) => timeboxes[index] ? [{ id, timebox: timeboxes[index] }] : [])
+}
+
 // What a session needs before its first question: who else is working (as the remote sees
 // it), what is left, and which way to go.
 export async function vibeStatus(options = {}) {
@@ -420,17 +439,10 @@ export async function vibeStatus(options = {}) {
   }
   const local = summarize(text)
   const design = await designOf(workspace)
-  const explore = []
-  for (const task of local.tasks) {
-    const file = (await readdir(path.join(root, 'spec/tasks')).catch(() => [])).find((name) => name.startsWith(`${task.id}.`))
-    const content = file ? await readOptional(path.join(root, 'spec/tasks', file)) : null
-    const timebox = exploreValue(quoteFields(quoteLine(content ?? '') ?? '').get('explore'))
-    if (timebox) explore.push({ id: task.id, timebox })
-  }
-  const openReports = []
-  for (const file of (await readdir(path.join(root, 'spec/reports')).catch(() => [])).filter((name) => name.endsWith('.md'))) {
-    if (quoteFields(quoteLine((await readOptional(path.join(root, 'spec/reports', file))) ?? '') ?? '').get('to') === '-') openReports.push(`spec/reports/${file}`)
-  }
+  const explore = await exploreTimeboxes(root, local.tasks)
+  const reports = (await readdir(path.join(root, 'spec/reports')).catch(() => [])).filter((name) => name.endsWith('.md'))
+  const reportTo = await Promise.all(reports.map(async (file) => quoteFields(quoteLine((await readOptional(path.join(root, 'spec/reports', file))) ?? '') ?? '').get('to')))
+  const openReports = reports.filter((file, index) => reportTo[index] === '-').map((file) => `spec/reports/${file}`)
   const ownTag = (task) => task.st?.startsWith('doing@') && task.st.split('.')[1] === options.tag
   const implementation = { todo: local.tasks.filter((task) => task.st === 'todo').map((task) => task.id),
     resume: local.tasks.filter(ownTag).map((task) => task.id),
@@ -506,7 +518,7 @@ export async function vibePreflight(options = {}) {
     if (!available) missing.push(command)
   }
   add('verification', missing.length === 0, missing.length ? `missing commands: ${missing.join(', ')}` : verify.declared ? `task: ${verify.task.length}, batch: ${verify.batch.length}; conditional checks remain in ARCH guidance` : 'legacy ARCH: changed tests + fast checks at task tier; select batch commands before code push', true)
-  if (options.probe) checks.push(await probeWorker(context, { ...options, permissionMode: await permissionMode(options, context.root) }))
+  if (options.probe) checks.push(await probeWorker(context, { ...options, permissionMode: await permissionMode(options, context.root), headlessMcp: await readSetting({ root: context.root }, 'headless-mcp') }))
   return { schemaVersion: 1, ok: checks.every((check) => check.ok), checks, needsUser: checks.filter((check) => check.needsUser) }
 }
 
@@ -535,6 +547,8 @@ async function probeWorker(context, options) {
     if (options.model) args.push('--model', options.model)
     const env = { ...(options.env ?? process.env) }
     delete env.CLAUDECODE
+    // Same optional flags (MCP isolation included) as the workers it stands in for.
+    if (provider === 'claude') args.push(...claudeOptionalFlags(await providerFlags(provider, { env }), { headlessMcp: options.headlessMcp }))
     const output = await new Promise((resolve, reject) => {
       const child = spawn(provider, args, { cwd: probeRoot, env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
       let stdout = '', stderr = '', timedOut = false, forced

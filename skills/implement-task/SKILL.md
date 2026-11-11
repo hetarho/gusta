@@ -23,7 +23,7 @@ description: >-
 단독은 태스크 시작 HEAD를 `$HAERAM_DIFF_BASE`로 보존하고 모든 검사에 넘긴다(반복기는 이미 설정). 선점은 `vibe task start T### --tag <tag>`(태스크·STATE·active는 CLI가 쓴다, 거절되면 다른 후보). solo는 첫 작업 커밋에 포함, strict는 start-vibe의 `vibe claim`을 먼저 한다. 같은 checkout에서 동시 쓰기를 하지 않는다.
 
 ## 2. 신선도
-brief의 stale-base와 history(base 이후 chg 줄)가 델타다 — chg를 따로 읽지 않는다. 무관하면 base만 갱신, 영향 있으면 todo 복귀·log 후 create-task로 갱신한다(손으로 todo·blocked로 돌리면 active 행의 doing도 `vibe beat --doing -`). 완료 전 관련 rev만 다시 확인한다. 워커는 기획 공간에 인계하며 base를 임의로 바꾸지 않는다.
+brief의 stale-base와 history(base 이후 chg 줄)가 델타다 — chg를 따로 읽지 않는다. 무관하면 base만 갱신, 영향 있으면 todo 복귀·log 후 create-task로 갱신한다(손으로 todo·blocked로 돌리면 active 행의 doing도 `vibe beat --tag <tag> --doing -`). 완료 전 관련 rev만 다시 확인한다. 워커는 기획 공간에 인계하며 base를 임의로 바꾸지 않는다.
 
 ## 3. 구현
 태스크 완료기준과 인용 결정에 맞춰 구현한다. 코드는 `rg`로 위치를 찾고 필요한 줄 범위만 읽는다. 큰 파일·같은 SSOT 전체를 반복 출력하지 않는다.

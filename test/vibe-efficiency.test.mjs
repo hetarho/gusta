@@ -26,6 +26,10 @@ test('standalone brief contains exact cited blocks, freshness, touches and runna
   assert.ok(tiers.declared)
   const format = await vibeFormat({ section: 'task' })
   assert.ok(JSON.stringify(format).length < 9500)
+  // SETTINGS has its own section: the state excerpt every STATE writer reads does not carry it
+  const state = JSON.stringify(await vibeFormat({ section: 'state' }))
+  assert.ok(state.length < 10500); assert.doesNotMatch(state, /permission-mode/)
+  assert.match((await vibeFormat({ section: 'settings' })).sections[0].text, /permission-mode/)
   const result = await execute(process.execPath, [cli, 'vibe', 'brief', 'T001', '--target', root, '--json'])
   assert.equal(JSON.parse(result.stdout).taskId, 'T001')
 })

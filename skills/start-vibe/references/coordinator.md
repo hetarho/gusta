@@ -12,7 +12,7 @@ SKILL.md 2절의 조건일 때만 쓴다. 아래 `work ...`·`vibe ...`는 `npx 
 - 맡김이면 preflight에서 `vibe preflight --probe '<태스크 단계 명령>' --allow-tool '<규칙>'`으로 실제 헤드리스 워커가 그 명령을 권한 확인 없이 실행하는지 실측한다. 거부되면 사용자가 떠나기 전 그 규칙을 허용할지 묻는다.
 
 ## 2. 실행
-- `work run --work <slug> --autopilot [--provider codex|claude | --providers codex,claude] --json`을 셸 도구의 백그라운드 실행으로 띄운다(함께 모드면 `--autopilot` 없이). 실행기는 배정·같은 세션 resume·통합·검증 캐시/heavy 락·스냅샷·절전 방지를 모델 턴 없이 맡는다([runner.md](../../manage-work/references/runner.md)):
+- `work run --work <slug> --autopilot [--provider codex|claude | --providers codex,claude] --json`을 셸 도구의 백그라운드 실행으로 띄운다(함께 모드면 `--autopilot` 없이). 실행기는 배정·같은 세션 resume·통합·검증 캐시/heavy 락·스냅샷·절전 방지를 모델 턴 없이 맡는다(실행기가 실패하거나 예상과 다르게 동작할 때만 [runner.md](../../manage-work/references/runner.md)를 읽는다):
   - 세션이 끝나도 이어 가야 하면 `--detach`로 띄운다. 확인은 `work run --work <slug> --status`, 멈춤은 `kill` 대신 `work run --work <slug> --stop`.
   - 맡김에서 결정 요청만 남으면 모델 호출 없이 결정을 기다린다(기본 15분, `--decision-wait-ms`로 변경). 대기할 attempt와 질문을 stderr·runtime 이력에 남긴다. 통합 실패 후 새로 제출·승인된 제출물은 같은 run에서 다시 통합한다. 같은 제출물의 통합 실패로 승인된 단위가 남으면 결정 대기 없이 `needs-attention`으로 끝낸다. 함께 모드는 결정 대기 없이 반환한다.
 
@@ -22,6 +22,7 @@ SKILL.md 2절의 조건일 때만 쓴다. 아래 `work ...`·`vibe ...`는 `npx 
   - 함께: 사용자에게 선택지형으로 묻는다(여러 건이면 모아서).
   - 맡김: 추천안으로 update-ssot를 진행한다(잠정). inbox `decided`·보고서 decided에 질문·선택·대안을 남긴다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 inbox `parked`, 그 attempt는 `work release --attempt <id> --reason parked`로 내려놓는다.
   - 기획은 묶음의 기획 공간(`group.path`)에서 하고 커밋한다. 결정을 요청한 태스크는 base를 새 rev로 올리고(내용은 그대로 — create-task의 todo 갱신 규칙) STATE ssot의 tasked도 rev로 맞춘다: 이 델타는 그 태스크가 소화한다. 기획 커밋 직후 `vibe plan-push`로 SETTINGS plan 브랜치에 올리고 바로 `work update --attempt <id> --status doing --note '<결정·rev·순서 조건>'`으로 재개한다. 선행 통합을 기다리겠다고 재개를 붙잡아 두지 않는다. 실행기가 기획 브랜치를 그 워커 공간에 합치고 같은 세션을 이어 실행한다.
+  - 기획 공간에서는 조정자 하나만 문서를 쓴다. 활성 attempt(released·failed·integrated가 아닌 것)의 계약 불변과 영향 보고는 create-task 3절 dep 항목·update-ssot 2절 파급 확인을 따른다.
   - 통합 순서 같은 의존 관계는 태스크 deps(`dep:`)에 반영해 함께 커밋하고 메모로 넘긴다. 실제 순서를 맞추는 일은 실행기와 runtime이 맡는다.
   - 같은 도메인을 참조하는 다른 진행 중 단위는 다음 제출에서 SSOT가 달라졌다며 blocked로 돌아온다. 그 태스크도 base를 올리고 `work update --status doing --note '<rev> 동기화'`로 재개하면 실행기가 같은 방식으로 합쳐 이어 간다.
 - `wait`: 그대로 다시 호출한다.

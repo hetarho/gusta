@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFile, writeFile, readdir, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fixture, git } from './helpers/vibe-fixture.mjs'
-import { vibeLoop, executeVibeUnit, closingReserve, nextRung, timeboxMs, EXPLORE_EXIT_MS } from '../src/vibe-loop.mjs'
+import { vibeLoop, executeVibeUnit, closingReserve, nextRung, timeboxMs, EXPLORE_EXIT_MS, unitStatus, UNIT_LISTED } from '../src/vibe-loop.mjs'
 import { timingKey } from '../src/check-cache.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
 import { activeRows, appendInbox } from '../src/state-doc.mjs'
@@ -273,6 +273,9 @@ test('a blocked-only task gets a planning recovery unit, then resumes implementa
   const result = await vibeLoop({ ...opts(root), maxUnits: 5 }, { preflight: passed,
     execute: async (options, job) => {
       calls++; assert.equal(job.brief.taskId, 'T001')
+      // A task unit gets its own row and totals; the planning recovery keeps every remaining row.
+      if (calls === 2) assert.deepEqual(job.status.remaining.map((task) => task.id), ['T001'])
+      else { assert.equal(job.status.remaining, undefined); assert.equal(job.status.task.id, 'T001'); assert.equal(job.status.counts.remaining, 1) }
       const stateFile = path.join(root, 'spec/STATE.md'), taskFile = path.join(root, 'spec/tasks/T001.example.md')
       if (calls === 1) {
         await writeFile(stateFile, (await readFile(stateFile, 'utf8')).replace('| todo |', '| blocked@261020 |'))
@@ -383,6 +386,17 @@ test('the unit log follows the adapter live, before the unit process exits', asy
   assert.match(await readFile(r.log, 'utf8'), /progress-out[\s\S]*"kind":"task"/)
 })
 
+test('a built-in Claude unit carries the optional flags the installed CLI lists', async (t) => {
+  const { root, temporary, initial } = await fixture(t)
+  const bin = path.join(temporary, 'bin'); await mkdir(bin)
+  const flag = '--exclude-dynamic-system-prompt-sections', args = path.join(temporary, 'claude-args.json')
+  await writeFile(path.join(bin, 'claude'), `#!${process.execPath}\nconst a=process.argv.slice(2);if(a.includes('--help'))console.log('--print ${flag}');else{process.stdin.resume();process.stdin.on('end',()=>{require('node:fs').writeFileSync(${JSON.stringify(args)},JSON.stringify(a));console.log(JSON.stringify({type:'result',is_error:false,structured_output:{kind:'none',id:'',outcome:'no_work',pushed:false,next:'stop'}}))})}`, { mode: 0o755 })
+  const directory = path.join(temporary, 'logs'); await mkdir(directory)
+  const r = await executeVibeUnit({ provider: 'claude', tag: 't060', env: { PATH: `${bin}${path.delimiter}${process.env.PATH}` } }, { workspace: root, role: 'unit', diffBase: initial }, directory, { stopFile: path.join(directory, 'STOP'), deadline: Date.now() + 60000, timeoutMs: 60000 })
+  assert.equal(r.result?.outcome, 'no_work', r.error)
+  assert.ok(JSON.parse(await readFile(args, 'utf8')).includes(flag))
+})
+
 test('detached host survives parent return and writes its final manifest with one shared report', async (t) => {
   const { root, temporary } = await fixture(t)
   const bin = path.join(temporary, 'bin'); await mkdir(bin)
@@ -427,6 +441,45 @@ for (const pushEachUnit of [false, true]) test(`strict concurrency runs one fina
   assert.equal(result.ok, true, result.error)
   assert.equal(checks, pushEachUnit ? 3 : 1)
   assert.equal(pushes, pushEachUnit ? 3 : 1)
+})
+
+test('unit assignment status: a task unit drops the remaining rows, a planning unit keeps them', () => {
+  const ids = Array.from({ length: 8 }, (_, i) => `T00${i + 1}`)
+  const status = { tag: 't060', route: 'implementation', parkedOnly: false, concurrency: 'solo', next: ['- implement-task T001'],
+    counts: { inbox: 2, parked: 0, remaining: 8 }, remaining: ids.map((id) => ({ id, title: `task ${id}`, dep: '-', st: 'todo' })), runnable: ids,
+    implementation: { todo: ids, resume: [], blocked: [], pending: [], reviews: [], explore: [{ id: 'T008', timebox: '1h' }] }, planning: { ideation: [] } }
+  const trimmed = unitStatus(status, 'T007', null)
+  assert.equal(trimmed.remaining, undefined)
+  assert.deepEqual(trimmed.task, { id: 'T007', title: 'task T007', dep: '-', st: 'todo' })
+  // The cut keeps the unit's own task (past the first five here) at the head of each list.
+  const head = ['T007', ...ids.slice(0, UNIT_LISTED - 1)]
+  assert.deepEqual(trimmed.runnable, head); assert.deepEqual(trimmed.implementation.todo, head)
+  assert.deepEqual(unitStatus(status, 'T002', null).runnable, ['T002', 'T001', 'T003', 'T004', 'T005'])
+  assert.deepEqual(trimmed.counts, { inbox: 2, parked: 0, remaining: 8, runnable: 8, todo: 8 })
+  assert.deepEqual(trimmed.implementation.explore, status.implementation.explore)
+  assert.match(trimmed.listed, /vibe status --tag t060 --no-fetch --json/)
+  for (const key of ['route', 'parkedOnly', 'concurrency', 'next', 'planning']) assert.deepEqual(trimmed[key], status[key])
+  // A continuation still implements its task; a planning unit, a split and a blocked recovery rewrite tasks and deps.
+  assert.equal(unitStatus(status, 'T007', { reason: 'interrupted', taskId: 'T007' }).remaining, undefined)
+  for (const [selected, recovery] of [[null, null], ['T007', { reason: 'split', taskId: 'T007' }], ['T007', { reason: 'blocked-task', taskId: 'T007' }]]) assert.equal(unitStatus(status, selected, recovery), status)
+  const stub = { route: 'implementation', parkedOnly: true }
+  assert.equal(unitStatus(stub, 'T001', null), stub)
+})
+
+test('one fetch per unit boundary: the post-claim and post-unit status stay local', async (t) => {
+  const { root } = await fixture(t)
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- push: true\n'); await git(root, 'add', 'spec/SETTINGS.md'); await git(root, 'commit', '-qam', 'push branch')
+  const calls = []
+  const result = await vibeLoop({ ...opts(root), maxUnits: 3 }, { preflight: passed,
+    status: async (options) => { calls.push(options.section ? 'inbox' : options.fetch === false ? 'local' : 'fetch'); return { ...await vibeStatus(options), concurrency: 'strict' } },
+    claim: async (options) => { calls.push(`claim ${options.task}`); return { ok: true } },
+    execute: async (options, job) => { calls.push('unit'); return completeTask(root, job.brief.taskId) },
+    sync: async () => ({ ok: true }), check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: null }),
+  })
+  assert.equal(result.ok, true, result.error); assert.equal(result.units, 3)
+  // The first read is the host's setup; each boundary then fetches once and claims on that read
+  // (inbox reads never fetch).
+  assert.deepEqual(calls.slice(1).filter((call) => call !== 'inbox'), ['fetch', 'claim T001', 'local', 'unit', 'local', 'fetch', 'claim T002', 'local', 'unit', 'local', 'fetch', 'claim T003', 'local', 'unit', 'local'])
 })
 
 test('hourly snapshots span fresh unit sessions instead of resetting at each launch', async (t) => {

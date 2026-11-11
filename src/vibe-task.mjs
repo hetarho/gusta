@@ -16,8 +16,8 @@ const STATE = 'spec/STATE.md'
 const NEXT_LIMIT = 3
 // next lines this command writes, replaced on its next run.
 const GENERATED_NEXT = /^- (implement-task T\d{3,}( T\d{3,})*|no runnable task\b.*)$/
-// outcome and verified still holding the template text.
-const UNFILLED = /^- (outcome|verified): <[^>]*>$/
+// result lines still holding the template text (`at` is fine when --at replaces it).
+const UNFILLED = /^- (outcome|at|verified|limits): <[^>]*>$/
 
 export async function vibeTask(options = {}, { now = () => new Date() } = {}) {
   if (!['start', 'done'].includes(options.step) || !TASK_ID.test(options.task ?? '')) fail('vibe task start T### --tag <tag> | vibe task done T### --tag <tag> [--at <sha>] [--force-other]')
@@ -75,7 +75,7 @@ async function done({ options, board, root, state, id, date }) {
   let content = await readFile(path.join(root, task.file), 'utf8')
   // The result is judged as the model wrote it: the `at` line --at writes proves nothing.
   const filled = resultLines(content).filter((line) => !line.startsWith('- at:'))
-  const unfilled = (sections(content).get('result') ?? []).map((line) => line.trim()).filter((line) => UNFILLED.test(line))
+  const unfilled = (sections(content).get('result') ?? []).map((line) => line.trim()).filter((line) => UNFILLED.test(line) && !(options.at !== undefined && line.startsWith('- at:')))
   const problems = [...openChecks(content).map((line) => `acceptance ${line}`), ...(filled.length ? [] : ['result: empty']), ...unfilled.map((line) => `result ${line}`)]
   if (problems.length) fail('acceptance를 모두 체크하고 result를 채운 뒤 다시 실행하세요.', problems)
   if (options.at !== undefined) content = withResultLine(content, 'at', await commitOf(root, options.at))

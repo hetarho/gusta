@@ -31,7 +31,7 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
   vibe brief <T###|ID-n|ID|ID@rev ...> [--ref <commit>] [--deep] [--diff-base <task-start-sha>] [--json]
                                                 결정 원문 블록·필수 의존·전역 규칙·flow·constraints·stale base 이후 chg.
                                                 기본은 작업 트리(미커밋 포함), --ref는 그 커밋만. 마크다운이 기본이고 끝에 end 줄
-  vibe format --section task|state|ssot|report|reading  FORMAT 발췌만
+  vibe format --section task|state|ssot|report|reading|settings  FORMAT 발췌만
   vibe status [--tag <tag>] [--no-fetch]        원격의 다른 세션·남은 일·추천 경로(route)
   vibe sync                                     원격 push 브랜치를 HEAD에 반영 (STATE는 섹션 단위 병합)
   vibe plan-sync                                기획 브랜치(SETTINGS plan, 미정이면 land)의 최신을 HEAD에 합침 — 기획·채번 전
@@ -57,13 +57,27 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
                                                 디자인 모드(start-design): 이 checkout의 Git 디렉터리에 디자인 중 상태 쓰기·전체 검증·삭제.
                                                 STATE·다른 worktree는 건드리지 않음 (커밋은 호출자). verify는 ARCH task·batch 명령 전부를
                                                 미커밋 작업 트리에서 한 번씩. 디자인 중 이 checkout의 push·맡김은 거절
-  vibe ab start <slug> [--variants 2] [--base HEAD] [--base-port 4101] [--setup <install command>] [--copy <untracked file> ...]
-  vibe ab run <slug> --variant <a|b|..> --prompt-file <file> [--provider auto|claude|codex] [--model <id>] [--allow-tool <rule> ...] [--permission-mode bypass|acceptEdits] [--timeout-ms 3600000]
-  vibe ab serve <slug> --command '<dev server using $PORT>' [--variant <v>] [--ready-timeout-ms 120000]
+  vibe ab start <slug> [--variants 2] [--base HEAD] [--base-port 4101] [--setup <install command>] [--reuse <dir> ...] [--copy <untracked file> ...] [--shared-file <file>] [--scaffold-prompt <file> | --scaffold <ref>] [--timeout-ms <ms>]
+                                                shared: 모든 변형 프롬프트의 공통 앞부분(목표·결정·화면·완료 기준). scaffold: 세션 하나가 ab/<slug>/base에
+                                                mock 데이터·인증 stub 커밋을 만들고 변형은 거기서 시작(--scaffold는 있는 커밋 재사용). pick은 그 경로를 기준 상태로 되돌려 합친다.
+                                                --scaffold-prompt는 run과 같은 --provider·--model·--allow-tool·--permission-mode를 받는다.
+                                                --timeout-ms는 setup(기본 1200000)과 scaffold 세션(기본 3600000)에 함께 쓰인다.
+                                                --reuse: lockfile대로 설치된 git-ignored 의존성 폴더만. 가장 가까운 lockfile 폴더의 lockfile이 모두 기준 커밋과 같으면
+                                                이 checkout의 설치를 복사(CoW, symlink 아님), 아니면 setup. 오래된 설치·절대 symlink·postinstall 부수 효과는 그대로 복사되거나 빠짐
+  vibe ab add <slug> --from <v> [--setup <install command>] [--reuse <dir> ...] [--copy <untracked file> ...]
+                                                <v>의 끝에서 다음 변형(최대 6)을 새 브랜치·worktree·포트로. 그 run은 다른 변형의 git diff를 읽어도 된다고 안내.
+                                                --setup·--copy·--reuse는 주지 않으면 start 값
+  vibe ab run <slug> (--variant <a|b|..> (--prompt-file <approach> | --follow-up-file <request>) | --all --prompt-dir <dir>) [--provider auto|claude|codex] [--model <id>] [--allow-tool <rule> ...] [--permission-mode bypass|acceptEdits] [--timeout-ms 3600000]
+                                                follow-up은 공통·처음 접근·지난 요약·새 hub 메모를 붙여 같은 브랜치에서 이어 고친다. scaffold 파일을 고치면 ok:false·scaffoldTouched.
+                                                --all: <dir>/<v>.md가 있는 변형을 한 프로세스에서 병렬로, 결과 JSON 하나(한 변형 실패가 나머지를 막지 않음, 파일 없는 변형은 skipped)
+  vibe ab serve <slug> --command '<dev server using $PORT>' [--variant <v>] [--restart] [--ready-timeout-ms 120000]
+                                                화면(path)이 HTTP로 응답하면 준비. 살아 있는 서버는 두고(--restart면 새로) 비교 페이지(hub) URL 하나
   vibe ab exec <slug> --command '<measure or check>' [--repeat 1] [--variant <v>]
-  vibe ab status <slug> | pick <slug> --variant <v> [--prune-branches] | stop <slug> [--remove] [--prune-branches]
+                                                변형을 번갈아 실행해 중앙값·종료 코드·마지막 줄. 최근 결과는 hub에도(변형마다 명령이 다르면 명령도)
+  vibe ab status <slug> | pick <slug> --variant <v> [--approach <English line>] [--prune-branches] | stop <slug> [--remove] [--prune-branches]
                                                 A/B 비교(show-ab): 변형마다 브랜치·형제 worktree·포트. 변형 세션은 그 worktree만 고치고
-                                                커밋·서버·측정·정리는 CLI가 한다. pick은 그 변형만 현재 브랜치에 merge
+                                                커밋·서버·측정·정리는 CLI가 한다. status는 hub URL·메모·choose, pick은 그 변형만 현재 브랜치에 merge하고
+                                                STATE log에 채택 줄(접근은 --approach 또는 저장된 접근 첫 줄, 약 100자)을 쓴다(커밋은 호출자)
   vibe preflight [--probe <command> [--provider claude|codex] [--allow-tool <rule> ...]]
                                                 맡김 전 점검: push 권한·lint·절전 방지·CI 접근·헤드리스 워커 실측
   vibe awake [--hours <n>] | --stop             macOS caffeinate로 절전 방지
@@ -79,9 +93,9 @@ const allowed = {
   claim: ['tag', 'task', 'remote'], task: ['tag', 'at'],
   checkpoint: ['tag', 'message', 'remote'], prune: ['tag', 'work', 'remote'], settings: ['set'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
   awake: ['hours', 'remote'], check: ['tier', 'diff-base', 'task', 'timeout-ms'], design: ['tag', 'scope', 'verify', 'timeout-ms'],
-  ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'variant', 'prompt-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
+  ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'reuse', 'from', 'shared-file', 'scaffold-prompt', 'scaffold', 'variant', 'approach', 'prompt-file', 'prompt-dir', 'follow-up-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
 }
-const flags = { task: ['force-other'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep'], ab: ['remove', 'prune-branches'] }
+const flags = { task: ['force-other'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep'], ab: ['remove', 'prune-branches', 'restart', 'all'] }
 const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
   ab: (options) => { if (!Object.hasOwn(AB_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe ab <${Object.keys(AB_STEPS).join('|')}> <slug>`); return AB_STEPS[options.step](options) } }
 
@@ -118,7 +132,7 @@ export async function runVibeCLI(args) {
     const value = equals === -1 ? args.shift() : argument.slice(equals + 1)
     if (value === undefined || (value.startsWith('--') && name !== 'probe')) throw new SkillPackageError(`${argument} 값이 필요합니다.`)
     const field = name === 'target' ? 'targetRoot' : name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())
-    if (['allow-tool', 'verify', 'copy', 'set'].includes(name) || (action === 'plan-push' && name === 'commit')) (options[field] ??= []).push(value)
+    if (['allow-tool', 'verify', 'copy', 'reuse', 'set'].includes(name) || (action === 'plan-push' && name === 'commit')) (options[field] ??= []).push(value)
     else options[field] = value
   }
   if (action === 'check') {

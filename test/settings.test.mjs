@@ -9,7 +9,7 @@ import { fixture } from './helpers/vibe-fixture.mjs'
 
 test('설정: 파일·키가 없으면 기본값, 잘못된 값은 오류로 남고 읽는 쪽은 추측하지 않는다', async (t) => {
   assert.deepEqual(effectiveSettings(null).settings.map(({ key, value, source }) => [key, value, source]),
-    [['prune-branches', true, 'default'], ['land', '?', 'default'], ['land-via', 'merge', 'default'], ['push', false, 'default'], ['deploy', '-', 'default'], ['plan', '?', 'default'], ['permission-mode', 'bypass', 'default']])
+    [['prune-branches', true, 'default'], ['land', '?', 'default'], ['land-via', 'merge', 'default'], ['push', false, 'default'], ['deploy', '-', 'default'], ['plan', '?', 'default'], ['permission-mode', 'bypass', 'default'], ['headless-mcp', 'isolate', 'default']])
   assert.deepEqual(effectiveSettings(null).unset, ['land'])
   assert.match(parseSettings('# SETTINGS\n- land: bad..name\n- deploy: true\n').errors.join(), /land: bad\.\.name.*deploy: true/)
   const parsed = parseSettings('# SETTINGS\n- prune-branches: false  # keep\n- color: blue\n')
@@ -30,6 +30,22 @@ test('headless 권한: 기본은 bypass, SETTINGS가 바꾸고, 명시한 --perm
   assert.equal(await permissionMode({ permissionMode: 'bypass' }, root), 'bypass')
   await assert.rejects(permissionMode({ permissionMode: 'yolo' }, root), /bypass\|acceptEdits/)
   await assert.rejects(vibeSettings({ targetRoot: root, set: ['permission-mode=plan'] }), /bypass\|acceptEdits/)
+})
+
+test('headless MCP: 기본은 isolate, vibe settings가 inherit로 바꾸고 보여 주며, 잘못된 값은 쓰지도 통과하지도 않는다', async (t) => {
+  const { root } = await fixture(t, 0)
+  assert.equal(await readSetting({ targetRoot: root }, 'headless-mcp'), 'isolate')
+  const result = await vibeSettings({ targetRoot: root, set: ['headless-mcp=inherit'] })
+  assert.deepEqual(result.changed, ['headless-mcp'])
+  const shown = result.settings.find((entry) => entry.key === 'headless-mcp')
+  assert.deepEqual([shown.value, shown.source, shown.default, shown.values], ['inherit', 'file', 'isolate', 'isolate|inherit'])
+  assert.match(shown.note, /isolate = none \(no user, account or project \.mcp\.json servers\)/)
+  assert.equal(await readSetting({ targetRoot: root }, 'headless-mcp'), 'inherit')
+  assert.match(await readFile(path.join(root, 'spec/SETTINGS.md'), 'utf8'), /^- headless-mcp: inherit {2}# /m)
+  await assert.rejects(vibeSettings({ targetRoot: root, set: ['headless-mcp=none'] }), /isolate\|inherit/)
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- headless-mcp: none\n')
+  assert.ok((await lintSpec({ targetRoot: root })).errors.some((error) => /SETTINGS.md: headless-mcp: none \(isolate\|inherit\)/.test(error)))
+  await assert.rejects(readSetting({ targetRoot: root }, 'headless-mcp'), /SETTINGS.md 값이 잘못/)
 })
 
 test('vibe settings --set은 파일을 만들거나 그 줄만 바꾸고, 같은 값이면 쓰지 않는다', async (t) => {

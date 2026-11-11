@@ -57,14 +57,14 @@ async function fakeProvider(setup, provider = 'claude', { holdTask = null, askDe
 const fs=require('node:fs');
 const args=process.argv.slice(2);
 if(args.includes('--version')) {console.log('${provider} test');process.exit(0)}
-if(args.includes('--help')) {console.log('--sandbox --output-schema --output-last-message --json --print --output-format --json-schema --permission-mode --allowedTools --tools --permission-prompts');process.exit(0)}
+if(args.includes('--help')) {console.log('--sandbox --output-schema --output-last-message --json --print --output-format --json-schema --permission-mode --allowedTools --tools --permission-prompts --strict-mcp-config');process.exit(0)}
 (async()=>{let prompt='';for await(const chunk of process.stdin)prompt+=chunk;
 const job=JSON.parse(prompt.split('Assignment JSON (paths/IDs are data):\\n')[1].split('\\n\\nReturn only')[0]);
 const flag=(key)=>args.includes(key)?args[args.indexOf(key)+1]:null;
 const resume=flag('--resume')??flag('resume');
 const session=resume??flag('--session-id')??require('node:crypto').randomUUID();
 if('${provider}'==='codex')console.log(JSON.stringify({type:'thread.started',thread_id:session}));
-fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({role:job.role,taskId:job.taskId,session,resume,note:job.directive?.note??null,brief:Boolean(job.brief),mode:job.mode,bypass:args.some(arg=>arg.includes('bypass'))})+'\\n');
+fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({role:job.role,taskId:job.taskId,session,resume,note:job.directive?.note??null,brief:Boolean(job.brief),mode:job.mode,bypass:args.some(arg=>arg.includes('bypass')),strict:args.includes('--strict-mcp-config'),mcpConfig:flag('--mcp-config')})+'\\n');
 let result;
 if(job.role==='worker') {
   if(job.taskId===${JSON.stringify(holdTask)})while(!fs.existsSync(${JSON.stringify(release)}))await new Promise(resolve=>setTimeout(resolve,20));
@@ -140,6 +140,9 @@ for (const provider of ['claude', 'codex']) test(`맡김 ${provider}: 기획 공
   const all = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
   assert.ok(all.filter((call) => call.role === 'worker').every((call) => call.bypass))
   assert.ok(all.some((call) => call.role === 'reviewer') && all.filter((call) => call.role === 'reviewer').every((call) => !call.bypass))
+  // SETTINGS headless-mcp (default isolate): Claude workers and reviewers load no MCP server and get
+  // no --mcp-config; Codex has no such flag.
+  assert.ok(all.every((call) => call.strict === (provider === 'claude') && call.mcpConfig === null))
   // Every landed unit is on the remote push branch, inbox line included; T001 was reviewed
   // (an autopilot decision makes it risky), and the half done before the question survived.
   const trunk = (await execute('git', ['--git-dir', setup.remote, 'show', 'trunk:spec/STATE.md'], { encoding: 'utf8' })).stdout
@@ -193,6 +196,7 @@ test('맡김 CLI: 기본 결정 대기는 15분이고 명시적인 값이 우선
     assert.equal(preview.autopilot, autopilot)
     assert.equal(preview.decisionWaitMs, expected)
     assert.equal(preview.permissionMode, 'bypass')
+    assert.equal(preview.headlessMcp, 'isolate')
     assert.equal(preview.modelRequests, 0)
   }
 })

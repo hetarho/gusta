@@ -139,7 +139,7 @@ async function outlook(context, id, owner) {
 
 // Autopilot: nobody answers, so no instruction ends in a question to the user.
 const UNATTENDED = {
-  blocked: 'attempt.reason을 확인한다. 직접 고칠 수 있으면 고친 뒤 work update --attempt <id> --status doing으로 재개해 다시 submit한다. 기획 결정이 필요하면 결정 요청(question·options·recommendation)을 저장소 밖 JSON에 써서 work update --attempt <id> --status blocked --reason <요약> --decision-file <path>로 남기고 work next를 다시 호출한다 — 기다리지 않는다.',
+  blocked: 'attempt.reason을 확인한다. 직접 고칠 수 있으면 고친 뒤 work update --attempt <id> --status doing으로 재개해 다시 submit한다. 기획 결정이 필요하면 결정 요청(question·options·recommendation)을 세션 임시 폴더의 JSON에 써서 work update --attempt <id> --status blocked --reason <요약> --decision-file <path>로 남기고 work next를 다시 호출한다 — 기다리지 않는다.',
   decide: 'attempt.decision에 답한다(조정자). 기획 공간에서 recommendation으로 update-ssot를 진행하고(잠정) inbox decided·보고서에 질문·선택·대안을 남겨 커밋한 뒤, work update --attempt <id> --status doing --note <적용한 결정과 SSOT rev>로 재개한다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 inbox parked 후 work release --attempt <id> --reason parked. 그리고 work next를 다시 호출한다.',
   complete: '남은 일이 없다. landFrom에서 vibe push --target <landFrom> --verified-commit <verified.commit>으로 SETTINGS land에 반영하고, 반영 결과와 검증 커밋을 보고서에 남긴 뒤 마감한다. 결과 reason이 land-unset이면 inbox parked로 남긴다.',
   stalled: '사람만 풀 수 있는 원인이다. 원인을 inbox parked와 보고서에 남기고 묶음 밖의 다른 일로 간다 — 기다리지 않는다.',
@@ -149,7 +149,7 @@ const UNATTENDED = {
 
 const INSTRUCTION = {
   implement: 'attempt.workspace에서 attempt.tasks를 attempt.taskId부터 순서대로 implement-task로 구현하고 태스크마다 커밋한 뒤, 마지막 태스크까지 끝나면 work submit --attempt <id>를 한 번 실행한다. 응답이 doing이면 그 taskId부터 이어 가고, ready면 work next를 다시 호출한다. correction이 있으면 findings부터 처리한다.',
-  review: 'review.workspace(읽기 전용)에서 review-task로 review.tasks를 검토하고, 저장소 밖 JSON 파일에 결과를 써서 work review-finish --review <id> --result-file <path>를 실행한 뒤 work next를 다시 호출한다.',
+  review: 'review.workspace(읽기 전용)에서 review-task로 review.tasks를 검토하고, 세션 임시 폴더의 JSON 파일에 결과를 써서 work review-finish --review <id> --result-file <path>를 실행한 뒤 work next를 다시 호출한다.',
   blocked: 'attempt.reason을 확인한다. 직접 고칠 수 있으면 고친 뒤 work update --attempt <id> --status doing으로 재개해 다시 submit하고, 기획 판단이 필요하면 사용자에게 보고하고 멈춘다.',
   wait: 'work next를 다시 호출한다. 통합·검증은 CLI가 백그라운드에서 진행한다.',
   'needs-reviewer': '이 세션의 제출물만 남아 있어 독립 리뷰어가 필요하다. 다른 세션을 열어 같은 요청을 하게 하거나, 새 컨텍스트의 서브에이전트에서 다른 owner로 review-task를 실행한 뒤 work next를 다시 호출한다.',

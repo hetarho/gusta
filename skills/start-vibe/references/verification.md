@@ -14,15 +14,19 @@
 
 ARCH task → `--task-verify`, 빠른 통합 검사 → `--verify`, 통합/e2e·전체 스위트 → `--group-verify`. 단위 결과는 로컬 작업 브랜치에 모으고 기본으로 `--push`를 붙이지 않는다. 기존 활성 묶음도 저장된 검증 명령을 확인해 이 매핑으로 `work configure`한다(진행 중 관문은 끝난 뒤 변경). 일반 `npm test`·`verify` 안에 브라우저가 포함됐는지도 실제 스크립트·테스트 의존성으로 확인한다. 이름만 보고 분류하거나 검사를 없애지 않는다.
 
-기존 ARCH와 충돌하면 create-architecture/update-ssot가 검증 범위·필요한 조건은 유지하며 단계·소유권을 정리한다. 구현 워커가 SSOT를 고치지 않는다. 명시적으로 별도 실행을 요청받은 경우는 그 범위만 예외로 두고, 비용과 최종 검증 필요 여부를 기록한다.
+기존 ARCH와 충돌하면 create-architecture/update-ssot가 검증 범위·필요한 조건은 유지하며 단계·소유권을 정리한다. 맡김의 기획 조각(단위1 포함)은 기존 ARCH가 통합/e2e를 task로 요구하면 batch로 옮기고 근거를 기록한다. 구현 워커가 SSOT를 고치지 않는다. 명시적으로 별도 실행을 요청받은 경우는 그 범위만 예외로 두고, 비용과 최종 검증 필요 여부를 기록한다.
 
 ## 최종 관문과 push
 
 1. 단위들을 통합하고 대상 브랜치의 최신 변경을 합친다. 조정 중에는 같은 checkout의 코드 쓰기를 멈추고 깨끗한 최종 후보를 확정한다. 기본은 모든 단위를 모은 뒤 한 번이며, 다른 세션 감지나 보고서 경계만으로 단위별 e2e/push를 켜지 않는다.
 2. 조정자 CLI 한 곳에서 최종 검증한다: 묶음이면 저장된 `work finish` 관문, 단독이면 `vibe check --tier batch --diff-base <묶음 시작 SHA> -- <command>`. batch/group은 clone 공용 heavy 락을 자동 획득하고 락 안에서 성공 기록을 재확인한다. 같은 트리·명령·범위의 성공은 재사용한다. `work finish`의 현재 검증 결과가 있으면 같은 e2e를 별도로 반복하지 않는다.
 3. 실패하거나 실행 중 코드/HEAD가 바뀌면 push하지 않는다. 조정자가 수정 작업을 배정하고 변경 후 최종 후보를 다시 검증한다. 실행하지 않은 검사는 통과로 기록하지 않는다.
-4. 성공한 검증 커밋을 `vibe push --verified-commit <검증 SHA>`로 전달한다(SETTINGS land·push대로 — 할 일이 없으면 CLI가 none으로 끝낸다). sync/retry로 코드·설정·SSOT가 달라지면 CLI가 push를 거절한다. 현재 후보를 다시 검증한 뒤 새 SHA로 재시도한다. STATE·태스크·보고서·work 실행 기록만의 변경은 재검증을 요구하지 않는다. CI는 실제 코드 push 후 한 번 기다린다. 읽을 수단이 없어 `unchecked`면 기다리지 않고 보고서 next에 확인할 커밋 링크를 남긴다.
+4. 성공한 검증 커밋을 `vibe push --verified-commit <검증 SHA>`로 전달한다(SETTINGS land·push대로 — 할 일이 없으면 CLI가 none으로 끝낸다). sync/retry로 코드·설정·SSOT가 달라지면 CLI가 push를 거절한다. 현재 후보를 다시 검증한 뒤 새 SHA로 재시도한다. STATE·태스크·보고서·work 실행 기록만의 변경은 재검증을 요구하지 않는다. CI는 실제 코드 push 후 한 번 기다린다(아래 CI 대기).
 
-위임된 단위 세션에서는 호스트가 strict 선점(SKILL.md 4절 `vibe claim`)을 맡는다.
+위임된 단위 세션에서는 호스트가 strict 선점([세션 절차](session.md)의 `vibe claim`)을 맡는다.
 
 단위별 push를 사용자가 명시하면 loop는 `--push-each-unit`, 묶음은 `--push <branch>`를 사용한다. 이 경우도 실제 push 전 관문은 조정자/호스트가 실행한다. 워커·리뷰어의 batch/group 실행은 기본 거절되며, 사용자에게 별도 실행을 명시적으로 요청받았을 때만 `--allow-final`로 예외를 표시한다. 락·실행 기록은 같은 clone의 worktree들이 공유하며 다른 clone의 직접 셸 실행까지 제어하지는 않는다.
+
+## CI 대기
+
+CI는 실제 push당 `vibe ci wait --commit <sha> --diff-base <묶음 시작 SHA> --json` 한 번 또는 push --wait-ci. Claude는 셸 백그라운드+하네스 완료 알림, Codex는 긴 timeout의 단일 블로킹 호출. sleep→조회→보고 모델 루프 금지. 긴 e2e·벤치마크도 완료까지 모델을 깨우지 않는다. CI를 읽을 수단이 없으면(gh·토큰 없음, 비공개 저장소, GitHub 원격 아님) CLI가 유예 뒤 `unchecked`(ok)로 돌려준다 — 멈추거나 수정 태스크를 만들지 않고 보고서 next에 `check CI later: <sha> <checkUrl>`로 남긴다. 맡김에서 실패는 근거를 담은 수정 태스크를 만들어 **다음 단위로 우선 실행**한다. 수정 태스크 생성만 하고 종료하지 않는다. 기획 판단은 SKILL.md 3절대로 해소하고, 실제 권한·외부 작업에 막히면 해당 건만 parked 후 다른 태스크로 간다. 시간·단위 한도와 반복 무진행·실행 실패 제한은 유지한다. run 없는 push는 CLI가 skipped로 마친다.

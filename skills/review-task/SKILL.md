@@ -37,6 +37,6 @@ JSON 형식은 다음과 같다. findings는 승인 시 빈 배열일 수 있고
 {"verdict":"changes_requested","summary":"Retry drops the idempotency key.","findings":[{"priority":"P1","where":"src/payment.ts:42","message":"On timeout, retry omits the original key and can charge twice. Preserve the key and add a timeout regression test."}]}
 ```
 
-- 수동 실행은 저장소 밖 파일에 JSON을 저장하고 `work review-finish --review <id> --result-file <path> --json`. runner가 결과 제출을 담당한다면 JSON만 반환하고 review-finish를 호출하지 않는다.
+- 수동 실행은 세션 임시 폴더의 파일에 JSON을 저장하고(저장소에 남기지 않는다. 다른 경로 쓰기는 권한 창이 뜬다 — start-vibe 3절) `work review-finish --review <id> --result-file <path> --json`. runner가 결과 제출을 담당한다면 JSON만 반환하고 review-finish를 호출하지 않는다.
 - CLI는 리뷰 ID·제출 ID·커밋·상위 기준을 다시 검사한다. 리뷰 중 다른 단위가 통합돼도 바뀐 파일이 제출물과 겹치지 않으면 결과가 유지된다. 겹치는 변경으로 결과가 거부되면 새 배정으로 재리뷰한다. 오래된 결과를 새 ID에 복사하지 않는다.
 - approved 이후 통합 검증과 done 처리는 manage-work/runner가 담당한다. STATE next·태스크 파일·done 아카이브를 직접 갱신하지 않는다. novice에게는 가능해진 동작과 수정 이유, expert에게는 finding·커밋·승인 여부를 간결하게 보고한다.

@@ -12,18 +12,48 @@ const requiredFlags = {
   codex: ['--sandbox', '--output-schema', '--output-last-message', '--json'],
   claude: ['--print', '--output-format', '--json-schema', '--permission-mode', '--allowedTools', '--tools', '--permission-prompts'],
 }
+// Passed only when the installed CLI lists them: an older CLI fails on an unknown flag.
+// --exclude-dynamic-system-prompt-sections moves cwd, git status and memory paths out of the
+// system prompt, so sessions in different worktrees read one cached prompt instead of each writing it.
+// --strict-mcp-config loads only the MCP servers named by --mcp-config (none are): an unattended session
+// gets no user, account or project MCP server (SETTINGS headless-mcp; agent-adapter claudeOptionalFlags).
+export const STRICT_MCP = '--strict-mcp-config'
+export const OPTIONAL_FLAGS = { codex: [], claude: ['--exclude-dynamic-system-prompt-sections', STRICT_MCP] }
+const helpArgs = (provider) => provider === 'codex' ? ['exec', '--help'] : ['--help']
+const listed = (provider, help) => OPTIONAL_FLAGS[provider].filter((flag) => help.includes(flag))
+// One answer per provider and PATH for this process: inspection fills it, providerFlags reuses it.
+const known = new Map()
+const knownKey = (provider, env) => `${provider}\0${env.PATH ?? ''}`
 
 async function probe(provider, cwd, env) {
   try {
     const [{ stdout: version }, { stdout: help }] = await Promise.all([
       execute(provider, ['--version'], { cwd, env, timeout: 5000, maxBuffer: 1024 * 1024 }),
-      execute(provider, provider === 'codex' ? ['exec', '--help'] : ['--help'], { cwd, env, timeout: 5000, maxBuffer: 1024 * 1024 }),
+      execute(provider, helpArgs(provider), { cwd, env, timeout: 5000, maxBuffer: 1024 * 1024 }),
     ])
     const missing = requiredFlags[provider].filter((flag) => !help.includes(flag))
-    return { provider, available: true, compatible: missing.length === 0, version: version.trim(), missing }
+    const extraFlags = listed(provider, help)
+    known.set(knownKey(provider, env), Promise.resolve(extraFlags))
+    return { provider, available: true, compatible: missing.length === 0, version: version.trim(), missing, extraFlags }
   } catch (error) {
     return { provider, available: error.code !== 'ENOENT', compatible: false, error: error.code === 'ENOENT' ? 'not-installed' : error.killed ? 'probe-timeout' : 'probe-failed' }
   }
+}
+
+// The optional flags a provider CLI supports, without a model call: this process's inspection
+// when it ran, else one cached `--help`. A failed probe (even a synchronous spawn error) means none.
+// The cache lives for the process: a CLI updated mid-run keeps its first answer until the next run.
+export async function providerFlags(provider, { env = process.env, cwd, run = execute } = {}) {
+  if (!OPTIONAL_FLAGS[provider]?.length) return []
+  const key = knownKey(provider, env)
+  if (!known.has(key)) known.set(key, (async () => {
+    try {
+      const help = run(provider, helpArgs(provider), { cwd, env, timeout: 5000, maxBuffer: 1024 * 1024 })
+      help.child?.stdin?.end()
+      return listed(provider, (await help).stdout)
+    } catch { return [] }
+  })())
+  return known.get(key)
 }
 
 export async function inspectProviders(options = {}) {
@@ -69,6 +99,9 @@ export async function workDoctor(options = {}) {
   return { ...providers, orca }
 }
 
+// The built-in adapter command line; flags are the provider's supported OPTIONAL_FLAGS.
+export const adapterArgs = (provider, model, flags = []) => [adapter, '--provider', provider, ...(model ? ['--model', model] : []), ...flags.flatMap((flag) => ['--provider-flag', flag])]
+
 export async function builtInAdapter(options = {}) {
   if (options.provider !== undefined && (options.providers !== undefined || options.workers !== undefined)) throw new SkillPackageError('--provider와 혼합 워커 설정을 함께 지정할 수 없습니다.')
   if (options.providers !== undefined && options.workers !== undefined) throw new SkillPackageError('providers와 workers 설정 중 하나만 지정하세요.')
@@ -95,7 +128,7 @@ export async function builtInAdapter(options = {}) {
   }
   const configure = (entry, model) => {
     if (model !== undefined && (typeof model !== 'string' || !model.trim())) throw new SkillPackageError('model은 비어 있지 않은 문자열이어야 합니다.')
-    return { command: process.execPath, args: [adapter, '--provider', entry.provider, ...(model ? ['--model', model] : [])], provider: entry.provider, version: entry.version, model: model ?? null }
+    return { command: process.execPath, args: adapterArgs(entry.provider, model, entry.extraFlags), provider: entry.provider, version: entry.version, model: model ?? null }
   }
   const workers = requests.map((entry) => configure(select(entry.provider), entry.model))
   const worker = workers[0]

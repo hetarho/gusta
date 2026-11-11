@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp, writeFile, rm, readFile, realpath } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, readFile, realpath } from 'node:fs/promises'
 import { writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { executeAgentAdapter, claudeResult, claudeEnvelope, providerArguments } from '../src/agent-adapter.mjs'
-import { builtInAdapter, inspectProviders, inspectOrca } from '../src/work-providers.mjs'
+import { executeAgentAdapter, claudeResult, claudeEnvelope, providerArguments, skillBody } from '../src/agent-adapter.mjs'
+import { builtInAdapter, inspectProviders, inspectOrca, providerFlags } from '../src/work-providers.mjs'
 
 async function stub(t, name, body) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-provider-test-')))
@@ -123,6 +123,109 @@ test('단일/혼합 워커와 모델별 설정을 지원하고 모호한 설정�
   }
 })
 
+const SHARED_PROMPT = '--exclude-dynamic-system-prompt-sections'
+// A Claude CLI that counts --help calls and records each session's arguments next to itself.
+const claudeCli = (help) => `const fs=require('node:fs'),path=require('node:path');const args=process.argv.slice(2);const here=(name)=>path.join(__dirname,name);
+if(args.includes('--version'))console.log('claude-test');
+else if(args.includes('--help')){fs.appendFileSync(here('help-calls'),'x');console.log(${JSON.stringify(`--print --output-format --json-schema --permission-mode --allowedTools --tools --permission-prompts ${help}`)})}
+else{process.stdin.resume();process.stdin.on('end',()=>{fs.writeFileSync(here('received.json'),JSON.stringify(args));console.log(JSON.stringify({type:'result',is_error:false,structured_output:{verdict:'approved',summary:'reviewed',findings:[]}}))})}`
+const helpCalls = (root) => readFile(path.join(root, 'help-calls'), 'utf8').then((text) => text.length, () => 0)
+
+test('설치된 Claude CLI가 지원하면 헤드리스 세션에 동적 시스템 프롬프트 제외 flag를 붙이고, 검사한 프로세스는 다시 묻지 않는다', async (t) => {
+  const fixture = await stub(t, 'claude', claudeCli(`${SHARED_PROMPT}  Move per-machine sections`))
+  const info = await inspectProviders({ targetRoot: fixture.root, env: fixture.env })
+  assert.deepEqual(info.providers.find((entry) => entry.provider === 'claude').extraFlags, [SHARED_PROMPT])
+  const config = await builtInAdapter({ targetRoot: fixture.root, env: fixture.env, provider: 'claude' })
+  for (const role of ['worker', 'reviewer']) assert.equal(flag(config.roles[role].args, '--provider-flag'), SHARED_PROMPT)
+  const probed = await helpCalls(fixture.root)
+  // Inspection already answered: the cached probe does not ask --help again.
+  const flags = await providerFlags('claude', { env: fixture.env })
+  assert.deepEqual(flags, [SHARED_PROMPT])
+  assert.equal(await helpCalls(fixture.root), probed)
+  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {}, flags })
+  assert.ok(JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8')).includes(SHARED_PROMPT))
+  // Without flags from its caller a session gets none; only known optional flags reach Claude and Codex gets none.
+  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {} })
+  assert.ok(!JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8')).includes(SHARED_PROMPT))
+  const files = { schema: 'schema', result: 'result' }
+  const unitArgs = providerArguments('claude', 'unit', files, null, { flags: [SHARED_PROMPT, '--dangerous'] })
+  assert.ok(unitArgs.includes(SHARED_PROMPT)); assert.ok(!unitArgs.includes('--dangerous'))
+  for (const role of ['variant', 'scaffold']) assert.ok(providerArguments('claude', role, files, null, { flags: [SHARED_PROMPT] }).includes(SHARED_PROMPT), role)
+  assert.ok(!providerArguments('codex', 'worker', files, null, { flags: [SHARED_PROMPT] }).includes(SHARED_PROMPT))
+})
+
+test('--help에 없는 선택 flag는 붙이지 않고, 검사 없는 경로는 프로세스당 한 번만 묻는다', async (t) => {
+  const fixture = await stub(t, 'claude', claudeCli(''))
+  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {} })
+  assert.ok(!JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8')).includes(SHARED_PROMPT))
+  assert.equal(await helpCalls(fixture.root), 0, 'a session never starts its own probe')
+  assert.deepEqual(await providerFlags('claude', { env: fixture.env }), [])
+  assert.deepEqual(await providerFlags('claude', { env: fixture.env }), [])
+  assert.equal(await helpCalls(fixture.root), 1)
+  const config = await builtInAdapter({ targetRoot: fixture.root, env: fixture.env, provider: 'claude' })
+  assert.ok(!config.roles.worker.args.includes('--provider-flag'))
+  // Injected probe: cached per PATH, a failure (async or a synchronous spawn error) means no flag, Codex is never asked.
+  let runs = 0
+  const run = async () => { runs++; return { stdout: `--print ${SHARED_PROMPT}` } }
+  const env = { PATH: path.join(fixture.root, 'injected') }
+  assert.deepEqual(await providerFlags('claude', { env, run }), [SHARED_PROMPT])
+  assert.deepEqual(await providerFlags('claude', { env, run }), [SHARED_PROMPT])
+  assert.equal(runs, 1)
+  assert.deepEqual(await providerFlags('claude', { env: { PATH: path.join(fixture.root, 'broken') }, run: async () => { throw new Error('old cli') } }), [])
+  assert.deepEqual(await providerFlags('claude', { env: { PATH: path.join(fixture.root, 'unspawnable') }, run: () => { throw new Error('spawn EACCES') } }), [])
+  assert.deepEqual(await providerFlags('codex', { env, run: () => assert.fail('codex has no optional flags') }), [])
+})
+
+const STRICT_MCP = '--strict-mcp-config'
+const sentArgs = async (root) => JSON.parse(await readFile(path.join(root, 'received.json'), 'utf8'))
+
+test('헤드리스 Claude 세션은 MCP 서버를 하나도 싣지 않는다 — 사용자·계정 서버도 checkout의 .mcp.json도 (headless-mcp)', async (t) => {
+  const files = { schema: 'schema', result: 'result' }
+  // Isolated by default for every role: the strict flag and never an --mcp-config.
+  for (const role of ['unit', 'worker', 'reviewer', 'scout', 'variant', 'scaffold']) {
+    const args = providerArguments('claude', role, files, null, { flags: [SHARED_PROMPT, STRICT_MCP] })
+    assert.deepEqual(args.slice(-2), [SHARED_PROMPT, STRICT_MCP], role); assert.ok(!args.includes('--mcp-config'), role)
+  }
+  // inherit keeps the user's setup; an older CLI without the flag gets none; Codex gets none.
+  const inherit = providerArguments('claude', 'unit', files, null, { flags: [SHARED_PROMPT, STRICT_MCP], headlessMcp: 'inherit' })
+  assert.ok(inherit.includes(SHARED_PROMPT)); assert.ok(!inherit.includes(STRICT_MCP)); assert.ok(!inherit.includes('--mcp-config'))
+  assert.ok(!providerArguments('claude', 'unit', files, null, { flags: [] }).some((arg) => arg.includes('mcp')))
+  assert.ok(!providerArguments('codex', 'worker', files, null, { flags: [STRICT_MCP] }).some((arg) => arg.includes('mcp')))
+  assert.throws(() => providerArguments('claude', 'unit', files, null, { flags: [STRICT_MCP], headlessMcp: 'all' }), /headless-mcp/)
+
+  // A CLI that lists the flag: detected like the other optional flags, sent per the job's headlessMcp.
+  const fixture = await stub(t, 'claude', claudeCli(`${STRICT_MCP}  Only use MCP servers from --mcp-config`))
+  const flags = await providerFlags('claude', { env: fixture.env })
+  assert.deepEqual(flags, [STRICT_MCP])
+  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {}, flags })
+  let args = await sentArgs(fixture.root)
+  assert.ok(args.includes(STRICT_MCP)); assert.ok(!args.includes('--mcp-config'))
+  // A committed .mcp.json is code a worker can write: an isolated session (here the reviewer) never loads it.
+  await writeFile(path.join(fixture.root, '.mcp.json'), '{"mcpServers":{}}')
+  await executeAgentAdapter({ provider: 'claude', job: { ...job(fixture.root, 'reviewer'), headlessMcp: 'isolate' }, env: fixture.env, log: () => {}, flags })
+  args = await sentArgs(fixture.root)
+  assert.ok(args.includes(STRICT_MCP)); assert.ok(!args.includes('--mcp-config')); assert.ok(!args.some((arg) => arg.includes('.mcp.json')))
+  await executeAgentAdapter({ provider: 'claude', job: { ...job(fixture.root, 'reviewer'), headlessMcp: 'inherit' }, env: fixture.env, log: () => {}, flags })
+  args = await sentArgs(fixture.root)
+  assert.ok(!args.includes(STRICT_MCP)); assert.ok(!args.includes('--mcp-config'))
+  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {} })
+  assert.ok(!(await sentArgs(fixture.root)).some((arg) => arg.includes('mcp')), 'no flags from the caller, no MCP flag')
+
+  // work scout reads the setting from its checkout.
+  const { workScout } = await import('../src/work-scout.mjs')
+  const promptFile = path.join(fixture.root, 'prompt.md')
+  await writeFile(promptFile, 'Assigned area: src/')
+  let seen
+  const scout = { inspect: async () => ({ autoProvider: 'claude', providers: [{ provider: 'claude', compatible: true }] }), flags: async () => [STRICT_MCP],
+    execute: async (input) => { seen = input; return { summary: 'none', proposals: [] } } }
+  await workScout({ promptFile, targetRoot: fixture.root }, scout)
+  assert.equal(seen.job.headlessMcp, 'isolate')
+  await mkdir(path.join(fixture.root, 'spec'))
+  await writeFile(path.join(fixture.root, 'spec/SETTINGS.md'), '# SETTINGS\n- headless-mcp: inherit\n')
+  await workScout({ promptFile, targetRoot: fixture.root }, scout)
+  assert.equal(seen.job.headlessMcp, 'inherit')
+})
+
 test('워커는 결정 요청을 돌려줄 수 있고, 세션 ID를 미리 정해 파일에 남긴 뒤 다음 실행에서 이어 쓴다', async (t) => {
   const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.appendFileSync('calls.jsonl',JSON.stringify({args:process.argv.slice(2),text})+'\\n');console.log(JSON.stringify({type:'result',is_error:false,session_id:'ignored',structured_output:{outcome:'blocked',summary:'needs a policy',decision:{question:'Cap per user?',options:['10','unlimited'],recommendation:'10'}}}));});`)
   const sessionFile = path.join(fixture.root, 'session.txt')
@@ -177,6 +280,26 @@ test('unit adapters use fresh sessions and permit bypass only when explicitly se
   await assert.rejects(executeAgentAdapter({ provider: 'claude', job: { role: 'unit', workspace: fixture.root, resume: first.session }, env: fixture.env }), /resume 금지/)
 })
 
+// Codex units used to `cat .codex/skills/start-vibe/SKILL.md` first, loading the inlined skill twice.
+test('unit prompt inlines the start-vibe body once, without frontmatter, and says it is already loaded', async (t) => {
+  const fixture = await stub(t, 'codex', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('prompt.txt',text);const out=process.argv[process.argv.indexOf('--output-last-message')+1];fs.writeFileSync(out,JSON.stringify({kind:'none',id:'',outcome:'no_work',pushed:false,next:''}));});`)
+  await executeAgentAdapter({ provider: 'codex', job: { role: 'unit', workspace: fixture.root, tag: 't061' }, env: fixture.env, log: () => {} })
+  const text = await readFile(path.join(fixture.root, 'prompt.txt'), 'utf8')
+  const file = await readFile(new URL('../skills/start-vibe/SKILL.md', import.meta.url), 'utf8')
+  const [, frontmatter, body] = file.match(/^---\n([\s\S]*?)\n---\n+([\s\S]*)$/)
+  const note = text.search(/start-vibe skill is included below and already loaded: do not open its SKILL\.md or call a Skill tool for it/)
+  assert.ok(note >= 0 && note < text.indexOf(body), 'the no-reload note comes before the skill')
+  assert.match(text, /Load the skills it routes to \(implement-task, create-task, update-ssot/)
+  assert.equal(text.split(body).length, 2, 'the skill body appears exactly once')
+  // The trigger description is frontmatter only; none of its lines reach the unit.
+  const description = frontmatter.split('\n').filter((line) => /^\s{2}\S/.test(line)).map((line) => line.trim())
+  assert.ok(description.length > 0)
+  for (const line of description) assert.ok(!text.includes(line), `frontmatter line leaked: ${line}`)
+  assert.ok(!text.includes('name: start-vibe'))
+  assert.equal(skillBody('---\nname: x\n---\n\n# x\nbody\n'), '# x\nbody\n')
+  assert.equal(skillBody('# x\n---\nbody\n---\n'), '# x\n---\nbody\n---\n')
+})
+
 test('탐색 세션은 읽기 전용으로 실행되고 제안 JSON만 돌려준다', async (t) => {
   const proposal = { title: 'Cache parsed config', where: 'src/a.mjs:10', problem: 'parsed per call', evidence: 'profile.log:3', change: 'memoize', touches: ['src/a.mjs'], preserves: 'same output', checks: 'unit a', cost: 'small', risk: 'stale cache' }
   const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('received.json',JSON.stringify({args:process.argv.slice(2),text}));console.log(JSON.stringify({type:'result',is_error:false,usage:{output_tokens:7},structured_output:{summary:'one',proposals:[${JSON.stringify(proposal)}]}}));});`)
@@ -204,16 +327,35 @@ test('탐색 세션은 timeout에 끝나고 work scout는 실행기 확인·프�
   assert.equal(result.provider, 'codex'); assert.deepEqual(result.proposals, [])
   assert.deepEqual(result.usage, { input: 2, cacheWrite: 0, cacheRead: 9, output: 3 })
   assert.equal(seen.job.role, 'scout'); assert.equal(seen.job.prompt, 'Assigned area: test/'); assert.equal(seen.job.timeoutMs, 900000)
+  assert.deepEqual(seen.flags, [])
+  // The scout asks providerFlags itself and hands the answer to the session.
+  const claude = [{ provider: 'claude', compatible: true }]
+  await workScout({ promptFile, targetRoot: fixture.root }, { inspect: async () => ({ autoProvider: 'claude', providers: claude }),
+    flags: async (provider) => provider === 'claude' ? [SHARED_PROMPT] : [], execute: async (input) => { seen = input; return { summary: 'none', proposals: [] } } })
+  assert.deepEqual(seen.flags, [SHARED_PROMPT])
   await assert.rejects(workScout({ promptFile, provider: 'claude' }, { inspect: async () => ({ autoProvider: 'codex', providers }) }), /사용 가능한 claude/)
   await assert.rejects(workScout({}), /prompt-file/)
 })
 
 test('A/B 변형 세션은 쓰기 권한·허용 명령으로 실행되고 커밋·서버는 호스트 몫으로 둔다', async (t) => {
-  const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('received.json',JSON.stringify({args:process.argv.slice(2),text}));console.log(JSON.stringify({type:'result',is_error:false,structured_output:{outcome:'completed',summary:'card layout',view:'/pricing'}}));});`)
+  const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('received.json',JSON.stringify({args:process.argv.slice(2),text}));console.log(JSON.stringify({type:'result',is_error:false,usage:{output_tokens:4},structured_output:{outcome:'completed',summary:'card layout',view:'pricing cards',path:' /pricing '}}));});`)
   const result = await executeAgentAdapter({ provider: 'claude', job: { schemaVersion: 1, role: 'variant', workspace: fixture.root, prompt: 'Variant a: cards', allowTools: ['Bash(npm test *)'] }, env: fixture.env, log: () => {} })
-  assert.deepEqual({ outcome: result.outcome, view: result.view }, { outcome: 'completed', view: '/pricing' })
+  assert.deepEqual({ outcome: result.outcome, view: result.view, path: result.path }, { outcome: 'completed', view: 'pricing cards', path: '/pricing' })
+  // Variant runs report usage like units and scouts, so the comparison's cost is visible.
+  assert.equal(result.usage.output_tokens, 4)
   const { args, text } = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
   assert.equal(flag(args, '--permission-mode'), 'acceptEdits'); assert.ok(flag(args, '--allowedTools').includes('Bash(npm test *)'))
-  assert.match(text, /host commits your changes/); assert.match(text, /\$PORT/); assert.match(text, /Variant a: cards/)
+  assert.match(text, /host commits your changes/); assert.match(text, /\$PORT/); assert.match(text, /Variant a: cards/); assert.match(text, /path \(the URL path/)
+  assert.ok(JSON.parse(flag(args, '--json-schema')).required.includes('path'))
   assert.throws(() => claudeResult(JSON.stringify({ structured_output: { outcome: 'completed', summary: 'x' } }), 'variant'), /view/)
+  // Results without path (older providers or records) open at the root.
+  assert.equal(claudeResult(JSON.stringify({ structured_output: { outcome: 'completed', summary: 'x', view: 'home' } }), 'variant').path, '')
+  assert.throws(() => claudeResult(JSON.stringify({ structured_output: { outcome: 'completed', summary: 'x', view: 'home', path: 3 } }), 'variant'), /path/)
+  // The mock scaffold writes like a variant but is told it never ships: no switch read by app code.
+  const scaffold = await executeAgentAdapter({ provider: 'claude', job: { schemaVersion: 1, role: 'scaffold', workspace: fixture.root, prompt: 'Screen: /pricing', permissionMode: 'bypass' }, env: fixture.env, log: () => {} })
+  assert.equal(scaffold.path, '/pricing'); assert.equal(scaffold.usage.output_tokens, 4)
+  const sent = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
+  assert.equal(flag(sent.args, '--permission-mode'), 'bypassPermissions')
+  assert.match(sent.text, /never ships/); assert.match(sent.text, /Do NOT add an environment switch/); assert.match(sent.text, /request interception/)
+  assert.match(sent.text, /Do NOT edit the target screen's component, route, loader or style files/); assert.match(sent.text, /Screen: \/pricing$/)
 })

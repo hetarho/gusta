@@ -198,9 +198,11 @@ THEME SSOT가 너무 길어. 의미 바꾸지 말고 정리해줘.      → doc-
 /haeram-setting prune-branches false               → 그 값만 바꾸고 커밋
 ```
 
-설정은 `spec/SETTINGS.md`에 한 줄씩 남고, 파일이나 키가 없으면 기본값을 씁니다. 브랜치 전략([아래 표](#브랜치-전략)) 말고는 `permission-mode`와 `prune-branches`가 있습니다.
+설정은 `spec/SETTINGS.md`에 한 줄씩 남고, 파일이나 키가 없으면 기본값을 씁니다. 브랜치 전략([아래 표](#브랜치-전략)) 말고는 `permission-mode`·`headless-mcp`·`prune-branches`가 있습니다.
 
 `permission-mode`(기본 `bypass`)는 CLI가 띄우는 헤드리스 작성 세션 — `vibe loop` 단위, `work run` 워커, show-ab 변형, `vibe preflight --probe` — 의 권한입니다. 맡김에는 권한 창에 답할 사람이 없으므로 기본은 권한 확인과 sandbox를 건너뜁니다(Claude bypassPermissions, Codex `--dangerously-bypass-approvals-and-sandbox`, 네트워크 허용). `acceptEdits`로 바꾸면 Claude는 편집+`--allow-tool` 목록만, Codex는 workspace-write sandbox(네트워크 없음)에서 돕니다. 리뷰어는 어느 쪽이든 읽기 전용이고, 명령의 `--permission-mode`는 그 실행에만 적용됩니다.
+
+`headless-mcp`(기본 `isolate`)는 같은 헤드리스 Claude 세션(리뷰어·`work scout` 포함)이 싣는 MCP 서버입니다. 기본은 `--strict-mcp-config`만 붙여 MCP 서버를 하나도 싣지 않습니다 — 사용자·계정에 연결된 서버도, checkout의 `.mcp.json`도 싣지 않습니다(`.mcp.json`은 워커가 커밋할 수 있는 코드라, 직접 넘기면 승인 없이 그 커밋을 검토하는 리뷰어나 다음 단위에서 실행됩니다). 권한 확인 없이 도는 세션이 프로젝트 밖 서비스를 바꾸지 못하고, 쓰지 않는 도구 정의만큼 프롬프트도 줄어듭니다. 이 flag가 없는 예전 CLI에는 붙이지 않습니다. 헤드리스 세션에 MCP가 필요한 프로젝트는 `inherit`로 사용자 설정을 그대로 씁니다. 스킬·CLAUDE.md·플러그인·훅은 어느 쪽이든 그대로이고, Codex 세션은 바뀌지 않습니다.
 
 `prune-branches`(기본 `true`): 작업이 끝나면 CLI가 자기가 만든 것 중 더 이상 쓰지 않는 것을 지웁니다. 작업이 끝나는 시점은 실행기 종료, `work cleanup`, `vibe loop` 종료, 세션 마감의 `vibe prune`, show-ab 채택입니다. 지우는 것은 이미 합쳐진 단위·묶음 브랜치, 그 worktree(설치·빌드 산출물 포함), 체크포인트 ref, 이 세션의 `wip/<tag>`입니다. 원격의 `wip/<tag>`는 HEAD가 push된 뒤에만 지웁니다. 합쳐지지 않은 커밋, 미커밋 변경, 진행 중인 작업은 남기고 이유를 `kept`로 보고합니다.
 
@@ -215,10 +217,10 @@ haeram 스킬을 쓴 세션 끝에 부르면, 그 세션에서 스킬·CLI가 �
 /show-ab 검색 응답이 느려. 캐시 방식 세 가지로 구현해서 벤치마크로 비교해줘
 ```
 
-1. 변형마다 `ab/<slug>/<a|b|…>` 브랜치와 형제 worktree, 포트(4101부터 빈 포트)가 생기고 의존성 설치(`--setup`)가 병렬로 돕니다(`vibe ab start`).
-2. 변형마다 새 하위 세션이 자기 worktree만 고칩니다(`vibe ab run`, 헤드리스 Claude·Codex 또는 에이전트의 하위 세션). 커밋은 CLI가 변형 브랜치에 하고, 진행자에게는 요약과 "어디를 보면 되는지"만 돌아옵니다.
-3. `vibe ab serve`가 변형마다 개발 서버를 `$PORT`로 띄우고 준비될 때까지 기다립니다. `vibe ab exec --repeat 3`은 변형을 번갈아 실행해 시간 중앙값·최소값을 모읍니다. 진행자는 변형 | 접근 | URL·측정값 | 장단점 비교표 하나로 보여 줍니다.
-4. 고르면 `vibe ab pick`이 서버를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리합니다(브랜치는 `prune-branches` 설정대로, 기본은 삭제). 채택은 결정이라 STATE log에 남기고, SSOT 규칙이 바뀌었으면 update-ssot로 이어집니다. 전체 테스트는 합친 뒤 평소 마감 관문에서 한 번입니다.
+1. 변형마다 `ab/<slug>/<a|b|…>` 브랜치와 형제 worktree, 포트(4101부터 빈 포트)가 생기고 의존성 설치(`--setup`)가 병렬로 돕니다(`vibe ab start`). lockfile이 그대로면 `--reuse node_modules`가 설치 대신 이 checkout의 의존성 폴더(git이 무시하는 것만)를 복사합니다.
+2. 변형마다 새 하위 세션이 자기 worktree만 고칩니다(`vibe ab run --all`이 한 번에 병렬로, 헤드리스 Claude·Codex 또는 에이전트의 하위 세션). 커밋은 CLI가 변형 브랜치에 하고, 진행자에게는 요약과 "어디를 보면 되는지"만 돌아옵니다.
+3. `vibe ab serve`가 변형마다 개발 서버를 `$PORT`로 띄우고 볼 화면이 HTTP로 응답하면 비교 페이지(hub) 하나를 엽니다. 사용자는 그 URL 하나에서 변형을 나란히(데스크톱·모바일 폭) 보고 메모를 남기거나 choose를 누릅니다. `vibe ab exec --repeat 3`은 변형을 번갈아 실행해 시간 중앙값·최소값을 모으고 hub에도 보여 줍니다. "A의 레이아웃에 B의 색"처럼 섞고 싶으면 `vibe ab add --from a`가 A에서 이어지는 새 변형을 만듭니다. 진행자는 변형 | 접근 | 측정값 | 장단점 비교표 하나로 보여 주고, 메모는 그 변형의 후속 수정에 씁니다.
+4. choose는 의사 표시일 뿐입니다 — 진행자가 `vibe ab status`로 읽고 사용자에게 확인한 뒤 `vibe ab pick`이 서버·hub를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리합니다(브랜치는 `prune-branches` 설정대로, 기본은 삭제). 채택은 결정이라 pick이 STATE log에 한 줄을 쓰고(커밋은 진행자), SSOT 규칙이 바뀌었으면 update-ssot로 이어집니다. 전체 테스트는 합친 뒤 평소 마감 관문에서 한 번입니다.
 
 변형마다 구현 세션 하나만큼 토큰·시간이 들고, 고를 사람이 있어야 하므로 맡김에서는 실행하지 않습니다. 변형은 spec/을 고치지 않으며 미커밋 변경이 있으면 시작하지 않습니다.
 

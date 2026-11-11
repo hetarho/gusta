@@ -7,7 +7,7 @@ import test from 'node:test'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { mergeState, upsertActive, activeRows } from '../src/state-doc.mjs'
-import { vibeStatus, vibeSync, vibePush, vibeDeploy, vibeClaim, vibeBeat, vibeCheckpoint, vibePreflight, vibeCheck } from '../src/vibe.mjs'
+import { vibeStatus, vibeSync, vibePush, vibeDeploy, vibeClaim, vibeBeat, vibeCheckpoint, vibePreflight, vibeCheck, exploreTimeboxes } from '../src/vibe.mjs'
 import { withHeavyLock } from '../src/check-cache.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 import { vibeDesign } from '../src/vibe-design.mjs'
@@ -292,6 +292,21 @@ test('route: 완료 ideation 파일은 새 기획 후보나 기본 읽기 입력
   assert.deepEqual(status.planning.ideation, [])
 })
 
+test('explore timeboxes: one listing, row order, a row matches only its own `<id>.` file', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'haeram-explore-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(path.join(root, 'spec/tasks'), { recursive: true })
+  const quote = (id, extra) => `# ${id} x\n> st:todo | ssot:A-1 | base:A@1 | dep:-${extra}\n`
+  await writeFile(path.join(root, 'spec/tasks/T10.later.md'), quote('T10', ' | explore:30m'))
+  await writeFile(path.join(root, 'spec/tasks/T1.v1.2.notes.md'), quote('T1', ' | explore:2h'))
+  await writeFile(path.join(root, 'spec/tasks/T2.plain.md'), quote('T2', ''))
+  await writeFile(path.join(root, 'spec/tasks/T3.none.md'), quote('T3', ' | explore:-'))
+  await writeFile(path.join(root, 'spec/tasks/README'), 'no dot in this name')
+  const rows = ['T10', 'T9', 'T2', 'T1', 'T3', 'T1'].map((id) => ({ id }))
+  assert.deepEqual(await exploreTimeboxes(root, rows), [{ id: 'T10', timebox: '30m' }, { id: 'T1', timebox: '2h' }, { id: 'T1', timebox: '2h' }])
+  assert.deepEqual(await exploreTimeboxes(path.join(root, 'missing'), rows), [])
+})
+
 test('vibe check는 같은 작업 트리에서 통과한 명령을 다시 돌리지 않는다', async (t) => {
   const { a, temporary } = await machines(t)
   const counter = path.join(temporary, 'runs.txt')
@@ -407,7 +422,7 @@ test('preflight --probe는 새 worktree의 헤드리스 워커로 명령 실행 
   const fake = path.join(bin, 'claude')
   // The fake provider records where it ran and which tools it was allowed, then reports a denial
   // unless Bash(npm test *) was granted.
-  await writeFile(fake, `#!/usr/bin/env node\nconst args = process.argv.slice(2)\nconst allowed = args[args.indexOf('--allowedTools') + 1]\nrequire('fs').writeFileSync(${JSON.stringify(path.join(temporary, 'probe.json'))}, JSON.stringify({ cwd: process.cwd(), allowed }))\nconst denied = !allowed.includes('Bash(npm test *)')\nprocess.stdout.write(JSON.stringify({ structured_output: { ran: !denied, exitCode: denied ? 1 : 0, denied, note: 'probe' } }))\n`)
+  await writeFile(fake, `#!/usr/bin/env node\nconst args = process.argv.slice(2)\nif (args.includes('--help')) { console.log('--exclude-dynamic-system-prompt-sections'); process.exit(0) }\nconst allowed = args[args.indexOf('--allowedTools') + 1]\nrequire('fs').writeFileSync(${JSON.stringify(path.join(temporary, 'probe.json'))}, JSON.stringify({ cwd: process.cwd(), allowed, shared: args.includes('--exclude-dynamic-system-prompt-sections') }))\nconst denied = !allowed.includes('Bash(npm test *)')\nprocess.stdout.write(JSON.stringify({ structured_output: { ran: !denied, exitCode: denied ? 1 : 0, denied, note: 'probe' } }))\n`)
   await chmod(fake, 0o755)
   const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` }
   const denied = await vibePreflight({ targetRoot: a, probe: 'npm test', provider: 'claude', env })
@@ -417,6 +432,7 @@ test('preflight --probe는 새 worktree의 헤드리스 워커로 명령 실행 
   const record = JSON.parse(await readFile(path.join(temporary, 'probe.json'), 'utf8'))
   assert.notEqual(await realpath(record.cwd).catch(() => record.cwd), a)
   assert.match(record.cwd, /\.haeram-worktrees/)
+  assert.equal(record.shared, true, 'the probe runs with the optional flags workers get')
   const granted = await vibePreflight({ targetRoot: a, probe: 'npm test', provider: 'claude', env, allowTool: ['Bash(npm test *)'] })
   assert.equal(granted.checks.find((check) => check.name === 'worker-probe').ok, true)
   assert.equal((await git(a, 'worktree', 'list')).stdout.trim().split('\n').length, 1)
