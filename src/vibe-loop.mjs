@@ -576,7 +576,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (status.concurrency === 'strict' && context.target) {
         await metadataCommit(`vibe ${options.tag}: session presence`)
         await deps.claim({ ...options, targetRoot: root, task: selected })
-        status = await deps.status({ ...options, targetRoot: root, tag: options.tag })
+        // The claim fetched and pushed the target just now: re-read locally.
+        status = await deps.status({ ...options, targetRoot: root, tag: options.tag, fetch: false })
       }
       const before = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
       await metadata.assertClean()
@@ -661,7 +662,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (failureStreak >= 2) { reason = 'session-failures'; break }
       if (noProgress >= 2) { reason = 'no-progress'; break }
       if (failed) continue
-      const afterStatus = await deps.status({ ...options, targetRoot: root, tag: options.tag })
+      // Local rows only; the next boundary's status fetches before any remote-dependent decision.
+      const afterStatus = await deps.status({ ...options, targetRoot: root, tag: options.tag, fetch: false })
       if (priorityTask && afterStatus.remaining && !afterStatus.remaining.some((task) => task.id === priorityTask)) priorityTask = null
       if (count >= maxUnits) { reason = 'max-units'; break }
       const completed = pending.filter((entry) => ['task', 'fix'].includes(entry.result?.kind) && entry.result.outcome === 'completed').length

@@ -440,6 +440,22 @@ for (const pushEachUnit of [false, true]) test(`strict concurrency runs one fina
   assert.equal(pushes, pushEachUnit ? 3 : 1)
 })
 
+test('one fetch per unit boundary: the post-claim and post-unit status stay local', async (t) => {
+  const { root } = await fixture(t)
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- push: true\n'); await git(root, 'add', 'spec/SETTINGS.md'); await git(root, 'commit', '-qam', 'push branch')
+  const calls = []
+  const result = await vibeLoop({ ...opts(root), maxUnits: 3 }, { preflight: passed,
+    status: async (options) => { calls.push(options.section ? 'inbox' : options.fetch === false ? 'local' : 'fetch'); return { ...await vibeStatus(options), concurrency: 'strict' } },
+    claim: async (options) => { calls.push(`claim ${options.task}`); return { ok: true } },
+    execute: async (options, job) => { calls.push('unit'); return completeTask(root, job.brief.taskId) },
+    sync: async () => ({ ok: true }), check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: null }),
+  })
+  assert.equal(result.ok, true, result.error); assert.equal(result.units, 3)
+  // The first read is the host's setup; each boundary then fetches once and claims on that read
+  // (inbox reads never fetch).
+  assert.deepEqual(calls.slice(1).filter((call) => call !== 'inbox'), ['fetch', 'claim T001', 'local', 'unit', 'local', 'fetch', 'claim T002', 'local', 'unit', 'local', 'fetch', 'claim T003', 'local', 'unit', 'local'])
+})
+
 test('hourly snapshots span fresh unit sessions instead of resetting at each launch', async (t) => {
   const { root } = await fixture(t)
   let now = Date.now(), n = 0, snapshots = 0
