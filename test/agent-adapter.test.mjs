@@ -179,18 +179,17 @@ test('--help에 없는 선택 flag는 붙이지 않고, 검사 없는 경로는 
 const STRICT_MCP = '--strict-mcp-config'
 const sentArgs = async (root) => JSON.parse(await readFile(path.join(root, 'received.json'), 'utf8'))
 
-test('헤드리스 Claude 세션은 사용자·계정 MCP 서버를 싣지 않고 checkout의 .mcp.json만 싣는다 (headless-mcp)', async (t) => {
+test('헤드리스 Claude 세션은 MCP 서버를 하나도 싣지 않는다 — 사용자·계정 서버도 checkout의 .mcp.json도 (headless-mcp)', async (t) => {
   const files = { schema: 'schema', result: 'result' }
-  // Isolated by default for every role; the project's config goes last (--mcp-config takes a list).
+  // Isolated by default for every role: the strict flag and never an --mcp-config.
   for (const role of ['unit', 'worker', 'reviewer', 'scout', 'variant', 'scaffold']) {
-    assert.ok(providerArguments('claude', role, files, null, { flags: [STRICT_MCP] }).includes(STRICT_MCP), role)
-    assert.deepEqual(providerArguments('claude', role, files, null, { flags: [SHARED_PROMPT, STRICT_MCP], mcpConfig: '/w/.mcp.json' }).slice(-4), [SHARED_PROMPT, STRICT_MCP, '--mcp-config', '/w/.mcp.json'], role)
+    const args = providerArguments('claude', role, files, null, { flags: [SHARED_PROMPT, STRICT_MCP] })
+    assert.deepEqual(args.slice(-2), [SHARED_PROMPT, STRICT_MCP], role); assert.ok(!args.includes('--mcp-config'), role)
   }
-  // inherit keeps the user's setup; an older CLI without the flag gets neither flag; Codex gets none.
-  const inherit = providerArguments('claude', 'unit', files, null, { flags: [SHARED_PROMPT, STRICT_MCP], headlessMcp: 'inherit', mcpConfig: '/w/.mcp.json' })
+  // inherit keeps the user's setup; an older CLI without the flag gets none; Codex gets none.
+  const inherit = providerArguments('claude', 'unit', files, null, { flags: [SHARED_PROMPT, STRICT_MCP], headlessMcp: 'inherit' })
   assert.ok(inherit.includes(SHARED_PROMPT)); assert.ok(!inherit.includes(STRICT_MCP)); assert.ok(!inherit.includes('--mcp-config'))
-  const older = providerArguments('claude', 'unit', files, null, { flags: [], mcpConfig: '/w/.mcp.json' })
-  assert.ok(!older.includes(STRICT_MCP)); assert.ok(!older.includes('--mcp-config'))
+  assert.ok(!providerArguments('claude', 'unit', files, null, { flags: [] }).some((arg) => arg.includes('mcp')))
   assert.ok(!providerArguments('codex', 'worker', files, null, { flags: [STRICT_MCP] }).some((arg) => arg.includes('mcp')))
   assert.throws(() => providerArguments('claude', 'unit', files, null, { flags: [STRICT_MCP], headlessMcp: 'all' }), /headless-mcp/)
 
@@ -201,15 +200,16 @@ test('헤드리스 Claude 세션은 사용자·계정 MCP 서버를 싣지 않�
   await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {}, flags })
   let args = await sentArgs(fixture.root)
   assert.ok(args.includes(STRICT_MCP)); assert.ok(!args.includes('--mcp-config'))
+  // A committed .mcp.json is code a worker can write: an isolated session (here the reviewer) never loads it.
   await writeFile(path.join(fixture.root, '.mcp.json'), '{"mcpServers":{}}')
   await executeAgentAdapter({ provider: 'claude', job: { ...job(fixture.root, 'reviewer'), headlessMcp: 'isolate' }, env: fixture.env, log: () => {}, flags })
   args = await sentArgs(fixture.root)
-  assert.equal(flag(args, '--mcp-config'), path.join(fixture.root, '.mcp.json')); assert.equal(args.at(-1), path.join(fixture.root, '.mcp.json'))
+  assert.ok(args.includes(STRICT_MCP)); assert.ok(!args.includes('--mcp-config')); assert.ok(!args.some((arg) => arg.includes('.mcp.json')))
   await executeAgentAdapter({ provider: 'claude', job: { ...job(fixture.root, 'reviewer'), headlessMcp: 'inherit' }, env: fixture.env, log: () => {}, flags })
   args = await sentArgs(fixture.root)
   assert.ok(!args.includes(STRICT_MCP)); assert.ok(!args.includes('--mcp-config'))
   await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {} })
-  assert.ok(!(await sentArgs(fixture.root)).includes('--mcp-config'), 'no strict flag, no explicit config')
+  assert.ok(!(await sentArgs(fixture.root)).some((arg) => arg.includes('mcp')), 'no flags from the caller, no MCP flag')
 
   // work scout reads the setting from its checkout.
   const { workScout } = await import('../src/work-scout.mjs')

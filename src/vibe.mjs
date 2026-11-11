@@ -19,7 +19,7 @@ import { runVibeCheck } from './vibe-check.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { vibeCIWait, githubRepository } from './vibe-ci.mjs'
 import { providerFlags } from './work-providers.mjs'
-import { claudeOptionalFlags, projectMcpConfig } from './agent-adapter.mjs'
+import { claudeOptionalFlags } from './agent-adapter.mjs'
 
 const execute = promisify(execFile)
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
@@ -547,8 +547,8 @@ async function probeWorker(context, options) {
     if (options.model) args.push('--model', options.model)
     const env = { ...(options.env ?? process.env) }
     delete env.CLAUDECODE
-    // Same optional flags and MCP sources as the workers it stands in for.
-    if (provider === 'claude') args.push(...claudeOptionalFlags(await providerFlags(provider, { env }), { headlessMcp: options.headlessMcp, mcpConfig: await projectMcpConfig(probeRoot) }))
+    // Same optional flags (MCP isolation included) as the workers it stands in for.
+    if (provider === 'claude') args.push(...claudeOptionalFlags(await providerFlags(provider, { env }), { headlessMcp: options.headlessMcp }))
     const output = await new Promise((resolve, reject) => {
       const child = spawn(provider, args, { cwd: probeRoot, env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
       let stdout = '', stderr = '', timedOut = false, forced

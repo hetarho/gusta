@@ -140,8 +140,8 @@ for (const provider of ['claude', 'codex']) test(`맡김 ${provider}: 기획 공
   const all = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
   assert.ok(all.filter((call) => call.role === 'worker').every((call) => call.bypass))
   assert.ok(all.some((call) => call.role === 'reviewer') && all.filter((call) => call.role === 'reviewer').every((call) => !call.bypass))
-  // SETTINGS headless-mcp (default isolate): Claude workers and reviewers load no user or account MCP
-  // servers (the fixture has no .mcp.json to load instead); Codex has no such flag.
+  // SETTINGS headless-mcp (default isolate): Claude workers and reviewers load no MCP server and get
+  // no --mcp-config; Codex has no such flag.
   assert.ok(all.every((call) => call.strict === (provider === 'claude') && call.mcpConfig === null))
   // Every landed unit is on the remote push branch, inbox line included; T001 was reviewed
   // (an autopilot decision makes it risky), and the half done before the question survived.

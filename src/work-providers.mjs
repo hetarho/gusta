@@ -15,8 +15,8 @@ const requiredFlags = {
 // Passed only when the installed CLI lists them: an older CLI fails on an unknown flag.
 // --exclude-dynamic-system-prompt-sections moves cwd, git status and memory paths out of the
 // system prompt, so sessions in different worktrees read one cached prompt instead of each writing it.
-// --strict-mcp-config loads only the MCP servers named by --mcp-config: an unattended session does not
-// get the user's or account connectors (SETTINGS headless-mcp; agent-adapter claudeOptionalFlags).
+// --strict-mcp-config loads only the MCP servers named by --mcp-config (none are): an unattended session
+// gets no user, account or project MCP server (SETTINGS headless-mcp; agent-adapter claudeOptionalFlags).
 export const STRICT_MCP = '--strict-mcp-config'
 export const OPTIONAL_FLAGS = { codex: [], claude: ['--exclude-dynamic-system-prompt-sections', STRICT_MCP] }
 const helpArgs = (provider) => provider === 'codex' ? ['exec', '--help'] : ['--help']

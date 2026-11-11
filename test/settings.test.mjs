@@ -39,7 +39,7 @@ test('headless MCP: 기본은 isolate, vibe settings가 inherit로 바꾸고 보
   assert.deepEqual(result.changed, ['headless-mcp'])
   const shown = result.settings.find((entry) => entry.key === 'headless-mcp')
   assert.deepEqual([shown.value, shown.source, shown.default, shown.values], ['inherit', 'file', 'isolate', 'isolate|inherit'])
-  assert.match(shown.note, /isolate = .*\.mcp\.json/)
+  assert.match(shown.note, /isolate = none \(no user, account or project \.mcp\.json servers\)/)
   assert.equal(await readSetting({ targetRoot: root }, 'headless-mcp'), 'inherit')
   assert.match(await readFile(path.join(root, 'spec/SETTINGS.md'), 'utf8'), /^- headless-mcp: inherit {2}# /m)
   await assert.rejects(vibeSettings({ targetRoot: root, set: ['headless-mcp=none'] }), /isolate\|inherit/)
