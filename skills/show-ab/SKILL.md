@@ -35,7 +35,7 @@ description: >-
 ## 3. 병렬 구현 — 하위 세션
 변형마다 이 변형의 접근만 `<dir>/<v>.md`에 쓰고 동시에 띄운다:
 - 기본(헤드리스): `vibe ab run <slug> --all --prompt-dir <dir> --provider <claude|codex> [--allow-tool '<태스크 검사 명령 규칙>'] --json` 하나를 백그라운드로 실행한다(병렬, 끝나면 한 번 알림). 한 변형만은 `--variant <v> --prompt-file <file>`. 세션은 자기 worktree만 고치고, CLI가 shared를 앞에 붙이고 끝나면 변형 브랜치에 커밋한다. 돌아오는 것은 summary·view·path(볼 곳·URL 경로)뿐이다.
-- run이 scaffoldTouched(scaffold 줄·파일을 바꾼 곳)·scaffoldResidue(옮겨 쓴 mock 줄)를 주면 보여 주기 전에 되돌리는 follow-up을 보낸다(데이터 변경은 summary로).
+- run이 scaffoldTouched(scaffold 줄·파일 수정)를 주면 보여 주기 전에 되돌리는 follow-up을 보낸다(데이터 변경은 summary로). scaffoldResidue는 줄이 실제 scaffold를 가리킬 때만 follow-up, 아니면 사용자에게 보이고 확인받아 `pick --accept-residue`.
 - 네이티브 하위 세션 도구를 써도 된다(worktree 경로·shared+접근을 주고 커밋·서버·scaffold 수정은 하지 않게). 같은 대화에서 역할만 바꿔 변형을 직접 만들지 않는다.
 - 변형은 영향 단위 테스트와 빠른 검사만 돌린다(전체 스위트는 합친 뒤 마감 관문에서 한 번).
 
@@ -50,7 +50,7 @@ description: >-
 
 ## 5. 채택과 정리
 - `vibe ab pick <slug> --variant <v> --approach '<영어 한 줄 접근>' --json`: 서버·hub를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리한다. 변형 브랜치는 `prune-branches`(기본 true, `--prune-branches`면 강제)대로 지운다. 충돌이면 현재 브랜치는 그대로 두고 보고한다.
-- pick은 scaffold의 줄·파일만 빼고 합친다(같은 파일의 변형 수정은 남는다). todo(실제 데이터 연결)는 create-task로. `--accept-residue`는 남은 줄을 사용자에게 보여 주고 확인받은 뒤에만.
+- pick은 scaffold의 줄·파일만 빼고 합친다(같은 파일의 변형 수정은 남는다). todo(실제 데이터 연결)는 create-task로.
 - 채택 기록: pick이 쓴 STATE log 줄(files)을 커밋 하나로 남기고, 채택안이 SSOT 규칙을 바꿨으면 이어서 update-ssot(대안=고르지 않은 변형, 이유=사용자 선택 근거).
 - 합친 뒤에는 평소대로 영향 검사, push 직전 마감 관문(start-vibe 4절).
 - 고르지 않고 끝내면 `vibe ab stop <slug> --remove`. 나중에 보겠다면 서버·hub를 두고 `vibe ab status <slug>`의 hub URL을 다시 준다.
