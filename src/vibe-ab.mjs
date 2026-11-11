@@ -272,17 +272,18 @@ async function scaffoldLines(root, record, file) {
 // modified text file (editable: where the scaffold's lines are) but not those lines; every other scaffold
 // path is read-only. Pick removes exactly the scaffold's lines and files.
 async function scaffoldFiles(root, record) {
-  const added = [], modified = [], editable = {}
+  const added = [], modified = [], edited = [], editable = {}
   if (record.scaffold) {
     const status = fields(await git(root, ['diff', '--name-status', '-z', '--no-renames', record.origin, record.scaffold]))
     for (let index = 0; index < status.length; index += 2) {
       const code = status[index], file = status[index + 1]
       ;(code === 'A' ? added : modified).push(file)
+      if (code === 'M') edited.push(file)
       const lines = code === 'M' ? await scaffoldLines(root, record, file) : []
       if (lines.length) editable[file] = lines
     }
   }
-  return { all: [...added, ...modified].sort(), added, modified, editable }
+  return { all: [...added, ...modified].sort(), added, modified, edited, editable }
 }
 // A scaffold that edited existing UI files may have edited the target screen itself, which the variants
 // redesign: start names them for the coordinator to look at.
@@ -439,6 +440,8 @@ async function runAll(ctx, record, options, deps) {
   const approaches = found.filter(([, text]) => text !== null), skipped = found.filter(([, text]) => text === null).map(([name]) => name)
   if (!approaches.length) fail(`${options.promptDir}에 변형 프롬프트가 없습니다: ${names.map((name) => `${name}.md`).join(', ')}`)
   const session = await sessionOptions(ctx, options, deps)
+  // The residue marks once, before the parallel runs that all check against them.
+  if (record.scaffold) await scaffoldMarks(ctx, record, await scaffoldFiles(ctx.root, record))
   const variants = await Promise.all(approaches.map(([name, approach]) => runVariant(ctx, record, name, session, deps, { approach }).catch((error) =>
     ({ ok: false, variant: name, error: error.message, ...(error.details?.length ? { details: error.details } : {}) }))))
   return { schemaVersion: 1, ok: variants.every((entry) => entry.ok), slug: record.slug, variants, skipped }
@@ -641,19 +644,29 @@ const reversePatch = async (root, record, file) => (await execFileAsync('git', [
 const gitOut = async (root, args) => (await execFileAsync('git', ['-C', root, ...args], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } })).stdout
 // Added and removed lines of a patch, trimmed; a file's ---/+++ header ends at its first hunk.
 function patchLines(patch) {
-  const added = [], removed = []
-  let hunk = false
+  const sections = new Map()
+  let current = null, hunk = false
   for (const line of patch.split('\n')) {
-    if (line.startsWith('diff --git ')) hunk = false
+    if (line.startsWith('diff --git ')) { current = sections.get(line) ?? { added: [], removed: [] }; sections.set(line, current); hunk = false }
     else if (line.startsWith('@@')) hunk = true
-    else if (hunk && line[0] === '+') added.push(line.slice(1).trim())
-    else if (hunk && line[0] === '-') removed.push(line.slice(1).trim())
+    else if (hunk && line[0] === '+') current.added.push(line.slice(1).trim())
+    else if (hunk && line[0] === '-') current.removed.push(line.slice(1).trim())
   }
-  return { added, removed }
+  return sections
+}
+// One -U0 diff between two trees, split by file: { file: { added, removed } }. A path git still quotes
+// (control characters, quotes, backslashes) is not found by its header and gets a call of its own.
+async function linesByFile(root, from, to, names) {
+  const sections = patchLines(await gitOut(root, ['-c', 'core.quotePath=false', 'diff-tree', '-r', '-p', '-U0', '--no-renames', from, to]))
+  const result = {}
+  for (const name of names) {
+    result[name] = sections.get(`diff --git a/${name} b/${name}`)
+      ?? [...patchLines(await gitOut(root, ['diff-tree', '-p', '-U0', '--no-renames', from, to, '--', literal(name)])).values()][0] ?? { added: [], removed: [] }
+  }
+  return result
 }
 // Blank lines, lone braces or brackets and bare tags say nothing about where a line came from.
 const TRIVIAL = /^(?:[\s{}()[\];,]*|<\/?[\w.:-]+>)$/
-const named = (text) => new RegExp(`(?<![\\w-])${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`)
 // The lines origin already has somewhere: common code (an import, a return), not scaffold wiring.
 async function inOrigin(root, origin, lines) {
   if (!lines.length) return new Set()
@@ -662,29 +675,61 @@ async function inOrigin(root, origin, lines) {
   running.child.stdin.end(`${lines.join('\n')}\n`)
   return new Set((await running.then((result) => result.stdout, (error) => error.code === 1 ? '' : Promise.reject(error))).split('\n').map((line) => line.trim()))
 }
-// What marks scaffold wiring: the non-trivial lines it added that origin never had (not lines it moved),
-// and the paths of its new files as imports or src attributes write them (last two segments, with or
-// without the extension).
-async function scaffoldMarks(root, record, files) {
-  const { added, removed } = patchLines(await gitOut(root, ['diff-tree', '-r', '-p', '-U0', '--no-renames', record.origin, record.scaffold]))
-  const moved = new Set(removed), candidates = [...new Set(added.filter((line) => !TRIVIAL.test(line) && !moved.has(line)))]
-  const common = await inOrigin(root, record.origin, candidates)
-  const paths = new Set(files.added.flatMap((file) => {
+const stripExt = (text) => text.replace(/\.[^./]+$/, '')
+const endsWithPath = (whole, tail) => whole === tail || whole.endsWith(`/${tail}`)
+// What marks scaffold wiring, from origin and the scaffold alone:
+// - lines: non-trivial lines the scaffold inserted into files origin had (a script tag, an entry import, an
+//   alias line), not lines it moved and none origin has elsewhere. Files it added are its own code: their
+//   boilerplate (hooks, returns) is everybody's, so they give path marks only.
+// - paths: how code names a file it added. Tails of two or more segments, with and without the extension,
+//   whose directory part origin lacks (mocks/handlers, never api/client); a */index.* also names its
+//   directory. One-segment names (root files, a bare directory) count only inside a string ('./fixtures',
+//   '../mocks'). A mark origin could resolve itself (the end of an origin file or directory path) is dropped.
+async function computeMarks(root, record, files) {
+  const listing = fields(await git(root, ['ls-tree', '-r', '-z', '--name-only', record.origin]))
+  const dirExists = (dir) => listing.some((file) => file.startsWith(`${dir}/`) || file.includes(`/${dir}/`))
+  const resolvable = (mark) => dirExists(mark) || listing.some((file) => endsWithPath(file, mark) || endsWithPath(stripExt(file), mark))
+  const paths = new Map()
+  const offer = (mark, quoted) => {
+    if (!mark || paths.has(mark) || resolvable(mark) || (!quoted && dirExists(path.posix.dirname(mark)))) return
+    paths.set(mark, { text: mark, quoted })
+  }
+  for (const file of files.added) {
     const parts = file.split('/')
-    return parts.length === 1 ? [file] : [file, parts.slice(-2).join('/')].flatMap((tail) => [tail, tail.replace(/\.[^./]+$/, '')])
-  }))
-  return { lines: new Set(candidates.filter((line) => !common.has(line))), paths: [...paths].map(named) }
-}
-// Scaffold residue in an adopted tree: lines it adds over origin that repeat a scaffold line or name a file
-// the scaffold added (its mock <script> copied elsewhere, an import of its handlers). Adopted, that wiring
-// would ship pointing at a deleted file.
-async function scaffoldResidue(root, record, files, tree) {
-  const marks = await scaffoldMarks(root, record, files), found = new Map()
-  if (!marks.lines.size && !marks.paths.length) return []
-  for (const file of await netChanges(root, record.origin, tree)) {
-    for (const line of patchLines(await gitOut(root, ['diff-tree', '-p', '-U0', '--no-renames', record.origin, tree, '--', literal(file)])).added) {
-      if (line && (marks.lines.has(line) || marks.paths.some((mark) => mark.test(line)))) found.set(`${file}\0${line}`, { file, line: line.slice(0, 200) })
+    if (parts.length === 1) for (const mark of [file, stripExt(file)]) offer(mark, true)
+    for (let size = 2; size <= parts.length; size++) for (const mark of [parts.slice(-size).join('/'), stripExt(parts.slice(-size).join('/'))]) offer(mark, false)
+    if (parts.length > 1 && /^index\.[^./]+$/.test(parts.at(-1))) {
+      const dir = parts.slice(0, -1)
+      for (let size = 1; size <= dir.length; size++) offer(dir.slice(-size).join('/'), size === 1)
     }
+  }
+  const sections = await linesByFile(root, record.origin, record.scaffold, files.all)
+  const moved = new Set(Object.values(sections).flatMap((entry) => entry.removed))
+  const candidates = [...new Set(files.edited.flatMap((file) => sections[file]?.added ?? []).filter((line) => !TRIVIAL.test(line) && !moved.has(line)))]
+  const common = await inOrigin(root, record.origin, candidates)
+  return { lines: candidates.filter((line) => !common.has(line)), paths: [...paths.values()] }
+}
+// Marks depend only on origin and the scaffold: computed on first use and kept in the runtime under both SHAs.
+async function scaffoldMarks(ctx, record, files) {
+  const file = fileOf(ctx, record.slug, `marks-${record.origin.slice(0, 12)}-${record.scaffold.slice(0, 12)}.json`)
+  const cached = await readFile(file, 'utf8').then(JSON.parse, () => null)
+  if (cached) return cached
+  const marks = await computeMarks(ctx.root, record, files)
+  await atomicJSON(file, marks)
+  return marks
+}
+const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const markPattern = ({ text, quoted }) => new RegExp(quoted ? `(?<=['"\`/])${escaped(text)}(?=['"\`])` : `(?<![\\w-])${escaped(text)}(?![\\w-])`)
+// Scaffold residue in an adopted tree: lines it adds over origin that repeat a scaffold wiring line or name a
+// file the scaffold added (its mock <script> copied elsewhere, an import of its handlers). Adopted, that
+// wiring would ship pointing at a deleted file.
+async function scaffoldResidue(ctx, record, files, tree) {
+  const marks = await scaffoldMarks(ctx, record, files)
+  if (!marks.lines.length && !marks.paths.length) return []
+  const lines = new Set(marks.lines), patterns = marks.paths.map(markPattern), found = new Map()
+  const sections = await linesByFile(ctx.root, record.origin, tree, await netChanges(ctx.root, record.origin, tree))
+  for (const [file, { added }] of Object.entries(sections)) {
+    for (const line of added) if (line && (lines.has(line) || patterns.some((pattern) => pattern.test(line)))) found.set(`${file}\0${line}`, { file, line: line.slice(0, 200) })
   }
   return [...found.values()].slice(0, 20)
 }
@@ -708,7 +753,7 @@ async function withoutScaffold(ctx, record, commit, files) {
   try {
     if (await applies(await reversePatch(ctx.root, record))) {
       const tree = (await indexGit(ctx.root, index, ['write-tree'])).trim()
-      return { tree, residue: await scaffoldResidue(ctx.root, record, files, tree) }
+      return { tree, residue: await scaffoldResidue(ctx, record, files, tree) }
     }
     // Only a scaffold path the variant changed can block its own part (a path's patch holds what lies under it).
     const changed = (await netChanges(ctx.root, record.scaffold, commit)).filter((file) => files.all.includes(file))
@@ -733,7 +778,8 @@ export async function abPick(options = {}) {
   const tip = (await git(ctx.root, ['rev-parse', `${winner.branch}^{commit}`])).trim(), files = await scaffoldFiles(ctx.root, record)
   const adopted = record.scaffold ? await withoutScaffold(ctx, record, tip, files) : null
   if (adopted?.conflicts) fail(`변형 ${name}이 scaffold의 줄·파일을 바꿨거나 그 줄에 너무 붙여 고쳐 scaffold를 뺄 수 없습니다 — 되돌리는 follow-up 뒤에 다시 고르세요. 현재 브랜치와 변형 브랜치는 그대로입니다.`, adopted.conflicts)
-  if (adopted?.residue.length) fail(`변형 ${name}에 scaffold의 mock 줄·경로가 옮겨져 남습니다(합치면 지워진 파일을 가리킴) — 지우는 follow-up 뒤에 다시 고르세요. 현재 브랜치와 변형 브랜치는 그대로입니다.`, adopted.residue.map(({ file, line }) => `${file}: ${line}`))
+  // --accept-residue is the person's call after seeing the lines: they are adopted and listed in the result.
+  if (adopted?.residue.length && !options.acceptResidue) fail(`변형 ${name}에 scaffold의 mock 줄·경로가 옮겨져 남습니다(합치면 지워진 파일을 가리킴) — 지우는 follow-up 뒤에 다시 고르세요(사용자가 그 줄을 보고 받아들이면 --accept-residue). 현재 브랜치와 변형 브랜치는 그대로입니다.`, adopted.residue.map(({ file, line }) => `${file}: ${line}`))
   if (adopted && adopted.tree === (await git(ctx.root, ['rev-parse', `${record.origin}^{tree}`])).trim()) fail(`변형 ${name}에 scaffold 밖 변경이 없습니다.`)
   await checkClean(trees)
   // The adopt commit (scaffold removed, on top of origin) is built before anything stops: an unexpected Git
@@ -755,6 +801,7 @@ export async function abPick(options = {}) {
   if (logLine) await writeFile(path.join(ctx.root, STATE), closeTasks(state, [], { log: logLine }).text)
   await tidy(ctx, slug, trees, prune)
   return { schemaVersion: 1, ok: true, slug, adopted: name, merged, logLine, files: logLine ? [STATE] : [], summary: winner.runs.at(-1)?.summary ?? null, branches: prune ? [] : trees.map(([, tree]) => tree.branch),
+    ...(adopted?.residue.length ? { scaffoldResidue: adopted.residue } : {}),
     ...(record.scaffold ? { scaffold: record.scaffold, scaffoldFiles: { added: files.added, modified: files.modified }, todo: '채택한 UI는 mock 데이터 위에서 만들어졌습니다(scaffold는 빠짐). 실제 데이터 연결이 남았습니다.' } : {}) }
 }
 
