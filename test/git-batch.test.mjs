@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { access, mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { access, appendFile, mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -63,6 +63,30 @@ test('showMany equals git show for blobs, missing paths, trees and odd names in 
   assert.deepEqual(expected.slice(2), ['', null, null])
 })
 
+test('showMany equals git show for binary, invalid UTF-8, symlink and gitlink entries', async (t) => {
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-batch-odd-')))
+  t.after(() => rm(temporary, { recursive: true, force: true }))
+  const root = path.join(temporary, 'repo')
+  await mkdir(path.join(root, 'spec'), { recursive: true })
+  await execute('git', ['init', '-q', '-b', 'trunk', root])
+  const commitAll = (cwd) => execute('git', ['-C', cwd, '-c', 'user.name=T', '-c', 'user.email=t@e', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'c'])
+  await writeFile(path.join(root, 'spec/binary.md'), Buffer.from([0, 1, 2, 0xff, 0xfe, 10, 0xc3, 0x28, 0xe2, 0x82, 65, 10]))
+  await symlink('../elsewhere.md', path.join(root, 'spec/link.md'))
+  const other = path.join(temporary, 'other')
+  await execute('git', ['init', '-q', other])
+  await commitAll(other)
+  await execute('git', ['-C', root, 'add', '.'])
+  await execute('git', ['-C', root, 'update-index', '--add', '--cacheinfo', `160000,${(await git(other, ['rev-parse', 'HEAD'])).trim()},spec/module.md`])
+  await commitAll(root)
+  const commit = (await git(root, ['rev-parse', 'HEAD'])).trim()
+  const specs = ['spec/binary.md', 'spec/link.md', 'spec/module.md'].map((file) => `${commit}:${file}`)
+  const expected = await Promise.all(specs.map((spec) => git(root, ['show', spec], [128])))
+  assert.deepEqual(await showMany(root, specs), expected)
+  assert.ok(expected[0].includes('\uFFFD'))
+  assert.equal(expected[1], '../elsewhere.md')
+  assert.equal(expected[2], null)
+})
+
 test('readTaskBoard at a commit lists tasks and the done archive like the checkout it came from', async (t) => {
   const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-batch-board-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
@@ -84,9 +108,19 @@ test('readTaskBoard at a commit lists tasks and the done archive like the checko
   assert.deepEqual(committed.tasks.map((entry) => [entry.id, entry.waitingOn]), [['T002', []], ['T003', ['T002']]])
   // A caller's inspection of the same root, made in the same operation, is used instead of a new one.
   const inspected = await inspectWorkspace({ targetRoot: root })
-  const reused = await readTaskBoard({ targetRoot: root, workspace: inspected, ref: 'HEAD' })
+  const reused = await readTaskBoard({ targetRoot: root, inspection: inspected, ref: 'HEAD' })
   assert.equal(reused.workspace, inspected)
   assert.deepEqual(pick(reused), pick(committed))
+  // At a commit, each directory's direct entries are what `ls-tree <commit>:<dir>` lists, trees included.
+  await mkdir(path.join(root, 'spec/tasks/done/T010.dir.md'))
+  await writeFile(path.join(root, 'spec/tasks/done/T010.dir.md/inner'), 'x\n')
+  await execute('git', ['-C', root, 'add', '.'])
+  await execute('git', ['-C', root, '-c', 'user.name=T', '-c', 'user.email=t@e', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'tree'])
+  const listed = async (directory) => (await git(root, ['ls-tree', '--name-only', '-z', `HEAD:${directory}`])).split('\0').filter((name) => name.endsWith('.md'))
+  const later = await readTaskBoard({ targetRoot: root, ref: 'HEAD' })
+  assert.deepEqual(later.doneIds, (await listed('spec/tasks/done')).map((name) => name.split('.')[0]).sort())
+  assert.deepEqual(later.tasks.map((entry) => entry.file), (await listed('spec/tasks')).map((name) => `spec/tasks/${name}`))
+  assert.deepEqual(later.doneIds, ['T001', 'T010'])
 })
 
 const markerPaths = '.git/MERGE_HEAD\n.git/CHERRY_PICK_HEAD\n.git/REVERT_HEAD\n.git/rebase-merge\n.git/rebase-apply\n'

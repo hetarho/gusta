@@ -145,7 +145,7 @@ function taskContract(content) {
 // implemented in order in the same workspace and never wait for integration.
 async function currentUnit(context, group, ids, snapshot) {
   const commit = snapshot?.commit ?? await head(context.cwd, `refs/heads/${group.branch}`)
-  const board = scopedBoard(snapshot?.board ?? await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: commit }), group)
+  const board = scopedBoard(snapshot?.board ?? await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: commit }), group)
   if (!board.ok || board.warnings.length) fail('상위 브랜치의 태스크/STATE를 먼저 정리하고 커밋하세요.', [...board.errors, ...board.warnings])
   const tasks = ids.map((id) => board.tasks.find((item) => item.id === id))
   if (tasks.some((task) => task?.st !== 'todo')) fail(`${ids.join(' ')}: todo 상태이며 상위 브랜치에서 dep이 충족된 태스크만 배정할 수 있습니다.`)
@@ -182,7 +182,7 @@ async function checkWorker(context, group, attempt, workingTree = false) {
   const ids = unitTasks(attempt)
   const position = ids.indexOf(attempt.taskId)
   if (position === -1) fail('실행 기록의 현재 태스크가 배정 단위에 없습니다.')
-  const { read: upstream, ...current } = await currentUnit(context, group, ids)
+  const { read: atTarget, ...current } = await currentUnit(context, group, ids)
   const domains = [...new Set(current.tasks.flatMap(({ task }) => task.base.map((base) => base.split('@')[0])))]
   const read = workingTree ? (file) => readFile(path.join(attempt.workspace, file), 'utf8').catch(() => null)
     : await blobsAt(context.cwd, workspace.git.head, [...current.tasks.map(({ task }) => task.file), ...domains.map((domain) => `spec/ssot/${domain}.md`)])
@@ -196,7 +196,7 @@ async function checkWorker(context, group, attempt, workingTree = false) {
   }
   for (const domain of domains) {
     const file = `spec/ssot/${domain}.md`
-    const canonical = await upstream(file)
+    const canonical = await atTarget(file)
     if (!canonical || canonical !== await read(file)) fail(`${domain}: 상위 브랜치의 SSOT가 달라졌습니다. 동기화 후 다시 검증하세요.`)
   }
   const common = (await git(context.cwd, ['merge-base', current.commit, workspace.git.head])).trim()
@@ -433,7 +433,7 @@ export async function startWork(options) {
   const target = adopted ? context.cwd : await destination(context, `${options.name}-plan`, options.path)
   const group = { id: options.name, branch, baseRef, baseCommit, path: target, managed: !adopted, status: 'preparing', creator: creator(), createdAt: now(), limits: workLimits(options), verify: storedChecks(options),
     review: 'risky', ...storedPolicy(options) }
-  if (group.taskScope) scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: baseCommit }), group)
+  if (group.taskScope) scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: baseCommit }), group)
   await transaction(context.root, (state) => {
     if (Object.hasOwn(state.groups, group.id)) fail('같은 이름의 작업 묶음이 이미 있습니다. work status를 확인하세요.')
     if (Object.values(state.groups).some((entry) => entry.branch === branch || entry.path === target)) fail('이미 사용 중인 기획 브랜치 또는 작업 공간입니다.')
@@ -458,7 +458,7 @@ export async function configureWork(options) {
   const policy = storedPolicy(options)
   if (!Object.keys(verify).length && !Object.keys(policy).length) fail('저장할 설정을 --tasks, --task-verify, --verify, --group-verify, --push, --review, --review-path, --review-lines, --allow-tool로 지정하세요.')
   const context = await repository(options)
-  const board = policy.taskScope ? await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: `refs/heads/${groupOf(await readRuntime(context.root), options.work).branch}` }) : null
+  const board = policy.taskScope ? await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: `refs/heads/${groupOf(await readRuntime(context.root), options.work).branch}` }) : null
   return transaction(context.root, (state) => {
     const group = groupOf(state, options.work)
     if (policy.taskScope) {
@@ -499,11 +499,14 @@ async function claimTask(options, next = false, given = null) {
   const group = groupOf(initial, options.work)
   if (!next && group.taskScope && !group.taskScope.includes(options.task)) fail('승인 범위 밖 태스크입니다. 오케스트레이터의 승인 뒤 범위를 갱신하세요.')
   // A claim-next the group would refuse anyway answers before reading the board. The transaction
-  // judges the live state again, so a slot freed meanwhile is still taken by the next call.
+  // judges the live state again, so a slot freed meanwhile is still taken by the next call. A refusal
+  // for capacity, owner-busy, a pending correction or backpressure therefore no longer reports plan,
+  // scope or --workspace errors: they surface at the next claim that can take work, and `work next`
+  // reports wait meanwhile.
   const refused = next ? claimRefusal(initial, group, options.owner, next) : null
   if (refused) return { idle: true, reason: refused, skipped: [] }
   const commit = await head(context.cwd, `refs/heads/${group.branch}`)
-  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: commit }), group)
+  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: commit }), group)
   if (!board.ok || board.warnings.length) fail('상위 브랜치의 태스크/STATE를 먼저 정리하고 커밋하세요.', [...board.errors, ...board.warnings])
   // Read/validate immutable task snapshots before the short allocation transaction.
   const claimed = new Set(Object.values(initial.attempts).filter(active).flatMap(unitTasks))
@@ -980,7 +983,7 @@ export async function workBoard(options) {
   const context = await repository(options)
   const state = await readRuntime(context.root)
   const group = groupOf(state, options.work)
-  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: `refs/heads/${group.branch}` }), group)
+  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: `refs/heads/${group.branch}` }), group)
   const attempts = Object.values(state.attempts)
   const live = attempts.filter(active)
   const units = planUnits(board.tasks, board.doneIds, new Set(live.flatMap(unitTasks)))
@@ -1036,7 +1039,7 @@ export async function finishWork(options) {
     await assertWorkspace(context, group)
     await requireClean(group.path)
     const commit = await head(group.path)
-    const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: commit }), group)
+    const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: commit }), group)
     if (!board.ok || board.warnings.length) fail('작업 브랜치의 태스크/STATE를 먼저 정리하세요.', [...board.errors, ...board.warnings])
     const deferred = mainSessionTasks(board.tasks)
     const remaining = board.tasks.filter((task) => !task.st?.startsWith('blocked@') && !deferred.has(task.id))

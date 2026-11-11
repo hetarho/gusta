@@ -45,7 +45,7 @@ async function pruneGroup(context, id) {
   const into = await mergedInto(context.cwd, group)
   if (!into) return { kept: `${group.branch}가 ${[group.baseRef, group.push].filter(Boolean).join('·')}에 아직 합쳐지지 않았습니다.` }
   if (into !== 'missing') {
-    const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, workspace: context.workspace, ref: `refs/heads/${group.branch}` }), group)
+    const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: `refs/heads/${group.branch}` }), group)
     const deferred = mainSessionTasks(board.tasks)
     if (!board.ok || board.tasks.some((task) => !deferred.has(task.id))) return { kept: '남은 태스크가 있습니다.' }
   }
