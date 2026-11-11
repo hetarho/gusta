@@ -84,6 +84,73 @@ export function upsertActive(text, row, { remove = false } = {}) {
   return renderState(blocks)
 }
 
+const taskBlock = (blocks) => blocks.find((entry) => entry.name === 'tasks')
+const rowIndex = (block, id) => block?.body.findIndex((line) => isRow(line) && !isSeparator(line) && rowKey(line) === id) ?? -1
+
+// One STATE tasks row `id|title|ssot|dep|st`, or null.
+export function taskRow(text, id) {
+  const block = taskBlock(parseState(text))
+  const index = rowIndex(block, id)
+  if (index === -1) return null
+  const [, title, ssot, dep, st] = cells(block.body[index])
+  return { id, title, ssot, dep, st }
+}
+
+// Set one task row's st; null when the row is missing.
+export function setTaskSt(text, id, st) {
+  const blocks = parseState(text)
+  const block = taskBlock(blocks)
+  const index = rowIndex(block, id)
+  if (index === -1) return null
+  const row = cells(block.body[index])
+  row[4] = st
+  block.body[index] = `| ${row.join(' | ')} |`
+  return renderState(blocks)
+}
+
+// Finished tasks leave STATE: their rows go, an active row doing one of them goes back to `-`,
+// one log line goes on top (LOG_LIMIT kept) and next is replaced when given (lines, or a
+// function of the current lines). Returns the text and the IDs that had no row.
+export function closeTasks(text, ids, { log, next } = {}) {
+  const blocks = parseState(text)
+  const found = new Set()
+  const block = taskBlock(blocks)
+  if (block) {
+    block.body = block.body.filter((line) => {
+      const hit = isRow(line) && ids.includes(rowKey(line))
+      if (hit) found.add(rowKey(line))
+      return !hit
+    })
+  }
+  const active = blocks.find((entry) => entry.name === 'active')
+  if (active) {
+    active.body = active.body.map((line) => {
+      const row = isRow(line) ? cells(line) : []
+      if (row.length !== 6 || !ids.includes(row[5])) return line
+      row[5] = '-'
+      return `| ${row.join(' | ')} |`
+    })
+  }
+  const section = (name) => {
+    let entry = blocks.find((candidate) => candidate.name === name)
+    if (!entry) {
+      entry = { name, body: [] }
+      const log = blocks.findIndex((candidate) => candidate.name === 'log')
+      blocks.splice(name === 'next' && log !== -1 ? log : blocks.length, 0, entry)
+    }
+    return entry
+  }
+  if (next) {
+    const entry = section('next')
+    entry.body = typeof next === 'function' ? next(entry.body.filter((line) => line.startsWith('- '))) : next
+  }
+  if (log) {
+    const entry = section('log')
+    entry.body = [log, ...entry.body.filter((line) => line.startsWith('- '))].slice(0, LOG_LIMIT)
+  }
+  return { text: renderState(blocks), missing: ids.filter((id) => !found.has(id)) }
+}
+
 const same = (left, right) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null)
 const dated = (line) => line.match(/^- (\d{6})\b/)?.[1] ?? ''
 
