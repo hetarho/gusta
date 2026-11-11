@@ -317,27 +317,50 @@ function variantPrompt(record, name, files, { approach, followUp, note }) {
       `Your branch already contains this work; change only what is asked.\n\nFollow-up request:\n${followUp}`])].filter(Boolean).join('\n\n')
 }
 
-export async function abRun(options = {}, injected = {}) {
-  const deps = { inspect: inspectProviders, execute: executeAgentAdapter, ...injected }
-  const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
-  if (!options.variant) fail('--variant가 필요합니다.')
-  const [name] = pick(record, options), variant = record.variants[name]
-  if (Boolean(options.promptFile) === Boolean(options.followUpFile)) fail('--prompt-file(이 변형의 접근) 또는 --follow-up-file(이어 고칠 요청) 중 하나가 필요합니다.')
-  if (options.followUpFile && !variant.runs.length) fail(`변형 ${name}은 아직 실행되지 않았습니다. 먼저 --prompt-file로 실행하세요.`)
-  // The approach stays with the variant: a follow-up repeats it without the coordinator rewriting it.
-  const approach = options.promptFile ? await readFile(path.resolve(options.promptFile), 'utf8') : variant.approach
-  const followUp = options.followUpFile ? await readFile(path.resolve(options.followUpFile), 'utf8') : undefined
+// One variant session: a first run with its approach or a follow-up on the same branch. The result is
+// saved under the record lock as soon as the session ends.
+async function runVariant(ctx, record, name, session, deps, { approach, followUp }) {
+  const slug = record.slug, variant = record.variants[name]
   // Only a hub note written after the last run is news to the session.
   const hubNote = followUp === undefined ? null : (await readFeedback(fileOf(ctx, slug, 'feedback.json'))).notes[name]
   const note = hubNote && Date.parse(hubNote.at) > Date.parse(variant.runs.at(-1).at) ? hubNote.note : null
   const files = await scaffoldFiles(ctx.root, record)
-  const prompt = variantPrompt(record, name, files.all, { approach, followUp, note })
-  const run = await headless(deps.execute, await sessionOptions(ctx, options, deps), { role: 'variant', cwd: variant.path, prompt, log: fileOf(ctx, slug, `${name}-run-${variant.runs.length + 1}.log`), subject: `ab ${slug}/${name}` })
+  // The approach stays with the variant: a follow-up repeats it without the coordinator rewriting it.
+  const prompt = variantPrompt(record, name, files.all, { approach: approach ?? variant.approach, followUp, note })
+  const run = await headless(deps.execute, session, { role: 'variant', cwd: variant.path, prompt, log: fileOf(ctx, slug, `${name}-run-${variant.runs.length + 1}.log`), subject: `ab ${slug}/${name}` })
   if (followUp !== undefined) run.followUp = true
-  const live = await update(ctx, slug, (current) => { current.variants[name].runs.push(run); if (options.promptFile) current.variants[name].approach = approach })
+  const live = await update(ctx, slug, (current) => { current.variants[name].runs.push(run); if (approach !== undefined) current.variants[name].approach = approach })
   // A scaffold edit is caught here, before the person compares: pick would refuse this variant.
   const touched = record.scaffold ? (await netChanges(variant.path, record.scaffold, 'HEAD')).filter((file) => files.all.includes(file)) : []
-  return { schemaVersion: 1, ok: run.outcome === 'completed' && !touched.length, slug, variant: name, url: urlOf(live.variants[name]), ...run, ...(touched.length ? { scaffoldTouched: touched } : {}) }
+  return { ok: run.outcome === 'completed' && !touched.length, variant: name, url: urlOf(live.variants[name]), ...run, ...(touched.length ? { scaffoldTouched: touched } : {}) }
+}
+
+export async function abRun(options = {}, injected = {}) {
+  const deps = { inspect: inspectProviders, execute: executeAgentAdapter, ...injected }
+  const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
+  if (options.all) return runAll(ctx, record, options, deps)
+  if (options.promptDir) fail('--prompt-dir는 --all과 함께 씁니다.')
+  if (!options.variant) fail('--variant가 필요합니다(모든 변형을 한 번에: --all --prompt-dir <dir>).')
+  const [name] = pick(record, options), variant = record.variants[name]
+  if (Boolean(options.promptFile) === Boolean(options.followUpFile)) fail('--prompt-file(이 변형의 접근) 또는 --follow-up-file(이어 고칠 요청) 중 하나가 필요합니다.')
+  if (options.followUpFile && !variant.runs.length) fail(`변형 ${name}은 아직 실행되지 않았습니다. 먼저 --prompt-file로 실행하세요.`)
+  const approach = options.promptFile ? await readFile(path.resolve(options.promptFile), 'utf8') : undefined
+  const followUp = options.followUpFile ? await readFile(path.resolve(options.followUpFile), 'utf8') : undefined
+  return { schemaVersion: 1, slug, ...(await runVariant(ctx, record, name, await sessionOptions(ctx, options, deps), deps, { approach, followUp })) }
+}
+
+// --all: every variant with <dir>/<v>.md runs at once in this one process, so a background launch wakes
+// the coordinator once instead of once per variant. One failed session does not stop or drop the others.
+async function runAll(ctx, record, options, deps) {
+  if (options.variant || options.promptFile || options.followUpFile) fail('--all은 --prompt-dir의 <v>.md로만 실행합니다(--variant·--prompt-file·--follow-up-file 없이).')
+  if (!options.promptDir) fail('--all에는 --prompt-dir <dir>가 필요합니다(변형마다 <v>.md).')
+  const names = Object.keys(record.variants)
+  const approaches = (await Promise.all(names.map(async (name) => [name, await readFile(path.resolve(options.promptDir, `${name}.md`), 'utf8').catch(() => null)]))).filter(([, text]) => text !== null)
+  if (!approaches.length) fail(`${options.promptDir}에 변형 프롬프트가 없습니다: ${names.map((name) => `${name}.md`).join(', ')}`)
+  const session = await sessionOptions(ctx, options, deps)
+  const variants = await Promise.all(approaches.map(([name, approach]) => runVariant(ctx, record, name, session, deps, { approach }).catch((error) =>
+    ({ ok: false, variant: name, error: error.message, ...(error.details?.length ? { details: error.details } : {}) }))))
+  return { schemaVersion: 1, ok: variants.every((entry) => entry.ok), slug: record.slug, variants }
 }
 
 // Ready means the screen answers: after the port listens, one GET of the variant's view path. A 5xx

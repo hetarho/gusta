@@ -155,6 +155,32 @@ test('start refuses uncommitted user changes; stop --remove keeps branches when 
   assert.equal(again.ok, true)
 })
 
+test('run --all runs every variant with a prompt in --prompt-dir at once, saves each and keeps going past a failure', async (t) => {
+  const { root, temporary } = await project(t, 'all')
+  await abStart({ targetRoot: root, slug: 'all', variants: 3, basePort: 4981 })
+  const promptDir = path.join(temporary, 'prompts'); await mkdir(promptDir)
+  for (const name of ['a', 'b', 'c']) await writeFile(path.join(promptDir, `${name}.md`), `Approach ${name}.`)
+  await assert.rejects(abRun({ targetRoot: root, slug: 'all', all: true }), /--prompt-dir/)
+  await assert.rejects(abRun({ targetRoot: root, slug: 'all', all: true, promptDir, followUpFile: path.join(promptDir, 'a.md') }), /--all/)
+  await assert.rejects(abRun({ targetRoot: root, slug: 'all', all: true, promptDir: temporary }), /a\.md, b\.md, c\.md/)
+  const finished = []
+  const delays = { a: 400, b: 50 }
+  const execute = async (input) => {
+    const name = input.job.workspace.slice(-1)
+    if (name === 'c') throw new Error('provider crashed')
+    await new Promise((resolve) => setTimeout(resolve, delays[name]))
+    const result = await session(`v${name}`)(input)
+    finished.push(name)
+    return result
+  }
+  const ran = await abRun({ targetRoot: root, slug: 'all', all: true, promptDir }, { inspect: providers, flags: noFlags, execute })
+  assert.deepEqual(finished, ['b', 'a'])
+  assert.equal(ran.ok, false); assert.deepEqual(ran.variants.map((entry) => [entry.variant, entry.ok]), [['a', true], ['b', true], ['c', false]])
+  assert.equal(ran.variants[2].error, 'provider crashed')
+  const status = await abStatus({ targetRoot: root, slug: 'all' })
+  assert.deepEqual(status.variants.map((entry) => entry.last?.summary ?? null), ['va variant', 'vb variant', null])
+})
+
 test('variant and scaffold sessions get the optional provider flags the installed CLI supports', async (t) => {
   const { root, temporary } = await project(t, 'flags')
   const flags = async (provider) => provider === 'claude' ? ['--exclude-dynamic-system-prompt-sections'] : []
