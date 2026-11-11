@@ -1,14 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, writeFile, access, mkdtemp, mkdir, rm, lstat, readlink, symlink, realpath } from 'node:fs/promises'
+import { readFile, writeFile, access, mkdtemp, mkdir, rm, lstat, readlink, symlink, realpath, stat } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fixture, git } from './helpers/vibe-fixture.mjs'
-import { abStart, abAdd, abRun, abServe, abExec, abStatus, abPick, abStop, copyTree } from '../src/vibe-ab.mjs'
-import { renderHub, viewPath, createHub, readFeedback, hubMain } from '../src/vibe-ab-hub.mjs'
+import { abStart, abAdd, abRun, abServe, abExec, abStatus, abPick, abStop, copyTree, scaffoldWarnings } from '../src/vibe-ab.mjs'
+import { renderHub, hubModel, viewPath, createHub, readFeedback, hubMain } from '../src/vibe-ab-hub.mjs'
 
 const exists = (file) => access(file).then(() => true, () => false)
 const providers = async () => ({ autoProvider: 'claude', providers: [{ provider: 'claude', compatible: true }] })
@@ -98,6 +98,9 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   assert.match(await git(root, 'log', '-1', '--format=%s'), /ab hero: adopt b/)
   assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before); assert.equal(await git(root, 'rev-parse', 'HEAD^2'), winner)
   for (const entry of started.variants) assert.equal(await exists(entry.path), false)
+  // The emptied sibling worktree folders go; with pruning, so do the comparison's logs, feedback and prompts.
+  assert.equal(await exists(path.join(temporary, '.haeram-worktrees')), false)
+  assert.equal(await exists(path.dirname(measured.variants[0].log)), false)
   // prune-branches defaults to true: no variant branch outlives the pick.
   assert.deepEqual(adopted.branches, [])
   assert.equal(await git(root, 'branch', '--list', 'ab/hero/*'), '')
@@ -196,12 +199,16 @@ test('start refuses uncommitted user changes; stop --remove keeps branches when 
   await git(started.variants[0].path, 'add', 'pending.txt'); await git(started.variants[0].path, 'commit', '-q', '-m', 'wip')
   await assert.rejects(abPick({ targetRoot: root, slug: 'nav', variant: 'b' }), /커밋이 없습니다/)
   await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- prune-branches: false\n'); await git(root, 'add', 'spec/SETTINGS.md'); await git(root, 'commit', '-q', '-m', 'keep branches')
+  const logs = path.dirname((await abExec({ targetRoot: root, slug: 'nav', variant: 'a', command: 'node -e 1' })).variants[0].log)
   const stopped = await abStop({ targetRoot: root, slug: 'nav', remove: true })
   assert.deepEqual(stopped.branches, ['ab/nav/a', 'ab/nav/b', 'ab/nav/c'])
   assert.match(await git(root, 'branch', '--list', 'ab/nav/*'), /ab\/nav\/a/)
+  // Without pruning the logs stay; the emptied worktree folder goes either way.
+  assert.ok(await exists(logs)); assert.equal(await exists(path.dirname(started.variants[0].path)), false)
   const again = await abStart({ targetRoot: root, slug: 'nav2', variants: 2, basePort: 4771 })
+  const logs2 = path.dirname((await abExec({ targetRoot: root, slug: 'nav2', variant: 'a', command: 'node -e 1' })).variants[0].log)
   await abStop({ targetRoot: root, slug: 'nav2', remove: true, pruneBranches: true })
-  assert.equal(await git(root, 'branch', '--list', 'ab/nav2/*'), '')
+  assert.equal(await git(root, 'branch', '--list', 'ab/nav2/*'), ''); assert.equal(await exists(logs2), false)
   assert.equal(again.ok, true)
 })
 
@@ -282,7 +289,7 @@ test('serve is ready only when the view answers, keeps a live server unless --re
 test('hub page escapes session text and frames each variant at URL plus view path', () => {
   assert.deepEqual(['', '/', 'settings', '/a/b', 'http://localhost:3000/x?y=1', 'the settings page'].map(viewPath), ['', '', '/settings', '/a/b', '/x?y=1', ''])
   const html = renderHub({ slug: 'hero', feedback: { notes: { a: { note: 'larger <b>', at: 'now' } }, chosen: { variant: 'b', at: 'now' } }, variants: [
-    { name: 'a', url: 'http://localhost:4101/settings', summary: 'cards <script>x</script>\nsecond line', view: 'settings tab', serving: true },
+    { name: 'a', url: 'http://localhost:4101/settings', approach: 'Cards <first>', summary: 'cards <script>x</script>\nsecond line', view: 'settings tab', serving: true },
     { name: 'b', from: 'a', url: 'http://localhost:4102', summary: 'list', view: '', serving: false, exec: { command: 'bench', medianMs: 812, exitCodes: [0, 1], last: '<b>done</b>' } }] })
   assert.ok(html.includes('<p class="measure bad" title="bench">median 812 ms · exit 0,1 · <code>&lt;b&gt;done&lt;/b&gt;</code></p>'))
   // Numbers from different commands do not compare: then each line names its command.
@@ -293,6 +300,11 @@ test('hub page escapes session text and frames each variant at URL plus view pat
   assert.ok(!same.includes('<code>npm test</code>'))
   assert.deepEqual([...html.matchAll(/<iframe src="([^"]+)"/g)].map((match) => match[1]), ['http://localhost:4101/settings', 'http://localhost:4102'])
   assert.ok(!html.includes('<script>x</script>')); assert.ok(html.includes('cards &lt;script&gt;'))
+  // The approach titles the variant; the latest summary (a follow-up's says only what changed) sits below it.
+  assert.ok(html.includes('<p class="approach" title="Cards &lt;first&gt;">Cards &lt;first&gt;</p><p title="cards &lt;script&gt;'))
+  assert.ok(!html.includes('class="approach" title=""'))
+  const model = hubModel({ slug: 'hero', variants: { a: { port: 1, approach: '# Cards first\n\nThree columns.', runs: [{ summary: 'prices are bold now' }] } } }, {}, () => false)
+  assert.deepEqual([model.variants[0].approach, model.variants[0].summary], ['Cards first', 'prices are bold now'])
   assert.ok(html.includes('>larger &lt;b&gt;</textarea>')); assert.match(html, /data-variant="b" class="chosen"/)
   assert.match(html, /target="_blank"/); assert.match(html, /data-width="390"/); assert.match(html, /not serving/); assert.match(html, /blocks framing/); assert.match(html, /<strong>b<\/strong><span class="muted">from a<\/span>/)
 })
@@ -356,9 +368,17 @@ test('a scaffold session is the variants\' base, prompts share one prefix, follo
     prompts[variant] = seen[0].prompt
     assert.equal(runs[variant].ok, true); assert.equal(runs[variant].scaffoldTouched, undefined)
   }
-  // Everything before the variant line is identical: shared text and the scaffold's read-only files.
+  // Everything before the variant line is identical: shared text and the scaffold rule with its own notes.
   const prefix = (variant) => prompts[variant].slice(0, prompts[variant].indexOf(`Variant ${variant} of mock`))
-  assert.equal(prefix('a'), prefix('b')); assert.match(prefix('a'), /clearer profile/); assert.match(prefix('a'), /read-only.*data\.js, fixtures\.json/)
+  assert.equal(prefix('a'), prefix('b')); assert.match(prefix('a'), /clearer profile/); assert.match(prefix('a'), /Read-only: fixtures\.json\./)
+  assert.match(prefix('a'), /You may edit data\.js except the scaffold's lines and the lines right around them \(data\.js: 1\)\./)
+  assert.match(prefix('a'), /Scaffold notes: fixtures for the profile screen/); assert.match(prefix('a'), /data states.*name them in view/)
+  // The full prompt each session got is kept next to its log, private; results carry only its path.
+  for (const file of [runs.a.promptPath, started.scaffoldRun.promptPath]) assert.equal((await stat(file)).mode & 0o777, 0o600)
+  assert.equal(runs.a.promptPath, runs.a.log.replace(/\.log$/, '.prompt.md'))
+  assert.match(await readFile(runs.a.promptPath, 'utf8'), /^You build one variant[\s\S]*Approach: make it alpha\.$/)
+  assert.match(await readFile(started.scaffoldRun.promptPath, 'utf8'), /^You build the shared mock scaffold[\s\S]*signed-in user\.$/)
+  assert.ok(!JSON.stringify(runs.a).includes('You build one variant'))
   assert.match(prompts.a, /\$PORT for this variant: \d+\.\n\nApproach: make it alpha\.$/)
   // A follow-up repeats the first prompt, then adds the last summary, the hub note written since and the request.
   await writeFile(path.join(path.dirname(runs.a.log), 'feedback.json'), JSON.stringify({ notes: { a: { note: 'bigger title', at: new Date(Date.now() + 60000).toISOString() } }, chosen: null }))
@@ -404,6 +424,48 @@ test('a scaffold that deletes an existing file or turns it into a directory gets
   assert.equal(await readFile(path.join(root, 'session.js'), 'utf8'), 'module.exports = realSession\n')
 })
 
+// A page whose entry the scaffold had to edit: one mock <script> line, the rest of the file the variants' to change.
+const page = ({ head = '', body = '<body>', mock = '' } = {}) => `<html>\n<head>\n<title>Profile</title>\n${head}</head>\n${body}\n<div id="app"></div>\n${mock}<script src="app.js"></script>\n</body>\n</html>\n`
+const MOCK = '<script src="mocks/mock.js"></script>\n'
+const register = async ({ job }) => {
+  await mkdir(path.join(job.workspace, 'mocks')); await writeFile(path.join(job.workspace, 'mocks/mock.js'), 'window.fetch = mockFetch\n')
+  await writeFile(path.join(job.workspace, 'index.html'), page({ mock: MOCK }))
+  return { outcome: 'completed', summary: 'mock fetch; ?mock=empty shows no items', view: 'home', path: '' }
+}
+const edit = (parts, summary) => async ({ job }) => { await writeFile(path.join(job.workspace, 'index.html'), page(parts)); return { outcome: 'completed', summary, view: 'home', path: '' } }
+
+test('the scaffold lock is per line: a variant edits a scaffold-modified file around its line and pick drops only that line', async (t) => {
+  const { root, temporary } = await project(t, 'lines')
+  await writeFile(path.join(root, 'index.html'), page()); await git(root, 'add', 'index.html'); await git(root, 'commit', '-q', '-m', 'page')
+  const origin = await git(root, 'rev-parse', 'HEAD')
+  const scaffoldPrompt = path.join(temporary, 'scaffold.md'); await writeFile(scaffoldPrompt, 'Screen: / with items.')
+  const started = await abStart({ targetRoot: root, slug: 'lines', variants: 2, basePort: 5021, scaffoldPrompt }, { inspect: providers, flags: noFlags, execute: register })
+  assert.equal(started.ok, true, JSON.stringify(started))
+  assert.deepEqual(started.scaffoldFiles, { added: ['mocks/mock.js'], modified: ['index.html'] }); assert.match(started.scaffoldWarnings[0], /likely UI files: index\.html/)
+  const promptFile = path.join(temporary, 'p.md'); await writeFile(promptFile, 'Build it.')
+  // a: CSS in <head> and a class two lines above the mock line (its context changes: 3-way). b: edits the mock line itself.
+  const seen = []
+  const a = await abRun({ targetRoot: root, slug: 'lines', variant: 'a', promptFile }, { inspect: providers, flags: noFlags,
+    execute: capture(seen, edit({ head: '<style>.card{display:grid}</style>\n', body: '<body class="cards">', mock: MOCK }, 'cards')) })
+  assert.equal(a.ok, true); assert.equal(a.scaffoldTouched, undefined)
+  assert.match(seen[0].prompt, /Read-only: mocks\/mock\.js\. You may edit index\.html except the scaffold's lines and the lines right around them \(index\.html: 7\)\./)
+  const b = await abRun({ targetRoot: root, slug: 'lines', variant: 'b', promptFile }, { inspect: providers, flags: noFlags, execute: edit({ mock: '<script src="mocks/other.js"></script>\n' }, 'other mock') })
+  assert.equal(b.ok, false); assert.deepEqual(b.scaffoldTouched, ['index.html'])
+  const head = await git(root, 'rev-parse', 'HEAD')
+  await assert.rejects(abPick({ targetRoot: root, slug: 'lines', variant: 'b' }), (error) => /scaffold의 줄·파일/.test(error.message) && error.details.join() === 'index.html')
+  assert.equal(await git(root, 'rev-parse', 'HEAD'), head); assert.equal((await abStatus({ targetRoot: root, slug: 'lines' })).variants.length, 2)
+  await abPick({ targetRoot: root, slug: 'lines', variant: 'a' })
+  assert.equal(await git(root, 'rev-parse', 'HEAD^1'), head); assert.equal(await git(root, 'rev-parse', 'HEAD^2^'), origin)
+  assert.equal(await readFile(path.join(root, 'index.html'), 'utf8'), page({ head: '<style>.card{display:grid}</style>\n', body: '<body class="cards">' }))
+  assert.equal(await exists(path.join(root, 'mocks')), false); assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'index.html')
+})
+
+test('scaffoldWarnings names modified files that look like UI or screen files', () => {
+  assert.deepEqual(scaffoldWarnings(['src/data.js', 'vite.config.ts', 'pages', 'src/api/client.ts']), [])
+  const [warning] = scaffoldWarnings(['index.html', 'src/data.js', 'styles/main.SCSS', 'src/Components/Card.ts', 'app/layout.js', 'src/views/x.svelte'])
+  assert.match(warning, /: index\.html, styles\/main\.SCSS, src\/Components\/Card\.ts, app\/layout\.js, src\/views\/x\.svelte — redo the scaffold/)
+})
+
 // A scaffold commit made outside the comparison (mock-data on top of main), and sessions that edit it.
 async function mockBranch(root) {
   await git(root, 'checkout', '-q', '-b', 'mock-data')
@@ -438,7 +500,7 @@ test('a reused --scaffold skips the session; a scaffold edit is flagged by run a
   const served = await abServe({ targetRoot: root, slug: 'reuse', command: PLAIN, readyTimeoutMs: 20000 })
   assert.equal(served.ok, true, JSON.stringify(served))
   const head = await git(root, 'rev-parse', 'HEAD'), tip = await git(root, 'rev-parse', 'ab/reuse/a')
-  await assert.rejects(abPick({ targetRoot: root, slug: 'reuse', variant: 'a' }), (error) => /scaffold 파일/.test(error.message) && error.details.includes('fixtures.json'))
+  await assert.rejects(abPick({ targetRoot: root, slug: 'reuse', variant: 'a' }), (error) => /scaffold의 줄·파일/.test(error.message) && error.details.includes('fixtures.json'))
   // The refusal came first: servers and the hub still show the comparison, both branches are as they were.
   const status = await abStatus({ targetRoot: root, slug: 'reuse' })
   assert.equal(status.hub, served.hub); assert.ok(status.variants.every((entry) => entry.serving))

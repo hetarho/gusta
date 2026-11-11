@@ -59,7 +59,7 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
                                                 미커밋 작업 트리에서 한 번씩. 디자인 중 이 checkout의 push·맡김은 거절
   vibe ab start <slug> [--variants 2] [--base HEAD] [--base-port 4101] [--setup <install command>] [--reuse <dir> ...] [--copy <untracked file> ...] [--shared-file <file>] [--scaffold-prompt <file> | --scaffold <ref>] [--timeout-ms <ms>]
                                                 shared: 모든 변형 프롬프트의 공통 앞부분(목표·결정·화면·완료 기준). scaffold: 세션 하나가 ab/<slug>/base에
-                                                mock 데이터·인증 stub 커밋을 만들고 변형은 거기서 시작(--scaffold는 있는 커밋 재사용). pick은 그 경로를 기준 상태로 되돌려 합친다.
+                                                mock 데이터·인증 stub 커밋을 만들고 변형은 거기서 시작(--scaffold는 있는 커밋 재사용). pick은 scaffold의 줄·파일만 되돌려 합친다.
                                                 --scaffold-prompt는 run과 같은 --provider·--model·--allow-tool·--permission-mode를 받는다.
                                                 --timeout-ms는 setup(기본 1200000)과 scaffold 세션(기본 3600000)에 함께 쓰인다.
                                                 --reuse: lockfile대로 설치된 git-ignored 의존성 폴더만. 가장 가까운 lockfile 폴더의 lockfile이 모두 기준 커밋과 같으면
@@ -68,7 +68,7 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
                                                 <v>의 끝에서 다음 변형(최대 6)을 새 브랜치·worktree·포트로. 그 run은 다른 변형의 git diff를 읽어도 된다고 안내.
                                                 --setup·--copy·--reuse는 주지 않으면 start 값
   vibe ab run <slug> (--variant <a|b|..> (--prompt-file <approach> | --follow-up-file <request>) | --all --prompt-dir <dir>) [--provider auto|claude|codex] [--model <id>] [--allow-tool <rule> ...] [--permission-mode bypass|acceptEdits] [--timeout-ms 3600000]
-                                                follow-up은 공통·처음 접근·지난 요약·새 hub 메모를 붙여 같은 브랜치에서 이어 고친다. scaffold 파일을 고치면 ok:false·scaffoldTouched.
+                                                follow-up은 공통·처음 접근·지난 요약·새 hub 메모를 붙여 같은 브랜치에서 이어 고친다. scaffold 줄·파일을 고치면 ok:false·scaffoldTouched.
                                                 --all: <dir>/<v>.md가 있는 변형을 한 프로세스에서 병렬로, 결과 JSON 하나(한 변형 실패가 나머지를 막지 않음, 파일 없는 변형은 skipped)
   vibe ab serve <slug> --command '<dev server using $PORT>' [--variant <v>] [--restart] [--ready-timeout-ms 120000]
                                                 화면(path)이 HTTP로 응답하면 준비. 살아 있는 서버는 두고(--restart면 새로) 비교 페이지(hub) URL 하나
