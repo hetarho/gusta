@@ -55,6 +55,24 @@ export const EXPLORE = /^\d+[mh]$/
 export const exploreValue = (value) => value && value !== '-' ? value : null
 export const EXIT_LINE = /^- \[[ v]\] exit: \S/
 
+// FORMAT date: YYMMDD in UTC.
+export const yymmdd = (date = new Date()) => date.toISOString().slice(2, 10).replaceAll('-', '')
+
+// The `vibe task done` gate: a task's ## result counts only lines someone filled — blank lines and
+// untouched template placeholders (`- outcome: <what works now>`) are empty. Lint keeps its own
+// non-blank check: archived history is never re-judged.
+const RESULT_PLACEHOLDER = /^- [\w-]+: <[^>]*>$/
+export const resultLines = (content) => (sections(content).get('result') ?? []).map((line) => line.trim())
+  .filter((line) => line !== '' && !RESULT_PLACEHOLDER.test(line))
+
+// Unchecked acceptance lines. An explore task's exit line is the timebox fallback: checked, it
+// closes the task by itself; unchecked, it is not owed.
+export function openChecks(content) {
+  const lines = (sections(content).get('acceptance') ?? []).map((line) => line.trim())
+  if (lines.some((line) => EXIT_LINE.test(line) && line.startsWith('- [v]'))) return []
+  return lines.filter((line) => line.startsWith('- [ ]') && !EXIT_LINE.test(line))
+}
+
 // Session presence and the owner's inbox (STATE ## active · ## inbox).
 export const SESSION_TAG = /^[A-Za-z0-9]{2,8}$/
 export const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z$/

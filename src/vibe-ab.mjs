@@ -9,7 +9,7 @@ import { inspectWorkspace, git } from './workspace.mjs'
 import { runtimeRoot, canonicalDestination } from './work-runtime.mjs'
 import { atomicJSON, processAlive, controlTransaction } from './loop-control.mjs'
 import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
-import { inspectProviders, availableProvider } from './work-providers.mjs'
+import { inspectProviders, availableProvider, providerFlags } from './work-providers.mjs'
 import { readSetting, permissionMode } from './settings.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { urlOf, readFeedback } from './vibe-ab-hub.mjs'
@@ -134,7 +134,10 @@ const setupResult = (entry) => entry.exitCode === 0 ? { ok: true, ms: entry.ms }
 async function sessionOptions(ctx, options, deps) {
   const timeoutMs = Number(options.timeoutMs ?? 3600000)
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) fail('timeout-ms는 양의 정수입니다.')
-  return { provider: await availableProvider(options, deps.inspect), model: options.model, timeoutMs, allowTools: options.allowTool ?? [], permissionMode: await permissionMode(options, ctx.root) }
+  const provider = await availableProvider(options, deps.inspect)
+  // Optional flags (e.g. Claude's static system prompt) let the variants' shared prefix hit one cache across worktrees.
+  return { provider, model: options.model, timeoutMs, allowTools: options.allowTool ?? [], permissionMode: await permissionMode(options, ctx.root),
+    flags: await (deps.flags ?? providerFlags)(provider, { env: options.env ?? process.env }) }
 }
 // One headless session in a worktree. The transcript goes to a runtime file (results name its path,
 // never its content); the host commits, so the session needs no Git permission.
@@ -144,7 +147,7 @@ async function headless(execute, session, { role, cwd, prompt, log, subject }) {
   await mkdir(path.dirname(log), { recursive: true })
   const file = await open(log, 'w', 0o600)
   let result
-  try { result = await execute({ provider: session.provider, model: session.model, job, log: (text) => { try { writeSync(file.fd, text) } catch {} } }) } catch (error) {
+  try { result = await execute({ provider: session.provider, model: session.model, job, log: (text) => { try { writeSync(file.fd, text) } catch {} }, flags: session.flags }) } catch (error) {
     throw new SkillPackageError(error.message, [...(error.details ?? []).map((detail) => String(detail).slice(-2000)), `log: ${log}`])
   } finally { await file.close() }
   const changed = (await git(cwd, ['status', '--porcelain'])).trim() !== ''

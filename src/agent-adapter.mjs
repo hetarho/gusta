@@ -5,6 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { SkillPackageError } from './errors.mjs'
 import { renderBrief } from './spec-context.mjs'
+import { OPTIONAL_FLAGS } from './work-providers.mjs'
 
 const fail = (message) => { throw new SkillPackageError(message) }
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
@@ -126,14 +127,18 @@ export function recoveryText(recovery) {
   return `\nRecovery unit for ${id}: read the blocker in its task result and relevant inbox entries. Resolve reversible planning/technical gaps as one planning slice, record the decision and restore todo with consistent deps/base in the task and STATE. If it is an implementation failure, make the scoped fix. If it truly needs the reserved authorization above, record parked for this task and return outcome parked. Do not repeat the same blocked implementation or wait for a user.${kept}`
 }
 
+// The frontmatter only triggers a skill; a unit is already inside it. No frontmatter: unchanged.
+export const skillBody = (text) => text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n+/, '')
+
 async function promptFor(job) {
   if (job.role === 'unit') {
     if (!job.workspace || job.resume) fail('단위는 workspace와 새 세션이 필요합니다 (resume 금지).')
-    const skill = await readFile(new URL('../skills/start-vibe/SKILL.md', import.meta.url), 'utf8')
+    const skill = skillBody(await readFile(new URL('../skills/start-vibe/SKILL.md', import.meta.url), 'utf8'))
     const autonomy = 'Autopilot delegates reversible planning and technical decisions to you. Do not wait for a person or park work merely because a decision is needed. Apply the recommended option through update-ssot and create-task when needed, record question/choice/alternatives/reason in STATE inbox decided, and leave the task runnable for the next unit. You may reorder unstarted tasks to bring an already-approved prerequisite or CI fix forward after checking real dependencies and touches; update task and STATE deps together. Preserve acceptance criteria and verification gates. Park only the affected work when it needs unavailable access, explicit authorization for irreversible/external effects, or a billing, data-deletion, privacy or security-policy decision; continue other runnable work.'
     const recovery = recoveryText(job.recovery)
     const limit = job.timeLimit ? ` The host cuts this unit after ${job.timeLimit.minutes} minutes (${job.timeLimit.cutAt}) and hands uncommitted work to a fresh unit; write measurements and findings into the task result as you go.` : ''
-    return `Run /start-vibe 맡김 단위1. Exactly one task done, one planning slice (update-ssot + create-task together), or inbox cleanup. No questions, no subagents. ${autonomy}${recovery}${limit} ${TASK_CHECKS} Host owns preflight, active row lifecycle, report lifecycle, batch checks, push and CI wait. Do not run them again. Use the same tag/report. Commit each completed task, including only its related changes. In strict concurrency the host publishes your claim with vibe claim before dispatch; never publish claims or pending code yourself. Never push completed code here: host runs the batch gate first. Do not close the shared report or remove active. Use cliCommand to call this installed CLI; do not download a different CLI. Read vibe brief for a task, exact FORMAT sections only for writing, never whole STATE/FORMAT/ARCH or large code files. Read scoped code with rg and ranges. Long checks: one blocking call (Codex) or shell background completion notification (Claude), no model polling. Return only the unit JSON schema.\n\n${skill}\n\n${splitBrief(job).text}Assignment JSON:\n${JSON.stringify(splitBrief(job).data)}`
+    // The skill rides in the prompt; without this note Codex units re-read it from .codex/skills first.
+    return `Run /start-vibe 맡김 단위1. The start-vibe skill is included below and already loaded: do not open its SKILL.md or call a Skill tool for it. Load the skills it routes to (implement-task, create-task, update-ssot...) as usual. Exactly one task done, one planning slice (update-ssot + create-task together), or inbox cleanup. No questions, no subagents. ${autonomy}${recovery}${limit} ${TASK_CHECKS} Host owns preflight, active row lifecycle, report lifecycle, batch checks, push and CI wait. Do not run them again. Use the same tag/report. Commit each completed task, including only its related changes. In strict concurrency the host publishes your claim with vibe claim before dispatch; never publish claims or pending code yourself. Never push completed code here: host runs the batch gate first. Do not close the shared report or remove active. Use cliCommand to call this installed CLI; do not download a different CLI. Read vibe brief for a task, exact FORMAT sections only for writing, never whole STATE/FORMAT/ARCH or large code files. Read scoped code with rg and ranges. Long checks: one blocking call (Codex) or shell background completion notification (Claude), no model polling. Return only the unit JSON schema.\n\nstart-vibe skill (already loaded):\n${skill}\n\n${splitBrief(job).text}Assignment JSON:\n${JSON.stringify(splitBrief(job).data)}`
   }
   if (job.role === 'scout') {
     if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('탐색은 workspace·prompt와 새 세션이 필요합니다.')
@@ -169,7 +174,8 @@ const WORKER_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep']
 
 // allowTools extends what a worker runs without a prompt: new worktrees are never-trusted
 // folders, so the project's own permission allowlist does not apply to them.
-export function providerArguments(provider, role, files, model, { allowTools = [], resume = null, session = null, permissionMode = 'acceptEdits' } = {}) {
+// flags: optional provider flags the installed CLI was found to support (work-providers OPTIONAL_FLAGS).
+export function providerArguments(provider, role, files, model, { allowTools = [], resume = null, session = null, permissionMode = 'acceptEdits', flags = [] } = {}) {
   const writes = WRITES.includes(role)
   const sandbox = writes ? 'workspace-write' : 'read-only'
   if (!['acceptEdits', 'bypass'].includes(permissionMode) || (!writes && permissionMode === 'bypass')) fail('지원하지 않는 permission mode입니다.')
@@ -184,11 +190,13 @@ export function providerArguments(provider, role, files, model, { allowTools = [
     '--permission-mode', writes ? permissionMode === 'bypass' ? 'bypassPermissions' : 'acceptEdits' : 'plan', '--permission-prompts', 'none',
     '--tools', writes ? 'Bash,Read,Edit,Write,Glob,Grep' : 'Bash,Read,Glob,Grep',
     '--allowedTools', writes ? [...WORKER_TOOLS, ...allowTools].join(',') : 'Read,Glob,Grep,Bash(git diff *),Bash(git show *),Bash(git log *),Bash(git status *),Bash(git ls-files *)',
-    ...(resume ? ['--resume', resume] : session ? ['--session-id', session] : []), ...(model ? ['--model', model] : [])]
+    ...(resume ? ['--resume', resume] : session ? ['--session-id', session] : []), ...(model ? ['--model', model] : []),
+    ...flags.filter((flag) => OPTIONAL_FLAGS.claude.includes(flag))]
   fail(`지원하지 않는 실행기: ${provider}`)
 }
 
-export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text) }) {
+// flags: the caller's providerFlags answer; none by default (this never probes the CLI).
+export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text), flags = [] }) {
   const prompt = await promptFor(job)
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-agent-'))
   const files = { schema: path.join(temporary, 'schema.json'), result: path.join(temporary, 'result.json') }
@@ -199,7 +207,7 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     const session = provider === 'claude' ? job.resume ?? randomUUID() : job.resume ?? null
     const remember = (id) => job.sessionFile && id ? writeFile(job.sessionFile, id).catch(() => {}) : null
     await remember(session)
-    const args = providerArguments(provider, job.role, files, model, { allowTools: WRITES.includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits' })
+    const args = providerArguments(provider, job.role, files, model, { allowTools: WRITES.includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags })
     const childEnv = { ...env }
     // The provider is an independent foreground run, not a nested interactive session.
     delete childEnv.CLAUDECODE

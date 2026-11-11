@@ -1,12 +1,13 @@
-import { readFile, mkdir, writeFile, rename, access } from 'node:fs/promises'
-import { constants } from 'node:fs'
+import { readFile, mkdir, writeFile, access } from 'node:fs/promises'
 import { randomUUID, createHash } from 'node:crypto'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { readTaskBoard } from './task-board.mjs'
-import { quoteLine, quoteFields, sections, splitRefs, TASK_ID, INBOX_LINE } from './spec-format.mjs'
+import { quoteLine, quoteFields, sections, splitRefs, TASK_ID, INBOX_LINE, yymmdd } from './spec-format.mjs'
+import { closeTasks } from './state-doc.mjs'
+import { withSt, archiveTaskFile } from './task-doc.mjs'
 import { assembleBrief, commitSource } from './spec-context.mjs'
 import { runtimeRoot, readRuntime, transaction, readLock, unlockRuntime, canonicalDestination } from './work-runtime.mjs'
 import { SkillPackageError } from './errors.mjs'
@@ -49,7 +50,7 @@ export function runCheckCommand(command, { cwd, env, timeout = 0, signal } = {})
 }
 import { activeAttempt as active, workerBusy, pendingReview, workLimits, invalidateReview, overlaps, rankedUnits, unitTasks, touchesErrors, approvedTasks, scopedBoard } from './work-policy.mjs'
 const now = () => new Date().toISOString()
-const date = () => now().slice(2, 10).replaceAll('-', '')
+const date = () => yymmdd()
 const creator = () => ({ pid: process.pid, host: os.hostname() })
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
 const digest = (value) => createHash('sha256').update(value).digest('hex')
@@ -714,37 +715,19 @@ async function archiveTasks(root, tasks, attempt, integration) {
   const quoted = (entries) => entries.map((entry) => JSON.stringify(entry.command ?? entry)).join('; ')
   for (const task of tasks) {
     const step = steps.get(task.id) ?? { commit: attempt.verifiedCommit, verification: attempt.verification ?? [] }
-    const file = path.join(root, task.file)
-    let content = await readFile(file, 'utf8')
-    content = content.replace(/^> st:[^|]+\|/m, `> st:done@${date()} |`)
+    let content = withSt(await readFile(path.join(root, task.file), 'utf8'), `done@${date()}`)
     content = content.replace(/^- at:.*$/m, `- at: ${step.commit}`)
     // Host-executed checks replace the worker's wording; without them the worker's own
     // impact-selected checks stay, followed by the unit integration checks.
     content = content.replace(/^- verified:(.*)$/m, (_, worker) => `- verified: ${[step.verification.length ? quoted(step.verification) : worker.trim(),
       integration.length ? `integration ${quoted(integration)}` : null].filter(Boolean).join('; ')}`)
-    await writeFile(file, content)
-    const archive = path.join(root, 'spec', 'tasks', 'done', path.basename(file))
-    try { await access(archive, constants.F_OK); fail('완료 아카이브 파일이 이미 있습니다.', [archive]) } catch (error) { if (error.code !== 'ENOENT') throw error }
-    await mkdir(path.dirname(archive), { recursive: true })
-    await rename(file, archive)
+    await archiveTaskFile(root, task.file, content)
   }
   const ids = tasks.map((task) => task.id)
   const statePath = path.join(root, 'spec', 'STATE.md')
-  const state = await readFile(statePath, 'utf8')
-  let section = null
-  const removed = new Set()
-  const rows = state.split(/\r?\n/).filter((row) => {
-    if (row.startsWith('## ')) section = row.slice(3).trim()
-    const id = section === 'tasks' && row.match(/^\|\s*(T\d{3,})\s*\|/)?.[1]
-    if (id && ids.includes(id)) { removed.add(id); return false }
-    return true
-  })
-  if (removed.size !== ids.length) fail('STATE에서 완료 처리할 태스크 행을 찾지 못했습니다.', ids.filter((id) => !removed.has(id)))
-  let next = rows.join('\n').replace(/(## log\s*\n)/, `$1- ${date()} ${ids.join(' ')} integrated\n`)
-  next = next.replace(/## next\n[\s\S]*?(?=\n## |$)/, '## next\n- inspect work board for remaining tasks\n')
-  const log = next.indexOf('## log\n')
-  if (log !== -1) next = next.slice(0, log) + '## log\n' + next.slice(log + 7).split('\n').filter((row) => row.startsWith('- ')).slice(0, 20).join('\n') + '\n'
-  await writeFile(statePath, next)
+  const closed = closeTasks(await readFile(statePath, 'utf8'), ids, { log: `- ${date()} ${ids.join(' ')} integrated`, next: ['- inspect work board for remaining tasks'] })
+  if (closed.missing.length) fail('STATE에서 완료 처리할 태스크 행을 찾지 못했습니다.', closed.missing)
+  await writeFile(statePath, closed.text)
 }
 
 export async function integrateWork(options) {

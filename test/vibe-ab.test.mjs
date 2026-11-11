@@ -23,6 +23,14 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 300))
 // A tiny server that answers with the variant's app.js, listening on $PORT.
 const SERVER = `node -e "require('http').createServer((q,s)=>s.end(require('./app.js'))).listen(process.env.PORT)"`
 const PLAIN = `node -e "require('http').createServer((q,s)=>s.end('ok')).listen(process.env.PORT)"`
+// A fake scaffold session: fixtures in a new file, wired into the existing data module.
+const scaffolding = async ({ job, log }) => {
+  log('{"type":"system","scaffold":true}\n')
+  await writeFile(path.join(job.workspace, 'fixtures.json'), '{"user":"Ada"}\n')
+  await writeFile(path.join(job.workspace, 'data.js'), "module.exports = require('./fixtures.json')\n")
+  return { outcome: 'completed', summary: 'fixtures for the profile screen', view: 'profile', path: '/profile', usage: { input_tokens: 1, output_tokens: 1 } }
+}
+const capture = (jobs, fake) => async (input) => { jobs.push(input.job); return fake(input) }
 // After hooks run in registration order: the stop goes in before the fixture's cleanup removes the
 // record, so a failed assertion cannot leak servers or the hub.
 async function project(t, ...slugs) {
@@ -115,6 +123,18 @@ test('start refuses uncommitted user changes; stop --remove keeps branches when 
   assert.equal(again.ok, true)
 })
 
+test('variant and scaffold sessions get the optional provider flags the installed CLI supports', async (t) => {
+  const { root, temporary } = await project(t, 'flags')
+  const flags = async (provider) => provider === 'claude' ? ['--exclude-dynamic-system-prompt-sections'] : []
+  const scaffoldPrompt = path.join(temporary, 'scaffold.md'); await writeFile(scaffoldPrompt, 'Screen: /profile.')
+  const seen = []
+  const record = (fake) => async (input) => { seen.push([input.job.role, input.flags]); return fake(input) }
+  await abStart({ targetRoot: root, slug: 'flags', variants: 2, basePort: 4801, scaffoldPrompt }, { inspect: providers, flags, execute: record(scaffolding) })
+  const promptFile = path.join(temporary, 'flags.md'); await writeFile(promptFile, 'Make it plain.')
+  await abRun({ targetRoot: root, slug: 'flags', variant: 'a', promptFile }, { inspect: providers, flags, execute: record(session('plain')) })
+  assert.deepEqual(seen, [['scaffold', ['--exclude-dynamic-system-prompt-sections']], ['variant', ['--exclude-dynamic-system-prompt-sections']]])
+})
+
 test('a server that never listens is reported with its log tail instead of a URL claim', async (t) => {
   const { root } = await project(t, 'crash')
   await abStart({ targetRoot: root, slug: 'crash', variants: 2, basePort: 4791 })
@@ -188,15 +208,6 @@ test('hub records notes and a choice for known variants only, and ends with its 
   await rm(recordFile)
   assert.equal((await fetch(hub)).status, 410)
 })
-
-// A fake scaffold session: fixtures in a new file, wired into the existing data module.
-const scaffolding = async ({ job, log }) => {
-  log('{"type":"system","scaffold":true}\n')
-  await writeFile(path.join(job.workspace, 'fixtures.json'), '{"user":"Ada"}\n')
-  await writeFile(path.join(job.workspace, 'data.js'), "module.exports = require('./fixtures.json')\n")
-  return { outcome: 'completed', summary: 'fixtures for the profile screen', view: 'profile', path: '/profile', usage: { input_tokens: 1, output_tokens: 1 } }
-}
-const capture = (jobs, fake) => async (input) => { jobs.push(input.job); return fake(input) }
 
 test('a scaffold session is the variants\' base, prompts share one prefix, follow-ups carry context, and pick drops the scaffold', async (t) => {
   const { root, temporary } = await project(t, 'mock')

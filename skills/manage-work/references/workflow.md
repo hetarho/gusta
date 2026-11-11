@@ -10,7 +10,7 @@
 - 기존 일반 checkout의 feature branch를 연결하려면 `--workspace current`, 항상 분리하려면 `--workspace new`. 분기 기준·이름·경로가 지정됐다면 `--base`, `--branch`, `--path`를 사용한다. 사용자에게 매번 모드를 묻지 않는다.
 - 미커밋 변경은 새 worktree에 복사되지 않는다. 관련 기획을 먼저 정리하고 사용자가 허용한 범위로 커밋한다. 관련 없는 변경은 자동 stash·commit하지 않는다.
 - 반환된 `path`에서 기획·채번을 진행한다. 채번 기준은 묶음 브랜치가 아니라 SETTINGS plan 브랜치다 — 기획 전 `vibe plan-sync`로 합치고, spec/만 담은 기획 커밋 직후 `vibe plan-push`로 올린다. 그래서 여러 묶음·worktree가 동시에 기획해도 번호가 겹치지 않는다(먼저 올린 쪽이 이기고, 거절된 쪽이 다시 채번한다). 한 묶음의 기획 공간에는 쓰기 담당을 하나만 둔다. 기획 커밋이 worker 배정의 기준이다.
-- 태스크는 create-task의 "기반 → 줄기 → 통합" 구조로 분해한다. 배정 전에 `work board`의 `units`와 errors를 확인한다 — `lane 순환`이 있으면 배정되지 않으므로 기획 공간에서 dep·lane을 먼저 고친다.
+- 태스크는 create-task의 [기반 → 줄기 → 통합](../../create-task/references/lanes.md) 구조로 분해한다. 배정 전에 `work board`의 `units`와 errors를 확인한다 — `lane 순환`이 있으면 배정되지 않으므로 기획 공간에서 dep·lane을 먼저 고친다.
 - Git 미지원·생성 실패 시 남은 branch/path를 보고한다. 다른 작업자가 없는 안전한 단독 작업은 기존 방식으로 진행할 수 있지만, 선점 실패나 격리 실패를 같은 폴더 병렬 쓰기로 우회하지 않는다.
 
 ## 2. 태스크 배정과 진행
@@ -27,7 +27,7 @@
 - 워커는 자신의 태스크 인용줄을 그대로 유지하고 acceptance·result와 구현 코드를 커밋한다. STATE의 doing/done이나 아카이브 이동은 하지 않는다.
 - 검증은 세 단계다. **태스크**: 워커가 변경 영향 테스트를 실행하고 `work submit --attempt <id> [--verify '<태스크 단계 명령>'] --json`으로 제출한다(`--verify`는 선택·반복 가능, 전체 스위트는 넣지 않는다). **단위**: `work integrate --verify '<빠른 통합 검사>'`가 lane·태스크 단위 통합마다 실행한다(기본으로 통합/e2e·전체 스위트 금지). **묶음**: 모든 단위가 통합되면 `work finish --work <slug> --verify '<ARCH 전체 검증·CI 재현>' --json`이 한 번 실행하고 검증 커밋을 기록한다. 명령은 ARCH의 단계별 verify 결정에서 가져온다. 최종 관문은 조정자 소유 CLI 하나가 실행하며 워커·리뷰어는 중복 실행하지 않는다.
 - lane은 마지막 태스크까지 구현한 뒤 한 번 submit하면 된다. submit은 앞에서부터 이어서 완료된 태스크를 모두 step으로 기록하고, 남은 태스크가 있으면 `doing`과 다음 `taskId`를 돌려준다(실행기는 태스크마다 새 에이전트를 쓰므로 태스크마다 제출한다). 마지막 태스크까지 포함한 submit에서 검사한 HEAD가 바뀌거나 미커밋 변경이 생기면 ready가 되지 않는다. `ready`는 워커 검증 완료이며 dep을 열지 않는다.
-- `review-task`가 `work review-claim --work <slug> --owner <reviewer>`(대기하는 리뷰 세션은 `--wait 540`)로 제출물을 선점하고 반환된 고정 커밋·상위 기준으로 리뷰한다. 결과는 `work review-finish --review <id> --result-file <repo 밖 JSON 경로>`. 승인 없이 통합할 수 없으며 수정 요청은 resume→구현→submit→재리뷰한다.
+- `review-task`가 `work review-claim --work <slug> --owner <reviewer>`(대기하는 리뷰 세션은 `--wait 540`)로 제출물을 선점하고 반환된 고정 커밋·상위 기준으로 리뷰한다. 결과는 `work review-finish --review <id> --result-file <세션 임시 폴더의 JSON 경로>`. 승인 없이 통합할 수 없으며 수정 요청은 resume→구현→submit→재리뷰한다.
 - 세션 루프 밖에서는 조정자가 승인된 제출물에 `work integrate --attempt <id> --json`(저장된 단위 명령, `--verify`로 덮어쓰기 가능). 이 요청은 로컬 후보 생성·검증·상위 작업 브랜치 반영을 수행한다. 후보 worktree에는 의존성 설치나 환경 준비가 없으므로 필요하면 명시적인 검증 명령에 설치/준비도 포함한다. 외부 서비스·공유 DB가 필요한 검증은 프로젝트의 격리 규칙을 따른다.
 - CLI는 별도 후보에서 merge, 단위의 모든 태스크 아카이브, STATE 행 제거, spec 검사, 커밋, 지정 검증을 수행한다. 검증 시간 상한은 명령당 1시간이며 `--verify-timeout-ms`로 바꾼다. 상위 checkout이 clean이고 기준이 그대로일 때만 fast-forward한다. 충돌/실패 후보는 보존하며 실제 원인은 JSON details에서 확인한다.
 - 승인은 제출 커밋에 묶인다. 코드 변경은 재제출·재리뷰가 필요하고, 상위 커밋이 바뀌면 바뀐 파일이 그 단위의 변경·SSOT와 겹칠 때만 재리뷰한다. 승인됐다고 검증을 생략하지 않는다.
