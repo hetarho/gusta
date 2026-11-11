@@ -27,6 +27,8 @@ export const SETTINGS = {
     note: 'planning branch where task IDs and SSOT revs are numbered (vibe plan-sync/plan-push); ? = land when it names a branch, else the repository default branch; - = this checkout only' },
   'permission-mode': { default: 'bypass', ...oneOf('bypass', 'acceptEdits'),
     note: 'headless sessions the CLI starts to write code (vibe loop units, work run workers, show-ab variants, preflight probe): bypass = no permission prompts or sandbox, network allowed; acceptEdits = edits plus the allow-tool list only, Codex in its workspace-write sandbox (no network)' },
+  'headless-mcp': { default: 'isolate', ...oneOf('isolate', 'inherit'),
+    note: "MCP servers of the headless Claude sessions the CLI starts: isolate = only the checkout's .mcp.json, never the user's or account connectors; inherit = whatever the user's Claude setup loads" },
 }
 export const SETTINGS_FILE = 'spec/SETTINGS.md'
 const TITLE = '# SETTINGS'

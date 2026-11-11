@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp, writeFile, rm, readFile, realpath } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, readFile, realpath } from 'node:fs/promises'
 import { writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -174,6 +174,56 @@ test('--help에 없는 선택 flag는 붙이지 않고, 검사 없는 경로는 
   assert.deepEqual(await providerFlags('claude', { env: { PATH: path.join(fixture.root, 'broken') }, run: async () => { throw new Error('old cli') } }), [])
   assert.deepEqual(await providerFlags('claude', { env: { PATH: path.join(fixture.root, 'unspawnable') }, run: () => { throw new Error('spawn EACCES') } }), [])
   assert.deepEqual(await providerFlags('codex', { env, run: () => assert.fail('codex has no optional flags') }), [])
+})
+
+const STRICT_MCP = '--strict-mcp-config'
+const sentArgs = async (root) => JSON.parse(await readFile(path.join(root, 'received.json'), 'utf8'))
+
+test('헤드리스 Claude 세션은 사용자·계정 MCP 서버를 싣지 않고 checkout의 .mcp.json만 싣는다 (headless-mcp)', async (t) => {
+  const files = { schema: 'schema', result: 'result' }
+  // Isolated by default for every role; the project's config goes last (--mcp-config takes a list).
+  for (const role of ['unit', 'worker', 'reviewer', 'scout', 'variant', 'scaffold']) {
+    assert.ok(providerArguments('claude', role, files, null, { flags: [STRICT_MCP] }).includes(STRICT_MCP), role)
+    assert.deepEqual(providerArguments('claude', role, files, null, { flags: [SHARED_PROMPT, STRICT_MCP], mcpConfig: '/w/.mcp.json' }).slice(-4), [SHARED_PROMPT, STRICT_MCP, '--mcp-config', '/w/.mcp.json'], role)
+  }
+  // inherit keeps the user's setup; an older CLI without the flag gets neither flag; Codex gets none.
+  const inherit = providerArguments('claude', 'unit', files, null, { flags: [SHARED_PROMPT, STRICT_MCP], headlessMcp: 'inherit', mcpConfig: '/w/.mcp.json' })
+  assert.ok(inherit.includes(SHARED_PROMPT)); assert.ok(!inherit.includes(STRICT_MCP)); assert.ok(!inherit.includes('--mcp-config'))
+  const older = providerArguments('claude', 'unit', files, null, { flags: [], mcpConfig: '/w/.mcp.json' })
+  assert.ok(!older.includes(STRICT_MCP)); assert.ok(!older.includes('--mcp-config'))
+  assert.ok(!providerArguments('codex', 'worker', files, null, { flags: [STRICT_MCP] }).some((arg) => arg.includes('mcp')))
+  assert.throws(() => providerArguments('claude', 'unit', files, null, { flags: [STRICT_MCP], headlessMcp: 'all' }), /headless-mcp/)
+
+  // A CLI that lists the flag: detected like the other optional flags, sent per the job's headlessMcp.
+  const fixture = await stub(t, 'claude', claudeCli(`${STRICT_MCP}  Only use MCP servers from --mcp-config`))
+  const flags = await providerFlags('claude', { env: fixture.env })
+  assert.deepEqual(flags, [STRICT_MCP])
+  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {}, flags })
+  let args = await sentArgs(fixture.root)
+  assert.ok(args.includes(STRICT_MCP)); assert.ok(!args.includes('--mcp-config'))
+  await writeFile(path.join(fixture.root, '.mcp.json'), '{"mcpServers":{}}')
+  await executeAgentAdapter({ provider: 'claude', job: { ...job(fixture.root, 'reviewer'), headlessMcp: 'isolate' }, env: fixture.env, log: () => {}, flags })
+  args = await sentArgs(fixture.root)
+  assert.equal(flag(args, '--mcp-config'), path.join(fixture.root, '.mcp.json')); assert.equal(args.at(-1), path.join(fixture.root, '.mcp.json'))
+  await executeAgentAdapter({ provider: 'claude', job: { ...job(fixture.root, 'reviewer'), headlessMcp: 'inherit' }, env: fixture.env, log: () => {}, flags })
+  args = await sentArgs(fixture.root)
+  assert.ok(!args.includes(STRICT_MCP)); assert.ok(!args.includes('--mcp-config'))
+  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env: fixture.env, log: () => {} })
+  assert.ok(!(await sentArgs(fixture.root)).includes('--mcp-config'), 'no strict flag, no explicit config')
+
+  // work scout reads the setting from its checkout.
+  const { workScout } = await import('../src/work-scout.mjs')
+  const promptFile = path.join(fixture.root, 'prompt.md')
+  await writeFile(promptFile, 'Assigned area: src/')
+  let seen
+  const scout = { inspect: async () => ({ autoProvider: 'claude', providers: [{ provider: 'claude', compatible: true }] }), flags: async () => [STRICT_MCP],
+    execute: async (input) => { seen = input; return { summary: 'none', proposals: [] } } }
+  await workScout({ promptFile, targetRoot: fixture.root }, scout)
+  assert.equal(seen.job.headlessMcp, 'isolate')
+  await mkdir(path.join(fixture.root, 'spec'))
+  await writeFile(path.join(fixture.root, 'spec/SETTINGS.md'), '# SETTINGS\n- headless-mcp: inherit\n')
+  await workScout({ promptFile, targetRoot: fixture.root }, scout)
+  assert.equal(seen.job.headlessMcp, 'inherit')
 })
 
 test('워커는 결정 요청을 돌려줄 수 있고, 세션 ID를 미리 정해 파일에 남긴 뒤 다음 실행에서 이어 쓴다', async (t) => {

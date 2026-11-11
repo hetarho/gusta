@@ -198,9 +198,11 @@ THEME SSOT가 너무 길어. 의미 바꾸지 말고 정리해줘.      → doc-
 /haeram-setting prune-branches false               → 그 값만 바꾸고 커밋
 ```
 
-설정은 `spec/SETTINGS.md`에 한 줄씩 남고, 파일이나 키가 없으면 기본값을 씁니다. 브랜치 전략([아래 표](#브랜치-전략)) 말고는 `permission-mode`와 `prune-branches`가 있습니다.
+설정은 `spec/SETTINGS.md`에 한 줄씩 남고, 파일이나 키가 없으면 기본값을 씁니다. 브랜치 전략([아래 표](#브랜치-전략)) 말고는 `permission-mode`·`headless-mcp`·`prune-branches`가 있습니다.
 
 `permission-mode`(기본 `bypass`)는 CLI가 띄우는 헤드리스 작성 세션 — `vibe loop` 단위, `work run` 워커, show-ab 변형, `vibe preflight --probe` — 의 권한입니다. 맡김에는 권한 창에 답할 사람이 없으므로 기본은 권한 확인과 sandbox를 건너뜁니다(Claude bypassPermissions, Codex `--dangerously-bypass-approvals-and-sandbox`, 네트워크 허용). `acceptEdits`로 바꾸면 Claude는 편집+`--allow-tool` 목록만, Codex는 workspace-write sandbox(네트워크 없음)에서 돕니다. 리뷰어는 어느 쪽이든 읽기 전용이고, 명령의 `--permission-mode`는 그 실행에만 적용됩니다.
+
+`headless-mcp`(기본 `isolate`)는 같은 헤드리스 Claude 세션(리뷰어·`work scout` 포함)이 싣는 MCP 서버입니다. 기본은 `--strict-mcp-config`로 사용자·계정에 연결된 MCP 서버를 싣지 않고, checkout의 `.mcp.json`이 있으면 그것만 `--mcp-config`로 싣습니다. 권한 확인 없이 도는 세션이 프로젝트 밖 서비스를 바꾸지 못하고, 쓰지 않는 도구 정의만큼 프롬프트도 줄어듭니다. 이 flag가 없는 예전 CLI에는 붙이지 않습니다. `inherit`면 사용자 설정을 그대로 씁니다. 스킬·CLAUDE.md·플러그인·훅은 어느 쪽이든 그대로이고, Codex 세션은 바뀌지 않습니다.
 
 `prune-branches`(기본 `true`): 작업이 끝나면 CLI가 자기가 만든 것 중 더 이상 쓰지 않는 것을 지웁니다. 작업이 끝나는 시점은 실행기 종료, `work cleanup`, `vibe loop` 종료, 세션 마감의 `vibe prune`, show-ab 채택입니다. 지우는 것은 이미 합쳐진 단위·묶음 브랜치, 그 worktree(설치·빌드 산출물 포함), 체크포인트 ref, 이 세션의 `wip/<tag>`입니다. 원격의 `wip/<tag>`는 HEAD가 push된 뒤에만 지웁니다. 합쳐지지 않은 커밋, 미커밋 변경, 진행 중인 작업은 남기고 이유를 `kept`로 보고합니다.
 

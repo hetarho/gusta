@@ -14,11 +14,12 @@ import { lintSpec } from './spec-lint.mjs'
 import { workInternals } from './work-groups.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { readSettings, branchPlan, defaultBranch, permissionMode } from './settings.mjs'
+import { readSettings, readSetting, branchPlan, defaultBranch, permissionMode } from './settings.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { vibeCIWait, githubRepository } from './vibe-ci.mjs'
 import { providerFlags } from './work-providers.mjs'
+import { claudeOptionalFlags, projectMcpConfig } from './agent-adapter.mjs'
 
 const execute = promisify(execFile)
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
@@ -517,7 +518,7 @@ export async function vibePreflight(options = {}) {
     if (!available) missing.push(command)
   }
   add('verification', missing.length === 0, missing.length ? `missing commands: ${missing.join(', ')}` : verify.declared ? `task: ${verify.task.length}, batch: ${verify.batch.length}; conditional checks remain in ARCH guidance` : 'legacy ARCH: changed tests + fast checks at task tier; select batch commands before code push', true)
-  if (options.probe) checks.push(await probeWorker(context, { ...options, permissionMode: await permissionMode(options, context.root) }))
+  if (options.probe) checks.push(await probeWorker(context, { ...options, permissionMode: await permissionMode(options, context.root), headlessMcp: await readSetting({ root: context.root }, 'headless-mcp') }))
   return { schemaVersion: 1, ok: checks.every((check) => check.ok), checks, needsUser: checks.filter((check) => check.needsUser) }
 }
 
@@ -546,8 +547,8 @@ async function probeWorker(context, options) {
     if (options.model) args.push('--model', options.model)
     const env = { ...(options.env ?? process.env) }
     delete env.CLAUDECODE
-    // Same optional flags as the workers it stands in for.
-    if (provider === 'claude') args.push(...await providerFlags(provider, { env }))
+    // Same optional flags and MCP sources as the workers it stands in for.
+    if (provider === 'claude') args.push(...claudeOptionalFlags(await providerFlags(provider, { env }), { headlessMcp: options.headlessMcp, mcpConfig: await projectMcpConfig(probeRoot) }))
     const output = await new Promise((resolve, reject) => {
       const child = spawn(provider, args, { cwd: probeRoot, env, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
       let stdout = '', stderr = '', timedOut = false, forced
