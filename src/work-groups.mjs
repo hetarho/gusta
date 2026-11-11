@@ -282,7 +282,7 @@ async function verify(root, checks, commit, signal, timeout = 60 * 60 * 1000, sc
   const env = { ...process.env, ...Object.fromEntries(Object.entries(scope).map(([key, value]) => [`HAERAM_${key}`, String(value)])) }
   const run = async () => {
     const results = []
-    const tree = runtime ? await commitTree(root, commit) : null
+    const tree = runtime && checks.length ? await commitTree(root, commit) : null
     for (const command of checks) {
       const key = tree && checkKey(tree, command, scope)
       const hit = key && await cachedPass(runtime, key)
@@ -701,9 +701,10 @@ export async function submitWork(options) {
     const covered = ids.slice(ids.indexOf(attempt.taskId), current.reach + 1)
     const verification = await verify(attempt.workspace, checks, current.workerCommit, options.signal, timeout,
       { TIER: 'task', DIFF_BASE: diffBase, TASK: covered.at(-1), TASKS: covered.join(' ') }, { runtime: context.root })
-    // Another unit may integrate meanwhile; the contract and SSOT must still match the new target.
-    // checkWorker re-inspects the workspace first, as its own first step.
-    const latest = await checkWorker(context, reservation.group, reservation.attempt)
+    // Another unit may integrate while checks run; the contract and SSOT must still match the new
+    // target (checkWorker re-inspects the workspace first). With no check to run, nothing ran in
+    // between, so the first check stands.
+    const latest = checks.length ? await checkWorker(context, reservation.group, reservation.attempt) : current
     if (latest.workerCommit !== current.workerCommit) fail('검증 중 워커 HEAD가 바뀌었습니다. 다시 제출하세요.')
     options.signal?.throwIfAborted()
     const at = now()
