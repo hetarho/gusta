@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, writeFile, access, mkdtemp, rm } from 'node:fs/promises'
+import { readFile, writeFile, access, mkdtemp, mkdir, rm } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import net from 'node:net'
@@ -262,8 +262,32 @@ test('a scaffold session is the variants\' base, prompts share one prefix, follo
   assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "alpha2"\n')
   assert.equal(await readFile(path.join(root, 'data.js'), 'utf8'), "module.exports = fetch('/api/user')\n")
   assert.equal(await exists(path.join(root, 'fixtures.json')), false)
-  assert.equal(adopted.scaffold, scaffold); assert.deepEqual(adopted.scaffoldFiles, ['data.js', 'fixtures.json']); assert.match(adopted.todo, /실제 데이터/)
+  assert.equal(adopted.scaffold, scaffold); assert.deepEqual(adopted.scaffoldFiles, started.scaffoldFiles); assert.match(adopted.todo, /실제 데이터/)
   assert.equal(await git(root, 'branch', '--list', 'ab/mock/*'), '')
+})
+
+test('a scaffold that deletes an existing file or turns it into a directory gets it back in the adopted commit', async (t) => {
+  const { root, temporary } = await project(t, 'gone')
+  await writeFile(path.join(root, 'middleware.js'), 'module.exports = redirectToLogin\n'); await writeFile(path.join(root, 'session.js'), 'module.exports = realSession\n')
+  await git(root, 'add', 'middleware.js', 'session.js'); await git(root, 'commit', '-q', '-m', 'auth')
+  const scaffoldPrompt = path.join(temporary, 'scaffold.md'); await writeFile(scaffoldPrompt, 'Screen: / without sign-in.')
+  const unguard = async ({ job }) => {
+    await rm(path.join(job.workspace, 'middleware.js'))
+    await rm(path.join(job.workspace, 'session.js')); await mkdir(path.join(job.workspace, 'session.js'))
+    await writeFile(path.join(job.workspace, 'session.js', 'index.js'), 'module.exports = { user: "Ada" }\n')
+    return { outcome: 'completed', summary: 'no sign-in redirect', view: 'home', path: '' }
+  }
+  const started = await abStart({ targetRoot: root, slug: 'gone', variants: 2, basePort: 4931, scaffoldPrompt }, { inspect: providers, flags: noFlags, execute: unguard })
+  assert.equal(started.ok, true, JSON.stringify(started))
+  assert.deepEqual(started.scaffoldFiles, { added: ['session.js/index.js'], modified: ['middleware.js', 'session.js'] })
+  const promptFile = path.join(temporary, 'a.md'); await writeFile(promptFile, 'Make it kept.')
+  await abRun({ targetRoot: root, slug: 'gone', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: session('kept') })
+  const before = await git(root, 'rev-parse', 'HEAD')
+  const adopted = await abPick({ targetRoot: root, slug: 'gone', variant: 'a' })
+  assert.deepEqual(adopted.scaffoldFiles, started.scaffoldFiles)
+  assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before); assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'app.js')
+  assert.equal(await readFile(path.join(root, 'middleware.js'), 'utf8'), 'module.exports = redirectToLogin\n')
+  assert.equal(await readFile(path.join(root, 'session.js'), 'utf8'), 'module.exports = realSession\n')
 })
 
 // A scaffold commit made outside the comparison (mock-data on top of main), and sessions that edit it.

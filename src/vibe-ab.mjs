@@ -163,8 +163,8 @@ async function headless(execute, session, { role, cwd, prompt, log, subject }) {
 }
 
 const fields = (text) => text.split('\0').filter(Boolean)
-// What the scaffold commit added and which existing files it modified: read-only for the variants and
-// put back as the start base had them at pick.
+// What the scaffold commit added and which existing files it modified or deleted: read-only for the
+// variants and put back as the start base had them at pick.
 async function scaffoldFiles(root, record) {
   const added = [], modified = []
   if (record.scaffold) {
@@ -452,9 +452,10 @@ async function withoutScaffold(ctx, record, name, files) {
       const tab = entry.indexOf('\t'), [mode, , object] = entry.slice(0, tab).split(' ')
       return { mode, object, file: entry.slice(tab + 1) }
     })
-    if (kept.length) await indexGit(ctx.root, index, ['update-index', ...kept.flatMap((entry) => ['--cacheinfo', `${entry.mode},${entry.object},${entry.file}`])])
-    const gone = files.all.filter((file) => !kept.some((entry) => entry.file === file))
-    if (gone.length) await indexGit(ctx.root, index, ['update-index', '--force-remove', '--', ...gone])
+    // Remove every scaffold path first, then add back origin's versions: a path the scaffold deleted is
+    // not in the winner's index, and a file the scaffold turned into a directory (or back) cannot clash.
+    if (files.all.length) await indexGit(ctx.root, index, ['update-index', '--force-remove', '--', ...files.all])
+    if (kept.length) await indexGit(ctx.root, index, ['update-index', '--add', ...kept.flatMap((entry) => ['--cacheinfo', `${entry.mode},${entry.object},${entry.file}`])])
     const tree = (await indexGit(ctx.root, index, ['write-tree'])).trim()
     const summary = winner.runs.at(-1)?.summary.split('\n')[0].slice(0, 72) ?? ''
     return (await git(ctx.root, ['commit-tree', tree, '-p', record.origin, '-m', `ab ${record.slug}/${name} without its mock scaffold${summary ? `: ${summary}` : ''}`])).trim()
@@ -479,8 +480,9 @@ export async function abPick(options = {}) {
     if (touched.length) fail(`변형 ${name}이 scaffold 파일을 고쳐 합치지 않았습니다 — 되돌리는 follow-up 뒤에 다시 고르세요. 현재 브랜치와 변형 브랜치는 그대로입니다.`, touched)
   }
   await checkClean(trees)
-  await update(ctx, slug, stopAll)
+  // The adopt commit is built before anything stops: an unexpected Git failure leaves the comparison running.
   const head = record.scaffold ? await withoutScaffold(ctx, record, name, files) : winner.branch
+  await update(ctx, slug, stopAll)
   try { await git(ctx.root, ['merge', '--no-ff', '-m', `ab ${slug}: adopt ${name}`, head]) } catch (error) {
     await git(ctx.root, ['merge', '--abort']).catch(() => {})
     fail(`변형 ${name}을 합치지 못했습니다(충돌). 현재 브랜치는 그대로입니다.`, [String(error.stderr ?? error.message).slice(-2000)])
@@ -491,7 +493,7 @@ export async function abPick(options = {}) {
   if (prune) await pruneBranches(ctx, trees)
   await rm(recordFile(ctx, slug), { force: true })
   return { schemaVersion: 1, ok: true, slug, adopted: name, merged, summary: winner.runs.at(-1)?.summary ?? null, branches: prune ? [] : trees.map(([, tree]) => tree.branch),
-    ...(record.scaffold ? { scaffold: record.scaffold, scaffoldFiles: files.all, todo: '채택한 UI는 mock 데이터 위에서 만들어졌습니다(scaffold는 빠짐). 실제 데이터 연결이 남았습니다.' } : {}) }
+    ...(record.scaffold ? { scaffold: record.scaffold, scaffoldFiles: { added: files.added, modified: files.modified }, todo: '채택한 UI는 mock 데이터 위에서 만들어졌습니다(scaffold는 빠짐). 실제 데이터 연결이 남았습니다.' } : {}) }
 }
 
 export const AB_STEPS = { start: abStart, run: abRun, serve: abServe, exec: abExec, status: abStatus, pick: abPick, stop: abStop }
