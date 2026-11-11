@@ -6,8 +6,8 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { runtimeRoot } from './work-runtime.mjs'
-import { sections, tableRows, quoteLine, quoteFields, exploreValue, INBOX_LINE, SESSION_TAG, TASK_ID } from './spec-format.mjs'
-import { activeRows, upsertActive, mergeState, parseState, renderState } from './state-doc.mjs'
+import { sections, tableRows, quoteLine, quoteFields, exploreValue, yymmdd, INBOX_LINE, SESSION_TAG, TASK_ID } from './spec-format.mjs'
+import { activeRows, upsertActive, mergeState, taskRow, setTaskSt } from './state-doc.mjs'
 import { designOf } from './interactive-state.mjs'
 import { workingTree, checkKey, cachedPass, recordPass, withHeavyLock } from './check-cache.mjs'
 import { lintSpec } from './spec-lint.mjs'
@@ -274,18 +274,14 @@ export async function vibeClaim(options = {}) {
     for (let attempt = 0; attempt < 3; attempt++) {
       if (!await fetchBranch(context.root, context.remote, `refs/heads/${context.target}`, tracking)) fail('원격 대상 브랜치가 없습니다. 먼저 기획 기준을 공유하세요.')
       const parent = await sha(context.root, tracking)
-      const remoteState = await git(context.root, ['show', `${parent}:spec/STATE.md`])
-      const blocks = parseState(remoteState)
+      let remoteState = await git(context.root, ['show', `${parent}:spec/STATE.md`])
       if (options.task) {
-        const tasks = blocks.find((block) => block.name === 'tasks')
-        const index = tasks?.body.findIndex((line) => line.split('|')[1]?.trim() === options.task) ?? -1
-        if (index < 0) fail('원격에 선점할 태스크가 없습니다. 기획 기준을 먼저 공유하세요.', [options.task])
-        const cells = tasks.body[index].split('|').slice(1, -1).map((cell) => cell.trim())
-        if (cells[4] !== 'todo' && !cells[4]?.endsWith(`.${options.tag}`)) fail('다른 세션이 선점했거나 실행할 수 없는 태스크입니다.', [options.task, cells[4]])
-        cells[4] = `doing@${new Date().toISOString().slice(2, 10).replaceAll('-', '')}.${options.tag}`
-        tasks.body[index] = `| ${cells.join(' | ')} |`
+        const claimed = taskRow(remoteState, options.task)
+        if (!claimed) fail('원격에 선점할 태스크가 없습니다. 기획 기준을 먼저 공유하세요.', [options.task])
+        if (claimed.st !== 'todo' && !claimed.st?.endsWith(`.${options.tag}`)) fail('다른 세션이 선점했거나 실행할 수 없는 태스크입니다.', [options.task, claimed.st])
+        remoteState = setTaskSt(remoteState, options.task, `doing@${yymmdd()}.${options.tag}`)
       }
-      const state = upsertActive(renderState(blocks), { ...row, doing: options.task ?? '-', at: minuteNow() })
+      const state = upsertActive(remoteState, { ...row, doing: options.task ?? '-', at: minuteNow() })
       const file = path.join(temporary, 'STATE.md')
       await writeFile(file, state)
       await indexGit(['read-tree', parent])
