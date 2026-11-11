@@ -1,13 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, writeFile, access, mkdtemp, mkdir, rm, lstat, readlink, symlink } from 'node:fs/promises'
+import { readFile, writeFile, access, mkdtemp, mkdir, rm, lstat, readlink, symlink, realpath } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fixture, git } from './helpers/vibe-fixture.mjs'
-import { abStart, abAdd, abRun, abServe, abExec, abStatus, abPick, abStop } from '../src/vibe-ab.mjs'
+import { abStart, abAdd, abRun, abServe, abExec, abStatus, abPick, abStop, copyTree } from '../src/vibe-ab.mjs'
 import { renderHub, viewPath, createHub, readFeedback, hubMain } from '../src/vibe-ab-hub.mjs'
 
 const exists = (file) => access(file).then(() => true, () => false)
@@ -107,35 +107,69 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   await assert.rejects(abStatus({ targetRoot: root, slug: 'hero' }), /없습니다/)
 })
 
-test('--reuse clones a dependency dir whose lockfile is unchanged at the base and installs where it changed', async (t) => {
-  const { root } = await project(t, 'deps', 'stale')
+// A checkout with an ignored install matching the root lockfile at HEAD (the lockfile changed once before).
+async function installed(root) {
   await writeFile(path.join(root, '.gitignore'), 'node_modules\n'); await writeFile(path.join(root, 'package-lock.json'), '{"lock":1}\n')
   await git(root, 'add', '.gitignore', 'package-lock.json'); await git(root, 'commit', '-q', '-m', 'lock 1')
   await writeFile(path.join(root, 'package-lock.json'), '{"lock":2}\n'); await git(root, 'commit', '-q', '-am', 'lock 2')
   await mkdir(path.join(root, 'node_modules/pkg'), { recursive: true }); await mkdir(path.join(root, 'node_modules/.bin'))
   await writeFile(path.join(root, 'node_modules/pkg/index.js'), 'module.exports = 2\n'); await symlink('../pkg/index.js', path.join(root, 'node_modules/.bin/pkg'))
-  const setup = 'node -e "require(\'fs\').writeFileSync(\'installed\',\'1\')"'
+  // A workspace package's install: no lockfile of its own, so the root one governs it.
+  await mkdir(path.join(root, 'apps/web/node_modules'), { recursive: true }); await writeFile(path.join(root, 'apps/web/node_modules/web.js'), 'web\n')
+}
+const INSTALL = 'node -e "require(\'fs\').writeFileSync(\'installed\',\'1\')"'
+const dirsOf = (entries) => entries.map((entry) => [entry.dir, entry.reused, entry.reason])
+
+test('--reuse clones ignored dependency dirs whose lockfiles are unchanged at the base, and installs otherwise', async (t) => {
+  const { root } = await project(t, 'deps', 'stale', 'mixed', 'broken')
+  await installed(root)
   await assert.rejects(abStart({ targetRoot: root, slug: 'deps', reuse: ['../node_modules'] }), /--reuse/)
-  const started = await abStart({ targetRoot: root, slug: 'deps', variants: 2, basePort: 4951, setup, reuse: ['node_modules/', 'apps/web/node_modules'] })
-  assert.equal(started.ok, true, JSON.stringify(started))
-  // A dir this checkout lacks cannot be reused, so setup still runs for that worktree.
-  assert.deepEqual(started.reuse.a.map((entry) => [entry.dir, entry.reused, entry.reason]), [['node_modules', true, undefined], ['apps/web/node_modules', false, 'not in this checkout']])
-  assert.deepEqual(Object.keys(started.setup), ['a', 'b'])
-  const only = await abStart({ targetRoot: root, slug: 'stale', variants: 2, basePort: 4961, setup, reuse: ['node_modules'] })
-  assert.equal(only.setup, undefined); assert.ok(only.reuse.b[0].reused && only.reuse.b[0].ms >= 0)
-  for (const entry of only.variants) {
+  // A tracked dir is never overwritten by a copy.
+  await assert.rejects(abStart({ targetRoot: root, slug: 'deps', reuse: ['spec'] }), /무시하는.*spec/)
+  const started = await abStart({ targetRoot: root, slug: 'deps', variants: 2, basePort: 4951, reuse: ['node_modules/', 'apps/web/node_modules'] })
+  assert.equal(started.ok, true, JSON.stringify(started)); assert.equal(started.setup, undefined)
+  for (const entry of started.variants) {
+    assert.deepEqual(dirsOf(started.reuse[entry.variant]), [['node_modules', true, undefined], ['apps/web/node_modules', true, undefined]])
     // A real copy, never a link into this checkout: an install in the variant must not reach it.
     const copied = path.join(entry.path, 'node_modules')
     assert.ok((await lstat(copied)).isDirectory()); assert.equal(await readlink(path.join(copied, '.bin/pkg')), '../pkg/index.js')
-    assert.equal(await exists(path.join(entry.path, 'installed')), false)
+    assert.equal(await readFile(path.join(entry.path, 'apps/web/node_modules/web.js'), 'utf8'), 'web\n')
     await writeFile(path.join(copied, 'pkg/index.js'), 'module.exports = "variant"\n')
   }
   assert.equal(await readFile(path.join(root, 'node_modules/pkg/index.js'), 'utf8'), 'module.exports = 2\n')
-  await abStop({ targetRoot: root, slug: 'stale', remove: true })
   // Started from the commit before the lockfile changed, the copy would be the wrong install: setup runs.
-  const old = await abStart({ targetRoot: root, slug: 'stale', variants: 2, basePort: 4961, setup, reuse: ['node_modules'], base: 'HEAD~1' })
+  const old = await abStart({ targetRoot: root, slug: 'stale', variants: 2, basePort: 4961, setup: INSTALL, reuse: ['node_modules'], base: 'HEAD~1' })
   assert.deepEqual(old.reuse.a, [{ dir: 'node_modules', reused: false, reason: 'package-lock.json differs at base' }]); assert.equal(old.setup.a.ok, true)
   for (const entry of old.variants) { assert.ok(await exists(path.join(entry.path, 'installed'))); assert.equal(await exists(path.join(entry.path, 'node_modules')), false) }
+  // With --setup, one dir that cannot be reused sends the worktree to setup without copying the others.
+  const copies = []
+  const counted = async (source, destination) => { copies.push(destination); return copyTree(source, destination) }
+  const mixed = await abStart({ targetRoot: root, slug: 'mixed', variants: 2, basePort: 4971, setup: INSTALL, reuse: ['node_modules', 'missing/node_modules'] }, { copy: counted })
+  assert.deepEqual(dirsOf(mixed.reuse.b), [['node_modules', false, 'setup instead'], ['missing/node_modules', false, 'not in this checkout']])
+  assert.deepEqual(copies, []); assert.equal(mixed.setup.b.ok, true)
+  // A copy that fails falls back to setup for that worktree.
+  const failing = async () => { throw Object.assign(new Error('no space'), { code: 'ENOSPC' }) }
+  const broken = await abStart({ targetRoot: root, slug: 'broken', variants: 2, basePort: 4981, setup: INSTALL, reuse: ['node_modules'] }, { copy: failing })
+  assert.deepEqual(dirsOf(broken.reuse.a), [['node_modules', false, 'copy failed: ENOSPC']]); assert.equal(broken.setup.a.ok, true)
+  assert.ok(await exists(path.join(broken.variants[0].path, 'installed')))
+})
+
+test('copyTree clones natively and falls back to fs.cp when the platform cp fails or is missing', async (t) => {
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-ab-copy-')))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const source = path.join(directory, 'node_modules')
+  await mkdir(path.join(source, 'pkg'), { recursive: true }); await mkdir(path.join(source, '.bin'))
+  await writeFile(path.join(source, 'pkg/index.js'), 'x\n'); await symlink('../pkg/index.js', path.join(source, '.bin/pkg'))
+  const calls = []
+  const broken = async (command, args) => { calls.push([command, ...args]); throw new Error('cp failed') }
+  for (const [name, options] of [['native', {}], ['fallback', { platform: 'darwin', run: broken }], ['other', { platform: 'win32', run: broken }]]) {
+    const destination = path.join(directory, name, 'node_modules')
+    await copyTree(source, destination, options)
+    assert.equal(await readFile(path.join(destination, 'pkg/index.js'), 'utf8'), 'x\n'); assert.equal(await readlink(path.join(destination, '.bin/pkg')), '../pkg/index.js')
+    assert.ok(!(await lstat(destination)).isSymbolicLink())
+  }
+  // Only darwin tried the platform cp, and only into a destination that did not exist yet.
+  assert.deepEqual(calls, [['cp', '-c', '-R', source, path.join(directory, 'fallback', 'node_modules')]])
 })
 
 test('start refuses uncommitted user changes; stop --remove keeps branches when prune-branches is false unless forced', async (t) => {
@@ -145,6 +179,9 @@ test('start refuses uncommitted user changes; stop --remove keeps branches when 
   await git(root, 'add', 'dirty.txt'); await git(root, 'commit', '-q', '-m', 'dirty')
   await assert.rejects(abStart({ targetRoot: root, slug: 'Bad Slug' }), /slug/)
   await assert.rejects(abStart({ targetRoot: root, slug: 'nav', variants: 7 }), /variants/)
+  // A copy that fails after `git worktree add` takes that worktree and branch away again.
+  await assert.rejects(abStart({ targetRoot: root, slug: 'nav', copy: ['spec'] }))
+  assert.equal(await git(root, 'branch', '--list', 'ab/nav/*'), ''); assert.equal((await git(root, 'worktree', 'list')).includes('ab-nav-'), false)
   const started = await abStart({ targetRoot: root, slug: 'nav', variants: 3, basePort: 4761 })
   assert.equal(started.variants.length, 3)
   await writeFile(path.join(started.variants[0].path, 'pending.txt'), 'unfinished')
@@ -163,7 +200,7 @@ test('start refuses uncommitted user changes; stop --remove keeps branches when 
 
 test('run --all runs every variant with a prompt in --prompt-dir at once, saves each and keeps going past a failure', async (t) => {
   const { root, temporary } = await project(t, 'all')
-  await abStart({ targetRoot: root, slug: 'all', variants: 3, basePort: 4981 })
+  await abStart({ targetRoot: root, slug: 'all', variants: 4, basePort: 4981 })
   const promptDir = path.join(temporary, 'prompts'); await mkdir(promptDir)
   for (const name of ['a', 'b', 'c']) await writeFile(path.join(promptDir, `${name}.md`), `Approach ${name}.`)
   await assert.rejects(abRun({ targetRoot: root, slug: 'all', all: true }), /--prompt-dir/)
@@ -182,9 +219,9 @@ test('run --all runs every variant with a prompt in --prompt-dir at once, saves 
   const ran = await abRun({ targetRoot: root, slug: 'all', all: true, promptDir }, { inspect: providers, flags: noFlags, execute })
   assert.deepEqual(finished, ['b', 'a'])
   assert.equal(ran.ok, false); assert.deepEqual(ran.variants.map((entry) => [entry.variant, entry.ok]), [['a', true], ['b', true], ['c', false]])
-  assert.equal(ran.variants[2].error, 'provider crashed')
+  assert.equal(ran.variants[2].error, 'provider crashed'); assert.deepEqual(ran.skipped, ['d'])
   const status = await abStatus({ targetRoot: root, slug: 'all' })
-  assert.deepEqual(status.variants.map((entry) => entry.last?.summary ?? null), ['va variant', 'vb variant', null])
+  assert.deepEqual(status.variants.map((entry) => entry.last?.summary ?? null), ['va variant', 'vb variant', null, null])
 })
 
 test('variant and scaffold sessions get the optional provider flags the installed CLI supports', async (t) => {
@@ -241,6 +278,12 @@ test('hub page escapes session text and frames each variant at URL plus view pat
     { name: 'a', url: 'http://localhost:4101/settings', summary: 'cards <script>x</script>\nsecond line', view: 'settings tab', serving: true },
     { name: 'b', from: 'a', url: 'http://localhost:4102', summary: 'list', view: '', serving: false, exec: { command: 'bench', medianMs: 812, exitCodes: [0, 1], last: '<b>done</b>' } }] })
   assert.ok(html.includes('<p class="measure bad" title="bench">median 812 ms · exit 0,1 · <code>&lt;b&gt;done&lt;/b&gt;</code></p>'))
+  // Numbers from different commands do not compare: then each line names its command.
+  const exec = (command) => ({ command, medianMs: 5, exitCodes: [0], last: '' })
+  const mixed = renderHub({ slug: 'hero', variants: [{ name: 'a', url: 'u', summary: '', view: '', exec: exec('npm run bench') }, { name: 'b', url: 'v', summary: '', view: '', exec: exec('npm test') }] })
+  assert.ok(mixed.includes('<code>npm run bench</code> · median 5 ms') && mixed.includes('<code>npm test</code> · median 5 ms'))
+  const same = renderHub({ slug: 'hero', variants: [{ name: 'a', url: 'u', summary: '', view: '', exec: exec('npm test') }, { name: 'b', url: 'v', summary: '', view: '' }] })
+  assert.ok(!same.includes('<code>npm test</code>'))
   assert.deepEqual([...html.matchAll(/<iframe src="([^"]+)"/g)].map((match) => match[1]), ['http://localhost:4101/settings', 'http://localhost:4102'])
   assert.ok(!html.includes('<script>x</script>')); assert.ok(html.includes('cards &lt;script&gt;'))
   assert.ok(html.includes('>larger &lt;b&gt;</textarea>')); assert.match(html, /data-variant="b" class="chosen"/)
@@ -426,6 +469,27 @@ test('add --from remixes a variant on its own branch, worktree and port, up to s
   assert.equal(await exists(path.join(root, 'fixtures.json')), false)
 })
 
+test('add keeps start\'s setup and reuse, checks the lockfile at the remixed tip, and skips a port something else holds', async (t) => {
+  const { root, temporary } = await project(t, 'tip')
+  await installed(root)
+  const started = await abStart({ targetRoot: root, slug: 'tip', variants: 2, basePort: 5011, setup: INSTALL, reuse: ['node_modules'] })
+  assert.ok(started.reuse.a[0].reused && started.reuse.b[0].reused)
+  // Variant a adds a dependency: its lockfile no longer matches this checkout's install.
+  const promptFile = path.join(temporary, 'a.md'); await writeFile(promptFile, 'Add a dependency.')
+  const lock = async ({ job }) => { await writeFile(path.join(job.workspace, 'package-lock.json'), '{"lock":"a"}\n'); return { outcome: 'completed', summary: 'new dependency', view: '', path: '' } }
+  await abRun({ targetRoot: root, slug: 'tip', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: lock })
+  const ports = started.variants.map((entry) => entry.port), held = Math.max(...ports) + 1
+  const listener = await new Promise((resolve) => { const server = net.createServer().listen(held, '127.0.0.1', () => resolve(server)) })
+  t.after(() => listener.close())
+  const fromA = await abAdd({ targetRoot: root, slug: 'tip', from: 'a' })
+  assert.deepEqual(fromA.reuse.c, [{ dir: 'node_modules', reused: false, reason: 'package-lock.json differs at base' }]); assert.equal(fromA.setup.c.ok, true)
+  assert.ok(await exists(path.join(fromA.path, 'installed'))); assert.equal(await exists(path.join(fromA.path, 'node_modules')), false)
+  assert.ok(![...ports, held].includes(fromA.port), String(fromA.port))
+  const fromB = await abAdd({ targetRoot: root, slug: 'tip', from: 'b' })
+  assert.equal(fromB.reuse.d[0].reused, true); assert.equal(fromB.setup, undefined)
+  assert.equal(await readlink(path.join(fromB.path, 'node_modules/.bin/pkg')), '../pkg/index.js')
+})
+
 test('a scaffold edit reverted by a follow-up adopts cleanly; a merge conflict leaves the current branch and the comparison', async (t) => {
   const { root, temporary } = await project(t, 'revert')
   const origin = await git(root, 'rev-parse', 'HEAD')
@@ -499,13 +563,15 @@ test('pick logs the adoption on top of a STATE log kept to 20 lines, and writes 
     await abStart({ targetRoot: root, slug, variants: 2, basePort: 4991 })
     await abRun({ targetRoot: root, slug, variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: session(slug) })
     if (slug === 'bare') { await git(root, 'rm', '-q', '-r', 'spec'); await git(root, 'commit', '-q', '-m', 'no spec') }
-    const adopted = await abPick({ targetRoot: root, slug, variant: 'a' })
+    // An English --approach wins over the stored one and is cut to about 100 characters.
+    const adopted = await abPick({ targetRoot: root, slug, variant: 'a', ...(slug === 'logged' ? { approach: `Cards first, ${'very '.repeat(30)}clear` } : {}) })
     if (slug === 'bare') {
       assert.deepEqual([adopted.logLine, adopted.files], [null, []]); assert.equal(await exists(path.join(root, 'spec/STATE.md')), false)
       assert.equal(await git(root, 'status', '--porcelain'), '')
       continue
     }
-    assert.match(adopted.logLine, /^- \d{6} ab logged: adopt a — Cards first$/)
+    const approach = adopted.logLine.split(' — ')[1]
+    assert.match(adopted.logLine, /^- \d{6} ab logged: adopt a — Cards first, very /); assert.equal(approach.length, 100); assert.ok(approach.endsWith('…'))
     const log = (await readFile(path.join(root, 'spec/STATE.md'), 'utf8')).split('## log\n')[1].trimEnd().split('\n')
     assert.deepEqual(log, [adopted.logLine, ...old.slice(0, 19)])
     await git(root, 'commit', '-q', '-am', 'log adoption')

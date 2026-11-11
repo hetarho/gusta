@@ -121,15 +121,22 @@ function stopAll(record) {
   record.hub = null
 }
 
-// A worktree on its own branch ab/<slug>/<name>, with the untracked files the run needs copied in.
+// A worktree on its own branch ab/<slug>/<name>, with the untracked files the run needs copied in. A
+// failed copy takes the worktree and branch away again: they are not in the record for stop to clean.
 async function addTree(ctx, slug, name, from, copies) {
   const branch = `ab/${slug}/${name}`
   const destination = await canonicalDestination(path.join(path.dirname(ctx.main), '.haeram-worktrees', ctx.identity, `ab-${slug}-${name}`))
   await git(ctx.root, ['worktree', 'add', '-b', branch, destination, from])
-  for (const file of copies) {
-    if (!(await exists(path.join(ctx.root, file)))) continue
-    await mkdir(path.dirname(path.join(destination, file)), { recursive: true })
-    await copyFile(path.join(ctx.root, file), path.join(destination, file))
+  try {
+    for (const file of copies) {
+      if (!(await exists(path.join(ctx.root, file)))) continue
+      await mkdir(path.dirname(path.join(destination, file)), { recursive: true })
+      await copyFile(path.join(ctx.root, file), path.join(destination, file))
+    }
+  } catch (error) {
+    await git(ctx.root, ['worktree', 'remove', '--force', destination]).catch(() => {})
+    await git(ctx.root, ['branch', '-D', branch]).catch(() => {})
+    throw error
   }
   return { branch, path: destination }
 }
@@ -150,39 +157,61 @@ function relative(files = [], flag) {
 
 const LOCKFILES = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb']
 const committedBytes = (cwd, spec) => execFileAsync('git', ['-C', cwd, 'show', spec], { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 }).then((result) => result.stdout, () => null)
-// A --reuse dir is reusable at `base` when it exists in this checkout and the nearest lockfile above it
-// is byte-identical in `base`: the copy is then what that lockfile installs. Returns why not, or null.
-async function reuseBlocker(root, dir, base) {
-  if (!(await exists(path.join(root, dir)))) return 'not in this checkout'
+// Only git-ignored dirs: a copy over a tracked dir (src) would replace the variant's own files.
+async function ignoredDirs(root, dirs) {
+  const tracked = []
+  for (const dir of dirs) if ((await git(root, ['check-ignore', '-q', `${dir}/`], [1])) === null) tracked.push(dir)
+  if (tracked.length) fail(`--reuse는 git이 무시하는 의존성 폴더(node_modules 등)만 받습니다: ${tracked.join(', ')}`)
+  return dirs
+}
+// Every lockfile of the nearest directory at or above `dir` that has one, here or in `base`.
+async function lockfilesNear(root, dir, base) {
   for (let parent = path.posix.dirname(dir); ; parent = path.posix.dirname(parent)) {
-    for (const name of LOCKFILES) {
-      const file = path.posix.join(parent, name), local = await readFile(path.join(root, file)).catch(() => null)
-      if (!local) continue
-      const committed = await committedBytes(root, `${base}:${file}`)
-      return committed && local.equals(committed) ? null : `${file} differs at base`
-    }
-    if (parent === '.') return 'no lockfile'
+    const files = await Promise.all(LOCKFILES.map(async (name) => {
+      const file = path.posix.join(parent, name)
+      return { file, local: await readFile(path.join(root, file)).catch(() => null), committed: await committedBytes(root, `${base}:${file}`) }
+    }))
+    if (files.some((entry) => entry.local || entry.committed)) return files
+    if (parent === '.') return []
   }
 }
+// A --reuse dir is reusable at `base` when it exists here and each of those lockfiles is byte-identical in
+// `base` (or absent from both): the copy is then what they install. Returns why not, or null.
+async function reuseBlocker(root, dir, base) {
+  if (!(await exists(path.join(root, dir)))) return 'not in this checkout'
+  const files = await lockfilesNear(root, dir, base)
+  if (!files.length) return 'no lockfile'
+  const changed = files.find((entry) => entry.local && entry.committed ? !entry.local.equals(entry.committed) : entry.local || entry.committed)
+  return changed ? `${changed.file} differs at base` : null
+}
 const reuseBlockers = async (root, dirs, base) => Object.fromEntries(await Promise.all(dirs.map(async (dir) => [dir, await reuseBlocker(root, dir, base)])))
-// Dependencies of one worktree: each reusable --reuse dir is cloned from this checkout (copy-on-write
-// where the filesystem can). Never a symlink: an install in the variant would write into this checkout,
-// and bundlers resolve real paths outside the worktree. Anything not reused runs --setup instead.
-async function prepare(ctx, slug, options, { name, path: cwd, port }, blockers) {
+// Clone one dependency dir. fs.cp walks the tree in JS (minutes for a real node_modules), so the platform
+// cp clones it natively first: macOS `cp -c` (clonefile), GNU `--reflink=auto`, both keeping relative
+// symlinks as they are. BSD cp nests the source inside an existing destination, so that case is fs.cp.
+export async function copyTree(source, destination, { platform = process.platform, run = execFileAsync } = {}) {
+  await mkdir(path.dirname(destination), { recursive: true })
+  const native = { darwin: ['-c', '-R'], linux: ['-R', '--reflink=auto', '--no-dereference'] }[platform]
+  if (native && !(await exists(destination))) {
+    try { await run('cp', [...native, source, destination]); return } catch { await rm(destination, { recursive: true, force: true }) }
+  }
+  await cp(source, destination, { recursive: true, mode: constants.COPYFILE_FICLONE, verbatimSymlinks: true })
+}
+// Dependencies of one worktree: each reusable --reuse dir is cloned from this checkout. Never a symlink: an
+// install in the variant would write into this checkout, and bundlers resolve real paths outside the
+// worktree. With --setup, one blocked dir sends the worktree straight to setup (npm ci reinstalls anyway).
+async function prepare(ctx, slug, prep, { name, path: cwd, port }, blockers) {
+  const dirs = Object.keys(blockers), installs = Boolean(prep.setup) && dirs.some((dir) => blockers[dir])
   const reuse = []
-  for (const dir of Object.keys(blockers)) {
-    let reason = blockers[dir]
+  for (const dir of dirs) {
+    let reason = blockers[dir] ?? (installs ? 'setup instead' : null)
     const started = Date.now()
     if (!reason) {
-      try {
-        await mkdir(path.dirname(path.join(cwd, dir)), { recursive: true })
-        await cp(path.join(ctx.root, dir), path.join(cwd, dir), { recursive: true, mode: constants.COPYFILE_FICLONE, verbatimSymlinks: true })
-      } catch (error) { reason = `copy failed: ${error.code ?? error.message}` }
+      try { await prep.copy(path.join(ctx.root, dir), path.join(cwd, dir)) } catch (error) { reason = `copy failed: ${error.code ?? error.message}` }
     }
     reuse.push(reason ? { dir, reused: false, reason } : { dir, reused: true, ms: Date.now() - started })
   }
-  const install = options.setup && (!reuse.length || reuse.some((entry) => !entry.reused))
-  const setup = install ? await shell(options.setup, cwd, port ? { PORT: String(port) } : {}, fileOf(ctx, slug, `${name}-setup.log`), Number(options.timeoutMs ?? 1200000)) : null
+  const install = prep.setup && (!reuse.length || reuse.some((entry) => !entry.reused))
+  const setup = install ? await shell(prep.setup, cwd, port ? { PORT: String(port) } : {}, fileOf(ctx, slug, `${name}-setup.log`), Number(prep.timeoutMs ?? 1200000)) : null
   return { reuse, setup }
 }
 // start/add report: setup per worktree that ran it, reuse per worktree when --reuse was given.
@@ -237,13 +266,13 @@ async function scaffoldFiles(root, record) {
 const netChanges = async (cwd, from, to) => fields(await git(cwd, ['diff', '--name-only', '-z', '--no-renames', from, to]))
 
 export async function abStart(options = {}, injected = {}) {
-  const deps = { inspect: inspectProviders, execute: executeAgentAdapter, ...injected }
+  const deps = { inspect: inspectProviders, execute: executeAgentAdapter, copy: copyTree, ...injected }
   const ctx = await context(options), slug = slugOf(options)
   if (await exists(recordFile(ctx, slug))) fail(`비교 ${slug}가 이미 있습니다. vibe ab status ${slug} 또는 stop --remove 후 다시 시작하세요.`)
   const count = Number(options.variants ?? 2)
   if (!Number.isInteger(count) || count < 2 || count > NAMES.length) fail(`variants는 2~${NAMES.length}입니다.`)
   if ((await git(ctx.root, ['status', '--porcelain'])).trim()) fail('미커밋 변경이 있습니다. 변형은 커밋된 기준에서 시작합니다 — 사용자 변경을 먼저 정리하세요.')
-  const copies = relative(options.copy, '--copy'), reuse = relative(options.reuse, '--reuse')
+  const copies = relative(options.copy, '--copy'), reuse = await ignoredDirs(ctx.root, relative(options.reuse, '--reuse'))
   if (options.scaffold && options.scaffoldPrompt) fail('--scaffold(있는 커밋)와 --scaffold-prompt(새로 만들기) 중 하나만 줍니다.')
   const origin = (await git(ctx.root, ['rev-parse', '--verify', `${options.base ?? 'HEAD'}^{commit}`])).trim()
   let scaffold = options.scaffold ? (await git(ctx.root, ['rev-parse', '--verify', `${options.scaffold}^{commit}`])).trim() : null
@@ -254,7 +283,9 @@ export async function abStart(options = {}, injected = {}) {
   const shared = options.sharedFile ? await readFile(path.resolve(options.sharedFile), 'utf8') : ''
   const brief = options.scaffoldPrompt ? await readFile(path.resolve(options.scaffoldPrompt), 'utf8') : null
   const session = brief ? await sessionOptions(ctx, options, deps) : null
-  const record = { schemaVersion: 1, slug, base: origin, createdAt: new Date().toISOString(), variants: {}, ...(shared.trim() ? { shared } : {}) }
+  // How worktrees get their dependencies is kept: add uses it for a remix unless told otherwise.
+  const record = { schemaVersion: 1, slug, base: origin, createdAt: new Date().toISOString(), variants: {}, prepare: { setup: options.setup ?? null, copy: copies, reuse }, ...(shared.trim() ? { shared } : {}) }
+  const prep = { setup: options.setup, timeoutMs: options.timeoutMs, copy: deps.copy }
   // start owns the record until it returns; its writes still take the lock so none interleaves with another command's.
   const store = () => locked(ctx, slug, () => save(ctx, record))
   for (const name of ['feedback.json', 'hub.json']) await rm(fileOf(ctx, slug, name), { force: true })
@@ -262,7 +293,7 @@ export async function abStart(options = {}, injected = {}) {
     // One session makes the screen render from fixtures on ab/<slug>/base; every variant starts from its commit.
     const tree = record.scaffoldTree = await addTree(ctx, slug, BASE, origin, copies)
     await store()
-    const prepared = depsReport({ [BASE]: await prepare(ctx, slug, options, { name: BASE, path: tree.path }, await reuseBlockers(ctx.root, reuse, origin)) })
+    const prepared = depsReport({ [BASE]: await prepare(ctx, slug, prep, { name: BASE, path: tree.path }, await reuseBlockers(ctx.root, reuse, origin)) })
     if (!prepared.ok) return { schemaVersion: 1, ok: false, slug, origin, ...prepared.report }
     const prompt = [shared.trim() && `Comparison context (the variants build this; you build only the scaffold):\n${shared.trim()}`, brief].filter(Boolean).join('\n\n')
     const run = record.scaffoldRun = await headless(deps.execute, session, { role: 'scaffold', cwd: tree.path, prompt, log: fileOf(ctx, slug, `${BASE}-run.log`), subject: `ab ${slug}/${BASE}: scaffold` })
@@ -281,7 +312,7 @@ export async function abStart(options = {}, injected = {}) {
   }
   // Dependencies go into every worktree at once; a failure keeps the worktrees for a retry.
   const blockers = await reuseBlockers(ctx.root, reuse, record.base)
-  const installed = depsReport(Object.fromEntries(await Promise.all(Object.entries(record.variants).map(async ([name, variant]) => [name, await prepare(ctx, slug, options, { name, ...variant }, blockers)]))))
+  const installed = depsReport(Object.fromEntries(await Promise.all(Object.entries(record.variants).map(async ([name, variant]) => [name, await prepare(ctx, slug, prep, { name, ...variant }, blockers)]))))
   const run = record.scaffoldRun
   const files = await scaffoldFiles(ctx.root, record)
   return { schemaVersion: 1, ok: installed.ok, slug, base: record.base, ...(scaffold ? { origin, scaffold, scaffoldFiles: { added: files.added, modified: files.modified } } : {}),
@@ -291,18 +322,22 @@ export async function abStart(options = {}, injected = {}) {
 
 // A remix ("a's layout with b's colours"): the next variant starts from <from>'s committed work on its own
 // branch, worktree and port. It still descends from the base (and the scaffold), so pick works unchanged.
-export async function abAdd(options = {}) {
+export async function abAdd(options = {}, injected = {}) {
+  const deps = { copy: copyTree, ...injected }
   const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
   if (!options.from) fail('--from <변형>이 필요합니다(새 변형이 이어받을 변형).')
   const [from] = pick(record, { variant: options.from })
   const name = [...NAMES].find((letter) => !record.variants[letter])
   if (!name) fail(`변형은 최대 ${NAMES.length}개입니다.`)
-  const copies = relative(options.copy, '--copy'), reuse = relative(options.reuse, '--reuse')
+  // start's --setup/--copy/--reuse are the defaults; a flag given here replaces that one.
+  const stored = record.prepare ?? {}, setup = options.setup ?? stored.setup ?? null
+  const copies = options.copy ? relative(options.copy, '--copy') : stored.copy ?? []
+  const reuse = options.reuse ? await ignoredDirs(ctx.root, relative(options.reuse, '--reuse')) : stored.reuse ?? []
   if (await dirty(record.variants[from])) fail(`변형 ${from}에 미커밋 변경이 있습니다 — 실행이 끝난 뒤 다시 하세요.`)
   const tip = (await git(ctx.root, ['rev-parse', `${record.variants[from].branch}^{commit}`])).trim()
   const variant = { ...(await addVariant(ctx, record, name, tip, copies, Math.min(...Object.values(record.variants).map((entry) => entry.port)))), from }
   await update(ctx, slug, (live) => { live.variants[name] = variant })
-  const installed = depsReport({ [name]: await prepare(ctx, slug, options, { name, ...variant }, await reuseBlockers(ctx.root, reuse, tip)) })
+  const installed = depsReport({ [name]: await prepare(ctx, slug, { setup, timeoutMs: options.timeoutMs, copy: deps.copy }, { name, ...variant }, await reuseBlockers(ctx.root, reuse, tip)) })
   return { schemaVersion: 1, ok: installed.ok, slug, variant: name, from, branch: variant.branch, path: variant.path, port: variant.port, url: urlOf(variant), ...installed.report }
 }
 
@@ -357,12 +392,13 @@ async function runAll(ctx, record, options, deps) {
   if (options.variant || options.promptFile || options.followUpFile) fail('--all은 --prompt-dir의 <v>.md로만 실행합니다(--variant·--prompt-file·--follow-up-file 없이).')
   if (!options.promptDir) fail('--all에는 --prompt-dir <dir>가 필요합니다(변형마다 <v>.md).')
   const names = Object.keys(record.variants)
-  const approaches = (await Promise.all(names.map(async (name) => [name, await readFile(path.resolve(options.promptDir, `${name}.md`), 'utf8').catch(() => null)]))).filter(([, text]) => text !== null)
+  const found = await Promise.all(names.map(async (name) => [name, await readFile(path.resolve(options.promptDir, `${name}.md`), 'utf8').catch(() => null)]))
+  const approaches = found.filter(([, text]) => text !== null), skipped = found.filter(([, text]) => text === null).map(([name]) => name)
   if (!approaches.length) fail(`${options.promptDir}에 변형 프롬프트가 없습니다: ${names.map((name) => `${name}.md`).join(', ')}`)
   const session = await sessionOptions(ctx, options, deps)
   const variants = await Promise.all(approaches.map(([name, approach]) => runVariant(ctx, record, name, session, deps, { approach }).catch((error) =>
     ({ ok: false, variant: name, error: error.message, ...(error.details?.length ? { details: error.details } : {}) }))))
-  return { schemaVersion: 1, ok: variants.every((entry) => entry.ok), slug: record.slug, variants }
+  return { schemaVersion: 1, ok: variants.every((entry) => entry.ok), slug: record.slug, variants, skipped }
 }
 
 // Ready means the screen answers: after the port listens, one GET of the variant's view path. A 5xx
@@ -563,8 +599,12 @@ async function withoutScaffold(ctx, record, name, files) {
   } finally { await rm(index, { force: true }) }
 }
 
-// The adoption log line as FORMAT writes it; the approach is the first line the variant was asked to build.
-const firstLine = (text) => String(text ?? '').split('\n').map((line) => line.replace(/^(?:#+|[-*>])\s+/, '').trim()).find(Boolean) ?? ''
+// The adoption log line as FORMAT writes it: the approach is --approach (English, one line) or else the first
+// line the variant was asked to build, cut to about 100 characters.
+function approachLine(text) {
+  const line = String(text ?? '').split('\n').map((entry) => entry.replace(/^(?:#+|[-*>])\s+/, '').trim()).find(Boolean) ?? ''
+  return line.length > 100 ? `${line.slice(0, 99).trimEnd()}…` : line
+}
 const STATE = 'spec/STATE.md'
 
 // Adoption merges exactly one variant into the checkout that started the comparison and logs it in
@@ -597,7 +637,7 @@ export async function abPick(options = {}) {
   const prune = await pruning(ctx, options)
   if (prune) await pruneBranches(ctx, trees)
   await rm(recordFile(ctx, slug), { force: true })
-  const state = await readFile(path.join(ctx.root, STATE), 'utf8').catch(() => null), approach = firstLine(winner.approach ?? winner.runs.at(-1)?.summary)
+  const state = await readFile(path.join(ctx.root, STATE), 'utf8').catch(() => null), approach = approachLine(options.approach ?? winner.approach ?? winner.runs.at(-1)?.summary)
   const logLine = state === null ? null : `- ${yymmdd()} ab ${slug}: adopt ${name}${approach ? ` — ${approach}` : ''}`
   if (logLine) await writeFile(path.join(ctx.root, STATE), closeTasks(state, [], { log: logLine }).text)
   return { schemaVersion: 1, ok: true, slug, adopted: name, merged, logLine, files: logLine ? [STATE] : [], summary: winner.runs.at(-1)?.summary ?? null, branches: prune ? [] : trees.map(([, tree]) => tree.branch),

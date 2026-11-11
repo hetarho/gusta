@@ -71,23 +71,25 @@ const post=(action,body)=>fetch(action,{method:'POST',headers:{'content-type':'a
 document.querySelectorAll('textarea').forEach((area)=>{let timer;const state=area.closest('.foot').querySelector('.saved');area.oninput=()=>{clearTimeout(timer);state.textContent='…';timer=setTimeout(()=>post('note',{variant:area.dataset.variant,note:area.value}).then(()=>state.textContent='saved',()=>state.textContent='not saved'),500)}})
 document.querySelectorAll('.choose').forEach((button)=>button.onclick=()=>post('choose',{variant:button.dataset.variant}).then((feedback)=>{const chosen=feedback.chosen.variant;document.querySelectorAll('section').forEach((section)=>section.classList.toggle('chosen',section.dataset.variant===chosen));document.getElementById('chosen').textContent='chosen: '+chosen+' — tell the session to adopt it'},()=>alert('not saved')))`
 
-// The latest `vibe ab exec` under a frame: median, exit codes and the last output line.
-function measured(exec) {
+// The latest `vibe ab exec` under a frame: median, exit codes and the last output line, led by the
+// command when the variants' latest measurements ran different commands (their numbers do not compare).
+function measured(exec, mixed) {
   if (!exec) return ''
   const codes = exec.exitCodes ?? [], bad = codes.some((code) => code !== 0)
-  return `<p class="measure${bad ? ' bad' : ''}" title="${escape(exec.command)}">median ${escape(exec.medianMs)} ms · exit ${escape(codes.join(','))}${exec.last ? ` · <code>${escape(exec.last)}</code>` : ''}</p>`
+  return `<p class="measure${bad ? ' bad' : ''}" title="${escape(exec.command)}">${mixed ? `<code>${escape(exec.command)}</code> · ` : ''}median ${escape(exec.medianMs)} ms · exit ${escape(codes.join(','))}${exec.last ? ` · <code>${escape(exec.last)}</code>` : ''}</p>`
 }
 
 // Pure: the hub page. Every text a session wrote is escaped; frames load each variant at its view path.
 export function renderHub({ slug, variants, feedback = EMPTY() }) {
   const chosen = feedback.chosen?.variant
+  const mixed = new Set(variants.filter((variant) => variant.exec).map((variant) => variant.exec.command)).size > 1
   const sections = variants.map((variant) => {
     const summary = variant.summary.split('\n')[0]
     return `<section data-variant="${escape(variant.name)}"${variant.name === chosen ? ' class="chosen"' : ''}>
 <div class="head"><div class="row"><strong>${escape(variant.name)}</strong>${variant.from ? `<span class="muted">from ${escape(variant.from)}</span>` : ''}<a href="${escape(variant.url)}" target="_blank" rel="noopener">open in new tab ↗</a>${variant.serving ? '' : '<span class="muted">not serving</span>'}</div>
 <p title="${escape(variant.summary)}">${escape(summary) || '<span class="muted">no run yet</span>'}</p>${variant.view ? `<p class="muted" title="${escape(variant.view)}">view: ${escape(variant.view)}</p>` : ''}</div>
 <div class="frame"><iframe src="${escape(variant.url)}" title="variant ${escape(variant.name)}"></iframe></div>
-<div class="foot">${measured(variant.exec)}<textarea data-variant="${escape(variant.name)}" placeholder="note for ${escape(variant.name)}">${escape(feedback.notes?.[variant.name]?.note ?? '')}</textarea>
+<div class="foot">${measured(variant.exec, mixed)}<textarea data-variant="${escape(variant.name)}" placeholder="note for ${escape(variant.name)}">${escape(feedback.notes?.[variant.name]?.note ?? '')}</textarea>
 <div class="row"><button class="choose" data-variant="${escape(variant.name)}">choose ${escape(variant.name)}</button><span class="saved muted"></span></div></div>
 </section>`
   }).join('\n')
