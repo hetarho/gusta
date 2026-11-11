@@ -7,7 +7,7 @@ import test from 'node:test'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { mergeState, upsertActive, activeRows } from '../src/state-doc.mjs'
-import { vibeStatus, vibeSync, vibePush, vibeDeploy, vibeClaim, vibeBeat, vibeCheckpoint, vibePreflight, vibeCheck } from '../src/vibe.mjs'
+import { vibeStatus, vibeSync, vibePush, vibeDeploy, vibeClaim, vibeBeat, vibeCheckpoint, vibePreflight, vibeCheck, exploreTimeboxes } from '../src/vibe.mjs'
 import { withHeavyLock } from '../src/check-cache.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 import { vibeDesign } from '../src/vibe-design.mjs'
@@ -290,6 +290,21 @@ test('route: 완료 ideation 파일은 새 기획 후보나 기본 읽기 입력
   const status = await vibeStatus({ targetRoot: root })
   assert.equal(status.route, 'implementation')
   assert.deepEqual(status.planning.ideation, [])
+})
+
+test('explore timeboxes: one listing, row order, a row matches only its own `<id>.` file', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'haeram-explore-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(path.join(root, 'spec/tasks'), { recursive: true })
+  const quote = (id, extra) => `# ${id} x\n> st:todo | ssot:A-1 | base:A@1 | dep:-${extra}\n`
+  await writeFile(path.join(root, 'spec/tasks/T10.later.md'), quote('T10', ' | explore:30m'))
+  await writeFile(path.join(root, 'spec/tasks/T1.v1.2.notes.md'), quote('T1', ' | explore:2h'))
+  await writeFile(path.join(root, 'spec/tasks/T2.plain.md'), quote('T2', ''))
+  await writeFile(path.join(root, 'spec/tasks/T3.none.md'), quote('T3', ' | explore:-'))
+  await writeFile(path.join(root, 'spec/tasks/README'), 'no dot in this name')
+  const rows = ['T10', 'T9', 'T2', 'T1', 'T3', 'T1'].map((id) => ({ id }))
+  assert.deepEqual(await exploreTimeboxes(root, rows), [{ id: 'T10', timebox: '30m' }, { id: 'T1', timebox: '2h' }, { id: 'T1', timebox: '2h' }])
+  assert.deepEqual(await exploreTimeboxes(path.join(root, 'missing'), rows), [])
 })
 
 test('vibe check는 같은 작업 트리에서 통과한 명령을 다시 돌리지 않는다', async (t) => {
