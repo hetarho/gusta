@@ -87,6 +87,7 @@ export function renderHub({ slug, variants, feedback = EMPTY() }) {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>A/B ${escape(slug)}</title><style>${STYLE}</style></head>
 <body><header><h1>A/B · ${escape(slug)}</h1><div class="row"><button data-width="1280" aria-pressed="true">desktop</button><button data-width="390" aria-pressed="false">mobile 390</button></div>
+<span class="muted">A blank frame means the app blocks framing: use “open in new tab”.</span>
 <span id="chosen">${chosen ? `chosen: ${escape(chosen)} — tell the session to adopt it` : ''}</span></header>
 <main style="--n:${variants.length}">
 ${sections}
@@ -97,17 +98,22 @@ ${sections}
 async function readBody(request, limit) {
   const chunks = []
   let size = 0
-  for await (const chunk of request) { size += chunk.length; if (size > limit) throw new HubError(413, 'body too large'); chunks.push(chunk) }
+  // Read to the end even past the limit, so the 413 reaches a client that is still sending.
+  for await (const chunk of request) { size += chunk.length; if (size <= limit) chunks.push(chunk) }
+  if (size > limit) throw new HubError(413, 'body too large')
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new HubError(400, 'body must be JSON') }
 }
 
 // Every request reads the record again, so reruns and restarts show without restarting the hub.
 // POSTs must be JSON: a cross-origin page cannot send that without a preflight this hub never allows.
-export function createHub({ recordFile, feedbackFile, alive = processAlive, now = () => new Date().toISOString() }) {
+// Only loopback Host names are served, so a rebound DNS name cannot reach the hub.
+function hubHandler({ recordFile, feedbackFile, alive = processAlive, now = () => new Date().toISOString() }) {
   let queue = Promise.resolve()
-  return http.createServer(async (request, response) => {
+  return async (request, response) => {
     const send = (status, type, body) => { response.writeHead(status, { 'content-type': `${type}; charset=utf-8`, 'cache-control': 'no-store' }); response.end(body) }
     try {
+      const port = request.socket.localPort
+      if (![`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`].includes(String(request.headers.host ?? '').toLowerCase())) return send(403, 'text/plain', 'unexpected host\n')
       const record = await readFile(recordFile, 'utf8').then(JSON.parse, () => null)
       if (!record) return send(410, 'text/plain', 'This comparison has ended.\n')
       const route = new URL(request.url, 'http://hub').pathname
@@ -125,14 +131,29 @@ export function createHub({ recordFile, feedbackFile, alive = processAlive, now 
       queue = next.catch(() => {})
       return send(200, 'application/json', JSON.stringify(await next))
     } catch (error) { send(error.status ?? 500, 'text/plain', `${error.message}\n`) }
-  })
+  }
 }
+export const createHub = (options) => http.createServer(hubHandler(options))
 
-// Detached entry (bin/haeram-ab-hub.mjs): listens on a free 127.0.0.1 port and tells the CLI which.
+const listen = (server, port, host) => new Promise((resolve, reject) => {
+  server.once('error', reject).listen(port, host, () => { server.off('error', reject); resolve(server) })
+})
+// Detached entry (bin/haeram-ab-hub.mjs): listens on a free port and tells the CLI which. `localhost`
+// may resolve to ::1 first, so the same port answers on both loopbacks (127.0.0.1 only without IPv6).
 // It exits by itself once the comparison record is gone (picked or removed).
-export async function hubMain([recordFile, feedbackFile, readyFile]) {
-  const server = createHub({ recordFile, feedbackFile })
-  await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve))
-  await atomicJSON(readyFile, { pid: process.pid, port: server.address().port })
-  setInterval(() => access(recordFile).catch(() => process.exit(0)), 30000).unref()
+export async function hubMain([recordFile, feedbackFile, readyFile], { exit = (code) => process.exit(code), checkMs = 30000 } = {}) {
+  const handler = hubHandler({ recordFile, feedbackFile })
+  let servers = null
+  for (let attempt = 1; !servers; attempt++) {
+    const first = await listen(http.createServer(handler), 0, '127.0.0.1')
+    const second = await listen(http.createServer(handler), first.address().port, '::1').catch((error) => error)
+    if (!(second instanceof Error)) servers = [first, second]
+    else if (['EADDRNOTAVAIL', 'EAFNOSUPPORT'].includes(second.code) || attempt >= 5) servers = [first]
+    else first.close()
+  }
+  const port = servers[0].address().port
+  await atomicJSON(readyFile, { pid: process.pid, port })
+  const timer = setInterval(() => access(recordFile).catch(() => exit(0)), checkMs)
+  timer.unref()
+  return { port, close: () => { clearInterval(timer); for (const server of servers) server.close() } }
 }

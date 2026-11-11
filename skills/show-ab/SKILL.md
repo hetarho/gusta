@@ -36,7 +36,7 @@ description: >-
 
 ## 4. 보여 주기
 - 화면이 있으면 `vibe ab serve <slug> --command '<개발 서버, 포트는 $PORT>' --json`: 변형마다 자기 포트에 띄우고 path가 응답하면 비교 페이지(hub)를 띄운다. 명령은 ARCH·package.json의 dev 스크립트로 고르고 포트 인자가 필요하면 `$PORT`를 넘긴다(예 `npm run dev -- --port $PORT`). 준비 실패(5xx·무응답)는 로그 tail로 원인을 보고하고 URL이 있다고 말하지 않는다. 3xx·4xx면 그 status를 함께 말한다.
-- 사용자에게는 hub URL 하나만 준다 — 변형이 나란히 보이고 거기서 메모·choose를 남길 수 있다고 한 줄로.
+- 사용자에게는 hub URL 하나만 준다 — 변형이 나란히 보이고 거기서 메모·choose를 남길 수 있다고 한 줄로. hub가 null이면 serve를 다시 돌린다(서버는 두고 hub만 다시 뜬다). 빈 프레임은 앱이 frame을 막는 것 — 새 탭 링크로.
 - 성능·동작 비교는 `vibe ab exec <slug> --command '<측정 명령>' --repeat 3 --json`: 변형을 번갈아 실행해 중앙값·최소·종료 코드·마지막 줄을 모은다. 실행 사이의 흔들림보다 작은 차이는 차이라고 하지 않는다.
 - 비교표 하나로 보여 준다: 변형 | 접근 | 측정값 | 볼 곳(view) | 장단점·위험. 판정은 사용자 몫이고 추천은 근거와 함께 한 줄만.
 - 사용자가 다 봤다고 하면 `vibe ab status <slug> --json`의 feedback(메모·chosen)을 읽는다. chosen은 의사 표시일 뿐 — 확인받고 pick한다.
