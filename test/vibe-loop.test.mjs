@@ -383,6 +383,17 @@ test('the unit log follows the adapter live, before the unit process exits', asy
   assert.match(await readFile(r.log, 'utf8'), /progress-out[\s\S]*"kind":"task"/)
 })
 
+test('a built-in Claude unit carries the optional flags the installed CLI lists', async (t) => {
+  const { root, temporary, initial } = await fixture(t)
+  const bin = path.join(temporary, 'bin'); await mkdir(bin)
+  const flag = '--exclude-dynamic-system-prompt-sections', args = path.join(temporary, 'claude-args.json')
+  await writeFile(path.join(bin, 'claude'), `#!${process.execPath}\nconst a=process.argv.slice(2);if(a.includes('--help'))console.log('--print ${flag}');else{process.stdin.resume();process.stdin.on('end',()=>{require('node:fs').writeFileSync(${JSON.stringify(args)},JSON.stringify(a));console.log(JSON.stringify({type:'result',is_error:false,structured_output:{kind:'none',id:'',outcome:'no_work',pushed:false,next:'stop'}}))})}`, { mode: 0o755 })
+  const directory = path.join(temporary, 'logs'); await mkdir(directory)
+  const r = await executeVibeUnit({ provider: 'claude', tag: 't060', env: { PATH: `${bin}${path.delimiter}${process.env.PATH}` } }, { workspace: root, role: 'unit', diffBase: initial }, directory, { stopFile: path.join(directory, 'STOP'), deadline: Date.now() + 60000, timeoutMs: 60000 })
+  assert.equal(r.result?.outcome, 'no_work', r.error)
+  assert.ok(JSON.parse(await readFile(args, 'utf8')).includes(flag))
+})
+
 test('detached host survives parent return and writes its final manifest with one shared report', async (t) => {
   const { root, temporary } = await fixture(t)
   const bin = path.join(temporary, 'bin'); await mkdir(bin)

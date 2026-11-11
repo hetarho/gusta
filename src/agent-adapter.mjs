@@ -5,6 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { SkillPackageError } from './errors.mjs'
 import { renderBrief } from './spec-context.mjs'
+import { OPTIONAL_FLAGS, knownFlags } from './work-providers.mjs'
 
 const fail = (message) => { throw new SkillPackageError(message) }
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
@@ -161,7 +162,8 @@ const WORKER_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep']
 
 // allowTools extends what a worker runs without a prompt: new worktrees are never-trusted
 // folders, so the project's own permission allowlist does not apply to them.
-export function providerArguments(provider, role, files, model, { allowTools = [], resume = null, session = null, permissionMode = 'acceptEdits' } = {}) {
+// flags: optional provider flags the installed CLI was found to support (work-providers OPTIONAL_FLAGS).
+export function providerArguments(provider, role, files, model, { allowTools = [], resume = null, session = null, permissionMode = 'acceptEdits', flags = [] } = {}) {
   const writes = ['worker', 'unit', 'variant'].includes(role)
   const sandbox = writes ? 'workspace-write' : 'read-only'
   if (!['acceptEdits', 'bypass'].includes(permissionMode) || (!writes && permissionMode === 'bypass')) fail('지원하지 않는 permission mode입니다.')
@@ -176,11 +178,13 @@ export function providerArguments(provider, role, files, model, { allowTools = [
     '--permission-mode', writes ? permissionMode === 'bypass' ? 'bypassPermissions' : 'acceptEdits' : 'plan', '--permission-prompts', 'none',
     '--tools', writes ? 'Bash,Read,Edit,Write,Glob,Grep' : 'Bash,Read,Glob,Grep',
     '--allowedTools', writes ? [...WORKER_TOOLS, ...allowTools].join(',') : 'Read,Glob,Grep,Bash(git diff *),Bash(git show *),Bash(git log *),Bash(git status *),Bash(git ls-files *)',
-    ...(resume ? ['--resume', resume] : session ? ['--session-id', session] : []), ...(model ? ['--model', model] : [])]
+    ...(resume ? ['--resume', resume] : session ? ['--session-id', session] : []), ...(model ? ['--model', model] : []),
+    ...flags.filter((flag) => OPTIONAL_FLAGS.claude.includes(flag))]
   fail(`지원하지 않는 실행기: ${provider}`)
 }
 
-export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text) }) {
+// flags defaults to what this process already learned about the CLI (inspection), never a new probe.
+export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text), flags }) {
   const prompt = await promptFor(job)
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-agent-'))
   const files = { schema: path.join(temporary, 'schema.json'), result: path.join(temporary, 'result.json') }
@@ -191,7 +195,7 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     const session = provider === 'claude' ? job.resume ?? randomUUID() : job.resume ?? null
     const remember = (id) => job.sessionFile && id ? writeFile(job.sessionFile, id).catch(() => {}) : null
     await remember(session)
-    const args = providerArguments(provider, job.role, files, model, { allowTools: ['worker', 'unit', 'variant'].includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits' })
+    const args = providerArguments(provider, job.role, files, model, { allowTools: ['worker', 'unit', 'variant'].includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags: flags ?? await knownFlags(provider, env) })
     const childEnv = { ...env }
     // The provider is an independent foreground run, not a nested interactive session.
     delete childEnv.CLAUDECODE
