@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm, readFile, realpath } from 'node:fs/promises'
 import { writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { executeAgentAdapter, claudeResult, claudeEnvelope, providerArguments } from '../src/agent-adapter.mjs'
+import { executeAgentAdapter, claudeResult, claudeEnvelope, providerArguments, skillBody } from '../src/agent-adapter.mjs'
 import { builtInAdapter, inspectProviders, inspectOrca, providerFlags } from '../src/work-providers.mjs'
 
 async function stub(t, name, body) {
@@ -227,6 +227,26 @@ test('unit adapters use fresh sessions and permit bypass only when explicitly se
   assert.deepEqual(providerArguments('codex', 'worker', files, null, { permissionMode: 'bypass', resume: 'abc' }).slice(0, 4), ['exec', 'resume', 'abc', '--dangerously-bypass-approvals-and-sandbox'])
   assert.ok(!providerArguments('codex', 'unit', files).some((arg) => arg.includes('bypass')))
   await assert.rejects(executeAgentAdapter({ provider: 'claude', job: { role: 'unit', workspace: fixture.root, resume: first.session }, env: fixture.env }), /resume 금지/)
+})
+
+// Codex units used to `cat .codex/skills/start-vibe/SKILL.md` first, loading the inlined skill twice.
+test('unit prompt inlines the start-vibe body once, without frontmatter, and says it is already loaded', async (t) => {
+  const fixture = await stub(t, 'codex', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('prompt.txt',text);const out=process.argv[process.argv.indexOf('--output-last-message')+1];fs.writeFileSync(out,JSON.stringify({kind:'none',id:'',outcome:'no_work',pushed:false,next:''}));});`)
+  await executeAgentAdapter({ provider: 'codex', job: { role: 'unit', workspace: fixture.root, tag: 't061' }, env: fixture.env, log: () => {} })
+  const text = await readFile(path.join(fixture.root, 'prompt.txt'), 'utf8')
+  const file = await readFile(new URL('../skills/start-vibe/SKILL.md', import.meta.url), 'utf8')
+  const [, frontmatter, body] = file.match(/^---\n([\s\S]*?)\n---\n+([\s\S]*)$/)
+  const note = text.search(/start-vibe skill is included below and already loaded: do not open its SKILL\.md or call a Skill tool for it/)
+  assert.ok(note >= 0 && note < text.indexOf(body), 'the no-reload note comes before the skill')
+  assert.match(text, /Load the skills it routes to \(implement-task, create-task, update-ssot/)
+  assert.equal(text.split(body).length, 2, 'the skill body appears exactly once')
+  // The trigger description is frontmatter only; none of its lines reach the unit.
+  const description = frontmatter.split('\n').filter((line) => /^\s{2}\S/.test(line)).map((line) => line.trim())
+  assert.ok(description.length > 0)
+  for (const line of description) assert.ok(!text.includes(line), `frontmatter line leaked: ${line}`)
+  assert.ok(!text.includes('name: start-vibe'))
+  assert.equal(skillBody('---\nname: x\n---\n\n# x\nbody\n'), '# x\nbody\n')
+  assert.equal(skillBody('# x\n---\nbody\n---\n'), '# x\n---\nbody\n---\n')
 })
 
 test('탐색 세션은 읽기 전용으로 실행되고 제안 JSON만 돌려준다', async (t) => {
