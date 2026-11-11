@@ -3,7 +3,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
-import { inspectWorkspace, git } from './workspace.mjs'
+import { inspectWorkspace, git, batchShow, gitOperation } from './workspace.mjs'
 import { readTaskBoard } from './task-board.mjs'
 import { quoteLine, quoteFields, sections, splitRefs, TASK_ID, INBOX_LINE, yymmdd } from './spec-format.mjs'
 import { closeTasks } from './state-doc.mjs'
@@ -58,6 +58,16 @@ const head = async (root, ref = 'HEAD') => (await git(root, ['rev-parse', '--ver
 const ancestor = async (root, old, next) => (await git(root, ['merge-base', '--is-ancestor', old, next], [1])) !== null
 const clean = async (root) => !(await git(root, ['status', '--porcelain', '--untracked-files=all'])).trim()
 const blob = (root, commit, file) => git(root, ['show', `${commit}:${file}`], [128])
+// blob() for `files` at one commit, read together in one batch; anything the batch cannot answer
+// exactly, and any other file, is read on demand as before. Held by one call only.
+async function blobsAt(root, commit, files) {
+  const unique = [...new Set(files)]
+  const answers = await batchShow(root, unique.map((file) => `${commit}:${file}`))
+  const known = new Map(unique.flatMap((file, index) => answers[index] === undefined ? [] : [[file, answers[index]]]))
+  return async (file) => known.has(file) ? known.get(file) : blob(root, commit, file)
+}
+const ssotFile = (base) => { const parsed = base.match(/^([A-Z]{2,6})@(\d+)$/); return parsed ? [`spec/ssot/${parsed[1]}.md`] : [] }
+const unitFiles = (tasks) => tasks.flatMap((task) => [...task.base.flatMap(ssotFile), task.file])
 
 async function repository(options) {
   const workspace = await inspectWorkspace(options)
@@ -113,13 +123,8 @@ async function requireClean(root) {
 }
 
 async function requireNoGitOperation(root) {
-  for (const marker of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']) {
-    if (await git(root, ['rev-parse', '--verify', '--quiet', marker], [1])) fail(`Git ${marker} 작업이 진행 중입니다.`, [root])
-  }
-  for (const marker of ['rebase-merge', 'rebase-apply']) {
-    const location = (await git(root, ['rev-parse', '--git-path', marker])).replace(/\r?\n$/, '')
-    try { await access(path.resolve(root, location)); fail('Git rebase 작업이 진행 중입니다.', [root]) } catch (error) { if (error.code !== 'ENOENT') throw error }
-  }
+  const marker = await gitOperation(root)
+  if (marker) fail(marker.startsWith('rebase-') ? 'Git rebase 작업이 진행 중입니다.' : `Git ${marker} 작업이 진행 중입니다.`, [root])
 }
 
 async function assertWorkspace(context, entry) {
@@ -140,22 +145,23 @@ function taskContract(content) {
 // implemented in order in the same workspace and never wait for integration.
 async function currentUnit(context, group, ids, snapshot) {
   const commit = snapshot?.commit ?? await head(context.cwd, `refs/heads/${group.branch}`)
-  const board = scopedBoard(snapshot?.board ?? await readTaskBoard({ targetRoot: context.cwd, ref: commit }), group)
+  const board = scopedBoard(snapshot?.board ?? await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: commit }), group)
   if (!board.ok || board.warnings.length) fail('상위 브랜치의 태스크/STATE를 먼저 정리하고 커밋하세요.', [...board.errors, ...board.warnings])
   const tasks = ids.map((id) => board.tasks.find((item) => item.id === id))
   if (tasks.some((task) => task?.st !== 'todo')) fail(`${ids.join(' ')}: todo 상태이며 상위 브랜치에서 dep이 충족된 태스크만 배정할 수 있습니다.`)
   const waiting = [...new Set(tasks.flatMap((task) => task.waitingOn.filter((dep) => !ids.includes(dep))))]
   if (waiting.length) fail(`${ids.join(' ')}: dep ${waiting.join(' ')}이 상위 브랜치에 아직 통합되지 않았습니다.`)
+  const read = snapshot?.read ?? await blobsAt(context.cwd, commit, unitFiles(tasks))
   for (const task of tasks) {
     for (const base of task.base) {
       const parsed = base.match(/^([A-Z]{2,6})@(\d+)$/)
       if (!parsed) fail(`${task.id}: 잘못된 SSOT base: ${base}`)
-      const ssot = await blob(context.cwd, commit, `spec/ssot/${parsed[1]}.md`)
+      const ssot = await read(`spec/ssot/${parsed[1]}.md`)
       const revision = quoteLine(ssot ?? '')?.match(/^r(\d+)\b/)?.[1]
       if (revision !== parsed[2]) fail(`${task.id}: ${base}가 현재 SSOT와 다릅니다. 기획 공간에서 신선도를 확인하고 태스크를 갱신하세요.`)
     }
   }
-  return { commit, board, tasks: await Promise.all(tasks.map(async (task) => ({ task, content: await blob(context.cwd, commit, task.file) }))) }
+  return { commit, board, read, tasks: await Promise.all(tasks.map(async (task) => ({ task, content: await read(task.file) }))) }
 }
 
 function incomplete(task, content) {
@@ -176,8 +182,10 @@ async function checkWorker(context, group, attempt, workingTree = false) {
   const ids = unitTasks(attempt)
   const position = ids.indexOf(attempt.taskId)
   if (position === -1) fail('실행 기록의 현재 태스크가 배정 단위에 없습니다.')
-  const current = await currentUnit(context, group, ids)
-  const read = (file) => workingTree ? readFile(path.join(attempt.workspace, file), 'utf8').catch(() => null) : blob(context.cwd, workspace.git.head, file)
+  const { read: atTarget, ...current } = await currentUnit(context, group, ids)
+  const domains = [...new Set(current.tasks.flatMap(({ task }) => task.base.map((base) => base.split('@')[0])))]
+  const read = workingTree ? (file) => readFile(path.join(attempt.workspace, file), 'utf8').catch(() => null)
+    : await blobsAt(context.cwd, workspace.git.head, [...current.tasks.map(({ task }) => task.file), ...domains.map((domain) => `spec/ssot/${domain}.md`)])
   let reach = position
   for (const [index, { task, content: upstream }] of current.tasks.entries()) {
     const content = await read(task.file)
@@ -186,9 +194,9 @@ async function checkWorker(context, group, attempt, workingTree = false) {
     if (index <= position && problem) fail(problem)
     if (index === reach + 1 && !problem) reach = index
   }
-  for (const domain of new Set(current.tasks.flatMap(({ task }) => task.base.map((base) => base.split('@')[0])))) {
+  for (const domain of domains) {
     const file = `spec/ssot/${domain}.md`
-    const canonical = await blob(context.cwd, current.commit, file)
+    const canonical = await atTarget(file)
     if (!canonical || canonical !== await read(file)) fail(`${domain}: 상위 브랜치의 SSOT가 달라졌습니다. 동기화 후 다시 검증하세요.`)
   }
   const common = (await git(context.cwd, ['merge-base', current.commit, workspace.git.head])).trim()
@@ -274,7 +282,7 @@ async function verify(root, checks, commit, signal, timeout = 60 * 60 * 1000, sc
   const env = { ...process.env, ...Object.fromEntries(Object.entries(scope).map(([key, value]) => [`HAERAM_${key}`, String(value)])) }
   const run = async () => {
     const results = []
-    const tree = runtime ? await commitTree(root, commit) : null
+    const tree = runtime && checks.length ? await commitTree(root, commit) : null
     for (const command of checks) {
       const key = tree && checkKey(tree, command, scope)
       const hit = key && await cachedPass(runtime, key)
@@ -425,7 +433,7 @@ export async function startWork(options) {
   const target = adopted ? context.cwd : await destination(context, `${options.name}-plan`, options.path)
   const group = { id: options.name, branch, baseRef, baseCommit, path: target, managed: !adopted, status: 'preparing', creator: creator(), createdAt: now(), limits: workLimits(options), verify: storedChecks(options),
     review: 'risky', ...storedPolicy(options) }
-  if (group.taskScope) scopedBoard(await readTaskBoard({ targetRoot: context.cwd, ref: baseCommit }), group)
+  if (group.taskScope) scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: baseCommit }), group)
   await transaction(context.root, (state) => {
     if (Object.hasOwn(state.groups, group.id)) fail('같은 이름의 작업 묶음이 이미 있습니다. work status를 확인하세요.')
     if (Object.values(state.groups).some((entry) => entry.branch === branch || entry.path === target)) fail('이미 사용 중인 기획 브랜치 또는 작업 공간입니다.')
@@ -450,7 +458,7 @@ export async function configureWork(options) {
   const policy = storedPolicy(options)
   if (!Object.keys(verify).length && !Object.keys(policy).length) fail('저장할 설정을 --tasks, --task-verify, --verify, --group-verify, --push, --review, --review-path, --review-lines, --allow-tool로 지정하세요.')
   const context = await repository(options)
-  const board = policy.taskScope ? await readTaskBoard({ targetRoot: context.cwd, ref: `refs/heads/${groupOf(await readRuntime(context.root), options.work).branch}` }) : null
+  const board = policy.taskScope ? await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: `refs/heads/${groupOf(await readRuntime(context.root), options.work).branch}` }) : null
   return transaction(context.root, (state) => {
     const group = groupOf(state, options.work)
     if (policy.taskScope) {
@@ -468,30 +476,52 @@ export async function claimWork(options) {
   return claimTask(options)
 }
 
-export async function claimNextWork(options) {
+// context: the caller's repository() for this same claim (the runner's slot pass), else a new one.
+export async function claimNextWork(options, context = null) {
   if (!options.owner?.trim()) fail('claim-next에는 --owner가 필요합니다.')
-  return claimTask(options, true)
+  return claimTask(options, true, context)
 }
 
-async function claimTask(options, next = false) {
-  const context = await repository(options)
+// Why the group takes no new unit for owner now, judged on one runtime state; null when it may.
+function claimRefusal(state, group, owner, next) {
+  const local = Object.values(state.attempts).filter((entry) => entry.group === group.id)
+  const limits = workLimits(group.limits)
+  if (local.filter(workerBusy).length >= limits.workers) return 'worker-capacity'
+  if (next && local.some((entry) => workerBusy(entry) && entry.owner === owner)) return 'owner-busy'
+  if (local.some((entry) => entry.status === 'changes_requested')) return 'changes-requested; resume corrections first'
+  if (local.filter(pendingReview).length >= limits.maxPending) return 'review-backpressure'
+  return null
+}
+
+async function claimTask(options, next = false, given = null) {
+  const context = given ?? await repository(options)
   const initial = await readRuntime(context.root)
   const group = groupOf(initial, options.work)
   if (!next && group.taskScope && !group.taskScope.includes(options.task)) fail('승인 범위 밖 태스크입니다. 오케스트레이터의 승인 뒤 범위를 갱신하세요.')
+  // A claim-next the group would refuse anyway answers before reading the board. The transaction
+  // judges the live state again, so a slot freed meanwhile is still taken by the next call. A refusal
+  // for capacity, owner-busy, a pending correction or backpressure therefore no longer reports plan,
+  // scope or --workspace errors: they surface at the next claim that can take work, and `work next`
+  // reports wait meanwhile.
+  const refused = next ? claimRefusal(initial, group, options.owner, next) : null
+  if (refused) return { idle: true, reason: refused, skipped: [] }
   const commit = await head(context.cwd, `refs/heads/${group.branch}`)
-  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, ref: commit }), group)
+  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: commit }), group)
   if (!board.ok || board.warnings.length) fail('상위 브랜치의 태스크/STATE를 먼저 정리하고 커밋하세요.', [...board.errors, ...board.warnings])
   // Read/validate immutable task snapshots before the short allocation transaction.
   const claimed = new Set(Object.values(initial.attempts).filter(active).flatMap(unitTasks))
   const units = rankedUnits(planUnits(board.tasks, board.doneIds, claimed), board.tasks)
   const candidates = []
   const skipped = []
-  for (const unit of units.filter((entry) => next ? entry.ready : entry.ids.includes(options.task))) {
+  const considered = units.filter((entry) => next ? entry.ready : entry.ids.includes(options.task))
+  // Every candidate's task and SSOT files at the one commit, in one batch.
+  const read = await blobsAt(context.cwd, commit, unitFiles(board.tasks.filter((task) => considered.some((unit) => !unit.mainSession && unit.ids.includes(task.id)))))
+  for (const unit of considered) {
     if (unit.mainSession) {
       if (!next) fail(`${options.task}: explore 태스크와 그 후속은 작업 묶음에 배정하지 않습니다. 메인 세션에서 단독으로 진행하세요.`)
       continue
     }
-    try { candidates.push({ unit, ...await currentUnit(context, group, unit.ids, { commit, board }) }) } catch (error) {
+    try { candidates.push({ unit, ...await currentUnit(context, group, unit.ids, { commit, board, read }) }) } catch (error) {
       if (!next) throw error
       skipped.push({ task: unit.ids.join(' '), reason: error.message })
     }
@@ -516,12 +546,8 @@ async function claimTask(options, next = false) {
     const idle = (reason) => { if (!next) fail(reason); return { idle: true, reason, skipped } }
     if (await head(context.cwd, `refs/heads/${group.branch}`) !== commit || candidates.some((entry) => entry.commit !== commit)) return idle('planning-changed; retry')
     const all = Object.values(state.attempts)
-    const local = all.filter((entry) => entry.group === group.id)
-    const limits = workLimits(live.limits)
-    if (local.filter(workerBusy).length >= limits.workers) return idle('worker-capacity')
-    if (next && local.some((entry) => workerBusy(entry) && entry.owner === owner)) return idle('owner-busy')
-    if (local.some((entry) => entry.status === 'changes_requested')) return idle('changes-requested; resume corrections first')
-    if (local.filter(pendingReview).length >= limits.maxPending) return idle('review-backpressure')
+    const refusal = claimRefusal(state, live, owner, next)
+    if (refusal) return idle(refusal)
     const available = prepared.find(({ current }) => (!live.taskScope || current.unit.ids.every((id) => live.taskScope.includes(id))) && !all.some((entry) => active(entry) &&
       (unitTasks(entry).some((taskId) => current.unit.ids.includes(taskId)) || overlaps(current.unit.touches, entry.touches))))
     if (!available) return idle(next ? 'no-eligible-task' : `${options.task}: 다른 실행이 이미 선점했거나 touches 영역을 사용 중입니다.`)
@@ -679,9 +705,10 @@ export async function submitWork(options) {
     const covered = ids.slice(ids.indexOf(attempt.taskId), current.reach + 1)
     const verification = await verify(attempt.workspace, checks, current.workerCommit, options.signal, timeout,
       { TIER: 'task', DIFF_BASE: diffBase, TASK: covered.at(-1), TASKS: covered.join(' ') }, { runtime: context.root })
-    await assertWorkspace(context, reservation.attempt)
-    // Another unit may integrate meanwhile; the contract and SSOT must still match the new target.
-    const latest = await checkWorker(context, reservation.group, reservation.attempt)
+    // Another unit may integrate while checks run; the contract and SSOT must still match the new
+    // target (checkWorker re-inspects the workspace first). With no check to run, nothing ran in
+    // between, so the first check stands.
+    const latest = checks.length ? await checkWorker(context, reservation.group, reservation.attempt) : current
     if (latest.workerCommit !== current.workerCommit) fail('검증 중 워커 HEAD가 바뀌었습니다. 다시 제출하세요.')
     options.signal?.throwIfAborted()
     const at = now()
@@ -956,7 +983,7 @@ export async function workBoard(options) {
   const context = await repository(options)
   const state = await readRuntime(context.root)
   const group = groupOf(state, options.work)
-  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, ref: `refs/heads/${group.branch}` }), group)
+  const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: `refs/heads/${group.branch}` }), group)
   const attempts = Object.values(state.attempts)
   const live = attempts.filter(active)
   const units = planUnits(board.tasks, board.doneIds, new Set(live.flatMap(unitTasks)))
@@ -1012,7 +1039,7 @@ export async function finishWork(options) {
     await assertWorkspace(context, group)
     await requireClean(group.path)
     const commit = await head(group.path)
-    const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, ref: commit }), group)
+    const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: commit }), group)
     if (!board.ok || board.warnings.length) fail('작업 브랜치의 태스크/STATE를 먼저 정리하세요.', [...board.errors, ...board.warnings])
     const deferred = mainSessionTasks(board.tasks)
     const remaining = board.tasks.filter((task) => !task.st?.startsWith('blocked@') && !deferred.has(task.id))

@@ -42,6 +42,13 @@ test('리뷰 대기 상한은 신규 선점을 멈추며 완료 검증만으로 
   await implement(attempt)
   await submitWork({ ...setup, attempt: attempt.id, verify: checks })
   assert.equal((await claimNextWork({ ...setup, work: 'pressure', owner: 'other' })).reason, 'review-backpressure')
+  // A refusal the group gives anyway answers before the board is read: a broken plan surfaces at the next claim that could take work.
+  const plan = (await inspectWork(setup)).groups.find((entry) => entry.id === 'pressure').path
+  const state = path.join(plan, 'spec/STATE.md')
+  await writeFile(state, (await readFile(state, 'utf8')).replace('| T002 | second | ARCH | - | todo |', '| T002 | second | ARCH | - | doing |'))
+  await commit(plan, 'break the plan')
+  assert.deepEqual(await claimNextWork({ ...setup, work: 'pressure', owner: 'other' }), { idle: true, reason: 'review-backpressure', skipped: [] })
+  await assert.rejects(claimWork({ ...setup, work: 'pressure', task: 'T002', owner: 'other' }), /태스크\/STATE/)
   await assert.rejects(integrateWork({ ...setup, attempt: attempt.id, verify: checks }), /상태|승인/)
   assert.equal((await claimReview({ ...setup, work: 'pressure', owner: 'worker' })).idle, true)
 })

@@ -1,7 +1,7 @@
-import { mkdir, readFile, writeFile, copyFile, cp, open, access, rm } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, copyFile, cp, open, access, rm, rmdir, chmod } from 'node:fs/promises'
 import { writeSync, constants } from 'node:fs'
 import { spawn, execFile } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,13 +9,13 @@ import { promisify } from 'node:util'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { runtimeRoot, canonicalDestination } from './work-runtime.mjs'
 import { atomicJSON, processAlive, controlTransaction } from './loop-control.mjs'
-import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
+import { executeAgentAdapter, compactUsage, agentPrompt } from './agent-adapter.mjs'
 import { inspectProviders, availableProvider, providerFlags } from './work-providers.mjs'
 import { readSetting, permissionMode } from './settings.mjs'
 import { closeTasks } from './state-doc.mjs'
 import { yymmdd } from './spec-format.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { urlOf, readFeedback } from './vibe-ab-hub.mjs'
+import { urlOf, readFeedback, approachLine } from './vibe-ab-hub.mjs'
 
 // A/B comparison: one problem, 2..6 variants, each on its own branch, sibling worktree and
 // port. Sessions build the variants; this host owns the mechanical parts a model should not
@@ -38,7 +38,8 @@ async function context(options) {
   return { root: workspace.git.root, main, identity, runtime: runtimeRoot(workspace) }
 }
 const recordFile = (ctx, slug) => path.join(ctx.runtime, 'ab', `${slug}.json`)
-const fileOf = (ctx, slug, name) => path.join(ctx.runtime, 'ab', slug, name)
+const dirOf = (ctx, slug) => path.join(ctx.runtime, 'ab', slug)
+const fileOf = (ctx, slug, name) => path.join(dirOf(ctx, slug), name)
 function slugOf(options) {
   if (!SLUG.test(options.slug ?? '')) fail('비교 이름(slug)은 소문자·숫자·하이픈 40자 이내입니다: vibe ab <step> <slug>')
   return options.slug
@@ -158,9 +159,10 @@ function relative(files = [], flag) {
 const LOCKFILES = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb']
 const committedBytes = (cwd, spec) => execFileAsync('git', ['-C', cwd, 'show', spec], { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 }).then((result) => result.stdout, () => null)
 // Only git-ignored dirs: a copy over a tracked dir (src) would replace the variant's own files.
+// check-ignore exits 128 for a path it cannot judge (beyond a symlinked dir): not ignored either.
 async function ignoredDirs(root, dirs) {
   const tracked = []
-  for (const dir of dirs) if ((await git(root, ['check-ignore', '-q', `${dir}/`], [1])) === null) tracked.push(dir)
+  for (const dir of dirs) if ((await git(root, ['check-ignore', '-q', `${dir}/`], [1]).catch(() => null)) === null) tracked.push(dir)
   if (tracked.length) fail(`--reuse는 git이 무시하는 의존성 폴더(node_modules 등)만 받습니다: ${tracked.join(', ')}`)
   return dirs
 }
@@ -186,13 +188,14 @@ async function reuseBlocker(root, dir, base) {
 }
 const reuseBlockers = async (root, dirs, base) => Object.fromEntries(await Promise.all(dirs.map(async (dir) => [dir, await reuseBlocker(root, dir, base)])))
 // Clone one dependency dir. fs.cp walks the tree in JS (minutes for a real node_modules), so the platform
-// cp clones it natively first: macOS `cp -c` (clonefile), GNU `--reflink=auto`, both keeping relative
-// symlinks as they are. BSD cp nests the source inside an existing destination, so that case is fs.cp.
+// cp clones it natively first: macOS `/bin/cp -c` (clonefile; GNU cp first on PATH reads -c as
+// --preserve=context), GNU `--reflink=auto`, both keeping relative symlinks as they are. BSD cp nests the
+// source inside an existing destination, so that case is fs.cp.
 export async function copyTree(source, destination, { platform = process.platform, run = execFileAsync } = {}) {
   await mkdir(path.dirname(destination), { recursive: true })
-  const native = { darwin: ['-c', '-R'], linux: ['-R', '--reflink=auto', '--no-dereference'] }[platform]
+  const native = { darwin: ['/bin/cp', '-c', '-R'], linux: ['cp', '-R', '--reflink=auto', '--no-dereference'] }[platform]
   if (native && !(await exists(destination))) {
-    try { await run('cp', [...native, source, destination]); return } catch { await rm(destination, { recursive: true, force: true }) }
+    try { await run(native[0], [...native.slice(1), source, destination]); return } catch { await rm(destination, { recursive: true, force: true }) }
   }
   await cp(source, destination, { recursive: true, mode: constants.COPYFILE_FICLONE, verbatimSymlinks: true })
 }
@@ -230,12 +233,15 @@ async function sessionOptions(ctx, options, deps) {
   return { provider, model: options.model, timeoutMs, allowTools: options.allowTool ?? [], permissionMode: await permissionMode(options, ctx.root), headlessMcp: await readSetting({ root: ctx.root }, 'headless-mcp'),
     flags: await (deps.flags ?? providerFlags)(provider, { env: options.env ?? process.env }) }
 }
-// One headless session in a worktree. The transcript goes to a runtime file (results name its path,
-// never its content); the host commits, so the session needs no Git permission.
+// One headless session in a worktree. The transcript and the full prompt it got go to runtime files
+// (results name their paths, never their content); the host commits, so the session needs no Git permission.
 async function headless(execute, session, { role, cwd, prompt, log, subject }) {
   const started = Date.now()
   const job = { schemaVersion: 1, role, workspace: cwd, prompt, timeoutMs: session.timeoutMs, allowTools: session.allowTools, permissionMode: session.permissionMode, headlessMcp: session.headlessMcp }
   await mkdir(path.dirname(log), { recursive: true })
+  const promptPath = log.replace(/\.log$/, '.prompt.md')
+  await writeFile(promptPath, await agentPrompt(job).catch(() => prompt), { mode: 0o600 })
+  await chmod(promptPath, 0o600)
   const file = await open(log, 'w', 0o600)
   let result
   try { result = await execute({ provider: session.provider, model: session.model, job, log: (text) => { try { writeSync(file.fd, text) } catch {} }, flags: session.flags }) } catch (error) {
@@ -248,21 +254,45 @@ async function headless(execute, session, { role, cwd, prompt, log, subject }) {
   }
   const commit = (await git(cwd, ['rev-parse', 'HEAD'])).trim()
   return { at: new Date().toISOString(), provider: session.provider, model: session.model ?? null, outcome: result.outcome, summary: result.summary, view: result.view, path: result.path ?? '',
-    commit, changed, ms: Date.now() - started, usage: compactUsage(result.usage), log }
+    commit, changed, ms: Date.now() - started, usage: compactUsage(result.usage), log, promptPath }
 }
 
 const fields = (text) => text.split('\0').filter(Boolean)
-// What the scaffold commit added and which existing files it modified or deleted: read-only for the
-// variants and put back as the start base had them at pick.
+const literal = (file) => `:(literal)${file}`
+// Where the scaffold's lines sit in its version of a file, from -U0 hunk headers: "7", "4-5", or "after 9"
+// where it removed lines. A binary file has none.
+async function scaffoldLines(root, record, file) {
+  const patch = await git(root, ['diff-tree', '-p', '-U0', '--no-renames', record.origin, record.scaffold, '--', literal(file)])
+  return [...patch.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)].map(([, start, count = '1']) => {
+    const from = Number(start), size = Number(count)
+    return size === 0 ? `after ${from}` : size === 1 ? `${from}` : `${from}-${from + size - 1}`
+  })
+}
+// What the scaffold commit added and which existing files it modified or deleted. A variant may edit a
+// modified text file (editable: where the scaffold's lines are) but not those lines; every other scaffold
+// path is read-only. Pick removes exactly the scaffold's lines and files.
 async function scaffoldFiles(root, record) {
-  const added = [], modified = []
+  const added = [], modified = [], edited = [], editable = {}
   if (record.scaffold) {
     const status = fields(await git(root, ['diff', '--name-status', '-z', '--no-renames', record.origin, record.scaffold]))
-    for (let index = 0; index < status.length; index += 2) (status[index] === 'A' ? added : modified).push(status[index + 1])
+    for (let index = 0; index < status.length; index += 2) {
+      const code = status[index], file = status[index + 1]
+      ;(code === 'A' ? added : modified).push(file)
+      if (code === 'M') edited.push(file)
+      const lines = code === 'M' ? await scaffoldLines(root, record, file) : []
+      if (lines.length) editable[file] = lines
+    }
   }
-  return { all: [...added, ...modified].sort(), added, modified }
+  return { all: [...added, ...modified].sort(), added, modified, edited, editable }
 }
-// Paths whose net content differs between two commits: what adopting `to` over `from` carries.
+// A scaffold that edited existing UI files may have edited the target screen itself, which the variants
+// redesign: start names them for the coordinator to look at.
+const UI_FILE = /\.(?:html|css|scss|jsx|tsx|vue|svelte|astro)$/i, UI_DIRS = new Set(['components', 'pages', 'app', 'routes', 'views'])
+export function scaffoldWarnings(modified) {
+  const ui = modified.filter((file) => UI_FILE.test(file) || file.toLowerCase().split('/').slice(0, -1).some((dir) => UI_DIRS.has(dir)))
+  return ui.length ? [`scaffold modified likely UI files: ${ui.join(', ')} — redo the scaffold if it edited the target screen itself`] : []
+}
+// Paths whose net content differs between two commits.
 const netChanges = async (cwd, from, to) => fields(await git(cwd, ['diff', '--name-only', '-z', '--no-renames', from, to]))
 
 export async function abStart(options = {}, injected = {}) {
@@ -314,9 +344,10 @@ export async function abStart(options = {}, injected = {}) {
   const blockers = await reuseBlockers(ctx.root, reuse, record.base)
   const installed = depsReport(Object.fromEntries(await Promise.all(Object.entries(record.variants).map(async ([name, variant]) => [name, await prepare(ctx, slug, prep, { name, ...variant }, blockers)]))))
   const run = record.scaffoldRun
-  const files = await scaffoldFiles(ctx.root, record)
+  const files = await scaffoldFiles(ctx.root, record), warnings = scaffoldWarnings(files.modified)
   return { schemaVersion: 1, ok: installed.ok, slug, base: record.base, ...(scaffold ? { origin, scaffold, scaffoldFiles: { added: files.added, modified: files.modified } } : {}),
-    ...(run ? { scaffoldRun: { summary: run.summary, view: run.view, path: run.path, ms: run.ms, usage: run.usage, log: run.log } } : {}),
+    ...(warnings.length ? { scaffoldWarnings: warnings } : {}),
+    ...(run ? { scaffoldRun: { summary: run.summary, view: run.view, path: run.path, ms: run.ms, usage: run.usage, log: run.log, promptPath: run.promptPath } } : {}),
     variants: Object.entries(record.variants).map(([name, variant]) => ({ variant: name, branch: variant.branch, path: variant.path, port: variant.port, url: urlOf(variant) })), ...installed.report }
 }
 
@@ -341,6 +372,17 @@ export async function abAdd(options = {}, injected = {}) {
   return { schemaVersion: 1, ok: installed.ok, slug, variant: name, from, branch: variant.branch, path: variant.path, port: variant.port, url: urlOf(variant), ...installed.report }
 }
 
+// The scaffold rule: read-only paths, editable files with where the scaffold's lines are (not their
+// content), the scaffold session's notes and its data states.
+function scaffoldRule(record, files) {
+  if (!files.all.length) return ''
+  const editable = Object.entries(files.editable), readOnly = files.all.filter((file) => !files.editable[file])
+  return ['Shared mock scaffold: adopting a variant removes exactly its lines and files.', readOnly.length && `Read-only: ${readOnly.join(', ')}.`,
+    editable.length && `You may edit ${editable.map(([file]) => file).join(', ')} except the scaffold's lines and the lines right around them (${editable.map(([file, lines]) => `${file}: ${lines.join(', ')}`).join('; ')}).`,
+    record.scaffoldRun?.summary && `Scaffold notes: ${record.scaffoldRun.summary.trim()}`,
+    'If it offers data states (e.g. ?mock=empty), design them too and name them in view. If you need different data, say so in summary.'].filter(Boolean).join(' ')
+}
+
 // [scaffold rule][shared text] then [variant line][approach][follow-up]: everything before the variant
 // line is the same for every variant (one cacheable prefix), and a follow-up repeats the first run's
 // prompt before what is new, so a fresh session knows the goal and the approach it continues.
@@ -348,7 +390,7 @@ function variantPrompt(record, name, files, { approach, followUp, note }) {
   const variant = record.variants[name], last = variant.runs.at(-1), others = Object.keys(record.variants).filter((other) => other !== name)
   // Worktrees share refs, so a remix can read what the other variants did without leaving its own.
   const remix = variant.from && `You start from variant ${variant.from}'s work (already on your branch). Other variants' changes: git diff ${record.base} ab/${record.slug}/<x>, x in ${others.join(', ')}.`
-  return [files.length && `Shared mock scaffold, read-only for variants (adopting a variant drops it): ${files.join(', ')}. If you need different data, say so in summary.`,
+  return [scaffoldRule(record, files),
     record.shared?.trim(), `Variant ${name} of ${record.slug}. $PORT for this variant: ${variant.port}.`, remix, approach,
     ...(followUp === undefined ? [] : [last && `Your last run's summary: ${last.summary}`, note && `The person's note on this variant: ${note}`,
       `Your branch already contains this work; change only what is asked.\n\nFollow-up request:\n${followUp}`])].filter(Boolean).join('\n\n')
@@ -363,13 +405,15 @@ async function runVariant(ctx, record, name, session, deps, { approach, followUp
   const note = hubNote && Date.parse(hubNote.at) > Date.parse(variant.runs.at(-1).at) ? hubNote.note : null
   const files = await scaffoldFiles(ctx.root, record)
   // The approach stays with the variant: a follow-up repeats it without the coordinator rewriting it.
-  const prompt = variantPrompt(record, name, files.all, { approach: approach ?? variant.approach, followUp, note })
+  const prompt = variantPrompt(record, name, files, { approach: approach ?? variant.approach, followUp, note })
   const run = await headless(deps.execute, session, { role: 'variant', cwd: variant.path, prompt, log: fileOf(ctx, slug, `${name}-run-${variant.runs.length + 1}.log`), subject: `ab ${slug}/${name}` })
   if (followUp !== undefined) run.followUp = true
   const live = await update(ctx, slug, (current) => { current.variants[name].runs.push(run); if (approach !== undefined) current.variants[name].approach = approach })
-  // A scaffold edit is caught here, before the person compares: pick would refuse this variant.
-  const touched = record.scaffold ? (await netChanges(variant.path, record.scaffold, 'HEAD')).filter((file) => files.all.includes(file)) : []
-  return { ok: run.outcome === 'completed' && !touched.length, variant: name, url: urlOf(live.variants[name]), ...run, ...(touched.length ? { scaffoldTouched: touched } : {}) }
+  // A scaffold-line edit or copy is caught here, before the person compares: pick would refuse this variant.
+  const adopted = record.scaffold ? await withoutScaffold(ctx, record, run.commit, files) : {}
+  const touched = adopted.conflicts ?? [], residue = adopted.residue ?? []
+  return { ok: run.outcome === 'completed' && !touched.length && !residue.length, variant: name, url: urlOf(live.variants[name]), ...run,
+    ...(touched.length ? { scaffoldTouched: touched } : {}), ...(residue.length ? { scaffoldResidue: residue } : {}) }
 }
 
 export async function abRun(options = {}, injected = {}) {
@@ -396,6 +440,8 @@ async function runAll(ctx, record, options, deps) {
   const approaches = found.filter(([, text]) => text !== null), skipped = found.filter(([, text]) => text === null).map(([name]) => name)
   if (!approaches.length) fail(`${options.promptDir}에 변형 프롬프트가 없습니다: ${names.map((name) => `${name}.md`).join(', ')}`)
   const session = await sessionOptions(ctx, options, deps)
+  // The residue marks once, before the parallel runs that all check against them.
+  if (record.scaffold) await scaffoldMarks(ctx, record, await scaffoldFiles(ctx.root, record))
   const variants = await Promise.all(approaches.map(([name, approach]) => runVariant(ctx, record, name, session, deps, { approach }).catch((error) =>
     ({ ok: false, variant: name, error: error.message, ...(error.details?.length ? { details: error.details } : {}) }))))
   return { schemaVersion: 1, ok: variants.every((entry) => entry.ok), slug: record.slug, variants, skipped }
@@ -559,6 +605,14 @@ async function pruneBranches(ctx, trees) {
 // Once a variant is picked or the comparison is dropped no variant branch is used again:
 // they go by default (spec/SETTINGS.md prune-branches); --prune-branches forces it when that is false.
 const pruning = async (ctx, options) => options.pruneBranches || await readSetting({ root: ctx.root }, 'prune-branches')
+// After pick or stop --remove: the sibling folders the worktrees lived in go once empty (rmdir removes only
+// an empty one), and under the same pruning rule the comparison's runtime folder (logs, feedback, prompts).
+async function tidy(ctx, slug, trees, prune) {
+  for (const dir of new Set(trees.filter(([, tree]) => tree.path).map(([, tree]) => path.dirname(tree.path)))) {
+    if (await rmdir(dir).then(() => true, () => false)) await rmdir(path.dirname(dir)).catch(() => {})
+  }
+  if (prune) await rm(dirOf(ctx, slug), { recursive: true, force: true })
+}
 
 export async function abStop(options = {}) {
   const ctx = await context(options), slug = slugOf(options), record = await update(ctx, slug, stopAll)
@@ -569,42 +623,146 @@ export async function abStop(options = {}) {
     discarded = await removeWorktrees(ctx, trees)
     if (prune) await pruneBranches(ctx, trees)
     await rm(recordFile(ctx, slug), { force: true })
+    await tidy(ctx, slug, trees, prune)
   }
   return { schemaVersion: 1, ok: true, slug, stopped: Object.keys(record.variants), removed: Boolean(options.remove), branches: prune ? [] : trees.map(([, tree]) => tree.branch),
     ...(discarded ? { note: '실패한 scaffold 세션이 남긴 미커밋 mock 변경은 버렸습니다.' } : {}) }
 }
 
 // git with a private index file, so a tree is built without touching any worktree or the real index.
-const indexGit = async (cwd, index, args) => (await execFileAsync('git', ['-C', cwd, ...args], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C', GIT_INDEX_FILE: index } })).stdout
-// A scaffold never ships: the adopted commit is the winner's tip with every scaffold path put back as
-// the start base had it (removed where the base had none), committed on top of origin. Only the net
-// result counts, so a variant that edited a scaffold file and later restored it adopts cleanly.
-async function withoutScaffold(ctx, record, name, files) {
-  const winner = record.variants[name], index = fileOf(ctx, record.slug, `${name}-adopt.index`)
+function indexGit(cwd, index, args, input) {
+  const running = execFileAsync('git', ['-C', cwd, ...args], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C', GIT_INDEX_FILE: index } })
+  running.child.stdin.on('error', () => {})
+  running.child.stdin.end(input)
+  return running.then((result) => result.stdout)
+}
+// The scaffold's reverse patch (scaffold to origin) as bytes; plumbing diff-tree ignores the diff UI config
+// (noprefix, color) git apply could not read back.
+const reversePatch = async (root, record, file) => (await execFileAsync('git', ['-C', root, 'diff-tree', '-r', '-p', '--binary', '--full-index', '--no-renames',
+  record.scaffold, record.origin, ...(file ? ['--', literal(file)] : [])], { encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 })).stdout
+// Git output that may be large (whole-file patches).
+const gitOut = async (root, args) => (await execFileAsync('git', ['-C', root, ...args], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } })).stdout
+// Added and removed lines of a patch, trimmed; a file's ---/+++ header ends at its first hunk.
+function patchLines(patch) {
+  const sections = new Map()
+  let current = null, hunk = false
+  for (const line of patch.split('\n')) {
+    if (line.startsWith('diff --git ')) { current = sections.get(line) ?? { added: [], removed: [] }; sections.set(line, current); hunk = false }
+    else if (line.startsWith('@@')) hunk = true
+    else if (hunk && line[0] === '+') current.added.push(line.slice(1).trim())
+    else if (hunk && line[0] === '-') current.removed.push(line.slice(1).trim())
+  }
+  return sections
+}
+// One -U0 diff between two trees, split by file: { file: { added, removed } }. A path git still quotes
+// (control characters, quotes, backslashes) is not found by its header and gets a call of its own.
+async function linesByFile(root, from, to, names) {
+  const sections = patchLines(await gitOut(root, ['-c', 'core.quotePath=false', 'diff-tree', '-r', '-p', '-U0', '--no-renames', from, to]))
+  const result = {}
+  for (const name of names) {
+    result[name] = sections.get(`diff --git a/${name} b/${name}`)
+      ?? [...patchLines(await gitOut(root, ['diff-tree', '-p', '-U0', '--no-renames', from, to, '--', literal(name)])).values()][0] ?? { added: [], removed: [] }
+  }
+  return result
+}
+// Blank lines, lone braces or brackets and bare tags say nothing about where a line came from.
+const TRIVIAL = /^(?:[\s{}()[\];,]*|<\/?[\w.:-]+>)$/
+// The lines origin already has somewhere: common code (an import, a return), not scaffold wiring.
+async function inOrigin(root, origin, lines) {
+  if (!lines.length) return new Set()
+  const running = execFileAsync('git', ['-C', root, 'grep', '-h', '-o', '-I', '-F', '-f', '-', origin], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } })
+  running.child.stdin.on('error', () => {})
+  running.child.stdin.end(`${lines.join('\n')}\n`)
+  return new Set((await running.then((result) => result.stdout, (error) => error.code === 1 ? '' : Promise.reject(error))).split('\n').map((line) => line.trim()))
+}
+const stripExt = (text) => text.replace(/\.[^./]+$/, '')
+const endsWithPath = (whole, tail) => whole === tail || whole.endsWith(`/${tail}`)
+// What marks scaffold wiring, from origin and the scaffold alone:
+// - lines: non-trivial lines the scaffold inserted into files origin had (a script tag, an entry import, an
+//   alias line), not lines it moved and none origin has elsewhere. Files it added are its own code: their
+//   boilerplate (hooks, returns) is everybody's, so they give path marks only.
+// - paths: how code names a file it added. Tails of two or more segments, with and without the extension,
+//   whose directory part origin lacks (mocks/handlers, never api/client); a */index.* also names its
+//   directory. One-segment names (root files, a bare directory) count only inside a string ('./fixtures',
+//   '../mocks'). A mark origin could resolve itself (the end of an origin file or directory path) is dropped.
+async function computeMarks(root, record, files) {
+  const listing = fields(await git(root, ['ls-tree', '-r', '-z', '--name-only', record.origin]))
+  const dirExists = (dir) => listing.some((file) => file.startsWith(`${dir}/`) || file.includes(`/${dir}/`))
+  const resolvable = (mark) => dirExists(mark) || listing.some((file) => endsWithPath(file, mark) || endsWithPath(stripExt(file), mark))
+  const paths = new Map()
+  const offer = (mark, quoted) => {
+    if (!mark || paths.has(mark) || resolvable(mark) || (!quoted && dirExists(path.posix.dirname(mark)))) return
+    paths.set(mark, { text: mark, quoted })
+  }
+  for (const file of files.added) {
+    const parts = file.split('/')
+    if (parts.length === 1) for (const mark of [file, stripExt(file)]) offer(mark, true)
+    for (let size = 2; size <= parts.length; size++) for (const mark of [parts.slice(-size).join('/'), stripExt(parts.slice(-size).join('/'))]) offer(mark, false)
+    if (parts.length > 1 && /^index\.[^./]+$/.test(parts.at(-1))) {
+      const dir = parts.slice(0, -1)
+      for (let size = 1; size <= dir.length; size++) offer(dir.slice(-size).join('/'), size === 1)
+    }
+  }
+  const sections = await linesByFile(root, record.origin, record.scaffold, files.all)
+  const moved = new Set(Object.values(sections).flatMap((entry) => entry.removed))
+  const candidates = [...new Set(files.edited.flatMap((file) => sections[file]?.added ?? []).filter((line) => !TRIVIAL.test(line) && !moved.has(line)))]
+  const common = await inOrigin(root, record.origin, candidates)
+  return { lines: candidates.filter((line) => !common.has(line)), paths: [...paths.values()] }
+}
+// Marks depend only on origin and the scaffold: computed on first use and kept in the runtime under both SHAs.
+async function scaffoldMarks(ctx, record, files) {
+  const file = fileOf(ctx, record.slug, `marks-${record.origin.slice(0, 12)}-${record.scaffold.slice(0, 12)}.json`)
+  const cached = await readFile(file, 'utf8').then(JSON.parse, () => null)
+  if (cached) return cached
+  const marks = await computeMarks(ctx.root, record, files)
+  await atomicJSON(file, marks)
+  return marks
+}
+const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const markPattern = ({ text, quoted }) => new RegExp(quoted ? `(?<=['"\`/])${escaped(text)}(?=['"\`])` : `(?<![\\w-])${escaped(text)}(?![\\w-])`)
+// Scaffold residue in an adopted tree: lines it adds over origin that repeat a scaffold wiring line or name a
+// file the scaffold added (its mock <script> copied elsewhere, an import of its handlers). Adopted, that
+// wiring would ship pointing at a deleted file.
+async function scaffoldResidue(ctx, record, files, tree) {
+  const marks = await scaffoldMarks(ctx, record, files)
+  if (!marks.lines.length && !marks.paths.length) return []
+  const lines = new Set(marks.lines), patterns = marks.paths.map(markPattern), found = new Map()
+  const sections = await linesByFile(ctx.root, record.origin, tree, await netChanges(ctx.root, record.origin, tree))
+  for (const [file, { added }] of Object.entries(sections)) {
+    for (const line of added) if (line && (lines.has(line) || patterns.some((pattern) => pattern.test(line)))) found.set(`${file}\0${line}`, { file, line: line.slice(0, 200) })
+  }
+  return [...found.values()].slice(0, 20)
+}
+// A scaffold never ships: the adopted tree is the variant's with the scaffold's reverse patch applied in a
+// private index, so exactly the scaffold's lines go. Its new files are deleted, files it deleted come back,
+// and a file it modified keeps the variant's other edits. Direct apply first, then 3-way (an edit a few lines
+// away changes the patch's context but still merges; `apply --cached --3way` needs Git 2.32+, and older Git
+// refuses such edits too). Returns { tree, residue }, or { conflicts }: the scaffold paths the variant
+// changed, or edited too close to the scaffold's lines, whose part of the patch no longer applies.
+async function withoutScaffold(ctx, record, commit, files) {
+  const index = fileOf(ctx, record.slug, `adopt-${randomUUID()}.index`)
   await mkdir(path.dirname(index), { recursive: true })
+  const applies = async (patch) => {
+    await indexGit(ctx.root, index, ['read-tree', commit])
+    if (!patch.length) return true
+    for (const mode of [[], ['--3way']]) {
+      if (await indexGit(ctx.root, index, ['apply', '--cached', '--binary', '--whitespace=nowarn', ...mode, '-'], patch).then(() => true, () => false)) return true
+    }
+    return false
+  }
   try {
-    await indexGit(ctx.root, index, ['read-tree', winner.branch])
-    // With no paths ls-tree would list the whole tree: an empty scaffold puts nothing back.
-    const kept = !files.all.length ? [] : fields(await git(ctx.root, ['ls-tree', '-r', '-z', '--full-tree', record.origin, '--', ...files.all])).map((entry) => {
-      const tab = entry.indexOf('\t'), [mode, , object] = entry.slice(0, tab).split(' ')
-      return { mode, object, file: entry.slice(tab + 1) }
-    })
-    // Remove every scaffold path first, then add back origin's versions: a path the scaffold deleted is
-    // not in the winner's index, and a file the scaffold turned into a directory (or back) cannot clash.
-    if (files.all.length) await indexGit(ctx.root, index, ['update-index', '--force-remove', '--', ...files.all])
-    if (kept.length) await indexGit(ctx.root, index, ['update-index', '--add', ...kept.flatMap((entry) => ['--cacheinfo', `${entry.mode},${entry.object},${entry.file}`])])
-    const tree = (await indexGit(ctx.root, index, ['write-tree'])).trim()
-    const summary = winner.runs.at(-1)?.summary.split('\n')[0].slice(0, 72) ?? ''
-    return (await git(ctx.root, ['commit-tree', tree, '-p', record.origin, '-m', `ab ${record.slug}/${name} without its mock scaffold${summary ? `: ${summary}` : ''}`])).trim()
+    if (await applies(await reversePatch(ctx.root, record))) {
+      const tree = (await indexGit(ctx.root, index, ['write-tree'])).trim()
+      return { tree, residue: await scaffoldResidue(ctx, record, files, tree) }
+    }
+    // Only a scaffold path the variant changed can block its own part (a path's patch holds what lies under it).
+    const changed = (await netChanges(ctx.root, record.scaffold, commit)).filter((file) => files.all.includes(file))
+    const conflicts = []
+    for (const file of changed) if (!(await applies(await reversePatch(ctx.root, record, file)))) conflicts.push(file)
+    return { conflicts: conflicts.length ? conflicts : changed.length ? changed : files.all }
   } finally { await rm(index, { force: true }) }
 }
 
-// The adoption log line as FORMAT writes it: the approach is --approach (English, one line) or else the first
-// line the variant was asked to build, cut to about 100 characters.
-function approachLine(text) {
-  const line = String(text ?? '').split('\n').map((entry) => entry.replace(/^(?:#+|[-*>])\s+/, '').trim()).find(Boolean) ?? ''
-  return line.length > 100 ? `${line.slice(0, 99).trimEnd()}…` : line
-}
 const STATE = 'spec/STATE.md'
 
 // Adoption merges exactly one variant into the checkout that started the comparison and logs it in
@@ -617,16 +775,17 @@ export async function abPick(options = {}) {
   if ((await git(ctx.root, ['status', '--porcelain'])).trim()) fail('합칠 checkout에 미커밋 변경이 있습니다.')
   // Predictable refusals come before servers and the hub stop, so the comparison stays on screen.
   if (Number((await git(ctx.root, ['rev-list', '--count', `${record.base}..${winner.branch}`])).trim()) === 0) fail(`변형 ${name}에 커밋이 없습니다.`)
-  const files = await scaffoldFiles(ctx.root, record)
-  if (record.scaffold) {
-    const changed = await netChanges(ctx.root, record.scaffold, winner.branch)
-    if (!changed.length) fail(`변형 ${name}에 scaffold 밖 변경이 없습니다.`)
-    const touched = changed.filter((file) => files.all.includes(file))
-    if (touched.length) fail(`변형 ${name}이 scaffold 파일을 고쳐 합치지 않았습니다 — 되돌리는 follow-up 뒤에 다시 고르세요. 현재 브랜치와 변형 브랜치는 그대로입니다.`, touched)
-  }
+  const tip = (await git(ctx.root, ['rev-parse', `${winner.branch}^{commit}`])).trim(), files = await scaffoldFiles(ctx.root, record)
+  const adopted = record.scaffold ? await withoutScaffold(ctx, record, tip, files) : null
+  if (adopted?.conflicts) fail(`변형 ${name}이 scaffold의 줄·파일을 바꿨거나 그 줄에 너무 붙여 고쳐 scaffold를 뺄 수 없습니다 — 되돌리는 follow-up 뒤에 다시 고르세요. 현재 브랜치와 변형 브랜치는 그대로입니다.`, adopted.conflicts)
+  // --accept-residue is the person's call after seeing the lines: they are adopted and listed in the result.
+  if (adopted?.residue.length && !options.acceptResidue) fail(`변형 ${name}에 scaffold의 mock 줄·경로가 옮겨져 남습니다(합치면 지워진 파일을 가리킴) — 지우는 follow-up 뒤에 다시 고르세요(사용자가 그 줄을 보고 받아들이면 --accept-residue). 현재 브랜치와 변형 브랜치는 그대로입니다.`, adopted.residue.map(({ file, line }) => `${file}: ${line}`))
+  if (adopted && adopted.tree === (await git(ctx.root, ['rev-parse', `${record.origin}^{tree}`])).trim()) fail(`변형 ${name}에 scaffold 밖 변경이 없습니다.`)
   await checkClean(trees)
-  // The adopt commit is built before anything stops: an unexpected Git failure leaves the comparison running.
-  const head = record.scaffold ? await withoutScaffold(ctx, record, name, files) : winner.branch
+  // The adopt commit (scaffold removed, on top of origin) is built before anything stops: an unexpected Git
+  // failure leaves the comparison running.
+  const summary = winner.runs.at(-1)?.summary.split('\n')[0].slice(0, 72) ?? ''
+  const head = adopted ? (await git(ctx.root, ['commit-tree', adopted.tree, '-p', record.origin, '-m', `ab ${slug}/${name} without its mock scaffold${summary ? `: ${summary}` : ''}`])).trim() : tip
   await update(ctx, slug, stopAll)
   try { await git(ctx.root, ['merge', '--no-ff', '-m', `ab ${slug}: adopt ${name}`, head]) } catch (error) {
     await git(ctx.root, ['merge', '--abort']).catch(() => {})
@@ -640,7 +799,9 @@ export async function abPick(options = {}) {
   const state = await readFile(path.join(ctx.root, STATE), 'utf8').catch(() => null), approach = approachLine(options.approach ?? winner.approach ?? winner.runs.at(-1)?.summary)
   const logLine = state === null ? null : `- ${yymmdd()} ab ${slug}: adopt ${name}${approach ? ` — ${approach}` : ''}`
   if (logLine) await writeFile(path.join(ctx.root, STATE), closeTasks(state, [], { log: logLine }).text)
+  await tidy(ctx, slug, trees, prune)
   return { schemaVersion: 1, ok: true, slug, adopted: name, merged, logLine, files: logLine ? [STATE] : [], summary: winner.runs.at(-1)?.summary ?? null, branches: prune ? [] : trees.map(([, tree]) => tree.branch),
+    ...(adopted?.residue.length ? { scaffoldResidue: adopted.residue } : {}),
     ...(record.scaffold ? { scaffold: record.scaffold, scaffoldFiles: { added: files.added, modified: files.modified }, todo: '채택한 UI는 mock 데이터 위에서 만들어졌습니다(scaffold는 빠짐). 실제 데이터 연결이 남았습니다.' } : {}) }
 }
 

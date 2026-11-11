@@ -389,4 +389,9 @@ test('A/B 변형 세션은 쓰기 권한·허용 명령으로 실행되고 커�
   assert.equal(flag(sent.args, '--permission-mode'), 'bypassPermissions')
   assert.match(sent.text, /never ships/); assert.match(sent.text, /Do NOT add an environment switch/); assert.match(sent.text, /request interception/)
   assert.match(sent.text, /Do NOT edit the target screen's component, route, loader or style files/); assert.match(sent.text, /Screen: \/pricing$/)
+  // Least invasive wiring first: the project's dev server or a dev-only route, entry-point registration last;
+  // switchable data states when cheap. Both roles write only inside their worktree.
+  assert.match(sent.text, /\(1\) fixtures served by the project's own dev server or a dev-only route\/middleware.*\(3\) only if unavoidable, registration from the entry point with the smallest possible insertion/)
+  assert.match(sent.text, /\?mock=empty\|error\|slow/); assert.match(sent.text, /removes exactly your lines and files/)
+  for (const prompt of [text, sent.text]) assert.match(prompt, /Write only inside this workspace.*git-ignored path in it or in the OS temp dir\), never in its parent folders\./)
 })
