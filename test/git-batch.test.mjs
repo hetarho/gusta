@@ -123,8 +123,8 @@ test('readTaskBoard at a commit lists tasks and the done archive like the checko
   assert.deepEqual(later.doneIds, ['T001', 'T010'])
 })
 
-const markerPaths = '.git/MERGE_HEAD\n.git/CHERRY_PICK_HEAD\n.git/REVERT_HEAD\n.git/rebase-merge\n.git/rebase-apply\n'
-function fakeGit({ refs = [], files = [], verified = [], failBatch = false } = {}) {
+const markerPaths = '.git\n.git/MERGE_HEAD\n.git/CHERRY_PICK_HEAD\n.git/REVERT_HEAD\n.git/rebase-merge\n.git/rebase-apply\n'
+function fakeGit({ refs = [], files = [], verified = [], failBatch = false, packed = null } = {}) {
   const calls = []
   return {
     calls,
@@ -139,13 +139,14 @@ function fakeGit({ refs = [], files = [], verified = [], failBatch = false } = {
       return Buffer.from(input.split('\n').filter(Boolean).map((name) => refs.includes(name) ? `${sha} commit 1` : `${name} missing`).join('\n') + '\n')
     },
     present: async (file) => files.some((name) => file.endsWith(`/.git/${name}`)),
+    read: async (file) => file.endsWith('/.git/packed-refs') ? packed : null,
   }
 }
 
 test('gitOperation: two processes find the first operation in the original order', async () => {
   const idle = fakeGit()
   assert.equal(await gitOperation('/repo', idle), null)
-  assert.deepEqual(idle.calls, ['rev-parse --git-path MERGE_HEAD --git-path CHERRY_PICK_HEAD --git-path REVERT_HEAD --git-path rebase-merge --git-path rebase-apply', 'cat-file --batch-check'])
+  assert.deepEqual(idle.calls, ['rev-parse --git-common-dir --git-path MERGE_HEAD --git-path CHERRY_PICK_HEAD --git-path REVERT_HEAD --git-path rebase-merge --git-path rebase-apply', 'cat-file --batch-check'])
   assert.equal(await gitOperation('/repo', fakeGit({ refs: ['REVERT_HEAD', 'CHERRY_PICK_HEAD'], files: ['rebase-merge'] })), 'CHERRY_PICK_HEAD')
   assert.equal(await gitOperation('/repo', fakeGit({ files: ['rebase-apply', 'rebase-merge'] })), 'rebase-merge')
   // A ref file whose object is lost: cat-file says missing, rev-parse --verify decides as before.
@@ -153,6 +154,15 @@ test('gitOperation: two processes find the first operation in the original order
   assert.equal(await gitOperation('/repo', lost), 'MERGE_HEAD')
   assert.equal(lost.calls.at(-1), 'rev-parse --verify --quiet MERGE_HEAD')
   assert.equal(await gitOperation('/repo', fakeGit({ files: ['MERGE_HEAD'] })), null)
+  // A loose or packed ref the name abbreviates, or a reftable backend, may point at a lost object too.
+  for (const where of [{ files: ['refs/heads/MERGE_HEAD'] }, { files: ['reftable'] }, { packed: `# pack-refs with: peeled\n${sha} refs/tags/MERGE_HEAD\n` }]) {
+    const asked = fakeGit({ ...where, verified: ['MERGE_HEAD'] })
+    assert.equal(await gitOperation('/repo', asked), 'MERGE_HEAD')
+    assert.equal(asked.calls.at(-1), 'rev-parse --verify --quiet MERGE_HEAD')
+  }
+  const unrelated = fakeGit({ packed: `${sha} refs/heads/main\n${sha} refs/heads/MERGE_HEAD-old\n` })
+  assert.equal(await gitOperation('/repo', unrelated), null)
+  assert.equal(unrelated.calls.length, 2)
   // A failed batch takes the one-call-per-marker path.
   const fallback = fakeGit({ failBatch: true, files: ['rebase-apply'] })
   assert.equal(await gitOperation('/repo', fallback), 'rebase-apply')
@@ -186,6 +196,8 @@ test('gitOperation agrees with one rev-parse per marker in a real repository and
     [linked, null, async () => {}],
     [linked, 'rebase-apply', () => mkdir(path.join(gitDir, 'rebase-apply'))],
     [linked, 'CHERRY_PICK_HEAD', () => writeFile(path.join(gitDir, 'CHERRY_PICK_HEAD'), `${commit}\n`)],
+    [root, 'REVERT_HEAD', () => rm(path.join(root, '.git/REVERT_HEAD'))
+      .then(() => appendFile(path.join(root, '.git/packed-refs'), `${'2'.repeat(40)} refs/heads/REVERT_HEAD\n`))],
   ]
   for (const [where, expected, change] of states) {
     await change()

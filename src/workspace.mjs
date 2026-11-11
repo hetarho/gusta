@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { access, realpath } from 'node:fs/promises'
+import { access, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
@@ -73,13 +73,37 @@ async function exists(file) {
   }
 }
 
+async function readText(file) {
+  try { return await readFile(file, 'utf8') } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+// The refs a pseudo-ref name abbreviates besides itself, in rev-parse's lookup order.
+const abbreviated = (name) => [`refs/${name}`, `refs/tags/${name}`, `refs/heads/${name}`, `refs/remotes/${name}`, `refs/remotes/${name}/HEAD`]
+
+// cat-file calls a name missing both when nothing resolves it and when a ref resolves it to a lost
+// object, where rev-parse --verify still succeeds. Only an absent ref settles it without asking:
+// no pseudo-ref file, no loose or packed ref the name abbreviates, and the files backend (no
+// reftable). Anything that cannot be ruled out, or read, is undecided.
+async function undecided(name, file, common, { present, read }) {
+  const maybe = (target) => present(target).catch(() => true)
+  if (await maybe(file) || await maybe(path.join(common, 'reftable'))) return true
+  for (const ref of abbreviated(name)) if (await maybe(path.join(common, ref))) return true
+  let packed
+  try { packed = await read(path.join(common, 'packed-refs')) } catch { return true }
+  const refs = new Set(abbreviated(name))
+  return (packed ?? '').split('\n').some((line) => refs.has(line.replace(/\r$/, '').split(' ')[1]))
+}
+
 // The Git operation in progress in root's worktree, checked in this order: MERGE_HEAD,
 // CHERRY_PICK_HEAD, REVERT_HEAD (a ref that resolves) or rebase-merge, rebase-apply (a directory
-// that exists); null when none. Two processes, not five: cat-file --batch-check resolves the refs
-// as rev-parse --verify does, and one rev-parse prints every --git-path. cat-file also calls a ref
-// to a lost object missing, so a missing ref whose file exists is verified on its own as before;
-// any other answer takes the one-call-per-marker path.
-export async function gitOperation(root, { run = git, batch = gitInput, present = exists } = {}) {
+// that exists); null when none. Usually two processes, not five: cat-file --batch-check resolves
+// the refs as rev-parse --verify does, and one rev-parse prints the common dir and every
+// --git-path. A missing ref that a lost object could explain is verified on its own as before
+// (undecided above); any other answer takes the one-call-per-marker path.
+export async function gitOperation(root, { run = git, batch = gitInput, present = exists, read = readText } = {}) {
   const one = async () => {
     for (const name of PSEUDO_REFS) if (await run(root, ['rev-parse', '--verify', '--quiet', name], [1])) return name
     for (const name of REBASE_DIRS) if (await present(path.resolve(root, (await run(root, ['rev-parse', '--git-path', name])).replace(/\r?\n$/, '')))) return name
@@ -88,20 +112,19 @@ export async function gitOperation(root, { run = git, batch = gitInput, present 
   let listed, checked
   try {
     [listed, checked] = await Promise.all([
-      run(root, ['rev-parse', ...[...PSEUDO_REFS, ...REBASE_DIRS].flatMap((name) => ['--git-path', name])]),
+      run(root, ['rev-parse', '--git-common-dir', ...[...PSEUDO_REFS, ...REBASE_DIRS].flatMap((name) => ['--git-path', name])]),
       batch(root, ['cat-file', '--batch-check'], PSEUDO_REFS.map((name) => `${name}\n`).join('')),
     ])
   } catch { return one() }
-  const paths = listed.split('\n').map((line) => line.replace(/\r$/, ''))
+  const [common, ...paths] = listed.split('\n').map((line) => path.resolve(root, line.replace(/\r$/, '')))
   const refs = checked.toString('utf8').split('\n')
-  if (paths.length !== 6 || paths[5] !== '' || refs.length !== 4 || refs[3] !== '') return one()
+  if (paths.length !== 6 || !listed.endsWith('\n') || refs.length !== 4 || refs[3] !== '') return one()
   for (const [index, name] of PSEUDO_REFS.entries()) {
     if (/^[0-9a-f]{40,64} /.test(refs[index])) return name
     if (refs[index] !== `${name} missing`) return one()
-    const file = await present(path.resolve(root, paths[index])).catch(() => true)
-    if (file && await run(root, ['rev-parse', '--verify', '--quiet', name], [1])) return name
+    if (await undecided(name, paths[index], common, { present, read }) && await run(root, ['rev-parse', '--verify', '--quiet', name], [1])) return name
   }
-  for (const [offset, name] of REBASE_DIRS.entries()) if (await present(path.resolve(root, paths[PSEUDO_REFS.length + offset]))) return name
+  for (const [offset, name] of REBASE_DIRS.entries()) if (await present(paths[PSEUDO_REFS.length + offset])) return name
   return null
 }
 
