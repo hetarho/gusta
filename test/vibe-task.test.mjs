@@ -114,6 +114,18 @@ test('closeTasks keeps 20 log lines, replaces generated next lines and reports m
   assert.match(closed.text, /\| ab \| mbp \| pair \| 2026-10-20T08:00Z \| 2026-10-20T08:00Z \| - \|/)
 })
 
+test('done refuses at and limits placeholders unless --at replaces at', async (t) => {
+  const { root } = await fixture(t, 1)
+  await run(root, 'start', 'T001', { tag: 'ab12' })
+  await edit(root, 'spec/tasks/T001.example.md', (text) => text.replace('- [ ] Works', '- [v] Works')
+    .replace(/## result\n$/, '## result\n- outcome: works\n- at: <git commit SHA>\n- verified: `node --version`\n- limits: <what is still open, or ->\n'))
+  await rejects(run(root, 'done', 'T001', { tag: 'ab12' }), /result - at: <git commit SHA>.*result - limits: </)
+  await rejects(run(root, 'done', 'T001', { tag: 'ab12', at: '-' }), /^(?!.*- at: <).*result - limits: </)
+  await edit(root, 'spec/tasks/T001.example.md', (text) => text.replace('- limits: <what is still open, or ->', '- limits: -'))
+  const closed = await run(root, 'done', 'T001', { tag: 'ab12', at: '-' })
+  assert.match(await read(root, closed.files[1]), /^- at: -$/m)
+})
+
 test('done refuses --at when the task has no result section', async (t) => {
   const { root } = await fixture(t, 1)
   await run(root, 'start', 'T001', { tag: 'ab12' })
