@@ -8,7 +8,7 @@ description: >-
 
 # show-ab — 변형 비교 진행자
 
-**역할: 비교 진행자(함께 전용).** 사람이 고르는 순간을 만든다 — 서로 다른 안을 실제로 만들어 띄우고, 사용자는 보고 고른다. 변형 구현은 하위 세션이, 브랜치·worktree·커밋·서버·측정·정리는 `vibe ab`가 맡는다. 이 세션은 변형 설계·비교표·채택 기록만 하고 코드를 직접 쓰지 않는다.
+**역할: 비교 진행자(함께 전용).** 서로 다른 안을 실제로 만들어 띄우고, 사용자는 보고 고른다. 변형 구현은 하위 세션이, 브랜치·worktree·커밋·서버·측정·정리는 `vibe ab`가 맡는다. 이 세션은 변형 설계·비교표·채택 기록만 하고 코드를 직접 쓰지 않는다.
 
 ## 공통 규칙 (모든 spec 스킬)
 1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 create-architecture 실행을 안내한다. `settings.unset`이 있으면 haeram-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
@@ -18,21 +18,24 @@ description: >-
 5. **읽기**: brief·status 요약을 먼저 쓰고 부족한 ID·섹션만 읽는다. 결정은 `vibe brief <T###|ID-n|ID@rev>`로 원문 블록째 받는다 — 끝의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
 ## 1. 변형 설계
-- 요청을 한 문장 목표와 비교 축(디자인·UX·UI·기능·성능)으로 정리한다. 변형 수는 사용자가 말한 대로, 없으면 2개(최대 6 — 변형마다 구현 세션 하나만큼 토큰·시간이 든다).
+- 요청을 한 문장 목표와 비교 축(디자인·UX·UI·기능·성능)으로 정리한다. 변형 수는 사용자가 말한 대로, 없으면 2개(최대 6 — 변형마다 세션 하나만큼 토큰·시간이 든다).
 - 변형마다 접근 하나: 목표·제약은 같고 방식은 확실히 다르게(사소한 차이 여럿보다 의미 있는 차이 하나). 사용자가 안을 말했으면 그대로 쓴다. 문제 자체가 모호할 때만 한 번 묻는다.
 - 변형은 실험이다 — spec/을 고치지 않고 기존 SSOT 결정·계약을 모두 지킨다. 결정을 바꿔야 성립하는 안이면 변형 설명에 그 결정 ID를 적는다.
+- UI 비교인데 화면에 백엔드·인증·시드 데이터가 필요하면 있는 것(Storybook 등 샌드박스, ARCH의 mock 스위치)을 변형마다 $PORT로 띄우고, 없으면 2절 scaffold.
 - 맡김에서는 실행하지 않는다(고를 사람이 없다). inbox parked에 비교 요청을 남긴다.
 
 ## 2. 준비
-`vibe ab start <slug> --variants <n> [--setup '<의존성 설치>'] [--copy <실행에 필요한 미추적 파일> ...] --json`
-- 변형마다 `ab/<slug>/<a|b|…>` 브랜치·형제 worktree·포트(4101부터 빈 포트)가 생긴다. 미커밋 변경이 있으면 거절된다 — 사용자 변경을 임의로 커밋하지 않고 어떻게 할지 묻는다.
-- setup은 lockfile에 맞는 설치(`npm ci`·`pnpm install --frozen-lockfile` 등)로 worktree마다 병렬 실행된다. `--copy`는 `.env.local`처럼 git에 없지만 실행에 필요한 파일만.
+`vibe ab start <slug> --variants <n> --shared-file <공통> [--scaffold-prompt <file> | --scaffold <ref>] [--setup '<의존성 설치>'] [--copy <미추적 파일> ...] --json`
+- 변형마다 `ab/<slug>/<a|b|…>` 브랜치·형제 worktree·포트가 생긴다. 미커밋 변경이 있으면 거절된다 — 사용자 변경은 임의로 커밋하지 않고 묻는다.
+- shared에는 변형 공통 글을 한 번만: 목표·제약·지킬 결정(`vibe brief` 블록)·볼 화면·완료 기준.
+- scaffold: 세션 하나가 `ab/<slug>/base`에 화면을 결정적 mock 데이터·인증 stub으로 띄우는 커밋을 만들고 변형은 그 위에서 시작한다. 프롬프트에는 볼 화면·필요한 데이터만, 있는 커밋은 `--scaffold <ref>`. ok:false면 보고하고 `stop --remove`.
+- setup은 lockfile에 맞는 설치(`npm ci` 등)로 worktree마다 병렬 실행된다. `--copy`는 `.env.local`처럼 git에 없지만 실행에 필요한 파일만.
 
 ## 3. 병렬 구현 — 하위 세션
-변형마다 세션 임시 폴더에 프롬프트 파일을 쓴다: 목표, 이 변형의 접근, 지킬 결정(`vibe brief` 블록 또는 SSOT ID), 볼 화면·완료 기준. 그리고 동시에 띄운다:
-- 기본(헤드리스): 변형마다 `vibe ab run <slug> --variant <v> --prompt-file <file> --provider <claude|codex> [--allow-tool '<태스크 검사 명령 규칙>'] --json`을 백그라운드로 실행한다. 세션은 자기 worktree만 고치고, 끝나면 CLI가 변형 브랜치에 커밋한다. 돌아오는 것은 summary·view·path(볼 곳·URL 경로)뿐이다.
-- 네이티브 하위 세션 도구를 써도 된다(worktree 경로 지정, 커밋·서버 실행은 하지 않게). 같은 대화에서 역할만 바꿔 변형을 직접 만들지 않는다.
-- 변형은 영향 단위 테스트와 빠른 검사만 돌린다. 전체 스위트는 채택한 변형을 합친 뒤 평소의 마감 관문에서 한 번.
+변형마다 이 변형의 접근만 프롬프트 파일에 쓰고 동시에 띄운다:
+- 기본(헤드리스): 변형마다 `vibe ab run <slug> --variant <v> --prompt-file <file> --provider <claude|codex> [--allow-tool '<태스크 검사 명령 규칙>'] --json`을 백그라운드로 실행한다. 세션은 자기 worktree만 고치고, CLI가 shared를 앞에 붙이고 끝나면 변형 브랜치에 커밋한다. 돌아오는 것은 summary·view·path(볼 곳·URL 경로)뿐이다.
+- 네이티브 하위 세션 도구를 써도 된다(worktree 경로·shared+접근을 주고 커밋·서버·scaffold 수정은 하지 않게). 같은 대화에서 역할만 바꿔 변형을 직접 만들지 않는다.
+- 변형은 영향 단위 테스트와 빠른 검사만 돌린다(전체 스위트는 합친 뒤 마감 관문에서 한 번).
 
 ## 4. 보여 주기
 - 화면이 있으면 `vibe ab serve <slug> --command '<개발 서버, 포트는 $PORT>' --json`: 변형마다 자기 포트에 띄우고 path가 응답하면 비교 페이지(hub)를 띄운다. 명령은 ARCH·package.json의 dev 스크립트로 고르고 포트 인자가 필요하면 `$PORT`를 넘긴다(예 `npm run dev -- --port $PORT`). 준비 실패(5xx·무응답)는 로그 tail로 원인을 보고하고 URL이 있다고 말하지 않는다. 3xx·4xx면 그 status를 함께 말한다.
@@ -40,10 +43,11 @@ description: >-
 - 성능·동작 비교는 `vibe ab exec <slug> --command '<측정 명령>' --repeat 3 --json`: 변형을 번갈아 실행해 중앙값·최소·종료 코드·마지막 줄을 모은다. 실행 사이의 흔들림보다 작은 차이는 차이라고 하지 않는다.
 - 비교표 하나로 보여 준다: 변형 | 접근 | 측정값 | 볼 곳(view) | 장단점·위험. 판정은 사용자 몫이고 추천은 근거와 함께 한 줄만.
 - 사용자가 다 봤다고 하면 `vibe ab status <slug> --json`의 feedback(메모·chosen)을 읽는다. chosen은 의사 표시일 뿐 — 확인받고 pick한다.
-- 특정 변형을 고쳐 달라고 하면(말 또는 메모) 그 변형에만 `vibe ab run`을 다시 돌린다(새 프롬프트에는 요청·메모만). 이어 `vibe ab serve <slug> --variant <v> --command …`는 살아 있는 서버를 두고 응답만 확인한다(hot reload가 없으면 `--restart`).
+- 특정 변형을 고쳐 달라고 하면(말 또는 메모) `vibe ab run <slug> --variant <v> --follow-up-file <요청만>`(접근·지난 요약·메모는 CLI가 붙인다). 이어 `vibe ab serve <slug> --variant <v> --command …`는 살아 있는 서버를 두고 응답만 확인한다(hot reload가 없으면 `--restart`).
 
 ## 5. 채택과 정리
-- `vibe ab pick <slug> --variant <v> --json`: 서버·hub를 모두 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리한다. 변형 브랜치는 spec/SETTINGS.md `prune-branches`(기본 true)대로 지운다. false여도 `--prune-branches`를 주면 지운다. 충돌이면 현재 브랜치는 그대로 두고 보고한다.
+- `vibe ab pick <slug> --variant <v> --json`: 서버·hub를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리한다. 변형 브랜치는 spec/SETTINGS.md `prune-branches`(기본 true)대로 지운다. false여도 `--prune-branches`를 주면 지운다. 충돌이면 현재 브랜치는 그대로 두고 보고한다.
+- scaffold는 pick이 빼고 합친다(scaffold 파일을 고친 변형은 거절). todo(실제 데이터 연결)는 create-task로.
 - 채택 기록은 디자인 마감과 같다: STATE log `- YYMMDD ab <slug>: adopt <v> — <approach>`를 merge 직후 커밋 하나로 남기고, 채택안이 SSOT 규칙을 바꿨으면 이어서 update-ssot(대안=고르지 않은 변형, 이유=사용자 선택 근거).
 - 합친 뒤에는 평소대로 영향 검사, push 직전 마감 관문(start-vibe 4절).
 - 고르지 않고 끝내면 `vibe ab stop <slug> --remove`(브랜치는 pick과 같은 설정을 따른다). 나중에 보겠다면 서버·hub를 두고 `vibe ab status <slug>`의 hub URL을 다시 준다.

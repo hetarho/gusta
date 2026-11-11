@@ -222,4 +222,10 @@ test('A/B 변형 세션은 쓰기 권한·허용 명령으로 실행되고 커�
   // Results without path (older providers or records) open at the root.
   assert.equal(claudeResult(JSON.stringify({ structured_output: { outcome: 'completed', summary: 'x', view: 'home' } }), 'variant').path, '')
   assert.throws(() => claudeResult(JSON.stringify({ structured_output: { outcome: 'completed', summary: 'x', view: 'home', path: 3 } }), 'variant'), /path/)
+  // The mock scaffold writes like a variant but is told it never ships: no switch read by app code.
+  const scaffold = await executeAgentAdapter({ provider: 'claude', job: { schemaVersion: 1, role: 'scaffold', workspace: fixture.root, prompt: 'Screen: /pricing', permissionMode: 'bypass' }, env: fixture.env, log: () => {} })
+  assert.equal(scaffold.path, '/pricing'); assert.equal(scaffold.usage.output_tokens, 4)
+  const sent = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
+  assert.equal(flag(sent.args, '--permission-mode'), 'bypassPermissions')
+  assert.match(sent.text, /never ships/); assert.match(sent.text, /Do NOT add an environment switch/); assert.match(sent.text, /Screen: \/pricing$/)
 })

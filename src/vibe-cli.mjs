@@ -52,8 +52,11 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
                                                 디자인 모드(start-design): 이 checkout의 Git 디렉터리에 디자인 중 상태 쓰기·전체 검증·삭제.
                                                 STATE·다른 worktree는 건드리지 않음 (커밋은 호출자). verify는 ARCH task·batch 명령 전부를
                                                 미커밋 작업 트리에서 한 번씩. 디자인 중 이 checkout의 push·맡김은 거절
-  vibe ab start <slug> [--variants 2] [--base HEAD] [--base-port 4101] [--setup <install command>] [--copy <untracked file> ...]
-  vibe ab run <slug> --variant <a|b|..> --prompt-file <file> [--provider auto|claude|codex] [--model <id>] [--allow-tool <rule> ...] [--permission-mode bypass|acceptEdits] [--timeout-ms 3600000]
+  vibe ab start <slug> [--variants 2] [--base HEAD] [--base-port 4101] [--setup <install command>] [--copy <untracked file> ...] [--shared-file <file>] [--scaffold-prompt <file> | --scaffold <ref>]
+                                                shared: 모든 변형 프롬프트의 공통 앞부분(목표·결정·화면·완료 기준). scaffold: 세션 하나가 ab/<slug>/base에
+                                                mock 데이터·인증 stub 커밋을 만들고 변형은 거기서 시작(--scaffold는 있는 커밋 재사용). pick은 그 커밋을 빼고 합친다
+  vibe ab run <slug> --variant <a|b|..> (--prompt-file <approach> | --follow-up-file <request>) [--provider auto|claude|codex] [--model <id>] [--allow-tool <rule> ...] [--permission-mode bypass|acceptEdits] [--timeout-ms 3600000]
+                                                follow-up은 공통·처음 접근·지난 요약·hub 메모를 붙여 같은 브랜치에서 이어 고친다
   vibe ab serve <slug> --command '<dev server using $PORT>' [--variant <v>] [--restart] [--ready-timeout-ms 120000]
                                                 화면(path)이 HTTP로 응답하면 준비. 살아 있는 서버는 두고(--restart면 새로) 비교 페이지(hub) URL 하나
   vibe ab exec <slug> --command '<measure or check>' [--repeat 1] [--variant <v>]
@@ -75,7 +78,7 @@ const allowed = {
   claim: ['tag', 'task', 'remote'],
   checkpoint: ['tag', 'message', 'remote'], prune: ['tag', 'work', 'remote'], settings: ['set'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
   awake: ['hours', 'remote'], check: ['tier', 'diff-base', 'task', 'timeout-ms'], design: ['tag', 'scope', 'verify', 'timeout-ms'],
-  ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'variant', 'prompt-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
+  ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'shared-file', 'scaffold-prompt', 'scaffold', 'variant', 'prompt-file', 'follow-up-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
 }
 const flags = { loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep'], ab: ['remove', 'prune-branches', 'restart'] }
 const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
