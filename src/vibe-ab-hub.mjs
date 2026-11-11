@@ -42,7 +42,7 @@ export function applyFeedback(feedback, action, body, names, at) {
 export function hubModel(record, feedback, alive = processAlive) {
   return { slug: record.slug, feedback, variants: Object.entries(record.variants).map(([name, variant]) => {
     const last = variant.runs?.at(-1)
-    return { name, url: urlOf(variant), summary: last?.summary ?? '', view: last?.view ?? '', serving: Boolean(variant.server?.pid && alive(variant.server.pid)) }
+    return { name, from: variant.from ?? '', url: urlOf(variant), summary: last?.summary ?? '', view: last?.view ?? '', serving: Boolean(variant.server?.pid && alive(variant.server.pid)) }
   }) }
 }
 
@@ -77,7 +77,7 @@ export function renderHub({ slug, variants, feedback = EMPTY() }) {
   const sections = variants.map((variant) => {
     const summary = variant.summary.split('\n')[0]
     return `<section data-variant="${escape(variant.name)}"${variant.name === chosen ? ' class="chosen"' : ''}>
-<div class="head"><div class="row"><strong>${escape(variant.name)}</strong><a href="${escape(variant.url)}" target="_blank" rel="noopener">open in new tab ↗</a>${variant.serving ? '' : '<span class="muted">not serving</span>'}</div>
+<div class="head"><div class="row"><strong>${escape(variant.name)}</strong>${variant.from ? `<span class="muted">from ${escape(variant.from)}</span>` : ''}<a href="${escape(variant.url)}" target="_blank" rel="noopener">open in new tab ↗</a>${variant.serving ? '' : '<span class="muted">not serving</span>'}</div>
 <p title="${escape(variant.summary)}">${escape(summary) || '<span class="muted">no run yet</span>'}</p>${variant.view ? `<p class="muted" title="${escape(variant.view)}">view: ${escape(variant.view)}</p>` : ''}</div>
 <div class="frame"><iframe src="${escape(variant.url)}" title="variant ${escape(variant.name)}"></iframe></div>
 <div class="foot"><textarea data-variant="${escape(variant.name)}" placeholder="note for ${escape(variant.name)}">${escape(feedback.notes?.[variant.name]?.note ?? '')}</textarea>

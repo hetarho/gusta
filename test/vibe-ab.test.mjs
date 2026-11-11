@@ -7,7 +7,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fixture, git } from './helpers/vibe-fixture.mjs'
-import { abStart, abRun, abServe, abExec, abStatus, abPick, abStop } from '../src/vibe-ab.mjs'
+import { abStart, abAdd, abRun, abServe, abExec, abStatus, abPick, abStop } from '../src/vibe-ab.mjs'
 import { renderHub, viewPath, createHub, readFeedback, hubMain } from '../src/vibe-ab-hub.mjs'
 
 const exists = (file) => access(file).then(() => true, () => false)
@@ -207,11 +207,11 @@ test('hub page escapes session text and frames each variant at URL plus view pat
   assert.deepEqual(['', '/', 'settings', '/a/b', 'http://localhost:3000/x?y=1', 'the settings page'].map(viewPath), ['', '', '/settings', '/a/b', '/x?y=1', ''])
   const html = renderHub({ slug: 'hero', feedback: { notes: { a: { note: 'larger <b>', at: 'now' } }, chosen: { variant: 'b', at: 'now' } }, variants: [
     { name: 'a', url: 'http://localhost:4101/settings', summary: 'cards <script>x</script>\nsecond line', view: 'settings tab', serving: true },
-    { name: 'b', url: 'http://localhost:4102', summary: 'list', view: '', serving: false }] })
+    { name: 'b', from: 'a', url: 'http://localhost:4102', summary: 'list', view: '', serving: false }] })
   assert.deepEqual([...html.matchAll(/<iframe src="([^"]+)"/g)].map((match) => match[1]), ['http://localhost:4101/settings', 'http://localhost:4102'])
   assert.ok(!html.includes('<script>x</script>')); assert.ok(html.includes('cards &lt;script&gt;'))
   assert.ok(html.includes('>larger &lt;b&gt;</textarea>')); assert.match(html, /data-variant="b" class="chosen"/)
-  assert.match(html, /target="_blank"/); assert.match(html, /data-width="390"/); assert.match(html, /not serving/); assert.match(html, /blocks framing/)
+  assert.match(html, /target="_blank"/); assert.match(html, /data-width="390"/); assert.match(html, /not serving/); assert.match(html, /blocks framing/); assert.match(html, /<strong>b<\/strong><span class="muted">from a<\/span>/)
 })
 
 test('hub records notes and a choice for known variants only, and ends with its comparison', async (t) => {
@@ -365,6 +365,32 @@ test('a reused --scaffold skips the session; a scaffold edit is flagged by run a
   await abStop({ targetRoot: root, slug: 'reuse', remove: true })
   assert.equal(await git(root, 'branch', '--list', 'ab/reuse/*'), '')
   assert.equal(await git(root, 'rev-parse', 'mock-data'), mock)
+})
+
+test('add --from remixes a variant on its own branch, worktree and port, up to six, and pick adopts it without the scaffold', async (t) => {
+  const { root, temporary } = await project(t, 'remix')
+  const origin = await git(root, 'rev-parse', 'HEAD'), mock = await mockBranch(root)
+  const started = await abStart({ targetRoot: root, slug: 'remix', variants: 2, basePort: 4971, scaffold: 'mock-data' }, { inspect: never, execute: never })
+  const promptFile = path.join(temporary, 'p.md'); await writeFile(promptFile, 'Build it.')
+  await abRun({ targetRoot: root, slug: 'remix', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: session('alpha') })
+  await assert.rejects(abAdd({ targetRoot: root, slug: 'remix' }), /--from/)
+  await assert.rejects(abAdd({ targetRoot: root, slug: 'remix', from: 'z' }), /변형 z/)
+  const added = await abAdd({ targetRoot: root, slug: 'remix', from: 'a' })
+  assert.equal(added.ok, true); assert.equal(added.variant, 'c'); assert.equal(added.from, 'a')
+  assert.equal(await git(root, 'rev-parse', 'ab/remix/c'), await git(root, 'rev-parse', 'ab/remix/a'))
+  assert.ok(!started.variants.some((entry) => entry.port === added.port))
+  const seen = []
+  await abRun({ targetRoot: root, slug: 'remix', variant: 'c', promptFile }, { inspect: providers, flags: noFlags, execute: capture(seen, session('gamma')) })
+  assert.match(seen[0].prompt, new RegExp(`start from variant a's work.*git diff ${mock} ab/remix/<x>, x in a, b\\.\\n\\nBuild it\\.$`, 's'))
+  for (const name of ['d', 'e', 'f']) assert.equal((await abAdd({ targetRoot: root, slug: 'remix', from: 'b' })).variant, name)
+  await assert.rejects(abAdd({ targetRoot: root, slug: 'remix', from: 'a' }), /최대 6/)
+  const status = await abStatus({ targetRoot: root, slug: 'remix' })
+  assert.equal(new Set(status.variants.map((entry) => entry.url)).size, 6); assert.equal(status.variants[2].from, 'a')
+  const adopted = await abPick({ targetRoot: root, slug: 'remix', variant: 'c' })
+  assert.equal(adopted.adopted, 'c'); assert.equal(await git(root, 'rev-parse', 'HEAD^2^'), origin)
+  assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'app.js')
+  assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "gamma"\n')
+  assert.equal(await exists(path.join(root, 'fixtures.json')), false)
 })
 
 test('a scaffold edit reverted by a follow-up adopts cleanly; a merge conflict leaves the current branch and the comparison', async (t) => {

@@ -287,13 +287,32 @@ export async function abStart(options = {}, injected = {}) {
     variants: Object.entries(record.variants).map(([name, variant]) => ({ variant: name, branch: variant.branch, path: variant.path, port: variant.port, url: urlOf(variant) })), ...installed.report }
 }
 
+// A remix ("a's layout with b's colours"): the next variant starts from <from>'s committed work on its own
+// branch, worktree and port. It still descends from the base (and the scaffold), so pick works unchanged.
+export async function abAdd(options = {}) {
+  const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
+  if (!options.from) fail('--from <변형>이 필요합니다(새 변형이 이어받을 변형).')
+  const [from] = pick(record, { variant: options.from })
+  const name = [...NAMES].find((letter) => !record.variants[letter])
+  if (!name) fail(`변형은 최대 ${NAMES.length}개입니다.`)
+  const copies = relative(options.copy, '--copy'), reuse = relative(options.reuse, '--reuse')
+  if (await dirty(record.variants[from])) fail(`변형 ${from}에 미커밋 변경이 있습니다 — 실행이 끝난 뒤 다시 하세요.`)
+  const tip = (await git(ctx.root, ['rev-parse', `${record.variants[from].branch}^{commit}`])).trim()
+  const variant = { ...(await addVariant(ctx, record, name, tip, copies, Math.min(...Object.values(record.variants).map((entry) => entry.port)))), from }
+  await update(ctx, slug, (live) => { live.variants[name] = variant })
+  const installed = depsReport({ [name]: await prepare(ctx, slug, options, { name, ...variant }, await reuseBlockers(ctx.root, reuse, tip)) })
+  return { schemaVersion: 1, ok: installed.ok, slug, variant: name, from, branch: variant.branch, path: variant.path, port: variant.port, url: urlOf(variant), ...installed.report }
+}
+
 // [scaffold rule][shared text] then [variant line][approach][follow-up]: everything before the variant
 // line is the same for every variant (one cacheable prefix), and a follow-up repeats the first run's
 // prompt before what is new, so a fresh session knows the goal and the approach it continues.
 function variantPrompt(record, name, files, { approach, followUp, note }) {
-  const variant = record.variants[name], last = variant.runs.at(-1)
+  const variant = record.variants[name], last = variant.runs.at(-1), others = Object.keys(record.variants).filter((other) => other !== name)
+  // Worktrees share refs, so a remix can read what the other variants did without leaving its own.
+  const remix = variant.from && `You start from variant ${variant.from}'s work (already on your branch). Other variants' changes: git diff ${record.base} ab/${record.slug}/<x>, x in ${others.join(', ')}.`
   return [files.length && `Shared mock scaffold, read-only for variants (adopting a variant drops it): ${files.join(', ')}. If you need different data, say so in summary.`,
-    record.shared?.trim(), `Variant ${name} of ${record.slug}. $PORT for this variant: ${variant.port}.`, approach,
+    record.shared?.trim(), `Variant ${name} of ${record.slug}. $PORT for this variant: ${variant.port}.`, remix, approach,
     ...(followUp === undefined ? [] : [last && `Your last run's summary: ${last.summary}`, note && `The person's note on this variant: ${note}`,
       `Your branch already contains this work; change only what is asked.\n\nFollow-up request:\n${followUp}`])].filter(Boolean).join('\n\n')
 }
@@ -440,7 +459,7 @@ export async function abStatus(options = {}) {
   for (const [name, variant] of Object.entries(record.variants)) {
     const ahead = Number((await git(ctx.root, ['rev-list', '--count', `${record.base}..${variant.branch}`]).catch(() => '0')).trim())
     const serving = Boolean(variant.server?.pid && processAlive(variant.server.pid))
-    variants.push({ variant: name, branch: variant.branch, path: variant.path, url: urlOf(variant), serving, commits: ahead, last: variant.runs.at(-1) ? { outcome: variant.runs.at(-1).outcome, summary: variant.runs.at(-1).summary, view: variant.runs.at(-1).view } : null })
+    variants.push({ variant: name, ...(variant.from ? { from: variant.from } : {}), branch: variant.branch, path: variant.path, url: urlOf(variant), serving, commits: ahead, last: variant.runs.at(-1) ? { outcome: variant.runs.at(-1).outcome, summary: variant.runs.at(-1).summary, view: variant.runs.at(-1).view } : null })
   }
   // The hub's notes and choice are what the person said; a choice is intent, adopting stays pick.
   const hub = record.hub?.url && processAlive(record.hub.pid) ? record.hub.url : null
@@ -549,4 +568,4 @@ export async function abPick(options = {}) {
     ...(record.scaffold ? { scaffold: record.scaffold, scaffoldFiles: { added: files.added, modified: files.modified }, todo: '채택한 UI는 mock 데이터 위에서 만들어졌습니다(scaffold는 빠짐). 실제 데이터 연결이 남았습니다.' } : {}) }
 }
 
-export const AB_STEPS = { start: abStart, run: abRun, serve: abServe, exec: abExec, status: abStatus, pick: abPick, stop: abStop }
+export const AB_STEPS = { start: abStart, add: abAdd, run: abRun, serve: abServe, exec: abExec, status: abStatus, pick: abPick, stop: abStop }
