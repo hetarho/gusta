@@ -21,7 +21,7 @@ description: >-
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(start-vibe)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(start-vibe 3절). 모드가 정해지지 않았으면 함께 모드다.
 5. **읽기**: brief·status 요약을 먼저 쓰고 부족한 ID·섹션만 읽는다. 결정은 `vibe brief <T###|ID-n|ID@rev>`로 원문 블록째 받는다 — 끝의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
-어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 FORMAT SETTINGS `plan`).
+어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 `vibe format --section settings`의 `plan`).
 
 ## 1. 스코프와 델타
 입력은 두 종류다 — **SSOT 델타**(기획 변경)와 **리뷰 finding**(사용자가 채택했거나 명시적 위임 범위에서 self-improve/self-improve-local 오케스트레이터가 채택한 개선). 사용자가 지정하지 않으면 둘 다 처리한다. 자율 채택은 review notes의 정책 참조 또는 로컬 호출 위임·승인 범위·동작 보존 근거를 확인하며, 큰 변화나 근거 없는 [o]는 태스크화하지 않고 [?]로 돌려 인계한다.
@@ -48,7 +48,7 @@ ARCH·SSOT·기존 코드에 답이 있으면 묻지 않는다. 영역: 데이�
 - **수치**: 조정할 값은 설정 이름으로 적고 숫자는 그 설정을 정의하는 태스크에만 둔다(예 `RETRY_CONFIG.maxAttempts`, `3` 아님). 다른 태스크가 정의한 값을 쓰는 태스크에는 읽을 설정 이름을 적는다 — impl notes의 숫자는 구현에 그대로 박힌다.
 - 리뷰 태스크: finding 하나 = 태스크 하나가 기본. 같은 파일·같은 원인이면 묶고, 한 세션에 못 끝낼 finding은 쪼갠다. 인용줄·impl notes 첫 줄·동작 불변 acceptance는 FORMAT review-sourced tasks대로 쓰고 finding이 요구하는 테스트를 더한다. 기획 결정을 바꾸는 태스크는 만들지 않는다 — 그런 finding은 update-ssot로 넘기고 [?]로 되돌린다.
 - impl notes의 결정 중 **이후 변경이 계속 지켜야 하는 계약**(공개 API 형태, 저장 포맷, 호환성 규칙)은 태스크에만 두지 않는다 — 그건 기획·기준 문서의 몫이니 update-ssot(또는 ARCH 개정)를 제안하고, 태스크에는 이번 구현이 따를 형태만 남긴다.
-- dep 그래프와 순서를 정리한다. 자기참조·순환은 금지하고 태스크 인용줄과 STATE의 dep을 일치시킨다. dep은 표의 활성 태스크 또는 `tasks/done/`의 완료 태스크를 가리킬 수 있고, 채번은 `vibe plan-sync` 직후 tasks/done/까지 포함한 최대 번호+1 — 이때 완료 태스크는 **파일명 목록만** 본다(내용 정독은 특정 태스크를 조사할 때뿐, FORMAT Reading). 기존 todo 태스크와 겹치면 todo는 수정(base 갱신), doing·done은 불변 — 후속 태스크로 만든다.
+- dep 그래프와 순서를 정리한다. 자기참조·순환은 금지하고 태스크 인용줄과 STATE의 dep을 일치시킨다. dep은 표의 활성 태스크 또는 `tasks/done/`의 완료 태스크를 가리킬 수 있고, 채번은 `vibe plan-sync` 직후 tasks/done/까지 포함한 최대 번호+1 — 이때 완료 태스크는 **파일명 목록만** 본다(내용 정독은 특정 태스크를 조사할 때뿐, FORMAT Reading). 기존 todo 태스크와 겹치면 todo는 수정(base 갱신), doing·done(작업 묶음이면 STATE todo라도 `work board`의 활성 attempt 포함 — 재분해는 작업자 중단·해제 후)은 불변 — 후속 태스크로 만든다.
 
 ## 4. 마감
 - 태스크마다 이 스킬 폴더의 assets/task.md를 복사해 `tasks/T###.<slug>.md`로 채운다(`<...>` 전부 교체) → STATE: tasks 행 추가(리뷰 태스크의 ssot 셀은 `ARCH`), next=`implement-task T###`(dep상 첫 것), log 1줄.

@@ -22,7 +22,7 @@ SKILL.md 2절의 조건일 때만 쓴다. 아래 `work ...`·`vibe ...`는 `npx 
   - 함께: 사용자에게 선택지형으로 묻는다(여러 건이면 모아서).
   - 맡김: 추천안으로 update-ssot를 진행한다(잠정). inbox `decided`·보고서 decided에 질문·선택·대안을 남긴다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 inbox `parked`, 그 attempt는 `work release --attempt <id> --reason parked`로 내려놓는다.
   - 기획은 묶음의 기획 공간(`group.path`)에서 하고 커밋한다. 결정을 요청한 태스크는 base를 새 rev로 올리고(내용은 그대로 — create-task의 todo 갱신 규칙) STATE ssot의 tasked도 rev로 맞춘다: 이 델타는 그 태스크가 소화한다. 기획 커밋 직후 `vibe plan-push`로 SETTINGS plan 브랜치에 올리고 바로 `work update --attempt <id> --status doing --note '<결정·rev·순서 조건>'`으로 재개한다. 선행 통합을 기다리겠다고 재개를 붙잡아 두지 않는다. 실행기가 기획 브랜치를 그 워커 공간에 합치고 같은 세션을 이어 실행한다.
-  - 기획 공간에서는 조정자 하나만 문서를 쓴다. 공유 보드의 실행 상태와 참조 도메인으로 영향받는 워커를 확인한다(`work board --work <slug> --json`의 attempt). STATE의 todo 표기만으로 미착수라고 판단하지 않는다 — STATE에 todo로 남아 있어도 활성 attempt(released·failed·integrated가 아닌 것)가 있으면 계약은 불변이다. 재분해가 필요하면 기존 작업자를 중단·해제한 뒤 처리한다. 정책 변경을 커밋한 뒤 affected task/attempt를 보고하고, 해당 워커가 동기화·재검증하거나 재분해 후 다시 배정되게 한다.
+  - 기획 공간에서는 조정자 하나만 문서를 쓴다. 활성 attempt(released·failed·integrated가 아닌 것)의 계약 불변과 영향 보고는 create-task 3절 dep 항목·update-ssot 2절 파급 확인을 따른다.
   - 통합 순서 같은 의존 관계는 태스크 deps(`dep:`)에 반영해 함께 커밋하고 메모로 넘긴다. 실제 순서를 맞추는 일은 실행기와 runtime이 맡는다.
   - 같은 도메인을 참조하는 다른 진행 중 단위는 다음 제출에서 SSOT가 달라졌다며 blocked로 돌아온다. 그 태스크도 base를 올리고 `work update --status doing --note '<rev> 동기화'`로 재개하면 실행기가 같은 방식으로 합쳐 이어 간다.
 - `wait`: 그대로 다시 호출한다.

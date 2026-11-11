@@ -23,7 +23,7 @@ description: >-
 CLI는 `npx haeram-spec-creator` 뒤에 붙인다. 실행기의 cliCommand가 있으면 그 경로를 사용한다.
 
 ## 1. 시작·단위1
-`vibe status --tag <tag> --json`으로 cfg·active·inbox 수·next·남은 일만 본다. 원격 오류면 선점하지 않는다. 앞선 원격은 깨끗한 트리에서 sync한다. 함께(pair)와 실행기 밖 초기화는 필요할 때만 [세션 절차](references/session.md)를 읽는다.
+`vibe status --tag <tag> --json`으로 cfg·active·inbox 수·next·남은 일만 본다. 원격 오류면 선점하지 않는다. 앞선 원격은 깨끗한 트리에서 sync한다. 함께(pair)와 실행기 밖 초기화는 필요할 때만 [세션 절차](references/session.md)를 읽는다(`concurrency: strict`면 그 strict 선점 `vibe claim`도).
 맡김(단위1·hostManaged 제외)은 `vibe loop --tag <tag> --provider claude|codex --detach --json`으로 넘긴다: 바깥 CLI가 단위마다 새 세션을 띄우고 active·보고서·마감 관문을 맡는다. 이 대화는 preflight와 실행 핸들 보고까지만 하고 단위를 직접 반복하지 않는다 — 대화가 길어지면 매 턴 쌓인 맥락 전체를 다시 보낸다. 작업 묶음 조건이면 [조정자 절차](references/coordinator.md), provider CLI가 없을 때만 이 대화가 단위1 규칙으로 하나씩 진행한다.
 loop를 띄우기 전(마감 예약·`--tasks`·단위 상한·권한 모드)과 실행 중 설정 변경·취소·정지는 [세션 절차](references/session.md)의 loop 옵션을 먼저 읽는다.
 `/start-vibe 맡김 단위1` 또는 `HAERAM_VIBE_UNIT=1`이면 시작 질문 없이 정확히 **태스크 1개 done / 기획 한 조각 / inbox 정리 / 작은 수정** 중 하나만 끝낸다. 기획 조각은 update-ssot(필요하면 create-ssot)+create-task를 같은 세션에서 끝내고 읽은 결정을 재사용한다. 그 뒤 구현으로 넘어가지 않는다. 구현을 부하 에이전트에 분할하지 않는다.
@@ -69,8 +69,8 @@ ideation/done/은 라우팅 후보가 아니다. 기획 조각의 전환 완료 
 - 커밋: 태스크·기획 조각·경량 수정마다 관련 파일만 커밋한다. 실행기 밖에서는 선점·active를 첫 작업 커밋에 포함하고 보고서는 태스크 3개(기본)·기획 조각의 태스크 소진·세션 끝 중 먼저 온 묶음 경계에 갱신한다.
 - 기획 문서는 SETTINGS plan 브랜치(미정이면 land, land도 브랜치가 아니면 저장소 기본 브랜치)에 항상 최신으로 둔다: 기획 조각은 `vibe plan-sync`로 시작하고, 기획 커밋은 spec/만 담아 커밋 직후 `vibe plan-push`한다. 코드 반영 규칙(SETTINGS land·push)과 무관하다. ID 충돌로 거절되면 고른 기획 스킬이 다시 채번해 올린다. 충돌·권한 문제로 실패하면 inbox parked에 남기고 구현으로 넘어가지 않는다(번호가 정본에 없는 태스크를 구현하지 않는다).
 - 끝난 작업의 반영은 SETTINGS `land`·`land-via`·`push`가 정한다. 세션 끝·반복기 멈춤에 최종 검증 뒤 `vibe push --verified-commit <SHA>`를 한 번 실행한다. push가 true면 원격, false면 로컬 land 브랜치, pr이면 PR로 반영하고, 할 일이 없으면 CLI가 none으로 끝낸다. 반영 대상은 묻지 않는다. push마다 원격 CI가 돌아 빌드 시간을 쓰므로 묶음 경계마다 push하지 않는다. land가 미정이면 함께는 haeram-init으로 정하고, 맡김은 현재 브랜치에 커밋만 한 뒤 inbox parked에 남긴다.
-- "배포해줘"(`vibe deploy`)와 strict 선점(`vibe claim`)은 [세션 절차](references/session.md)를 읽고 한다.
-- 검증: 태스크 단계는 implement-task 4절(영향 단위 테스트+빠른 검사). 통합·e2e·전체 스위트·CI는 작업을 시작한 **조정자/loop 호스트 하나가 최종 통합 후보에서 push 직전**(커밋만 남기면 전체 완료 관문) 한 번 — 관문·CI 대기(`vibe ci wait`)·과거 ARCH 이관은 [조정자 검증 절차](references/verification.md).
+- "배포해줘"(`vibe deploy`)는 [세션 절차](references/session.md)를 읽고 한다.
+- 검증: 태스크 단계는 implement-task 4절(영향 단위 테스트+빠른 검사). 통합·e2e·전체 스위트·CI는 작업을 시작한 **조정자/loop 호스트 하나가 최종 통합 후보에서 push 직전**(커밋만 남기면 전체 완료 관문) 한 번 — 관문·CI 대기(`vibe ci wait`)는 [조정자 검증 절차](references/verification.md). ARCH 검증 단계를 고치는 기획 조각도 그 이관 규칙을 읽는다.
 - 1시간마다, 긴 명령 전 `vibe checkpoint --tag <tag>` 유지(push 브랜치가 없으면 로컬 `wip/<tag>`에만 남는다). 무관한 사용자 변경은 커밋하지 않는다.
 
 ## 5. 마감
