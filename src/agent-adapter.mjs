@@ -123,10 +123,13 @@ export function recoveryText(recovery) {
   return `\nRecovery unit for ${id}: read the blocker in its task result and relevant inbox entries. Resolve reversible planning/technical gaps as one planning slice, record the decision and restore todo with consistent deps/base in the task and STATE. If it is an implementation failure, make the scoped fix. If it truly needs the reserved authorization above, record parked for this task and return outcome parked. Do not repeat the same blocked implementation or wait for a user.${kept}`
 }
 
+// The frontmatter only triggers a skill; a unit is already inside it. No frontmatter: unchanged.
+export const skillBody = (text) => text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n+/, '')
+
 async function promptFor(job) {
   if (job.role === 'unit') {
     if (!job.workspace || job.resume) fail('단위는 workspace와 새 세션이 필요합니다 (resume 금지).')
-    const skill = await readFile(new URL('../skills/start-vibe/SKILL.md', import.meta.url), 'utf8')
+    const skill = skillBody(await readFile(new URL('../skills/start-vibe/SKILL.md', import.meta.url), 'utf8'))
     const autonomy = 'Autopilot delegates reversible planning and technical decisions to you. Do not wait for a person or park work merely because a decision is needed. Apply the recommended option through update-ssot and create-task when needed, record question/choice/alternatives/reason in STATE inbox decided, and leave the task runnable for the next unit. You may reorder unstarted tasks to bring an already-approved prerequisite or CI fix forward after checking real dependencies and touches; update task and STATE deps together. Preserve acceptance criteria and verification gates. Park only the affected work when it needs unavailable access, explicit authorization for irreversible/external effects, or a billing, data-deletion, privacy or security-policy decision; continue other runnable work.'
     const recovery = recoveryText(job.recovery)
     const limit = job.timeLimit ? ` The host cuts this unit after ${job.timeLimit.minutes} minutes (${job.timeLimit.cutAt}) and hands uncommitted work to a fresh unit; write measurements and findings into the task result as you go.` : ''
