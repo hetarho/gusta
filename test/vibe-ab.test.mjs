@@ -424,40 +424,90 @@ test('a scaffold that deletes an existing file or turns it into a directory gets
   assert.equal(await readFile(path.join(root, 'session.js'), 'utf8'), 'module.exports = realSession\n')
 })
 
-// A page whose entry the scaffold had to edit: one mock <script> line, the rest of the file the variants' to change.
-const page = ({ head = '', body = '<body>', mock = '' } = {}) => `<html>\n<head>\n<title>Profile</title>\n${head}</head>\n${body}\n<div id="app"></div>\n${mock}<script src="app.js"></script>\n</body>\n</html>\n`
+// A page whose entry the scaffold had to edit: one mock <script> line (line 7), the rest of the file the variants' to change.
+const page = ({ head = '', body = '<body>', app = '<div id="app"></div>', mock = '', script = '<script src="app.js"></script>', after = '' } = {}) =>
+  `<html>\n<head>\n<title>Profile</title>\n${head}</head>\n${body}\n${app}\n${mock}${script}\n${after}</body>\n</html>\n`
 const MOCK = '<script src="mocks/mock.js"></script>\n'
 const register = async ({ job }) => {
-  await mkdir(path.join(job.workspace, 'mocks')); await writeFile(path.join(job.workspace, 'mocks/mock.js'), 'window.fetch = mockFetch\n')
+  await mkdir(path.join(job.workspace, 'mocks'), { recursive: true }); await writeFile(path.join(job.workspace, 'mocks/mock.js'), "import { ready } from '../util.js'\nif (window.mock) {\n  window.fetch = mockFetch\n}\n")
   await writeFile(path.join(job.workspace, 'index.html'), page({ mock: MOCK }))
   return { outcome: 'completed', summary: 'mock fetch; ?mock=empty shows no items', view: 'home', path: '' }
 }
-const edit = (parts, summary) => async ({ job }) => { await writeFile(path.join(job.workspace, 'index.html'), page(parts)); return { outcome: 'completed', summary, view: 'home', path: '' } }
+const edit = (parts, extra = {}) => async ({ job }) => {
+  await writeFile(path.join(job.workspace, 'index.html'), page(parts))
+  for (const [file, text] of Object.entries(extra)) await writeFile(path.join(job.workspace, file), text)
+  return { outcome: 'completed', summary: 'edited', view: 'home', path: '' }
+}
+const AROUND = { head: '<style>.card{display:grid}</style>\n', body: '<body class="cards">', after: '<p>footer</p>\n' }
 
-test('the scaffold lock is per line: a variant edits a scaffold-modified file around its line and pick drops only that line', async (t) => {
+test('the scaffold lock is per line: edits with an unchanged line between adopt; edits on or next to its line and copies of it are refused', async (t) => {
   const { root, temporary } = await project(t, 'lines')
-  await writeFile(path.join(root, 'index.html'), page()); await git(root, 'add', 'index.html'); await git(root, 'commit', '-q', '-m', 'page')
+  await writeFile(path.join(root, 'index.html'), page()); await writeFile(path.join(root, 'util.js'), "export const ready = true\nimport { ready } from '../util.js'\n")
+  await git(root, 'add', 'index.html', 'util.js'); await git(root, 'commit', '-q', '-m', 'page')
   const origin = await git(root, 'rev-parse', 'HEAD')
   const scaffoldPrompt = path.join(temporary, 'scaffold.md'); await writeFile(scaffoldPrompt, 'Screen: / with items.')
-  const started = await abStart({ targetRoot: root, slug: 'lines', variants: 2, basePort: 5021, scaffoldPrompt }, { inspect: providers, flags: noFlags, execute: register })
+  const started = await abStart({ targetRoot: root, slug: 'lines', variants: 6, basePort: 5021, scaffoldPrompt }, { inspect: providers, flags: noFlags, execute: register })
   assert.equal(started.ok, true, JSON.stringify(started))
   assert.deepEqual(started.scaffoldFiles, { added: ['mocks/mock.js'], modified: ['index.html'] }); assert.match(started.scaffoldWarnings[0], /likely UI files: index\.html/)
-  const promptFile = path.join(temporary, 'p.md'); await writeFile(promptFile, 'Build it.')
-  // a: CSS in <head> and a class two lines above the mock line (its context changes: 3-way). b: edits the mock line itself.
-  const seen = []
-  const a = await abRun({ targetRoot: root, slug: 'lines', variant: 'a', promptFile }, { inspect: providers, flags: noFlags,
-    execute: capture(seen, edit({ head: '<style>.card{display:grid}</style>\n', body: '<body class="cards">', mock: MOCK }, 'cards')) })
-  assert.equal(a.ok, true); assert.equal(a.scaffoldTouched, undefined)
-  assert.match(seen[0].prompt, /Read-only: mocks\/mock\.js\. You may edit index\.html except the scaffold's lines and the lines right around them \(index\.html: 7\)\./)
-  const b = await abRun({ targetRoot: root, slug: 'lines', variant: 'b', promptFile }, { inspect: providers, flags: noFlags, execute: edit({ mock: '<script src="mocks/other.js"></script>\n' }, 'other mock') })
-  assert.equal(b.ok, false); assert.deepEqual(b.scaffoldTouched, ['index.html'])
+  const promptDir = path.join(temporary, 'prompts'); await mkdir(promptDir)
+  for (const name of 'abcdef') await writeFile(path.join(promptDir, `${name}.md`), `Approach ${name}.`)
+  const sessions = {
+    // a: <style> in <head>, a class two lines above the mock line (3-way) and a line after the app script: one unchanged line between each.
+    a: edit({ ...AROUND, mock: MOCK }),
+    b: edit({ mock: '<script src="mocks/other.js"></script>\n' }), // the scaffold line itself
+    c: edit({ app: '<div id="app" class="x"></div>', mock: MOCK }), // the line directly before it
+    d: edit({ mock: MOCK, script: '<script src="app.js" defer></script>' }), // the line directly after it
+    // e: copies the mock line into <head> and imports the mock file from a new file: both would ship pointing at a deleted file.
+    e: edit({ head: MOCK, mock: MOCK }, { 'boot.js': "import './mocks/mock.js'\n" }),
+    // f: a lone `}` and an import line origin already has, both also scaffold lines: common lines are no residue.
+    f: edit({ mock: MOCK }, { 'app.css': '.card {\n  color: red;\n}\n', 'view.js': "import { ready } from '../util.js'\n" }),
+  }
+  const jobs = []
+  const ran = await abRun({ targetRoot: root, slug: 'lines', all: true, promptDir }, { inspect: providers, flags: noFlags, execute: capture(jobs, (input) => sessions[input.job.workspace.slice(-1)](input)) })
+  const result = Object.fromEntries(ran.variants.map((entry) => [entry.variant, entry]))
+  assert.deepEqual(ran.variants.map((entry) => [entry.variant, entry.ok]), [['a', true], ['b', false], ['c', false], ['d', false], ['e', false], ['f', true]])
+  for (const name of 'bcd') assert.deepEqual(result[name].scaffoldTouched, ['index.html'], name)
+  assert.deepEqual(result.e.scaffoldResidue, [{ file: 'boot.js', line: "import './mocks/mock.js'" }, { file: 'index.html', line: MOCK.trim() }]); assert.equal(result.e.scaffoldTouched, undefined)
+  for (const name of 'af') assert.equal(result[name].scaffoldResidue, undefined, name)
+  assert.match(jobs.find((job) => job.workspace.endsWith('a')).prompt, /Read-only: mocks\/mock\.js\. You may edit index\.html except the scaffold's lines and the lines right around them \(index\.html: 7\)\./)
   const head = await git(root, 'rev-parse', 'HEAD')
-  await assert.rejects(abPick({ targetRoot: root, slug: 'lines', variant: 'b' }), (error) => /scaffold의 줄·파일/.test(error.message) && error.details.join() === 'index.html')
-  assert.equal(await git(root, 'rev-parse', 'HEAD'), head); assert.equal((await abStatus({ targetRoot: root, slug: 'lines' })).variants.length, 2)
+  for (const name of 'bcd') await assert.rejects(abPick({ targetRoot: root, slug: 'lines', variant: name }), (error) => /scaffold의 줄·파일을 바꿨거나 그 줄에 너무 붙여/.test(error.message) && error.details.join() === 'index.html', name)
+  await assert.rejects(abPick({ targetRoot: root, slug: 'lines', variant: 'e' }), (error) => /mock 줄·경로/.test(error.message) && error.details.join('|') === `boot.js: import './mocks/mock.js'|index.html: ${MOCK.trim()}`)
+  // Every refusal came before anything stopped or moved.
+  assert.equal(await git(root, 'rev-parse', 'HEAD'), head); assert.equal((await abStatus({ targetRoot: root, slug: 'lines' })).variants.length, 6)
   await abPick({ targetRoot: root, slug: 'lines', variant: 'a' })
   assert.equal(await git(root, 'rev-parse', 'HEAD^1'), head); assert.equal(await git(root, 'rev-parse', 'HEAD^2^'), origin)
-  assert.equal(await readFile(path.join(root, 'index.html'), 'utf8'), page({ head: '<style>.card{display:grid}</style>\n', body: '<body class="cards">' }))
+  assert.equal(await readFile(path.join(root, 'index.html'), 'utf8'), page(AROUND))
   assert.equal(await exists(path.join(root, 'mocks')), false); assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'index.html')
+})
+
+test('a binary scaffold file comes back byte for byte; renaming a scaffold-modified file is refused', async (t) => {
+  const { root, temporary } = await project(t, 'bin')
+  const logo = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3, 0, 255])
+  await writeFile(path.join(root, 'logo.png'), logo); await writeFile(path.join(root, 'index.html'), page())
+  await git(root, 'add', 'logo.png', 'index.html'); await git(root, 'commit', '-q', '-m', 'page')
+  const scaffoldPrompt = path.join(temporary, 'scaffold.md'); await writeFile(scaffoldPrompt, 'Screen: / with photos.')
+  const binary = async (input) => {
+    await writeFile(path.join(input.job.workspace, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 9, 9, 9, 0, 255]))
+    await mkdir(path.join(input.job.workspace, 'mocks')); await writeFile(path.join(input.job.workspace, 'mocks/photo.png'), Buffer.from([0, 1, 0, 2, 255]))
+    return register(input)
+  }
+  const started = await abStart({ targetRoot: root, slug: 'bin', variants: 2, basePort: 5041, scaffoldPrompt }, { inspect: providers, flags: noFlags, execute: binary })
+  assert.deepEqual(started.scaffoldFiles, { added: ['mocks/mock.js', 'mocks/photo.png'], modified: ['index.html', 'logo.png'] })
+  const promptFile = path.join(temporary, 'p.md'); await writeFile(promptFile, 'Build it.')
+  const seen = []
+  assert.equal((await abRun({ targetRoot: root, slug: 'bin', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: capture(seen, session('alpha')) })).ok, true)
+  // A binary file has no line locations: it is read-only like the added files.
+  assert.match(seen[0].prompt, /Read-only: logo\.png, mocks\/mock\.js, mocks\/photo\.png\. You may edit index\.html /)
+  const moved = async ({ job }) => {
+    await writeFile(path.join(job.workspace, 'main.html'), await readFile(path.join(job.workspace, 'index.html'))); await rm(path.join(job.workspace, 'index.html'))
+    return { outcome: 'completed', summary: 'renamed the page', view: 'home', path: '' }
+  }
+  assert.deepEqual((await abRun({ targetRoot: root, slug: 'bin', variant: 'b', promptFile }, { inspect: providers, flags: noFlags, execute: moved })).scaffoldTouched, ['index.html'])
+  await assert.rejects(abPick({ targetRoot: root, slug: 'bin', variant: 'b' }), (error) => error.details.join() === 'index.html')
+  await abPick({ targetRoot: root, slug: 'bin', variant: 'a' })
+  assert.deepEqual(await readFile(path.join(root, 'logo.png')), logo); assert.equal(await readFile(path.join(root, 'index.html'), 'utf8'), page())
+  assert.equal(await exists(path.join(root, 'mocks')), false); assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'app.js')
 })
 
 test('scaffoldWarnings names modified files that look like UI or screen files', () => {
