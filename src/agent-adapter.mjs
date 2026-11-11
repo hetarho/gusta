@@ -107,6 +107,8 @@ export function codexSession(events) {
 
 const DECIDE = 'If a planning decision that only the planner may make blocks you (a gap or contradiction in the SSOT), do not settle the policy in code: keep your edits, return outcome blocked with decision {question, options, recommendation}. Otherwise return decision with an empty question, empty options and empty recommendation.'
 const BRIEF = 'The brief holds your task files, the decision blocks they depend on (cited, required, referencing them, global rules), the flow·constraints of those domains, changes since a stale base and the verification commands: that is your reading scope. Do not re-read STATE, FORMAT, ARCH or other SSOT files. Open an original only for what its issues, unfollowed or related lines name and the task needs; complete:no means part of it is missing, so read that part before relying on it.'
+// A/B sessions once wrote helper scripts next to their worktree: scratch files stay inside it or in the OS temp dir.
+const CONFINE = 'Write only inside this workspace, your own git worktree (scratch files under a git-ignored path in it or in the OS temp dir), never in its parent folders.'
 const TASK_CHECKS = 'At task tier, run only added/changed/affected unit tests and fast type/lint/format checks. Write or update integration/e2e tests as needed, but do not launch browsers, integration/e2e or full suites at task/session completion. The coordinator host owns their single final gate on the integrated candidate before the target-branch push. Classify tests by their isolation and dependencies, not their script names. Use small fixtures for unit tests; record deferred commands/specs in result limits and never report unrun checks as passed.'
 
 // The brief reaches the model as markdown ahead of the assignment JSON: inside JSON every newline
@@ -130,7 +132,8 @@ export function recoveryText(recovery) {
 // The frontmatter only triggers a skill; a unit is already inside it. No frontmatter: unchanged.
 export const skillBody = (text) => text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n+/, '')
 
-async function promptFor(job) {
+// The full prompt a session gets; A/B runs save it next to their log for debugging.
+export async function agentPrompt(job) {
   if (job.role === 'unit') {
     if (!job.workspace || job.resume) fail('단위는 workspace와 새 세션이 필요합니다 (resume 금지).')
     const skill = skillBody(await readFile(new URL('../skills/start-vibe/SKILL.md', import.meta.url), 'utf8'))
@@ -146,11 +149,11 @@ async function promptFor(job) {
   }
   if (job.role === 'variant') {
     if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('변형은 workspace·prompt와 새 세션이 필요합니다.')
-    return `You build one variant of an A/B comparison started by an orchestrator. Work only in this workspace (your own git worktree and branch) and implement this variant fully enough for a person to compare it. Do NOT edit spec/ (nothing is decided yet), run git add/commit/push/merge (the host commits your changes), start long-running servers (the host serves each variant on its own port as $PORT), or spawn subagents. ${TASK_CHECKS} Return outcome, summary (what you changed and its trade-offs), view (where a person should look: screen, state or command) and path (the URL path the host opens first, e.g. /settings/profile; empty for root or no screen); outcome blocked only when the variant cannot be built, with the reason in summary.\n\n${job.prompt}`
+    return `You build one variant of an A/B comparison started by an orchestrator, on your own branch; implement it fully enough for a person to compare it. ${CONFINE} Do NOT edit spec/ (nothing is decided yet), run git add/commit/push/merge (the host commits your changes), start long-running servers (the host serves each variant on its own port as $PORT), or spawn subagents. ${TASK_CHECKS} Return outcome, summary (what you changed and its trade-offs), view (where a person should look: screen, state or command) and path (the URL path the host opens first, e.g. /settings/profile; empty for root or no screen); outcome blocked only when the variant cannot be built, with the reason in summary.\n\n${job.prompt}`
   }
   if (job.role === 'scaffold') {
     if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('scaffold는 workspace·prompt와 새 세션이 필요합니다.')
-    return `You build the shared mock scaffold of an A/B UI comparison, before an orchestrator builds the variants on top of it. Work only in this workspace. Make the target screen render without a backend: realistic, deterministic fixtures and auth stubbed as a signed-in user, wired in directly at the data/auth boundary. Use one of: request interception (a fetch/MSW-style handler module registered from the app entry point or an instrumentation hook), a dev/bundler alias that swaps the data module, or a stub session/auth provider. Do NOT add an environment switch or flag that app code reads: this commit never ships, the host drops it when a variant is adopted. Put fixtures and stubs in new files and keep edits to existing files to that minimal wiring. Do NOT edit the target screen's component, route, loader or style files: the variants redesign those and may not edit your files. Do not redesign the screen. Do NOT edit spec/, run git add/commit/push/merge (the host commits your changes), start long-running servers, or spawn subagents. ${TASK_CHECKS} Return outcome, summary (files, fixture data and stubs you added), view and path (the URL path of the screen); outcome blocked when the screen cannot render without a real service, with the reason in summary.\n\n${job.prompt}`
+    return `You build the shared mock scaffold of an A/B UI comparison; the variants are built on top of it. ${CONFINE} Make the target screen render without a backend: realistic, deterministic fixtures and auth stubbed as a signed-in user, wired in at the data/auth boundary. Prefer, in order: (1) fixtures served by the project's own dev server or a dev-only route/middleware, touching no screen file; (2) a request interception module, a dev/bundler alias for the data module, or a stub auth provider; (3) only if unavoidable, registration from the entry point with the smallest possible insertion. When cheap, let the mock switch data states by query parameter (e.g. ?mock=empty|error|slow) so variants can design them. Do NOT add an environment switch or flag that app code reads: this commit never ships, the host removes exactly your lines and files when a variant is adopted. Put fixtures and stubs in new files. Do NOT edit the target screen's component, route, loader or style files, or redesign it: the variants do. Do NOT edit spec/, run git add/commit/push/merge (the host commits your changes), start long-running servers, or spawn subagents. ${TASK_CHECKS} Return outcome, summary (files, fixtures, stubs and data states you added), view and path (the URL path of the screen); outcome blocked when the screen cannot render without a real service, with the reason in summary.\n\n${job.prompt}`
   }
   if (!['worker', 'reviewer'].includes(job.role) || !job.workspace || !job.attempt || !job.taskId) fail('실행기 작업 입력이 올바르지 않습니다.')
   const unattended = job.mode === 'autopilot' ? ' Nobody is available to answer questions: never wait for one.' : ''
@@ -197,7 +200,7 @@ export function providerArguments(provider, role, files, model, { allowTools = [
 
 // flags: the caller's providerFlags answer; none by default (this never probes the CLI).
 export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text), flags = [] }) {
-  const prompt = await promptFor(job)
+  const prompt = await agentPrompt(job)
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-agent-'))
   const files = { schema: path.join(temporary, 'schema.json'), result: path.join(temporary, 'result.json') }
   try {
