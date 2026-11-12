@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Create Task"
+  short_description: "SSOT 변경분을 구현 태스크로 분해"
+  default_prompt: "Use $gusta-create-task to split pending SSOT deltas into implementable tasks as an engineer."

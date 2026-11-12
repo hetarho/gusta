@@ -14,9 +14,9 @@ test('30개 태스크를 6개 혼합 워커가 처리하고 실행 이력/STATE�
   await mkdir(barrier)
   const env = await providerStubs(setup, `
 if(job.role==='worker') {
- fs.writeFileSync(process.env.HAERAM_TEST_BARRIER+'/'+job.slot,job.provider);
+ fs.writeFileSync(process.env.GUSTA_TEST_BARRIER+'/'+job.slot,job.provider);
  const started=Date.now();
- while(fs.readdirSync(process.env.HAERAM_TEST_BARRIER).length<6) {
+ while(fs.readdirSync(process.env.GUSTA_TEST_BARRIER).length<6) {
   if(Date.now()-started>60000)throw Error('six workers did not start concurrently');
   await new Promise(resolve=>setTimeout(resolve,20));
  }
@@ -29,7 +29,7 @@ const result=job.role==='worker'?{outcome:'completed',summary:job.provider+' imp
 if(args.includes('--output-last-message'))fs.writeFileSync(args[args.indexOf('--output-last-message')+1],JSON.stringify(result));
 else console.log(JSON.stringify({type:'result',is_error:false,structured_output:result}));
 `)
-  env.HAERAM_TEST_BARRIER = barrier
+  env.GUSTA_TEST_BARRIER = barrier
   const result = await runWork({ ...setup, work: group.id, providers: 'codex,claude', env, verify: [checkFile('spec/ssot/ARCH.md')] })
   assert.equal(result.outcome, 'completed', JSON.stringify(result))
   assert.deepEqual(result.failures, [])

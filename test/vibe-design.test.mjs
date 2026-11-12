@@ -9,7 +9,7 @@ import { vibeStatus } from '../src/vibe.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 import { vibeBrief } from '../src/vibe-brief.mjs'
 import { runVibeCheck } from '../src/vibe-check.mjs'
-const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 
 test('디자인 중 상태는 checkout 로컬이다: STATE를 바꾸지 않고 다른 worktree에 보이지 않는다', async (t) => {
   const { root, temporary } = await fixture(t, 1)
@@ -17,12 +17,12 @@ test('디자인 중 상태는 checkout 로컬이다: STATE를 바꾸지 않고 �
   await vibeDesign({ targetRoot: root, step: 'start', tag: 'k3f9', scope: 'landing hero' })
   assert.equal(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), state)
   assert.equal(await git(root, 'status', '--porcelain'), '')
-  const stored = JSON.parse(await readFile(path.join(root, '.git/haeram-interactive.json'), 'utf8'))
+  const stored = JSON.parse(await readFile(path.join(root, '.git/gusta-interactive.json'), 'utf8'))
   assert.equal(stored.design.tag, 'k3f9')
   // A planning commit in this checkout carries nothing of the design to the planning branch.
-  await writeFile(path.join(root, 'spec/STATE.md'), state.replace('## log', '## log\n- 261030 create-task ARCH'))
+  await writeFile(path.join(root, 'spec/STATE.md'), state.replace('## log', '## log\n- 261030 gusta-create-task ARCH'))
   await git(root, 'commit', '-qam', 'plan')
-  assert.equal(await git(root, 'show', 'HEAD:spec/STATE.md'), state.replace('## log', '## log\n- 261030 create-task ARCH').trimEnd())
+  assert.equal(await git(root, 'show', 'HEAD:spec/STATE.md'), state.replace('## log', '## log\n- 261030 gusta-create-task ARCH').trimEnd())
   const other = path.join(temporary, 'other')
   await git(root, 'worktree', 'add', '-q', '-b', 'other', other)
   const status = await vibeStatus({ targetRoot: other, fetch: false })

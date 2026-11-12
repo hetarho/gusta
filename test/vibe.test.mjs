@@ -15,7 +15,7 @@ import { vibePrune } from '../src/prune.mjs'
 import { archiveTask } from './helpers/vibe-fixture.mjs'
 
 const execute = promisify(execFile)
-const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const git = (cwd, ...args) => execute('git', ['-C', cwd, ...args], { encoding: 'utf8' })
 const commitAll = async (cwd, message) => {
   await git(cwd, 'add', '-A')
@@ -45,10 +45,10 @@ const STATE = `# STATE
 | T002 | second | ARCH | - | todo |
 
 ## next
-- implement-task T001
+- gusta-implement-task T001
 
 ## log
-- 261012 create-task ARCH
+- 261012 gusta-create-task ARCH
 `
 const task = (id, extra = '') => `# ${id} example\n> st:todo | ssot:ARCH-1 | base:ARCH@1 | dep:-${extra}\n\n## goal\nimplement ${id}\n\n## acceptance\n- [ ] works\n\n## impl notes\n- -\n\n## result\n`
 
@@ -58,7 +58,7 @@ async function configure(root, temporary) {
 
 // A bare remote and two clones: two machines working on one project.
 async function machines(t, { state = STATE } = {}) {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-vibe-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-vibe-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const remote = path.join(temporary, 'remote.git')
   await execute('git', ['init', '-q', '--bare', '-b', 'main', remote])
@@ -83,9 +83,9 @@ async function machines(t, { state = STATE } = {}) {
 
 test('STATE 병합: log·inbox는 합치고, 행은 ID별로, active는 최신 at이 이긴다', () => {
   const base = STATE
-  const ours = upsertActive(STATE.replace('- 261012 create-task ARCH', '- 261013 T001 doing\n- 261012 create-task ARCH')
+  const ours = upsertActive(STATE.replace('- 261012 gusta-create-task ARCH', '- 261013 T001 doing\n- 261012 gusta-create-task ARCH')
     .replace('| T001 | first | ARCH | - | todo |', '| T001 | first | ARCH | - | doing@261013.aaaa |'), { tag: 'aaaa', host: 'a', mode: 'autopilot', since: '2026-10-13T01:00Z', at: '2026-10-13T02:00Z', doing: 'T001' })
-  const theirs = upsertActive(STATE.replace('- 261012 create-task ARCH', '- 261013 T002 done\n- 261012 create-task ARCH')
+  const theirs = upsertActive(STATE.replace('- 261012 gusta-create-task ARCH', '- 261013 T002 done\n- 261012 gusta-create-task ARCH')
     .replace('| T002 | second | ARCH | - | todo |\n', '').replace('## next\n', '## inbox\n- 261013 parked T001: needs a decision\n\n## next\n'), { tag: 'bbbb', host: 'b', mode: 'pair', since: '2026-10-13T01:30Z', at: '2026-10-13T01:30Z', doing: '-' })
   const { text, conflicts } = mergeState(base, ours, theirs)
   assert.deepEqual(conflicts, [])
@@ -167,13 +167,13 @@ test('push가 거부되면 원격을 가져와 STATE를 섹션 단위로 합치�
     const file = path.join(root, 'spec/STATE.md')
     await writeFile(file, (await readFile(file, 'utf8')).replace(from, to))
   }
-  await edit(a, '- 261012 create-task ARCH', '- 261013 a: T001 done\n- 261012 create-task ARCH')
+  await edit(a, '- 261012 gusta-create-task ARCH', '- 261013 a: T001 done\n- 261012 gusta-create-task ARCH')
   await archiveTask(a, 'T001')
   await writeFile(path.join(a, 'a.txt'), 'a\n')
   await commitAll(a, 'A unit')
   await vibePush({ targetRoot: a })
   await vibeBeat({ targetRoot: b, tag: 'bbbb', mode: 'pair', host: 'machine-b' })
-  await edit(b, '- 261012 create-task ARCH', '- 261013 b: started\n- 261012 create-task ARCH')
+  await edit(b, '- 261012 gusta-create-task ARCH', '- 261013 b: started\n- 261012 gusta-create-task ARCH')
   await writeFile(path.join(b, 'b.txt'), 'b\n')
   await commitAll(b, 'B unit')
   const result = await vibePush({ targetRoot: b })
@@ -322,20 +322,20 @@ test('route: 기획 거리·구현 거리에 따라 planning·implementation·ch
   for (const [state, route] of [[plain, 'ideation-first'], [withIdeation, 'planning'], [STATE, 'implementation'],
     [STATE.replace('## ssot\n', '## ideation\n| id | st |\n|---|---|\n| tags | ready@261013 |\n\n## ssot\n'), 'choose'],
     [plain.replace('| ARCH | 1 | 1 | - | 0 |', '| ARCH | 2 | 1 | ARCH-2+ | 0 |'), 'implementation']]) {
-    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-route-')))
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-route-')))
     t.after(() => rm(root, { recursive: true, force: true }))
     await mkdir(path.join(root, 'spec'), { recursive: true })
     await writeFile(path.join(root, 'spec/STATE.md'), state)
     assert.equal((await vibeStatus({ targetRoot: root })).route, route)
   }
-  const empty = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-route-')))
+  const empty = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-route-')))
   t.after(() => rm(empty, { recursive: true, force: true }))
   assert.equal((await vibeStatus({ targetRoot: empty })).route, 'architecture')
 })
 
 // A hand close (`done` without a date) used to read as neither todo nor done: settled, ideation-first.
 test('status: a row or task-file st outside FORMAT is an issue, never settled, and routes to repair; valid states keep their route', async (t) => {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-st-')))
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-st-')))
   t.after(() => rm(root, { recursive: true, force: true }))
   await mkdir(path.join(root, 'spec/tasks'), { recursive: true })
   const status = async (rows, files = {}) => {
@@ -360,7 +360,7 @@ test('status: a row or task-file st outside FORMAT is an issue, never settled, a
 })
 
 test('route: 완료 ideation 파일은 새 기획 후보나 기본 읽기 입력이 아니다', async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'haeram-ideation-route-'))
+  const root = await mkdtemp(path.join(os.tmpdir(), 'gusta-ideation-route-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   await mkdir(path.join(root, 'spec/ideation/done'), { recursive: true })
   await writeFile(path.join(root, 'spec/STATE.md'), STATE)
@@ -372,7 +372,7 @@ test('route: 완료 ideation 파일은 새 기획 후보나 기본 읽기 입력
 })
 
 test('explore timeboxes: one listing, row order, a row matches only its own `<id>.` file', async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'haeram-explore-'))
+  const root = await mkdtemp(path.join(os.tmpdir(), 'gusta-explore-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   await mkdir(path.join(root, 'spec/tasks'), { recursive: true })
   const quote = (id, extra) => `# ${id} x\n> st:todo | ssot:A-1 | base:A@1 | dep:-${extra}\n`
@@ -404,7 +404,7 @@ test('vibe check는 같은 작업 트리에서 통과한 명령을 다시 돌리
 })
 
 test('heavy lock은 무거운 검사를 하나씩만 실행한다', async (t) => {
-  const runtime = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-heavy-')))
+  const runtime = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-heavy-')))
   t.after(() => rm(runtime, { recursive: true, force: true }))
   let running = 0, peak = 0
   const job = () => withHeavyLock(runtime, 'job', async () => {
@@ -510,7 +510,7 @@ test('preflight --probe는 새 worktree의 헤드리스 워커로 명령 실행 
   assert.equal(probe.needsUser, true)
   const record = JSON.parse(await readFile(path.join(temporary, 'probe.json'), 'utf8'))
   assert.notEqual(await realpath(record.cwd).catch(() => record.cwd), a)
-  assert.match(record.cwd, /\.haeram-worktrees/)
+  assert.match(record.cwd, /\.gusta-worktrees/)
   assert.equal(record.shared, true, 'the probe runs with the optional flags workers get')
   const granted = await vibePreflight({ targetRoot: a, probe: 'npm test', provider: 'claude', env, allowTool: ['Bash(npm test *)'] })
   assert.equal(granted.checks.find((check) => check.name === 'worker-probe').ok, true)

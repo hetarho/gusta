@@ -25,7 +25,7 @@ import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, read
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine } from './loop-time.mjs'
 
-const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const present = (file) => access(file).then(() => true, () => false)
 const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
 // The closing reserve is what the last gate really costs: the measured suite, one repair
@@ -155,7 +155,7 @@ export async function executeVibeUnit(options, job, directory, limits = {}) {
   try {
     return await new Promise((resolve) => {
       const child = spawn(config.command, config.args, { cwd: job.workspace, env: { ...process.env, ...options.env,
-        HAERAM_VIBE_UNIT: '1', HAERAM_VIBE_TAG: options.tag, HAERAM_DIFF_BASE: job.diffBase, HAERAM_TIER: 'task', HAERAM_CHECK_LOG: checkLog },
+        GUSTA_VIBE_UNIT: '1', GUSTA_VIBE_TAG: options.tag, GUSTA_DIFF_BASE: job.diffBase, GUSTA_TIER: 'task', GUSTA_CHECK_LOG: checkLog },
         detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', log.fd] })
       const kill = (signal) => { try { process.platform === 'win32' ? child.kill(signal) : process.kill(-child.pid, signal) } catch {} }
       const stop = (reason) => { stopped ??= reason; kill('SIGTERM'); forced ??= setTimeout(() => kill('SIGKILL'), 2000) }
@@ -222,7 +222,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const mode = control.length ? null : await permissionMode(options, root)
   const mcp = control.length ? null : await readSetting({ root }, 'headless-mcp')
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
-  const lock = path.join(context.workspace.git.gitDir, 'haeram-vibe-loop.lock')
+  const lock = path.join(context.workspace.git.gitDir, 'gusta-vibe-loop.lock')
   const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {}, ...injected }
   const previous = await readJSON(manifest)
   if (previous && previous.cwd !== root) throw new SkillPackageError('이 tag는 다른 checkout 소유입니다.', [previous.cwd])
@@ -297,7 +297,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     await writeFile(config, JSON.stringify({ ...options, targetRoot: root, detach: false, runId }), { mode: 0o600 })
     const logPath = path.join(directory, 'host.log'), log = await open(logPath, 'a')
     try {
-      const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/haeram-vibe-loop.mjs', import.meta.url)), config], { cwd: root, detached: true, stdio: ['ignore', log.fd, log.fd], env: options.env ?? process.env })
+      const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/gusta-vibe-loop.mjs', import.meta.url)), config], { cwd: root, detached: true, stdio: ['ignore', log.fd, log.fd], env: options.env ?? process.env })
       await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
       child.unref()
       const readyUntil = Date.now() + 10000
@@ -503,10 +503,10 @@ export async function vibeLoop(options = {}, injected = {}) {
     const taskPath = `spec/tasks/${id}.${slug}.md`
     await writeFile(path.join(root, taskPath), `# ${id} ${title}\n> st:todo | ssot:- | base:ARCH@${rev} | dep:-\n\n## goal\n${goal}\n\n## acceptance\n- [ ] The failed checks pass with a regression test where appropriate.\n\n## impl notes\n${notes.map((note) => `- ${note}`).join('\n')}\n\n## result\n`)
     text = text.replace(/(## tasks\n[\s\S]*?)(?=\n## |$)/, (section) => `${section.trimEnd()}\n| ${id} | ${title} | ARCH | - | todo |\n`)
-    text = text.replace(/## next\n[\s\S]*?(?=\n## |$)/, `## next\n- implement-task ${id}\n`)
+    text = text.replace(/## next\n[\s\S]*?(?=\n## |$)/, `## next\n- gusta-implement-task ${id}\n`)
     await writeFile(file, text)
     await git(root, ['add', '--', file, taskPath])
-    await git(root, ['commit', '--quiet', '--only', '-m', `create-task ${id}: ${title}`, '--', file, taskPath])
+    await git(root, ['commit', '--quiet', '--only', '-m', `gusta-create-task ${id}: ${title}`, '--', file, taskPath])
     priorityTask = repairTask = id
     scope?.add(id)
   }
@@ -520,7 +520,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     const parents = [head]
     if (index && index !== tree && index !== (await git(root, ['rev-parse', 'HEAD^{tree}'])).trim()) parents.push((await git(root, ['commit-tree', index, '-p', head, '-m', `vibe ${options.tag} unit ${count}: staged`])).trim())
     const commit = (await git(root, ['commit-tree', tree, ...parents.flatMap((parent) => ['-p', parent]), '-m', `vibe ${options.tag} unit ${count} ${task ?? '-'}: ${cause}`])).trim()
-    const ref = `refs/haeram/units/${options.tag}/${runId.slice(0, 8)}-${count}`
+    const ref = `refs/gusta/units/${options.tag}/${runId.slice(0, 8)}-${count}`
     await git(root, ['update-ref', ref, commit])
     const files = (await git(root, ['diff', '--name-only', head, commit])).trim().split('\n').filter(Boolean)
     // Only the untracked paths git reports: a clean of the whole tree would also drop empty directories
@@ -549,7 +549,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     const repaired = specRepairs.get(id) ?? 0
     await event('spec-gate', { task: id, violations, next: repaired ? 'parked' : 'spec-gate' })
     if (repaired) {
-      await parkTask(id, null, `reported completed, but its spec close still failed after a repair unit (${violations[0]}). Close it with implement-task (vibe task done) and run lint.`)
+      await parkTask(id, null, `reported completed, but its spec close still failed after a repair unit (${violations[0]}). Close it with gusta-implement-task (vibe task done) and run lint.`)
       if (priorityTask === id) priorityTask = null
       return null
     }
@@ -767,7 +767,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       const workLeft = deadline - reserve.ms - deps.now()
       const exploreMs = new Map((status.implementation?.explore ?? []).map(({ id, timebox }) => [id, timeboxMs(timebox)]).filter(([, ms]) => ms))
       const unitLimit = (id) => exploreMs.has(id) ? Math.max(timeoutMs, exploreMs.get(id) + EXPLORE_EXIT_MS) : timeoutMs
-      const nextTask = status.next?.[0]?.match(/^- implement-task (T\d+)\b/)?.[1]
+      const nextTask = status.next?.[0]?.match(/^- gusta-implement-task (T\d+)\b/)?.[1]
       const queued = [priorityTask, ...(status.implementation?.resume ?? []), nextTask, ...runnable].filter((id) => id && runnable.includes(id))
       const selected = repairMs !== null ? repairTask : recovery?.taskId ?? queued.find((id) => !exploreMs.has(id) || unitLimit(id) <= workLeft) ?? null
       if (selected === null && queued.length) { reason = 'explore-no-time'; break }

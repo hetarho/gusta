@@ -187,7 +187,7 @@ test('CI failure at the unit limit preserves a prioritized fix task with evidenc
   })
   assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'max-units'); assert.equal(result.priorityTask, 'T004')
   assert.match(await readFile(path.join(root, 'spec/tasks/T004.fix-ci.md'), 'utf8'), /Regression/)
-  assert.match(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), /implement-task T004/)
+  assert.match(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), /gusta-implement-task T004/)
   assert.match(await readFile(path.join(root, result.report), 'utf8'), /priority task: T004/)
   assert.match(await readFile(path.join(root, result.report), 'utf8'), /CI .*failure https:\/\/example.test\/run\/1/)
   assert.equal((await readFile(path.join(root, result.report), 'utf8')).match(/task T001: completed/g).length, 1)
@@ -443,7 +443,7 @@ for (const pushEachUnit of [false, true]) test(`strict concurrency runs one fina
 
 test('unit assignment status: a task unit drops the remaining rows, a planning unit keeps them', () => {
   const ids = Array.from({ length: 8 }, (_, i) => `T00${i + 1}`)
-  const status = { tag: 't060', route: 'implementation', parkedOnly: false, concurrency: 'solo', next: ['- implement-task T001'],
+  const status = { tag: 't060', route: 'implementation', parkedOnly: false, concurrency: 'solo', next: ['- gusta-implement-task T001'],
     counts: { inbox: 2, parked: 0, remaining: 8 }, remaining: ids.map((id) => ({ id, title: `task ${id}`, dep: '-', st: 'todo' })), runnable: ids,
     implementation: { todo: ids, resume: [], blocked: [], pending: [], reviews: [], explore: [{ id: 'T008', timebox: '1h' }] }, planning: { ideation: [] } }
   const trimmed = unitStatus(status, 'T007', null)
@@ -522,7 +522,7 @@ test('the loop result, manifest and closing report carry the time breakdown', as
 
 test('a unit session records its vibe check runs and token usage for the breakdown', async (t) => {
   const { root, temporary, initial } = await fixture(t)
-  const cli = path.resolve('bin/haeram-spec-creator.mjs')
+  const cli = path.resolve('bin/gusta.mjs')
   const adapter = await fakeAdapter(temporary, `
     cp.execFileSync(process.execPath,[${JSON.stringify(cli)},'vibe','check','--tier','task','--','node -e "setTimeout(()=>{},50)"'],{stdio:'ignore'});
     console.log(JSON.stringify({kind:'task',id:'T001',outcome:'completed',pushed:false,next:'implementation',usage:{input_tokens:3,cache_creation_input_tokens:4,cache_read_input_tokens:5,output_tokens:6,iterations:[]}}));`)
@@ -562,10 +562,10 @@ test('a unit cut at its limit hands its uncommitted work to a fresh continuation
   assert.equal(jobs[1].recovery.reason, 'interrupted'); assert.equal(jobs[1].recovery.cause, 'unit-timeout'); assert.equal(jobs[1].recovery.taskId, 'T001')
   assert.deepEqual(jobs[1].recovery.snapshot.files, ['app.js', 'notes/partial.txt'])
   // The continuation finished the task, so its snapshot ref is gone.
-  assert.equal(await git(root, 'for-each-ref', 'refs/haeram/units'), '')
+  assert.equal(await git(root, 'for-each-ref', 'refs/gusta/units'), '')
   const events = await readFile(path.join(path.dirname(result.manifest), 'events.jsonl'), 'utf8')
   assert.match(events, /"type":"unit-cut"/); assert.doesNotMatch(events, /"type":"failed"/)
-  assert.match(await readFile(path.join(root, result.report), 'utf8'), /T001: cut \(unit-timeout\) · uncommitted work → refs\/haeram\/units\/t060\//)
+  assert.match(await readFile(path.join(root, result.report), 'utf8'), /T001: cut \(unit-timeout\) · uncommitted work → refs\/gusta\/units\/t060\//)
   assert.equal(checks, 1); assert.ok(pushes >= 1)
 })
 
@@ -589,8 +589,8 @@ test('a task that keeps getting cut is continued, split once, then parked; other
   })
   assert.deepEqual(seen, ['T001:-', 'T001:interrupted', 'T001:split', 'T001:-', 'T001:interrupted', 'T002:-', 'T003:-'])
   assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'parked-only')
-  assert.match(await git(root, 'show', 'HEAD:spec/STATE.md'), /^- \d{6} parked T001: .*refs\/haeram\/units\/t060\/\S+-5\b/m)
-  assert.match(await readFile(path.join(root, result.report), 'utf8'), /uncommitted work kept: refs\/haeram\/units\/t060\/\S+-5 \(T001, 1 files\)/)
+  assert.match(await git(root, 'show', 'HEAD:spec/STATE.md'), /^- \d{6} parked T001: .*refs\/gusta\/units\/t060\/\S+-5\b/m)
+  assert.match(await readFile(path.join(root, result.report), 'utf8'), /uncommitted work kept: refs\/gusta\/units\/t060\/\S+-5 \(T001, 1 files\)/)
 })
 
 test('an idle cut counts as a session failure; two stop the run, which still publishes committed work', async (t) => {
@@ -633,7 +633,7 @@ test('an explore unit runs its timebox plus exit time; units end inside the work
 test('--tasks runs only the scoped tasks and what the run creates for them, then closes', async (t) => {
   const { root } = await fixture(t)
   const state = path.join(root, 'spec/STATE.md')
-  await writeFile(state, (await readFile(state, 'utf8')).replace('| T003 | example | ARCH | - | todo |', '| T003 | example | ARCH | T002 | todo |').replace(/## next\n[\s\S]*?(?=\n## |$)/, '## next\n- implement-task T001\n'))
+  await writeFile(state, (await readFile(state, 'utf8')).replace('| T003 | example | ARCH | - | todo |', '| T003 | example | ARCH | T002 | todo |').replace(/## next\n[\s\S]*?(?=\n## |$)/, '## next\n- gusta-implement-task T001\n'))
   await git(root, 'commit', '-qam', 'T003 after T002')
   await assert.rejects(vibeLoop({ ...opts(root), tasks: 'T009', dryRun: true }), /tasks\/done에 없는/)
   await assert.rejects(vibeLoop({ ...opts(root), tasks: 'T003', dryRun: true }), /범위 밖 선행/)
@@ -682,7 +682,7 @@ async function handClose(root, id, n) {
   await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', `${id} by hand`)
   return { exitCode: 0, result: { kind: 'task', id, outcome: 'completed', pushed: false, next: 'implementation' } }
 }
-// implement-task §5 through the real CLI: start, check acceptance, fill the four result lines, done.
+// gusta-implement-task §5 through the real CLI: start, check acceptance, fill the four result lines, done.
 async function lifecycleClose(root, id, tag) {
   await vibeTask({ step: 'start', task: id, tag, targetRoot: root })
   const name = (await readdir(path.join(root, 'spec/tasks'))).find((file) => file.startsWith(`${id}.`))

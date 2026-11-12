@@ -12,7 +12,7 @@ test('실행기는 lane 태스크를 같은 공간에 차례로 배정하고 묶
   const log = path.join(setup.temporary, 'dispatch.log')
   const runner = await laneAdapter(setup, log)
   const bases = path.join(setup.temporary, 'bases.log')
-  const record = `node -e "require('fs').appendFileSync('${bases}', process.env.HAERAM_TASK + ' ' + process.env.HAERAM_DIFF_BASE + String.fromCharCode(10))"`
+  const record = `node -e "require('fs').appendFileSync('${bases}', process.env.GUSTA_TASK + ' ' + process.env.GUSTA_DIFF_BASE + String.fromCharCode(10))"`
   const result = await runWork({ ...setup, work: group.id, ...runner,
     taskVerify: [checkFile('spec/STATE.md'), record], verify: [checkFile('spec/ssot/ARCH.md')], groupVerify: [checkFile('T006.txt')] })
   assert.equal(result.outcome, 'completed', JSON.stringify(result))

@@ -13,7 +13,7 @@ import { inspectWorkspace } from '../src/workspace.mjs'
 import { runtimeRoot, readRuntime, transaction } from '../src/work-runtime.mjs'
 
 const execute = promisify(execFile)
-const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const git = (cwd, ...args) => execute('git', ['-C', cwd, ...args], { encoding: 'utf8' })
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const exists = (file) => access(file).then(() => true, () => false)
@@ -32,7 +32,7 @@ const until = async (read, done, label, ms = 60000) => {
 }
 
 async function fixture(t) {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-work-detach-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-work-detach-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'repo')
   await mkdir(path.join(root, 'spec/tasks'), { recursive: true })
@@ -40,19 +40,19 @@ async function fixture(t) {
   await git(temporary, 'init', '-q', '-b', 'trunk', root)
   for (const [key, value] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.hooksPath', path.join(temporary, 'no-hooks')]]) await git(root, 'config', key, value)
   await writeFile(path.join(root, 'spec/FORMAT.md'), '# FORMAT\n')
-  await writeFile(path.join(root, 'spec/STATE.md'), '# STATE\n\n## cfg\n- level: expert\n- lang: ko\n- docs: en\n\n## ssot\n| id | rev | tasked | pending | [?] |\n|---|---|---|---|---|\n| ARCH | 1 | 1 | - | 0 |\n\n## tasks\n| id | title | ssot | dep | st |\n|---|---|---|---|---|\n| T001 | first | ARCH | - | todo |\n| T002 | second | ARCH | - | todo |\n\n## next\n- implement-task T001\n\n## log\n')
+  await writeFile(path.join(root, 'spec/STATE.md'), '# STATE\n\n## cfg\n- level: expert\n- lang: ko\n- docs: en\n\n## ssot\n| id | rev | tasked | pending | [?] |\n|---|---|---|---|---|\n| ARCH | 1 | 1 | - | 0 |\n\n## tasks\n| id | title | ssot | dep | st |\n|---|---|---|---|---|\n| T001 | first | ARCH | - | todo |\n| T002 | second | ARCH | - | todo |\n\n## next\n- gusta-implement-task T001\n\n## log\n')
   await writeFile(path.join(root, 'spec/ssot/ARCH.md'), '# ARCH architecture\n> r1 | architecture\n\n## decisions\n- ARCH-1 [o] runtime: node\n\n## chg\n- r1 260924 initial\n')
   await writeFile(path.join(root, 'spec/tasks/T001.first.md'), task('T001'))
   await writeFile(path.join(root, 'spec/tasks/T002.second.md'), task('T002'))
   await git(root, 'add', '-A')
   await git(root, 'commit', '-q', '-m', 'spec')
-  // A command adapter: completes the task, or (HAERAM_TEST_HOLD) prints a line and hangs until killed.
+  // A command adapter: completes the task, or (GUSTA_TEST_HOLD) prints a line and hangs until killed.
   const adapter = path.join(temporary, 'adapter.mjs')
   await writeFile(adapter, `import fs from 'node:fs'; import {execFileSync} from 'node:child_process';
 let input=''; for await(const chunk of process.stdin) input+=chunk;
 const job=JSON.parse(input);
-if(process.env.HAERAM_TEST_HOLD){console.log('live '+job.taskId);setInterval(()=>{},1000)}
-else if(process.env.HAERAM_TEST_FAIL){process.stderr.write(JSON.stringify({type:'assistant',text:'TRANSCRIPT '+'x'.repeat(20000)})+'\\n'+'broken '+job.taskId+'\\n'+JSON.stringify({type:'user',text:'TRANSCRIPT tail'})+'\\n');process.exit(3)}
+if(process.env.GUSTA_TEST_HOLD){console.log('live '+job.taskId);setInterval(()=>{},1000)}
+else if(process.env.GUSTA_TEST_FAIL){process.stderr.write(JSON.stringify({type:'assistant',text:'TRANSCRIPT '+'x'.repeat(20000)})+'\\n'+'broken '+job.taskId+'\\n'+JSON.stringify({type:'user',text:'TRANSCRIPT tail'})+'\\n');process.exit(3)}
 else if(job.role==='worker'){
  const file='spec/tasks/'+fs.readdirSync('spec/tasks').find(name=>name.startsWith(job.taskId+'.'));
  const text=fs.readFileSync(file,'utf8').replace('- [ ]','- [v]');
@@ -66,13 +66,13 @@ else if(job.role==='worker'){
   const runtime = runtimeRoot(await inspectWorkspace({ targetRoot: root }))
   return { temporary, root, targetRoot: root, adapter: config, runtime }
 }
-const env = (extra = {}) => ({ ...process.env, HAERAM_NO_AWAKE: '1', ...extra })
+const env = (extra = {}) => ({ ...process.env, GUSTA_NO_AWAKE: '1', ...extra })
 const killGroup = (pid) => { try { process.kill(-pid, 'SIGKILL') } catch {} }
 
 test('work run --detach: 준비 확인 뒤 반환하고, --status는 파일만 읽고, --stop은 정상 종료 경로로 멈추며 결과가 남는다; 중복 시작은 거부', async (t) => {
   const setup = await fixture(t)
   await startWork({ ...setup, name: 'night', workers: 1 })
-  const run = (...args) => execute(process.execPath, [cli, 'work', 'run', '--work', 'night', '--target', setup.root, '--json', ...args], { encoding: 'utf8', env: env({ HAERAM_TEST_HOLD: '1' }) })
+  const run = (...args) => execute(process.execPath, [cli, 'work', 'run', '--work', 'night', '--target', setup.root, '--json', ...args], { encoding: 'utf8', env: env({ GUSTA_TEST_HOLD: '1' }) })
   const started = JSON.parse((await run('--detach', '--adapter', setup.adapter, '--verify', checks[0])).stdout)
   t.after(() => { try { process.kill(started.pid, 'SIGKILL') } catch {} })
   assert.equal(started.ok, true)
@@ -138,7 +138,7 @@ test('work run --detach: 끝난 실행의 결과를 --status로 보고, 합쳐�
 test('work run --status: 죽은 호스트의 runner 기록은 host-lost로 보고하고 신호를 보내지 않는다', async (t) => {
   const setup = await fixture(t)
   await startWork({ ...setup, name: 'lost', workers: 1 })
-  const started = await detachWork({ ...setup, work: 'lost', adapter: setup.adapter, verify: checks, env: env({ HAERAM_TEST_HOLD: '1' }) })
+  const started = await detachWork({ ...setup, work: 'lost', adapter: setup.adapter, verify: checks, env: env({ GUSTA_TEST_HOLD: '1' }) })
   const running = await until(() => workRunStatus({ ...setup, work: 'lost' }), (value) => value.dispatches[0]?.status === 'running', 'running dispatch')
   const { pid: provider, log } = Object.values((await readRuntime(setup.runtime)).attempts)[0].dispatch
   t.after(() => killGroup(provider))
@@ -178,7 +178,7 @@ test('work run --stop: heartbeat가 멈춘 기록이나 다른 호스트에는 �
 test('prune: 합쳐지지 않은(차단·해제) 단위의 dispatch 로그는 보존하고 해제 단위는 한 번만 보고한다', async (t) => {
   const setup = await fixture(t)
   await startWork({ ...setup, name: 'broken', workers: 1 })
-  const result = await runWork({ ...setup, work: 'broken', adapter: setup.adapter, verify: checks, env: env({ HAERAM_TEST_FAIL: '1' }) })
+  const result = await runWork({ ...setup, work: 'broken', adapter: setup.adapter, verify: checks, env: env({ GUSTA_TEST_FAIL: '1' }) })
   assert.ok(result.failures.length)
   const attempts = Object.values((await readRuntime(setup.runtime)).attempts)
   assert.ok(attempts.length && attempts.every((attempt) => attempt.status === 'blocked'))
@@ -219,7 +219,7 @@ test('호스트: 신호는 runner의 정상 종료로 넘기고(등록 전이어
 test('dispatch 기록은 로그 내용을 담지 않고 실패 이유만 남긴다; 예전 기록의 stderr도 CLI 출력에 실리지 않는다', async (t) => {
   const setup = await fixture(t)
   await startWork({ ...setup, name: 'quiet', workers: 1 })
-  await runWork({ ...setup, work: 'quiet', adapter: setup.adapter, verify: checks, env: env({ HAERAM_TEST_FAIL: '1' }), maxDispatches: 1 })
+  await runWork({ ...setup, work: 'quiet', adapter: setup.adapter, verify: checks, env: env({ GUSTA_TEST_FAIL: '1' }), maxDispatches: 1 })
   const [attempt] = Object.values((await readRuntime(setup.runtime)).attempts)
   assert.equal(attempt.dispatch.stderr, undefined)
   assert.equal(attempt.dispatch.error, 'adapter exited 3: broken T001')

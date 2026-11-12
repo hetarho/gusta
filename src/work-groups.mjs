@@ -114,7 +114,7 @@ function assertFreeWorkspace(state, destination, except) {
 async function destination(context, name, requested) {
   const main = context.workspace.git.worktrees.find((tree) => !tree.bare)?.path ?? context.cwd
   const identity = `${path.basename(main)}-${digest(context.workspace.git.commonDir).slice(0, 8)}`
-  return canonicalDestination(path.resolve(requested ?? path.join(path.dirname(main), '.haeram-worktrees', identity, name)))
+  return canonicalDestination(path.resolve(requested ?? path.join(path.dirname(main), '.gusta-worktrees', identity, name)))
 }
 
 async function requireClean(root) {
@@ -273,13 +273,13 @@ function verifyTimeout(options) {
   return value
 }
 
-// HAERAM_DIFF_BASE lets one stored command select only the affected tests, e.g.
-// `git diff --name-only "$HAERAM_DIFF_BASE" HEAD`, so the host verifies the impact itself.
-// A command that already passed on the same tree (and scope, when it reads HAERAM_*) is
+// GUSTA_DIFF_BASE lets one stored command select only the affected tests, e.g.
+// `git diff --name-only "$GUSTA_DIFF_BASE" HEAD`, so the host verifies the impact itself.
+// A command that already passed on the same tree (and scope, when it reads GUSTA_*) is
 // not run again. Unit and group gates hold the clone-wide heavy lock so they never compete
 // with each other or with a heavy experiment for the same CPUs.
 async function verify(root, checks, commit, signal, timeout = 60 * 60 * 1000, scope = {}, { runtime = null, heavy = false } = {}) {
-  const env = { ...process.env, ...Object.fromEntries(Object.entries(scope).map(([key, value]) => [`HAERAM_${key}`, String(value)])) }
+  const env = { ...process.env, ...Object.fromEntries(Object.entries(scope).map(([key, value]) => [`GUSTA_${key}`, String(value)])) }
   const run = async () => {
     const results = []
     const tree = runtime && checks.length ? await commitTree(root, commit) : null
@@ -743,7 +743,7 @@ export async function submitWork(options) {
         status: 'doing', taskId: ids[current.reach + 1], steps: merged(attempt), reason: null,
       }))
     }
-    await git(context.cwd, ['update-ref', `refs/haeram/attempts/${reservation.attempt.id}`, current.workerCommit])
+    await git(context.cwd, ['update-ref', `refs/gusta/attempts/${reservation.attempt.id}`, current.workerCommit])
     const risk = (reservation.group.review ?? 'all') === 'risky' ? await assessRisk(context, reservation.group, attempt, current, latest.commit) : null
     const submissionId = randomUUID()
     return await finishOperation(context, reservation, (attempt) => {
@@ -946,7 +946,7 @@ async function pruneAttemptRefs(context, group, attempt) {
     if (await git(context.cwd, ['branch', '-D', attempt.branch], [1]) === null) return { pruned, kept: `${attempt.branch}: 다른 작업 공간이 사용 중이라 보존합니다.` }
     pruned.push(attempt.branch)
   }
-  const checkpoint = `refs/haeram/checkpoints/${attempt.id}`
+  const checkpoint = `refs/gusta/checkpoints/${attempt.id}`
   if (await git(context.cwd, ['rev-parse', '--verify', '--quiet', checkpoint], [1])) {
     await git(context.cwd, ['update-ref', '-d', checkpoint])
     pruned.push(checkpoint)

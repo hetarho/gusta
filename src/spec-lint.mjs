@@ -18,7 +18,7 @@ const TOP_BULLET = /^-\s+\S/
 const SUB_LINE = /^\s+-\s+\S/
 const TABLE_ROW = /^\s*\|/
 
-// 의미 품질 신호(검토 후보). 구조 위반이 아니라 doc-review가 판단할 거리다 — 임계값은 신호일 뿐
+// 의미 품질 신호(검토 후보). 구조 위반이 아니라 gusta-doc-review가 판단할 거리다 — 임계값은 신호일 뿐
 // 자동 교정 기준이 아니고, 줄을 합치면 오히려 더 걸리도록 '한 줄' 길이만 센다.
 const DECISION_LINE_MAX = 700
 const DOT_GROUP_MAX = 2 // ' · ' 묶음이 3개 이상이면 여러 정책이 붙은 신호
@@ -243,7 +243,7 @@ export async function lintSpec({ targetRoot } = {}) {
 
   const state = await readIfExists(path.join(specRoot, 'STATE.md'))
   if (state === null) {
-    errors.push('spec/STATE.md가 없습니다 — create-architecture로 부트스트랩하세요.')
+    errors.push('spec/STATE.md가 없습니다 — gusta-create-architecture로 부트스트랩하세요.')
     return { ok: false, errors, warnings, reviewHints, counts }
   }
   const format = await readIfExists(path.join(specRoot, 'FORMAT.md'))
@@ -260,7 +260,7 @@ export async function lintSpec({ targetRoot } = {}) {
   const level = cfg.get('level')
   if (!level) errors.push('STATE cfg에 level이 없습니다.')
   else if (!LEVELS.has(level)) errors.push(`cfg level 값이 잘못됐습니다: ${level} (expert|mid|novice|?)`)
-  else if (level === '?') warnings.push('cfg level이 ?입니다 — create-architecture 캘리브레이션 미완.')
+  else if (level === '?') warnings.push('cfg level이 ?입니다 — gusta-create-architecture 캘리브레이션 미완.')
   const push = cfg.get('push')
   if (push !== undefined && !['-', '?'].includes(push) && !/^[A-Za-z0-9._/-]+$/.test(push)) {
     errors.push(`cfg push 값이 잘못됐습니다: ${push || '(빈 값)'} (브랜치 이름|-|?)`)
@@ -295,7 +295,7 @@ export async function lintSpec({ targetRoot } = {}) {
       errors.push(`ssot/${id}.md 파일이 없습니다.`)
       continue
     }
-    if (id === 'ARCH' && /\b(verify|verification|test)\b|검증/i.test(content) && !verificationTiers(content).declared) reviewHints.push('ssot/ARCH.md: verify 명령은 있으나 task / batch·push 전 / CI 검증 단계가 없습니다. create-architecture 개정 후보입니다.')
+    if (id === 'ARCH' && /\b(verify|verification|test)\b|검증/i.test(content) && !verificationTiers(content).declared) reviewHints.push('ssot/ARCH.md: verify 명령은 있으나 task / batch·push 전 / CI 검증 단계가 없습니다. gusta-create-architecture 개정 후보입니다.')
     const quote = quoteLine(content)
     const revMatch = quote?.match(/^r(\d+)\b/)
     if (!revMatch) errors.push(`ssot/${id}.md 인용줄이 'rN | 목적' 형식이 아닙니다.`)

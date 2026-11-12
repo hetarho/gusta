@@ -1,4 +1,0 @@
-interface:
-  display_name: "Doc Review"
-  short_description: "SSOT를 의미 보존하며 정리"
-  default_prompt: "Use $doc-review to tidy existing SSOT docs as an editor — preserve meaning, hand policy changes to update-ssot."

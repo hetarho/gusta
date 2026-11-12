@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Create Narrative"
+  short_description: "spec 전체를 사람이 읽기 좋은 이야기로"
+  default_prompt: "Use $gusta-create-narrative to weave the whole spec/ into a human-friendly Korean narrative doc."

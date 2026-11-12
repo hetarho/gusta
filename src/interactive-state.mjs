@@ -3,10 +3,10 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 
 // Interactive state: what a person is doing with an agent on this checkout right now (an open
-// start-design design). It lives in the checkout's own Git directory — never committed, never
+// gusta-design-mode design). It lives in the checkout's own Git directory — never committed, never
 // merged, invisible to other worktrees and clones. STATE cannot hold it: STATE rides along with
 // every planning commit (plan-push) to the planning branch and from there into every worktree.
-const FILE = 'haeram-interactive.json'
+const FILE = 'gusta-interactive.json'
 
 const location = (workspace) => workspace.git?.gitDir ? path.join(workspace.git.gitDir, FILE) : null
 

@@ -25,11 +25,11 @@ const STATE = `# STATE
 | T002 | api | ARCH | T001 | todo |
 
 ## next
-- implement-task T002
+- gusta-implement-task T002
 
 ## log
 - 260905 T001 done
-- 260905 create-task ARCH start
+- 260905 gusta-create-task ARCH start
 `
 
 const ARCH = `# ARCH architecture
@@ -460,7 +460,7 @@ test('spec이 없는 프로젝트는 부트스트랩 안내 오류를 낸다', a
   }
 })
 
-// ---- 문서 품질: 구조는 lint(오류·경고)가, 의미는 doc-review(검토 후보)가 본다 ----
+// ---- 문서 품질: 구조는 lint(오류·경고)가, 의미는 gusta-doc-review(검토 후보)가 본다 ----
 
 test('구조화된 결정 블록(하위 항목·표)은 오류도 검토 후보도 만들지 않는다', async () => {
   const structured = ARCH.replace(
@@ -617,7 +617,7 @@ test('템플릿 자리표시자만 남은 아카이브 result는 새 경고를 �
   })
 })
 
-test('doc-review식 분할: 새 번호를 붙여도 참조·rev·pending·완료 dep이 그대로다', async () => {
+test('gusta-doc-review식 분할: 새 번호를 붙여도 참조·rev·pending·완료 dep이 그대로다', async () => {
   // ARCH-1이 두 정책을 품고 있었다 → 머리 정책은 ARCH-1이 유지하고, 떨어진 정책만 새 번호를 받는다.
   const tidied = ARCH.replace(
     '- ARCH-1 [o] stack: next 15 ← ecosystem',
@@ -637,7 +637,7 @@ test('doc-review식 분할: 새 번호를 붙여도 참조·rev·pending·완료
 const SESSION_STATE = STATE
   .replace('- docs: en\n', '- docs: en\n- push: main\n')
   .replace('| T002 | api | ARCH | T001 | todo |', '| T002 | api | ARCH | T001 | doing@261013.k3f9 |')
-  .replace('## ssot\n', '## active\n| tag | host | mode | since | at | doing |\n|---|---|---|---|---|---|\n| k3f9 | mbp | autopilot | 2026-10-13T01:00Z | 2026-10-13T02:10Z | T002 |\n\n## inbox\n- 261013 decided ARCH-2 T002: deploy target unknown → static host (alt: container | serverless)\n- 261013 parked T001: needs a force push to rewrite the release tag\n- 261013 suggest -: run review-code after five tasks\n\n## ssot\n')
+  .replace('## ssot\n', '## active\n| tag | host | mode | since | at | doing |\n|---|---|---|---|---|---|\n| k3f9 | mbp | autopilot | 2026-10-13T01:00Z | 2026-10-13T02:10Z | T002 |\n\n## inbox\n- 261013 decided ARCH-2 T002: deploy target unknown → static host (alt: container | serverless)\n- 261013 parked T001: needs a force push to rewrite the release tag\n- 261013 suggest -: run gusta-review-code after five tasks\n\n## ssot\n')
 const DOING_T002 = T002.replace('st:todo', 'st:doing@261013.k3f9')
 
 test('active·inbox·cfg.push를 지킨 STATE는 통과한다', async () => {
@@ -652,7 +652,7 @@ test('inbox의 형식·참조와 active 행 형식이 틀리면 오류다', asyn
   const state = SESSION_STATE
     .replace('- push: main', '- push: two words')
     .replace('| k3f9 | mbp | autopilot | 2026-10-13T01:00Z | 2026-10-13T02:10Z | T002 |', '| k3f9 | mbp | solo | 26-10-13 | 2026-10-13T02:10Z | T009 |')
-    .replace('- 261013 suggest -: run review-code after five tasks', '- 261013 suggest ARCH-9 T404 review/none: missing refs\n- someday decided ARCH-1: no date')
+    .replace('- 261013 suggest -: run gusta-review-code after five tasks', '- 261013 suggest ARCH-9 T404 review/none: missing refs\n- someday decided ARCH-1: no date')
   await withFixture({ state, tasks: { 'T002.api.md': DOING_T002 } }, async (root) => {
     const { errors } = await lintSpec({ targetRoot: root })
     for (const pattern of [/cfg push/, /mode는 pair\|autopilot/, /since는 ISO UTC/, /doing T009/, /ARCH-9/, /T404/, /review\/none/, /inbox 줄 형식 오류/]) {

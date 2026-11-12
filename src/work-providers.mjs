@@ -6,7 +6,7 @@ import os from 'node:os'
 import { SkillPackageError } from './errors.mjs'
 
 const execute = promisify(execFile)
-const adapter = fileURLToPath(new URL('../bin/haeram-agent-adapter.mjs', import.meta.url))
+const adapter = fileURLToPath(new URL('../bin/gusta-agent-adapter.mjs', import.meta.url))
 const supported = ['codex', 'claude']
 const requiredFlags = {
   codex: ['--sandbox', '--output-schema', '--output-last-message', '--json'],

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Implement Task"
-  short_description: "태스크 구현·검증, 여러 세션이면 줄기를 나눠 진행"
-  default_prompt: "Use $implement-task to implement the remaining spec tasks, sharing lanes with other sessions through work next."

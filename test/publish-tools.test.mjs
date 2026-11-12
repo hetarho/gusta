@@ -19,7 +19,7 @@ test('publish preparation changes only conflict recovery and is idempotent', () 
 })
 
 test('publish preparation targets the actual bundled dependency and fails closed on tool drift', async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'haeram-publish-fixture-'))
+  const root = await mkdtemp(path.join(os.tmpdir(), 'gusta-publish-fixture-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const npmFile = path.join(root, 'package.json')
   const sigstore = path.join(root, 'node_modules', 'sigstore')
@@ -45,9 +45,9 @@ test('publish preparation targets the actual bundled dependency and fails closed
 
 // Run against the real pinned npm installation in the release job. Normal
 // consumer tests stay dependency-free and never install publishing tools.
-if (process.env.HAERAM_PUBLISH_NPM_ROOT) {
+if (process.env.GUSTA_PUBLISH_NPM_ROOT) {
   test('real publishing tools recover a 409 via GET and preserve log evidence; other errors still fail', async (t) => {
-    const root = process.env.HAERAM_PUBLISH_NPM_ROOT
+    const root = process.env.GUSTA_PUBLISH_NPM_ROOT
     await preparePublish(root)
     const npmRequire = createRequire(path.join(root, 'package.json'))
     const publishRequire = createRequire(npmRequire.resolve('libnpmpublish'))

@@ -14,7 +14,7 @@ const repository = fileURLToPath(new URL('../', import.meta.url))
 const target = path.resolve(option('--target', process.cwd()))
 const ref = option('--baseline-ref', 'HEAD')
 const baselineRef = (await execute('git', ['rev-parse', ref], { cwd: repository })).stdout.trim()
-const names = ['start-vibe', 'implement-task', 'manage-work']
+const names = ['gusta-start', 'gusta-implement-task', 'gusta-manage-work']
 const entries = {}
 for (const name of names) {
   const file = `skills/${name}/SKILL.md`
@@ -27,8 +27,8 @@ const excerpt = JSON.stringify(await vibeFormat({ section: 'task' }))
 entries.state = { before: state, after: status }
 entries.format = { before: format, after: excerpt }
 entries.taskSession = {
-  before: entries['start-vibe'].before + entries['implement-task'].before + state + format,
-  after: entries['start-vibe'].after + entries['implement-task'].after + status + excerpt,
+  before: entries['gusta-start'].before + entries['gusta-implement-task'].before + state + format,
+  after: entries['gusta-start'].after + entries['gusta-implement-task'].after + status + excerpt,
 }
 const measured = {}
 for (const [name, versions] of Object.entries(entries)) {
@@ -46,4 +46,4 @@ if (args.includes('--tokens')) {
   })
   for (const [name, versions] of Object.entries(tokens)) for (const [version, counts] of Object.entries(versions)) Object.assign(measured[name][version], counts)
 }
-process.stdout.write(`${JSON.stringify({ schemaVersion: 1, baselineRef, target, systemPrompt: 'not observable; excluded on both sides', recipe: 'task session = start-vibe + implement-task + STATE/full FORMAT before; status/task FORMAT excerpt after. Task-specific brief and provider wrapper excluded. Token counts are tokenizer proxies, not Claude billing or observed maximum context.', measured }, null, 2)}\n`)
+process.stdout.write(`${JSON.stringify({ schemaVersion: 1, baselineRef, target, systemPrompt: 'not observable; excluded on both sides', recipe: 'task session = gusta-start + gusta-implement-task + STATE/full FORMAT before; status/task FORMAT excerpt after. Task-specific brief and provider wrapper excluded. Token counts are tokenizer proxies, not Claude billing or observed maximum context.', measured }, null, 2)}\n`)

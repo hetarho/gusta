@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Preference"
+  short_description: "gusta 패키지 동작 설정 보기·바꾸기"
+  default_prompt: "Use $gusta-preference to show this project's gusta settings (spec/SETTINGS.md) as a table, and change only the values I name."

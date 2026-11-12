@@ -7,7 +7,7 @@ import test from 'node:test'
 import { discoverSkills, SkillPackageError } from '../src/index.mjs'
 
 async function temporarySkillsRoot() {
-  return mkdtemp(path.join(os.tmpdir(), 'haeram-skill-set-'))
+  return mkdtemp(path.join(os.tmpdir(), 'gusta-skill-set-'))
 }
 
 async function addSkill(root, folderName, frontmatterName = folderName) {

@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 export const execute = promisify(execFile)
 export const git = async (root, ...args) => (await execute('git', ['-C', root, ...args], { encoding: 'utf8' })).stdout.trim()
-// What `vibe task done` leaves (implement-task §5), without committing: acceptance checked, the
+// What `vibe task done` leaves (gusta-implement-task §5), without committing: acceptance checked, the
 // result filled, done@date in the file archived under tasks/done, the STATE row gone. false: no open file.
 export async function archiveTask(root, id) {
   const name = (await readdir(path.join(root, 'spec/tasks')).catch(() => [])).find((file) => file.startsWith(`${id}.`))
@@ -20,7 +20,7 @@ export async function archiveTask(root, id) {
   return true
 }
 export async function fixture(t, count = 3) {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-v060-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-v060-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'project')
   await mkdir(root)
@@ -28,7 +28,7 @@ export async function fixture(t, count = 3) {
   for (const [key, value] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.hooksPath', '/dev/null']]) await git(root, 'config', key, value)
   await mkdir(path.join(root, 'spec/ssot'), { recursive: true })
   await mkdir(path.join(root, 'spec/tasks/done'), { recursive: true })
-  let state = await readFile(new URL('../../skills/create-architecture/assets/STATE.md', import.meta.url), 'utf8')
+  let state = await readFile(new URL('../../skills/gusta-create-architecture/assets/STATE.md', import.meta.url), 'utf8')
   state = state.replace('- level: ?', '- level: expert').replace('- lang: ?', '- lang: ko').replace('- push: ?', '- push: -')
   state = state.replace('## tasks', '| ARCH | 1 | 1 | - | 0 |\n\n## tasks')
   const rows = []

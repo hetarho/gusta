@@ -1,10 +1,10 @@
 {
-  "name": "haeram-spec-creator",
+  "name": "@haeram/gusta",
   "version": "0.13.1",
-  "description": "Versioned Claude and Codex skills distributed through npm.",
+  "description": "A Spec-Driven Development (SDD) framework for code curators — Cultivate and exhibit your taste.",
   "type": "module",
   "bin": {
-    "haeram-spec-creator": "bin/haeram-spec-creator.mjs"
+    "gusta": "bin/gusta.mjs"
   },
   "exports": {
     ".": "./src/index.mjs"
@@ -17,10 +17,10 @@
   ],
   "scripts": {
     "test": "node --test",
-    "validate": "node ./bin/haeram-spec-creator.mjs validate --allow-empty",
+    "validate": "node ./bin/gusta.mjs validate --allow-empty",
     "pack:check": "node ./scripts/assert-pack.mjs",
     "check": "npm test && npm run validate && npm run pack:check",
-    "release:check": "npm test && node ./bin/haeram-spec-creator.mjs validate && npm run pack:check",
+    "release:check": "npm test && node ./bin/gusta.mjs validate && npm run pack:check",
     "prepublishOnly": "npm run release:check"
   },
   "engines": {
@@ -32,17 +32,19 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hetarho/haeram-spec-creator.git"
+    "url": "git+https://github.com/hetarho/gusta.git"
   },
   "bugs": {
-    "url": "https://github.com/hetarho/haeram-spec-creator/issues"
+    "url": "https://github.com/hetarho/gusta/issues"
   },
-  "homepage": "https://github.com/hetarho/haeram-spec-creator#readme",
+  "homepage": "https://github.com/hetarho/gusta#readme",
   "keywords": [
-    "codex",
-    "claude",
+    "gusta",
+    "spec-driven-development",
+    "sdd",
     "agent-skills",
-    "spec-driven-development"
+    "claude",
+    "codex"
   ],
   "license": "MIT"
 }

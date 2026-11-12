@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Init"
+  short_description: "정해지지 않은 gusta 설정(브랜치 전략) 정하기"
+  default_prompt: "Use $gusta-init to decide this project's unset gusta settings (branch strategy: land, land-via, push, deploy, plan) and write them to spec/SETTINGS.md."

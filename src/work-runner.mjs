@@ -141,7 +141,7 @@ export async function runWork(options) {
   }
   // Keep a Mac awake for exactly as long as this runner lives.
   let awake = null
-  if (process.platform === 'darwin' && (options.env ?? process.env).HAERAM_NO_AWAKE !== '1') {
+  if (process.platform === 'darwin' && (options.env ?? process.env).GUSTA_NO_AWAKE !== '1') {
     awake = spawn('caffeinate', ['-i', '-m', '-s', '-w', String(process.pid)], { detached: true, stdio: 'ignore' })
     awake.on('error', () => {})
     awake.unref()
@@ -151,7 +151,7 @@ export async function runWork(options) {
   let checkpoints = Promise.resolve()
   const checkpointWorkspace = async (job) => {
     job.checkpointAt = Date.now()
-    const ref = `refs/haeram/checkpoints/${job.attempt}`
+    const ref = `refs/gusta/checkpoints/${job.attempt}`
     const tree = await workingTree(job.workspace)
     const previous = (await git(job.workspace, ['rev-parse', '--verify', '--quiet', ref], [1]))?.trim() || null
     if (previous && (await git(job.workspace, ['rev-parse', `${previous}^{tree}`])).trim() === tree) return previous
@@ -251,7 +251,7 @@ export async function runWork(options) {
     const resume = role === 'worker' && current.session?.provider === provider && (current.resumes ?? 0) < MAX_RESUMES ? current.session.id : null
     const directive = role === 'worker' ? current.directive ?? null : null
     const job = { id, role, attempt: attempt.id, taskId: attempt.taskId, slot, review, expectedHead, provider, startedAt: Date.now(), workspace: review?.workspace ?? attempt.workspace, settled: false,
-      sessionFile: role === 'worker' ? path.join(os.tmpdir(), `haeram-session-${id}`) : null }
+      sessionFile: role === 'worker' ? path.join(os.tmpdir(), `gusta-session-${id}`) : null }
     await transaction(context.root, (state) => {
       const entry = attemptOf(state, attempt.id)
       entry.dispatch = { id, runner: run.id, role, slot, provider, model: adapter.model ?? null, status: 'starting', pid: null, host: os.hostname(), startedAt: now(), log }
@@ -268,20 +268,20 @@ export async function runWork(options) {
     if (!(directive && directive.kind !== 'timeout')) counts.set(key, (counts.get(key) ?? 0) + 1)
     const payload = { schemaVersion: 1, dispatchId: id, role, slot, provider: adapter.provider ?? 'custom', model: adapter.model ?? null, group: group.id, attempt: attempt.id,
       taskId: attempt.taskId, tasks: attempt.tasks ?? [attempt.taskId], lane: attempt.lane ?? null, workspace: job.workspace, groupBranch: group.branch,
-      cliCommand: [process.execPath, fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))],
+      cliCommand: [process.execPath, fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))],
       boardCommand: ['work', 'board', '--work', group.id, '--json'],
       verify, taskVerify, review: review ?? null, correction: attempt.correction ?? null,
       mode: autopilot ? 'autopilot' : 'pair', resume, directive, sessionFile: job.sessionFile, allowTools: role === 'worker' ? liveGroup.allowTools ?? [] : [], ...(role === 'worker' ? { permissionMode: mode } : {}), headlessMcp: mcp,
       brief: role === 'worker' ? await briefFor(context, liveGroup, current).catch(() => null) : null, risk: role === 'reviewer' ? current.risk ?? null : null,
       instruction: role === 'worker'
-        ? 'Use implement-task. Implement only taskId (or fix review findings) in this workspace, run the checks this task adds or affects, check acceptance, fill result, and commit. Full suites run at unit integration. Return JSON {"outcome":"completed","summary":"..."}. The runner owns submit and dispatches the next lane task to this workspace; do not submit, integrate, or claim another task. For a blocker return {"outcome":"blocked","summary":"reason"}; when only a planning decision blocks you, add "decision":{"question":"...","options":["..."],"recommendation":"..."} and commit your partial work.'
-        : 'Use review-task. Review the pinned commit against baseCommit, every task in tasks, and SSOT. Do not edit or commit. Return JSON {"verdict":"approved|changes_requested","summary":"...","findings":[{"priority":"P1|P2|P3","where":"file:line","message":"..."}]}. The runner owns review-finish.' }
-    if (config.kind === 'builtin' && role === 'worker') payload.instruction = 'Use implement-task to edit and verify only taskId, running the checks this task adds or affects; full suites run at unit integration. Do not commit or submit; the host runner validates scope, commits, submits and dispatches the next lane task. Return JSON with outcome completed|blocked, summary and decision (empty unless a planning decision blocks you).'
+        ? 'Use gusta-implement-task. Implement only taskId (or fix review findings) in this workspace, run the checks this task adds or affects, check acceptance, fill result, and commit. Full suites run at unit integration. Return JSON {"outcome":"completed","summary":"..."}. The runner owns submit and dispatches the next lane task to this workspace; do not submit, integrate, or claim another task. For a blocker return {"outcome":"blocked","summary":"reason"}; when only a planning decision blocks you, add "decision":{"question":"...","options":["..."],"recommendation":"..."} and commit your partial work.'
+        : 'Use gusta-review-task. Review the pinned commit against baseCommit, every task in tasks, and SSOT. Do not edit or commit. Return JSON {"verdict":"approved|changes_requested","summary":"...","findings":[{"priority":"P1|P2|P3","where":"file:line","message":"..."}]}. The runner owns review-finish.' }
+    if (config.kind === 'builtin' && role === 'worker') payload.instruction = 'Use gusta-implement-task to edit and verify only taskId, running the checks this task adds or affects; full suites run at unit integration. Do not commit or submit; the host runner validates scope, commits, submits and dispatches the next lane task. Return JSON with outcome completed|blocked, summary and decision (empty unless a planning decision blocks you).'
     const file = createWriteStream(log, { flags: 'a', mode: 0o600 })
     // A log write failure must not end the dispatch. The record never holds log content (it reaches
     // coordinator output): only the adapter's last plain stderr line, as the failure reason.
     file.on('error', () => {})
-    const child = spawn(adapter.command, adapter.args, { cwd: job.workspace, shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], env: { ...(options.env ?? process.env), HAERAM_ROLE: role, HAERAM_ATTEMPT: attempt.id, HAERAM_DISPATCH: id } })
+    const child = spawn(adapter.command, adapter.args, { cwd: job.workspace, shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], env: { ...(options.env ?? process.env), GUSTA_ROLE: role, GUSTA_ATTEMPT: attempt.id, GUSTA_DISPATCH: id } })
     job.child = child
     let output = '', overflow = false, pending = '', reason = null
     // Provider events arrive as JSON lines; the adapter's own message (its error) is plain text.
@@ -510,7 +510,7 @@ export async function runWork(options) {
 
 // work run --detach/--status/--stop. The host is an ordinary runWork in its own session: the group's
 // runner record is its lock and ownership acknowledgement, and status reads files only.
-const HOST = fileURLToPath(new URL('../bin/haeram-work-run.mjs', import.meta.url))
+const HOST = fileURLToPath(new URL('../bin/gusta-work-run.mjs', import.meta.url))
 const STALE_MS = 60000
 export const runFiles = (root, runId) => ({ log: path.join(root, 'logs', `run-${runId}.log`), result: path.join(root, 'logs', `run-${runId}.json`) })
 const runnerHealth = (runner, alive, at) => runner.host !== os.hostname() ? 'unknown-host' : !alive(runner.pid) ? 'host-lost'
@@ -593,7 +593,7 @@ export async function detachWork(options, deps = {}) {
   } finally { await log.close() }
 }
 
-// bin/haeram-work-run.mjs: signals never end the host abruptly. The first starts the runner's
+// bin/gusta-work-run.mjs: signals never end the host abruptly. The first starts the runner's
 // graceful stop; later ones are absorbed while it stops children and records state.
 export async function workRunHost(file, deps = {}) {
   const { options, result: resultFile } = JSON.parse(await readFile(file, 'utf8'))

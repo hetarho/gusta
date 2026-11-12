@@ -78,7 +78,7 @@ test('서로 기다리는 lane 계획은 배정 전에 거부한다', async (t) 
 test('세션 루프: 기반 → 리뷰 → 백그라운드 통합 → 줄기 분담 → 묶음 검증까지 자동으로 진행한다', async (t) => {
   const setup = await laneFixture(t, [['T001', '-', '-'], ['T002', 'T001', 'a'], ['T003', 'T002', 'a'], ['T004', 'T001', 'b'], ['T005', 'T003 T004', '-']])
   const log = path.join(setup.temporary, 'tiers.log')
-  const record = `node -e "require('fs').appendFileSync('${log}', [process.env.HAERAM_TIER, process.env.HAERAM_TASK || '-', process.env.HAERAM_DIFF_BASE].join(' ') + String.fromCharCode(10))"`
+  const record = `node -e "require('fs').appendFileSync('${log}', [process.env.GUSTA_TIER, process.env.GUSTA_TASK || '-', process.env.GUSTA_DIFF_BASE].join(' ') + String.fromCharCode(10))"`
   const tiers = { taskVerify: [record], verify: [record], groupVerify: [record, checkFile('T005.txt')], reviewers: 2 }
   const session = (owner, extra = {}) => nextWork({ ...setup, owner, pollMs: 100, ...extra })
   const review = async (assignment) => {

@@ -28,7 +28,7 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,39}$/
 const exists = (file) => access(file).then(() => true, () => false)
 const tailOf = (text) => text.trimEnd().split('\n').slice(-8)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-const HUB = fileURLToPath(new URL('../bin/haeram-ab-hub.mjs', import.meta.url))
+const HUB = fileURLToPath(new URL('../bin/gusta-ab-hub.mjs', import.meta.url))
 
 async function context(options) {
   const workspace = await inspectWorkspace(options)
@@ -126,7 +126,7 @@ function stopAll(record) {
 // failed copy takes the worktree and branch away again: they are not in the record for stop to clean.
 async function addTree(ctx, slug, name, from, copies) {
   const branch = `ab/${slug}/${name}`
-  const destination = await canonicalDestination(path.join(path.dirname(ctx.main), '.haeram-worktrees', ctx.identity, `ab-${slug}-${name}`))
+  const destination = await canonicalDestination(path.join(path.dirname(ctx.main), '.gusta-worktrees', ctx.identity, `ab-${slug}-${name}`))
   await git(ctx.root, ['worktree', 'add', '-b', branch, destination, from])
   try {
     for (const file of copies) {
@@ -530,7 +530,7 @@ export async function abServe(options = {}, injected = {}) {
       await mkdir(path.dirname(log), { recursive: true })
       const file = await open(log, 'a', 0o600)
       const child = await deps.spawnServer(options.command, { cwd: variant.path, shell: true, detached: process.platform !== 'win32',
-        env: { ...process.env, PORT: String(variant.port), HAERAM_AB_VARIANT: name }, stdio: ['ignore', file.fd, file.fd] })
+        env: { ...process.env, PORT: String(variant.port), GUSTA_AB_VARIANT: name }, stdio: ['ignore', file.fd, file.fd] })
       child.unref()
       await file.close()
       changed[name] = variant.server = { pid: child.pid, command: options.command, log, startedAt: new Date().toISOString() }
@@ -570,7 +570,7 @@ export async function abExec(options = {}) {
   for (let round = 0; round < repeat; round++) {
     for (const name of names) {
       const variant = record.variants[name]
-      runs[name].push(await shell(options.command, variant.path, { PORT: String(variant.port), HAERAM_AB_VARIANT: name }, path.join(ctx.runtime, 'ab', slug, `${name}-exec-${round + 1}.log`), timeoutMs))
+      runs[name].push(await shell(options.command, variant.path, { PORT: String(variant.port), GUSTA_AB_VARIANT: name }, path.join(ctx.runtime, 'ab', slug, `${name}-exec-${round + 1}.log`), timeoutMs))
     }
   }
   const variants = names.map((name) => {
@@ -787,7 +787,7 @@ async function withoutScaffold(ctx, record, commit, files) {
 const STATE = 'spec/STATE.md'
 
 // Adoption merges exactly one variant into the checkout that started the comparison and logs it in
-// STATE, uncommitted like vibe beat. update-ssot, when the choice changed a rule, stays with the skill.
+// STATE, uncommitted like vibe beat. gusta-update-ssot, when the choice changed a rule, stays with the skill.
 export async function abPick(options = {}) {
   const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
   if (!options.variant) fail('--variant가 필요합니다.')

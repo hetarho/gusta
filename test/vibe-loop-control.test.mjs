@@ -181,7 +181,7 @@ for (const point of ['config-before-apply', 'config-after-apply']) test(`failure
   assert.equal(state.appliedConfig.pushEachUnit, point === 'config-after-apply')
   assert.equal(state.running, false); assert.equal(state.units, 1)
   assert.equal(await git(root, 'status', '--porcelain'), '')
-  await assert.rejects(readFile(path.join(root, '.git/haeram-vibe-loop.lock')), { code: 'ENOENT' })
+  await assert.rejects(readFile(path.join(root, '.git/gusta-vibe-loop.lock')), { code: 'ENOENT' })
 })
 
 test('exhausted metadata retries record a distinct operational error; explicit recovery commits only owned files', async (t) => {
@@ -243,7 +243,7 @@ test('independent supervisor observes an actually killed isolated host and emits
   await writeFile(helper, `import {vibeLoop} from ${JSON.stringify(module)}; await vibeLoop(${JSON.stringify({ ...options(root), notifyCommand: notify.command })}, {preflight:async()=>({ok:true,checks:[]}), execute:async()=>new Promise(()=>{})});`)
   const child = spawn(process.execPath, [helper], { stdio: 'ignore' })
   t.after(() => { try { child.kill('SIGKILL') } catch {} })
-  const directory = path.join(root, '.git/haeram/v1/loops/ctrl01'), manifest = path.join(directory, 'loop.json')
+  const directory = path.join(root, '.git/gusta/v1/loops/ctrl01'), manifest = path.join(directory, 'loop.json')
   let state
   for (let n = 0; n < 200; n++) { state = await readJSON(manifest); if (state?.status === 'unit') break; await pause(25) }
   assert.equal(state.status, 'unit'); assert.equal(state.supervisor.ready, true)
@@ -276,7 +276,7 @@ test('independent supervisor observes an actually killed isolated host and emits
 
 test('stale heartbeat is reported without stealing a live host or restarting after a user stop', async (t) => {
   const { root } = await fixture(t)
-  const directory = path.join(root, '.git/haeram/v1/loops/stale1')
+  const directory = path.join(root, '.git/gusta/v1/loops/stale1')
   const state = { runId: 'isolated', tag: 'stale1', cwd: await realpath(root), host: os.hostname(), pid: process.pid, running: true, heartbeatAt: new Date(0).toISOString(), startedAt: new Date(0).toISOString() }
   await atomicJSON(path.join(directory, 'loop.json'), state)
   const watching = watchLoop(directory, state.runId, { intervalMs: 20 })
@@ -301,7 +301,7 @@ test('one checkout owner wins concurrent acquisition; tag controls cannot cross 
   await releaseLoop(lock, owner.runId)
   const worktree = path.join(temporary, 'other')
   await git(root, 'worktree', 'add', '-q', '-b', 'other', worktree)
-  const directory = path.join(root, '.git/haeram/v1/loops/ctrl01')
+  const directory = path.join(root, '.git/gusta/v1/loops/ctrl01')
   await atomicJSON(path.join(directory, 'loop.json'), { cwd: root, tag: 'ctrl01', running: true, host: os.hostname(), pid: process.pid })
   await assert.rejects(vibeLoop({ targetRoot: worktree, tag: 'ctrl01', stop: true }), /다른 checkout/)
   await assert.rejects(readFile(path.join(directory, 'STOP')), { code: 'ENOENT' })
@@ -309,7 +309,7 @@ test('one checkout owner wins concurrent acquisition; tag controls cannot cross 
 
 test('official CLI accepts configuration and emits a durable acknowledgement receipt', async (t) => {
   const { root } = await fixture(t)
-  const cli = new URL('../bin/haeram-spec-creator.mjs', import.meta.url).pathname
+  const cli = new URL('../bin/gusta.mjs', import.meta.url).pathname
   const result = await vibeLoop({ ...options(root), maxUnits: 2 }, { preflight: passed,
     execute: async (config, job) => {
       if (!config.pushEachUnit) {
@@ -453,7 +453,7 @@ test('unit timeout is recorded, never a silent success; idle cuts end the run as
 
 test('legacy hosts reject unsupported in-place requests without touching their execution', async (t) => {
   const { root } = await fixture(t)
-  const file = path.join(root, '.git/haeram/v1/loops/legacy/loop.json')
+  const file = path.join(root, '.git/gusta/v1/loops/legacy/loop.json')
   const legacy = { schemaVersion: 1, cwd: await realpath(root), tag: 'legacy', running: true, pid: process.pid, startedAt: new Date().toISOString() }
   await atomicJSON(file, legacy)
   await assert.rejects(vibeLoop({ targetRoot: root, tag: 'legacy', configure: true, pushEachUnit: true }), /지원하지 않습니다/)
@@ -555,7 +555,7 @@ test('finished summary: level, waiting judgment capped with IDs, parked count an
 })
 
 test('a run has exactly one finished notice, whoever closes it', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'haeram-finished-'))
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'gusta-finished-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const state = { runId: 'run-1', tag: 'ctrl01' }
   const first = await finishedEvent(directory, state, { level: 'info', status: 'stopped', reason: 'no-work' })
@@ -566,7 +566,7 @@ test('a run has exactly one finished notice, whoever closes it', async (t) => {
 })
 
 for (const blocked of ['events.jsonl', 'notifications']) test(`a finished notice whose ${blocked} write fails stays retryable, then is sent once`, async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'haeram-finished-'))
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'gusta-finished-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const state = { runId: 'run-1', tag: 'ctrl01' }
   // Injected write failure: a directory where the event log goes, or a file where the outbox goes.

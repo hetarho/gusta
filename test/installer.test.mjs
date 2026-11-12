@@ -7,7 +7,7 @@ import test from 'node:test'
 import { checkSkills, installSkills, LOCK_FILE, SkillPackageError } from '../src/index.mjs'
 
 async function createFixture() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'haeram-installer-'))
+  const root = await mkdtemp(path.join(os.tmpdir(), 'gusta-installer-'))
   const skillsRoot = path.join(root, 'source')
   const targetRoot = path.join(root, 'target')
   const skillRoot = path.join(skillsRoot, 'create-plan')
@@ -113,7 +113,7 @@ test('잠금 파일의 대상 밖 경로를 거부한다', async () => {
     path.join(fixture.targetRoot, LOCK_FILE),
     `${JSON.stringify({
       schemaVersion: 1,
-      packageName: 'haeram-spec-creator',
+      packageName: '@haeram/gusta',
       files: {
         '.codex/skills/../../../outside.txt': { sha256: 'a'.repeat(64) },
       },

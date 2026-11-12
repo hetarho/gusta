@@ -18,7 +18,7 @@ async function gitWith(root, args, env) {
 // (ignored files excluded). A copy of the real index keeps Git's stat cache, so only
 // changed files are hashed again.
 export async function workingTree(root) {
-  const temporary = path.join(os.tmpdir(), `haeram-index-${randomUUID()}`)
+  const temporary = path.join(os.tmpdir(), `gusta-index-${randomUUID()}`)
   try {
     const index = path.resolve(root, await gitWith(root, ['rev-parse', '--git-path', 'index']))
     const env = { GIT_INDEX_FILE: temporary }
@@ -35,10 +35,10 @@ export async function workingTree(root) {
 
 export const commitTree = (root, commit) => gitWith(root, ['rev-parse', `${commit}^{tree}`])
 
-// A stored command that reads HAERAM_* selects its work from the scope, so the scope is
+// A stored command that reads GUSTA_* selects its work from the scope, so the scope is
 // part of what was verified; any other command depends on the tree alone.
 export function checkKey(tree, command, scope = {}) {
-  return [tree, command, command.includes('HAERAM_') ? JSON.stringify(scope) : ''].join('\u0000')
+  return [tree, command, command.includes('GUSTA_') ? JSON.stringify(scope) : ''].join('\u0000')
 }
 
 async function readCache(runtime) {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Design Mode"
+  short_description: "실시간 디자인 모드: 말하는 대로 코드만 고치고, 끝나면 전체 테스트 후 커밋"
+  default_prompt: "Use $gusta-design-mode to mark STATE as designing, edit code live as the user describes, and run every test only after the user says the design is finished."

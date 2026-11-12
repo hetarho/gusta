@@ -80,9 +80,9 @@ export async function vibeBrief(options = {}) {
   const current = workspace.git?.head ?? null
   let diffBase = null
   if (source.kind === 'worktree') {
-    const startFile = path.join(workspace.git.gitDir, 'haeram-task-start.json')
+    const startFile = path.join(workspace.git.gitDir, 'gusta-task-start.json')
     const saved = await readFile(startFile, 'utf8').then(JSON.parse).catch(() => null)
-    diffBase = options.diffBase ?? process.env.HAERAM_DIFF_BASE ?? (saved?.task === single ? saved.diffBase : current)
+    diffBase = options.diffBase ?? process.env.GUSTA_DIFF_BASE ?? (saved?.task === single ? saved.diffBase : current)
     if (diffBase) await git(source.root, ['rev-parse', '--verify', `${diffBase}^{commit}`])
     await writeFile(startFile, JSON.stringify({ task: single, diffBase }))
   }
@@ -130,7 +130,7 @@ export function renderBriefView(view) {
 }
 
 export async function vibeFormat(options = {}) {
-  const markdown = await readFile(new URL('../skills/create-architecture/assets/FORMAT.md', import.meta.url), 'utf8')
+  const markdown = await readFile(new URL('../skills/gusta-create-architecture/assets/FORMAT.md', import.meta.url), 'utf8')
   const names = { task: ['Notation', 'Skeletons (section order fixed; only (opt) may be omitted; no sections beyond the skeleton)', 'State rules'], state: ['State rules', 'Sessions'], ssot: ['Principles', 'Notation'], report: ['Sessions'], reading: ['Reading'], settings: ['Settings'] }
   const requested = names[options.section] ?? [options.section]
   const map = sections(markdown)

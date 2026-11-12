@@ -7,7 +7,7 @@ import { fixture, git, execute } from './helpers/vibe-fixture.mjs'
 import { vibeTask } from '../src/vibe-task.mjs'
 import { closeTasks, taskRow } from '../src/state-doc.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
-const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 
 const clock = { now: () => new Date('2026-10-20T09:00:00Z') }
 const run = (root, step, task, extra = {}) => vibeTask({ targetRoot: root, step, task, ...extra }, clock)
@@ -74,7 +74,7 @@ test('done refuses unchecked acceptance or an empty result, then archives with n
   assert.equal(closed.st, 'done@261020')
   assert.deepEqual(closed.files, ['spec/tasks/T001.example.md', 'spec/tasks/done/T001.example.md', 'spec/STATE.md'])
   assert.deepEqual(closed.runnable, ['T002', 'T003'])
-  assert.deepEqual(closed.next, ['- implement-task T002 T003', '- finish create-architecture interview'])
+  assert.deepEqual(closed.next, ['- gusta-implement-task T002 T003', '- finish gusta-create-architecture interview'])
   const archived = await read(root, 'spec/tasks/done/T001.example.md')
   assert.match(archived, /^> st:done@261020 \|/m)
   assert.match(archived, new RegExp(`^- at: ${head}$`, 'm'))
@@ -97,14 +97,14 @@ test('done of the last task leaves a planning next, an explore exit closes it an
   await run(root, 'start', 'T001', { tag: 'ab12' })
   await edit(root, 'spec/tasks/T001.example.md', (text) => text.replace(/## result\n$/, '## result\n- outcome: measured\n- at: -\n- verified: -\n- limits: target unmet\n'))
   const closed = await run(root, 'done', 'T001', { forceOther: true })
-  assert.deepEqual(closed.next, ['- finish create-architecture interview'])
+  assert.deepEqual(closed.next, ['- finish gusta-create-architecture interview'])
   const state = await read(root, 'spec/STATE.md')
   assert.match(state, /## log\n- 261020 T001 done\n$/)
 })
 
 test('closeTasks keeps 20 log lines, replaces generated next lines and reports missing rows', () => {
   const log = Array.from({ length: 20 }, (_, index) => `- 2610${String(index).padStart(2, '0')} older ${index}`).join('\n')
-  const text = `# STATE\n\n## active\n| tag | host | mode | since | at | doing |\n|---|---|---|---|---|---|\n| ab | mbp | pair | 2026-10-20T08:00Z | 2026-10-20T08:00Z | T001 |\n\n## tasks\n| id | title | ssot | dep | st |\n|---|---|---|---|---|\n| T001 | a | ARCH | - | doing@261020.ab |\n\n## next\n- implement-task T001\n\n## log\n${log}\n`
+  const text = `# STATE\n\n## active\n| tag | host | mode | since | at | doing |\n|---|---|---|---|---|---|\n| ab | mbp | pair | 2026-10-20T08:00Z | 2026-10-20T08:00Z | T001 |\n\n## tasks\n| id | title | ssot | dep | st |\n|---|---|---|---|---|\n| T001 | a | ARCH | - | doing@261020.ab |\n\n## next\n- gusta-implement-task T001\n\n## log\n${log}\n`
   const closed = closeTasks(text, ['T001', 'T002'], { log: '- 261020 T001 done', next: ['- inspect work board for remaining tasks'] })
   assert.deepEqual(closed.missing, ['T002'])
   assert.match(closed.text, /## next\n- inspect work board for remaining tasks\n\n## log\n- 261020 T001 done\n/)

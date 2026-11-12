@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Create SSOT"
+  short_description: "기획자 인터뷰로 도메인 SSOT 작성"
+  default_prompt: "Use $gusta-create-ssot to interview the user as a planner and write a new domain SSOT."

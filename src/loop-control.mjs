@@ -280,7 +280,7 @@ export async function watchLoop(directory, runId, { intervalMs = 1000 } = {}) {
 export async function startLoopMonitor(directory, runId) {
   const log = await open(path.join(directory, 'supervisor.log'), 'a', 0o600)
   try {
-    const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/haeram-vibe-watch.mjs', import.meta.url)), directory, runId], { detached: true, stdio: ['ignore', log.fd, log.fd] })
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/gusta-vibe-watch.mjs', import.meta.url)), directory, runId], { detached: true, stdio: ['ignore', log.fd, log.fd] })
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
     child.unref()
     const until = Date.now() + 5000

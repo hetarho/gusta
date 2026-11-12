@@ -155,7 +155,7 @@ export const createHub = (options) => http.createServer(hubHandler(options))
 const listen = (server, port, host) => new Promise((resolve, reject) => {
   server.once('error', reject).listen(port, host, () => { server.off('error', reject); resolve(server) })
 })
-// Detached entry (bin/haeram-ab-hub.mjs): listens on a free port and tells the CLI which. `localhost`
+// Detached entry (bin/gusta-ab-hub.mjs): listens on a free port and tells the CLI which. `localhost`
 // may resolve to ::1 first, so the same port answers on both loopbacks (127.0.0.1 only without IPv6).
 // It exits by itself once the comparison record is gone (picked or removed).
 export async function hubMain([recordFile, feedbackFile, readyFile], { exit = (code) => process.exit(code), checkMs = 30000 } = {}) {

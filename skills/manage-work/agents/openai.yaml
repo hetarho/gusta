@@ -1,4 +1,0 @@
-interface:
-  display_name: "Manage Work"
-  short_description: "작업 묶음과 AI별 worktree의 배정·검증·통합·정리"
-  default_prompt: "Use $manage-work to organize this work into isolated tasks and integrate their verified results."

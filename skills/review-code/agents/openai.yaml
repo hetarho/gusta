@@ -1,4 +1,0 @@
-interface:
-  display_name: "Review Code"
-  short_description: "개발 관점 코드 점검 → 리팩토링 제안"
-  default_prompt: "Use $review-code to audit the codebase as a senior engineer and propose prioritized refactoring findings."

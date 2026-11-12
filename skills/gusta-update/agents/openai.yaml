@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Update"
+  short_description: "gusta 스킬셋 최신 버전으로 갱신하고 spec/ 이관"
+  default_prompt: "Use $gusta-update to update gusta to the latest npm version, reinstall its skills, and migrate spec/ (STATE, SETTINGS, FORMAT) to the new structure."

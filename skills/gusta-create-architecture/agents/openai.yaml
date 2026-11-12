@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Create Architecture"
+  short_description: "spec 초기화 + 아키텍처 SSOT 작성"
+  default_prompt: "Use $gusta-create-architecture to bootstrap spec/ and decide the architecture SSOT through an interview."

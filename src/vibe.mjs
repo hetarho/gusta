@@ -156,7 +156,7 @@ async function assertSpecClose(root, commit) {
   // Publication sends this commit, not the index or working tree. Snapshot only Markdown spec
   // inputs so unrelated dirty files remain supported and an unstaged repair cannot mask HEAD.
   const files = (await git(root, ['ls-tree', '-r', '--name-only', '-z', commit, '--', 'spec'])).split('\0').filter((file) => file.endsWith('.md'))
-  const candidate = await mkdtemp(path.join(os.tmpdir(), 'haeram-spec-close-'))
+  const candidate = await mkdtemp(path.join(os.tmpdir(), 'gusta-spec-close-'))
   try {
     const specs = files.map((file) => `${commit}:${file}`)
     const contents = await batchShow(root, specs)
@@ -178,7 +178,7 @@ export async function vibePush(options = {}) {
   const context = await vibeSession(options)
   const { branches } = context
   if (!context.target && !branches.landTarget) return { schemaVersion: 1, ok: true, pushed: null, reason: branches.unset ? 'land-unset' : 'push-disabled' }
-  if (await designOf(context.workspace)) fail('이 checkout은 디자인 중입니다(vibe design). 사용자에게 디자인이 끝났는지 확인하고 start-design 마감(vibe design verify → end → 커밋) 뒤 push하세요.')
+  if (await designOf(context.workspace)) fail('이 checkout은 디자인 중입니다(vibe design). 사용자에게 디자인이 끝났는지 확인하고 gusta-design-mode 마감(vibe design verify → end → 커밋) 뒤 push하세요.')
   if (branches.via === 'pr' && branches.landTarget) return landByPR(context, options)
   if (!context.target) return landLocal(context, options)
   if (!context.remote) fail('push할 원격이 없습니다. spec/SETTINGS.md push를 false로 두거나 원격을 추가하세요.')
@@ -212,7 +212,7 @@ async function landLocal(context, options) {
   const { root } = context
   const land = context.branches.landTarget
   const ref = `refs/heads/${land}`
-  if (!(await exists(root, ref))) fail(`land 브랜치 ${land}가 없습니다. 브랜치를 만들거나 /haeram-setting으로 land를 고치세요.`)
+  if (!(await exists(root, ref))) fail(`land 브랜치 ${land}가 없습니다. 브랜치를 만들거나 /gusta-preference로 land를 고치세요.`)
   if ((await git(root, ['status', '--porcelain', '--untracked-files=no'])).trim()) fail('커밋하지 않은 변경이 있습니다. 먼저 커밋하세요.')
   let merged = false
   if (!(await ancestor(root, ref, 'HEAD'))) {
@@ -256,9 +256,9 @@ async function landByPR(context, options) {
 export async function vibeDeploy(options = {}) {
   const context = await vibeSession(options)
   const { root, remote, branches } = context
-  if (!branches.deploy) fail('deploy 브랜치가 정해지지 않았습니다. /haeram-setting deploy <branch>로 정하세요.')
+  if (!branches.deploy) fail('deploy 브랜치가 정해지지 않았습니다. /gusta-preference deploy <branch>로 정하세요.')
   const source = branches.land ?? context.branch
-  if (!source) fail('배포할 land 브랜치가 정해지지 않았습니다. /haeram-init으로 정하세요.')
+  if (!source) fail('배포할 land 브랜치가 정해지지 않았습니다. /gusta-init으로 정하세요.')
   if (source === branches.deploy) return { schemaVersion: 1, ok: true, deployed: null, reason: 'land-is-deploy', to: branches.deploy }
   if (await designOf(context.workspace)) fail('이 checkout은 디자인 중입니다(vibe design). 디자인 마감 뒤 배포하세요.')
   const onRemote = branches.push
@@ -299,7 +299,7 @@ export async function vibeClaim(options = {}) {
   if ((await git(context.root, ['status', '--porcelain'])).trim()) fail('선점 전에 로컬 변경을 커밋하세요.')
   const row = activeRows(context.state ?? '').find((entry) => entry.tag === options.tag)
   if (!row) fail('선점 전에 vibe beat로 세션을 등록하세요.')
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-claim-'))
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'gusta-claim-'))
   const tracking = `refs/remotes/${context.remote}/${context.target}`
   const env = { ...process.env, GIT_INDEX_FILE: path.join(temporary, 'index') }
   const indexGit = async (args) => (await execute('git', ['-C', context.root, ...args], { env, encoding: 'utf8' })).stdout.trim()
@@ -539,7 +539,7 @@ export async function vibeStatus(options = {}) {
     implementation, planning, inbox: local.inbox.slice(0, 3).map(({ date, kind, refs, text }) => ({ date, kind, refs, text: text.slice(0, 220) })), inboxMore: local.inbox.length > 3, openReports,
     design,
     // An open design comes first: its edits are uncommitted until the user ends it. A broken st
-    // (a hand close) is fixed before anything else is chosen: implement-task's close, then lint.
+    // (a hand close) is fixed before anything else is chosen: gusta-implement-task's close, then lint.
     route: design ? 'design' : issues.length ? 'repair' : hasImplementation && hasPlanning ? 'choose' : hasImplementation ? 'implementation' : hasPlanning ? 'planning' : 'ideation-first' }
 }
 
@@ -552,9 +552,9 @@ export async function vibePreflight(options = {}) {
   const checks = []
   const add = (name, ok, detail, needsUser = false) => checks.push({ name, ok, detail, needsUser: !ok && needsUser })
   add('push-target', true, context.target ?? 'commit only (SETTINGS push false)')
-  // Informational: an undecided land is settled by haeram-init before autopilot starts (common rule 1);
+  // Informational: an undecided land is settled by gusta-init before autopilot starts (common rule 1);
   // autopilot itself commits on the current branch, so it never blocks here.
-  add('branch-settings', true, context.branches.unset ? 'land 미정 — 맡김은 현재 브랜치에 커밋만 합니다(/haeram-init으로 정하면 반영)' : `land ${context.settings.values.land}${context.branches.deploy ? ` → deploy ${context.branches.deploy}` : ''}`)
+  add('branch-settings', true, context.branches.unset ? 'land 미정 — 맡김은 현재 브랜치에 커밋만 합니다(/gusta-init으로 정하면 반영)' : `land ${context.settings.values.land}${context.branches.deploy ? ` → deploy ${context.branches.deploy}` : ''}`)
   if (context.target) {
     if (!context.remote) add('remote', false, 'no git remote for SETTINGS push', true)
     else {
@@ -571,7 +571,7 @@ export async function vibePreflight(options = {}) {
   }
   // Design edits wait for the user watching them; nobody is there to end the design.
   const design = await designOf(context.workspace)
-  add('design', !design, design ? `design in progress since ${design.since} (${design.tag}) — end it with start-design first` : 'none', true)
+  add('design', !design, design ? `design in progress since ${design.since} (${design.tag}) — end it with gusta-design-mode first` : 'none', true)
   const dirty = (await git(context.root, ['status', '--porcelain'])).split('\n').filter(Boolean)
   add('clean', dirty.length === 0, dirty.length ? `${dirty.length} uncommitted paths — commit or leave them out of unit commits` : 'clean')
   const lint = await lintSpec({ targetRoot: context.root })
@@ -591,7 +591,7 @@ export async function vibePreflight(options = {}) {
   const executables = [...new Set(commands.map((command) => command.match(/^(?:\w+=\S+\s+)*([\w./-]+)/)?.[1]).filter(Boolean))]
   const missing = []
   for (const command of executables) {
-    const available = await execute('sh', ['-c', 'command -v "$1"', 'haeram-verify', command], { cwd: context.root, env: options.env ?? process.env, timeout: 5000 }).then(() => true, () => false)
+    const available = await execute('sh', ['-c', 'command -v "$1"', 'gusta-verify', command], { cwd: context.root, env: options.env ?? process.env, timeout: 5000 }).then(() => true, () => false)
     if (!available) missing.push(command)
   }
   add('verification', missing.length === 0, missing.length ? `missing commands: ${missing.join(', ')}` : verify.declared ? `task: ${verify.task.length}, batch: ${verify.batch.length}; conditional checks remain in ARCH guidance` : 'legacy ARCH: changed tests + fast checks at task tier; select batch commands before code push', true)
@@ -615,7 +615,7 @@ async function probeWorker(context, options) {
   const provider = options.provider ?? (await which('claude') ? 'claude' : 'codex')
   const allow = options.allowTool ?? []
   const place = options.probeWorkspace === 'current' ? null : await workInternals.destination({ workspace: context.workspace, cwd: context.root }, `probe-${randomUUID().slice(0, 8)}`)
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-probe-'))
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'gusta-probe-'))
   const bypass = options.permissionMode === 'bypass'
   const probeRoot = place ?? context.root
   if (place) await git(context.root, ['worktree', 'add', '--detach', '--quiet', place, 'HEAD'])
