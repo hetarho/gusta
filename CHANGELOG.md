@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.13.1
+
+Released: 2026-11-12.
 
 - Add a read-only upgrade-context inventory covering first-party documents,
   scoped instructions and execution evidence. Upgrades audit even when current,
