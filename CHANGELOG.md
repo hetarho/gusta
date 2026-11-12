@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.14.0
+
+Released: 2026-11-12.
 
 - Rename the package to GUSTA for its open-source release — *Gustum usque
   sere, tuum aperi.* The npm package is now `@haeram/gusta` (`npx @haeram/gusta ...`;
