@@ -1,6 +1,6 @@
 {
   "name": "@haeram/gusta",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "description": "A Spec-Driven Development (SDD) framework for code curators — Cultivate and exhibit your taste.",
   "type": "module",
   "bin": {

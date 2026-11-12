@@ -3,7 +3,7 @@ name: gusta-create-task
 description: >-
   엔지니어 역할로 SSOT 변경분(STATE pending)과 채택된 리팩토링 finding(spec/review/,
   st:ready)을 구현 태스크(spec/tasks/T###.md)로 분해하는 내부 스킬. gusta-sketch가 기획
-  마지막에, gusta-start가 실행 중 공백을 메울 때 부른다 — 사용자가 직접 부르지 않는다. STATE의
+  마지막에, gusta-start가 요청 실행·실행 중 공백을 메울 때 부른다 — 사용자가 직접 부르지 않는다. STATE의
   rev/tasked 차이와 SSOT chg로 무엇이 새로 생겼고 어디가 바뀌었는지 스스로 파악한다. 개발 관점 질문만
   한다(데이터 모델·API·엣지·마이그레이션). 구현은 gusta-implement-task.
 ---

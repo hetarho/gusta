@@ -1,7 +1,7 @@
 ---
 name: gusta-create-ssot
 description: >-
-  gusta-sketch가 고른 시안을 새 도메인 SSOT(spec/ssot/)로 옮기는 내부 기획 스킬. 기획자 역할로
+  gusta-sketch가 고른 시안이나 gusta-start 요청 실행의 요청을 새 도메인 SSOT(spec/ssot/)로 옮기는 내부 기획 스킬. 기획자 역할로
   시안에서 정하지 못한 공백만 인터뷰한다(목적·타겟·범위·플로우·정책) — 기술 결정은 하지 않는다. 기존 SSOT 수정은
   gusta-update-ssot, 구현 분해는 gusta-create-task. 기능을 기획하려는 요청은
   gusta-sketch로.
@@ -26,6 +26,7 @@ description: >-
 STATE 읽기 → log에 `- YYMMDD gusta-create-ssot <topic> start` → STATE ssot 표(도메인 목록)와 `rg <키워드> spec/ssot`로 중복·연관 확인(ssot/ 전체를 읽지 않는다).
 같은 도메인이 이미 있으면 gusta-update-ssot로 전환을 제안한다.
 gusta-sketch에서 고른 시안의 결정(채택·안 할 것·v1 경계)이 재료다 — 2단계 인터뷰는 시안에서 정하지 못한 공백과 [?]만 채운다. sketch가 미뤄 둔 spec/ideation/ 문서(open·ready)를 재료로 쓰면 domains의 다음 미반영 채택 줄과 vision·shape·explored를 읽고 문서·STATE st를 ready로 바꾼다. ideation/done/은 기본 입력이 아니다. 같은 도메인이 이미 있으면 원본 경로·반영할 범위를 gusta-update-ssot로 함께 넘긴다.
+gusta-start 요청 실행이면 요청문이 재료다 — 요청문이 정한 것은 사용자 결정으로 그대로 쓰고, 정하지 않은 공백만 맡김 규칙으로 채운다.
 
 ## 2. 기획 인터뷰
 아래를 전부 결정으로 만들 수 있을 때까지 묻는다. 한 번에 2~4개씩. 이미 문서·대화에 답이 있으면 묻지 않는다.
