@@ -2,7 +2,7 @@
 
 [README](../README.ko.md) · [개발 흐름](workflow.md) · [브랜치·검증](branching.md) · **오래 맡기기** · [병렬 작업](parallel-work.md) · [자가 개선](self-improve.md) · [CLI](cli.md)
 
-맡김 모드의 결정·주차 규칙은 [개발 흐름의 모드 표](workflow.md#gusta-start로-시작하기)를, 검증·반영 규칙은 [검증과 push](branching.md#검증과-push)를 따릅니다.
+`/gusta-start`가 맡긴 실행의 결정·주차 규칙은 [개발 흐름의 실행하기](workflow.md#실행하기--gusta-start)를, 검증·반영 규칙은 [검증과 push](branching.md#검증과-push)를 따릅니다. 실행은 이미 만든 태스크만 합니다 — 구상과 태스크 만들기는 그 전에 [`/gusta-sketch`](workflow.md#구상하기--gusta-sketch)에서 끝냅니다.
 
 ## 오래 맡기기 — `vibe loop`
 
@@ -20,7 +20,7 @@ npx @haeram/gusta vibe loop --tag k3f9 --stop-after-unit --json
 npx @haeram/gusta vibe loop --tag k3f9 --stop --json
 ```
 
-반복기는 preflight·active·보고서를 한 번 준비한 뒤 태스크 하나, 기획 한 조각(SSOT+gusta-create-task), inbox 정리마다 새 세션을 시작합니다. 시간 한도의 마지막 구간은 **마감 관문 전용**입니다 — 그 구간에 들어서면 새 단위를 시작하지 않고(`reason: final-window`, 단위의 상한도 이 구간 시작까지라 실행 중이던 단위가 구간을 먹지 않습니다) 모은 코드 전체를 한 번 검증한 뒤 push·CI까지 진행합니다. 관문이 실패하면 근거를 담은 수정 태스크를 만들어 그 구간 안에서 고치고 다시 검증합니다. 누적 실패 관문 상한은 기본 3회(`--max-gate-attempts`, 2~5)이며 성공해도 실패 횟수를 초기화하지 않습니다. 두 번째 실패 뒤에는 같은 전체 명령 계획을 끝까지 관찰한 실패 명령 집합이 엄격히 줄어든 경우에만 추가 회복합니다. 명시적으로 완전성을 보증한 검사 어댑터는 테스트 ID를 비교할 수 있지만 일반 로그의 실패 개수는 진단 자료입니다. 새 실패·불명확한 결과·시간 부족이면 자동 회복을 끝내고 전체 시도·누적 실패/상한·남은 수정 태스크·push 여부를 반환합니다. 구간 길이는 실측입니다: `vibe check --tier batch`·`work finish`·`vibe design verify`가 기록한 전체 검증 시간×2 + 최근 단위 시간 + (push 브랜치가 있으면) CI 대기 시간. 아직 한 번도 측정되지 않았을 때만 max-hours의 20%를 쓰고, 측정은 단위 경계마다 다시 읽습니다. `--final-reserve-hours`로 직접 정할 수 있습니다.
+반복기는 preflight·active·보고서를 한 번 준비한 뒤 태스크 하나마다, 또는 막히거나 끊긴 태스크를 풀고 쪼개는 기획 한 조각(gusta-update-ssot+gusta-create-task)마다 새 세션을 시작합니다. 새 기능은 기획하지 않습니다 — 실행할 태스크가 없고 태스크로 안 쪼갠 SSOT 변경·채택된 review·미룬 구상만 남으면 `needs-sketch`로 멈추고 `/gusta-sketch`로 태스크까지 만든 뒤 다시 실행하라고 안내합니다(아무것도 없으면 `no-work`). 시간 한도의 마지막 구간은 **마감 관문 전용**입니다 — 그 구간에 들어서면 새 단위를 시작하지 않고(`reason: final-window`, 단위의 상한도 이 구간 시작까지라 실행 중이던 단위가 구간을 먹지 않습니다) 모은 코드 전체를 한 번 검증한 뒤 push·CI까지 진행합니다. 관문이 실패하면 근거를 담은 수정 태스크를 만들어 그 구간 안에서 고치고 다시 검증합니다. 누적 실패 관문 상한은 기본 3회(`--max-gate-attempts`, 2~5)이며 성공해도 실패 횟수를 초기화하지 않습니다. 두 번째 실패 뒤에는 같은 전체 명령 계획을 끝까지 관찰한 실패 명령 집합이 엄격히 줄어든 경우에만 추가 회복합니다. 명시적으로 완전성을 보증한 검사 어댑터는 테스트 ID를 비교할 수 있지만 일반 로그의 실패 개수는 진단 자료입니다. 새 실패·불명확한 결과·시간 부족이면 자동 회복을 끝내고 전체 시도·누적 실패/상한·남은 수정 태스크·push 여부를 반환합니다. 구간 길이는 실측입니다: `vibe check --tier batch`·`work finish`·`vibe design verify`가 기록한 전체 검증 시간×2 + 최근 단위 시간 + (push 브랜치가 있으면) CI 대기 시간. 아직 한 번도 측정되지 않았을 때만 max-hours의 20%를 쓰고, 측정은 단위 경계마다 다시 읽습니다. `--final-reserve-hours`로 직접 정할 수 있습니다.
 
 ### 단위 상한과 이어가기
 
@@ -42,7 +42,7 @@ npx @haeram/gusta vibe loop --tag k3f9 --stop --json
 
 마감 시각은 `--deadline '<ISO with Z or offset>'`, 마감 전 예약 길이는 `--final-reserve-hours <hours>`로 각각 정합니다. 실행 중에도 `--configure`에 이 옵션을 넘겨 같은 호스트에 적용하고 receipt의 실제 deadline·workDeadline·예약 값을 확인합니다. pending이나 push 주기 변경만으로 마감이 설정됐다고 말하지 않습니다. 실행 중에는 `--status`로 heartbeat·요청/적용 설정·운영 오류를 보고, `--configure --push-each-unit|--no-push-each-unit`로 단위별 push를 바꿉니다 — 현재 단위가 끝난 뒤 같은 호스트에 적용되며 receipt의 `status:applied`로 확인합니다(pending은 적용 전). SETTINGS push가 false이면 이 옵션도 원격 게시를 켜지 않습니다. `--stop`·SIGINT·SIGTERM은 즉시 취소라 새 마감 검증·push를 시작하지 않고, `--stop-after-unit`은 현재 단위와 마감 관문까지 마친 뒤 멈춥니다. 호스트는 자기가 쓴 보고서와 자기 active 행만 정리합니다. 성공을 보고한 단위 뒤에 그 밖의 변경이 남으면 사람의 편집일 수 있으니 보존한 채 다음 단위와 게시를 멈춥니다(끝내지 못한 단위의 변경은 위처럼 스냅샷으로 넘깁니다). 종료된 호스트는 `--recover-metadata`로 정리합니다(모델·push·재시작 없음). 시작 때 알림 연결 여부를 표시합니다. `--notify-command`가 없으면 로컬 outbox만 남으며 사용자에게 자동 통지되지 않습니다. 훅 성공도 사용자 수신 증거는 아닙니다. 시작 대화는 종료 영수증의 실제 검증·반영·원격 WIP 보존·미완료 상태를 확인해 보고합니다. 독립 감시자·알림(`--notify-command`: 실패·판단 대기·종료 요약)·복구 계약은 [loop 제어 계약](../skills/gusta-start/references/loop-control.md)에 있습니다.
 
-맡김의 결정·주차 규칙은 [모드 표](workflow.md#gusta-start로-시작하기)와 같습니다. 구현이 판단 문제로 막히면 기획 한 조각으로 해소해 재개하고, CI 실패는 근거를 담은 수정 태스크로 만들어 다음 단위로 먼저 실행합니다. 시간·단위·반복 실패 한도에 닿으면 `loop.json`과 보고서에 우선 재개할 태스크를 남깁니다.
+결정·주차 규칙은 [실행하기](workflow.md#실행하기--gusta-start)와 같습니다. 구현이 판단 문제로 막히면 기획 한 조각으로 해소해 재개하고, CI 실패는 근거를 담은 수정 태스크로 만들어 다음 단위로 먼저 실행합니다. 시간·단위·반복 실패 한도에 닿으면 `loop.json`과 보고서에 우선 재개할 태스크를 남깁니다.
 
 ## 결정 브리핑 — `vibe brief`
 

@@ -75,9 +75,12 @@ npx @haeram/gusta board --target ../my-worktree --json
 # 충돌한 로컬 파일을 패키지 버전으로 명시적으로 교체
 npx @haeram/gusta install --force
 
-# gusta-start 세션 도구
+# 세션 도구 (gusta-sketch·gusta-start·gusta-design-mode)
 npx @haeram/gusta vibe status --tag k3f9        # 다른 기기의 세션·남은 일·추천 경로
 npx @haeram/gusta vibe brief T012                # 태스크가 기대는 결정 블록·전역 규칙·flow·constraints·stale base 이후 chg
+npx @haeram/gusta vibe sketch serve tag-filter  # gusta-sketch 시안(.tmp/sketch/tag-filter/)을 127.0.0.1 포트 하나로 — 살아 있으면 재사용, 기본 8시간 뒤 종료
+npx @haeram/gusta vibe sketch status            # 기록된 스케치 서버와 alive
+npx @haeram/gusta vibe sketch stop tag-filter   # 스케치 서버 정지·기록 삭제 (--all은 전부)
 npx @haeram/gusta vibe plan-sync                # 기획 브랜치(SETTINGS plan, 미정이면 land)의 최신을 합침 — 기획·채번 전
 npx @haeram/gusta vibe plan-push                # spec/만 담은 기획 커밋을 기획 브랜치에 올림 (태스크 ID 충돌이면 거절)
 npx @haeram/gusta vibe push                     # 끝난 작업을 SETTINGS land로 반영(push면 원격을 합친 뒤 push, 아니면 로컬 병합, pr이면 PR)
@@ -98,7 +101,7 @@ npx @haeram/gusta vibe preflight --probe-workspace current --probe 'pnpm run tes
 
 `--force`는 로컬 수정 내용을 덮어쓸 수 있으므로 충돌 내용을 확인한 뒤 사용하세요.
 
-그 밖의 명령은 주제별 문서에 있습니다: `vibe loop`·`vibe brief`는 [오래 맡기기](autopilot.md), `vibe check`·`vibe push`·`vibe ci wait`는 [브랜치·검증](branching.md), `vibe ab`는 [개발 흐름의 gusta-showcase](workflow.md#여러-안을-띄워-고르기--gusta-showcase), `work`는 [병렬 작업](parallel-work.md). 전체 옵션은 `npx @haeram/gusta vibe --help`·`npx @haeram/gusta work --help`로 봅니다.
+그 밖의 명령은 주제별 문서에 있습니다: `vibe loop`·`vibe brief`는 [오래 맡기기](autopilot.md), `vibe check`·`vibe push`·`vibe ci wait`는 [브랜치·검증](branching.md), `vibe sketch`는 [개발 흐름의 gusta-sketch](workflow.md#구상하기--gusta-sketch), `vibe ab`는 [개발 흐름의 gusta-showcase](workflow.md#여러-안을-띄워-고르기--gusta-showcase), `work`는 [병렬 작업](parallel-work.md). 전체 옵션은 `npx @haeram/gusta vibe --help`·`npx @haeram/gusta work --help`로 봅니다.
 
 ## 기존 프로젝트 이관
 

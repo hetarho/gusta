@@ -12,7 +12,7 @@ description: >-
 **역할: 회고자.** 이 세션에서 실행된 gusta 스킬과 CLI가 실제로 어떻게 동작했는지 돌아보고, 스킬셋 관리자에게 넘길 개선 보고서를 만들어 gusta 저장소 `hetarho/gusta`에 이슈로 보낸다. 대상 프로젝트의 코드·기획은 평가하지 않는다. 대상 프로젝트에는 읽기 전용이다 — 파일·STATE·Git을 바꾸지 않고 하위 세션도 띄우지 않는다. 바깥으로 나가는 쓰기는 사용자가 확인한 이슈 하나뿐이다.
 
 ## 1. 전제와 근거
-- 이 대화에서 gusta 스킬(gusta-start·gusta-design-mode·ideation·gusta-create-architecture·gusta-create-ssot·gusta-update-ssot·gusta-create-task·gusta-implement-task·gusta-review-task·gusta-review-code·gusta-doc-review·gusta-create-narrative·gusta-manage-work·gusta-self-improve-remote·gusta-self-improve·gusta-showcase·gusta-init·gusta-preference·gusta-update)이 한 번 이상 실행됐는지 대화 기록으로 확인한다. 없으면 "gusta 스킬을 실행한 세션에서 불러 주세요" 한 줄만 답하고 끝낸다.
+- 이 대화에서 gusta 스킬(gusta-start·gusta-sketch·gusta-design-mode·gusta-create-architecture·gusta-create-ssot·gusta-update-ssot·gusta-create-task·gusta-implement-task·gusta-review-task·gusta-review-code·gusta-doc-review·gusta-create-narrative·gusta-manage-work·gusta-self-improve-remote·gusta-self-improve·gusta-showcase·gusta-init·gusta-preference·gusta-update)이 한 번 이상 실행됐는지 대화 기록으로 확인한다. 없으면 "gusta 스킬을 실행한 세션에서 불러 주세요" 한 줄만 답하고 끝낸다.
 - 근거는 이 대화에 남은 것만 쓴다: 스킬 지시, 실행한 명령과 출력, 오류·재시도, 사용자의 교정·불만, 권한 창, 대기, 반복해서 읽은 파일. 남아 있지 않은 부분을 추측으로 채우지 않는다. 앞부분이 요약됐으면 notes에 적는다.
 - 스킬 문장을 정확히 인용해야 할 때만 설치된 스킬 파일(`.claude/skills/<name>/` 또는 `.codex/skills/<name>/`)의 해당 절만 읽는다. 버전은 설치된 CLI의 `--version`으로 한 번 확인한다.
 
@@ -56,7 +56,7 @@ description: >-
 - <근거의 한계: 요약된 구간, 확인하지 못한 것>
 
 ---
-version:<x.y.z> | agent:<도구> <model> | mode:<함께|맡김|-> | skills:<실행된 스킬, 순서대로>
+version:<x.y.z> | agent:<도구> <model> | run:<직접|맡김|-> | skills:<실행된 스킬, 순서대로>
 ````
 
 ## 5. 올리기

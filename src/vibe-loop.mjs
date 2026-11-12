@@ -21,7 +21,7 @@ import { validateAgentResult, compactUsage } from './agent-adapter.mjs'
 import { adapterArgs, providerFlags } from './work-providers.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { permissionMode, readSetting, SETTINGS } from './settings.mjs'
-import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive, notificationCapability, loopDeadline, requestedLoopConfig } from './loop-control.mjs'
+import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive, notificationCapability, loopDeadline, requestedLoopConfig, loopHint } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine } from './loop-time.mjs'
 
@@ -79,8 +79,8 @@ export const timeboxMs = (value) => {
   return match ? Number(match[1]) * (match[2] === 'h' ? 3600000 : 60000) : null
 }
 // The status a unit's assignment carries. A unit with a chosen task reads that task's brief: it gets
-// the totals, the first few runnable/todo IDs and its own row, not every remaining row. A planning
-// unit (nothing chosen, or a split/blocked recovery that rewrites tasks and deps) keeps the full list.
+// the totals, the first few runnable/todo IDs and its own row, not every remaining row. A split or
+// blocked recovery, which rewrites tasks and deps, keeps the full list.
 export const UNIT_LISTED = 5
 export function unitStatus(status, selected, recovery) {
   if (!selected || !status.remaining || ['split', 'blocked-task'].includes(recovery?.reason)) return status
@@ -389,12 +389,12 @@ export async function vibeLoop(options = {}, injected = {}) {
     const remainingMs = Math.max(0, deadline - deps.now()), remainingUnits = Math.max(0, maxUnits - count)
     const hardStop = remainingMs === 0 || remainingUnits === 0 || ['max-hours', 'max-units', 'stop-file', 'signal', 'stop-after-unit', 'cancelled'].includes(stopReason ?? reason)
     return { objectiveComplete: false, recoverable: !hardStop, hardStop, reason, remainingMs, remainingUnits, deadline: new Date(deadline).toISOString(),
-      pendingRepairTasks: [...new Set([repairTask, ...specRejected.keys(), recovery?.reason === 'spec-gate' ? recovery.taskId : null].filter(Boolean))], next: hardStop ? 'report stop and preserve remaining work' : repairTask ? 'delegate the pending repair within the existing session budget, then verify before publication' : 'reconcile the result with the user objective and continue within the existing session budget' }
+      pendingRepairTasks: [...new Set([repairTask, ...specRejected.keys(), recovery?.reason === 'spec-gate' ? recovery.taskId : null].filter(Boolean))], next: hardStop ? 'report stop and preserve remaining work' : reason === 'needs-sketch' ? 'report that the owner plans the untasked SSOT deltas, reviews or ideation with /gusta-sketch; do not plan them in this session' : repairTask ? 'delegate the pending repair within the existing session budget, then verify before publication' : 'reconcile the result with the user objective and continue within the existing session budget' }
   }
   const snapshot = () => ({ ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, reason, ...(loopHint(reason) ? { hint: loopHint(reason) } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -443,7 +443,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     const kept = snapshots.filter((snapshot) => !snapshot.dropped).map((snapshot) => `- uncommitted work kept: ${snapshot.ref} (${snapshot.task ?? '-'}, ${snapshot.fileCount} files)\n`).join('')
     // CI the run could not read waits for the owner, not for the run.
     const ciLater = batches.filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => `- check CI later: ${entry.ci.commit ?? '-'} ${entry.ci.checkUrl ?? ''}`.trimEnd() + '\n').join('')
-    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}\n- verification: ${gateAttempts} rounds, ${gateFailures} failed, failed-round cap ${maxGateAttempts}; pending repair: ${repairTask ?? '-'}; code pushed: ${codePushed}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${ciLater}${kept}`)
+    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}${loopHint(reason) ? ` — ${loopHint(reason)}` : ''}\n- verification: ${gateAttempts} rounds, ${gateFailures} failed, failed-round cap ${maxGateAttempts}; pending repair: ${repairTask ?? '-'}; code pushed: ${codePushed}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${ciLater}${kept}`)
     await metadata.writeReport(text)
   }
   const recordReport = (closing) => metadataStep('report-write', () => updateReport(closing))
@@ -755,7 +755,11 @@ export async function vibeLoop(options = {}, injected = {}) {
       }
       const runnable = (status.runnable ?? []).filter(inScope)
       const scoped = scope && !runnable.length ? ((status.remaining ?? []).some((task) => scope.has(task.id)) ? 'scope-blocked' : 'scope-done') : null
-      const finished = scoped ?? (status.parkedOnly ? 'parked-only' : status.settled || status.route === 'ideation-first' ? 'no-work' : null)
+      // A unit only executes an existing task: with nothing runnable (and no repair to try below)
+      // the run ends. Untasked SSOT deltas, reviews and ideation are the owner's /gusta-sketch.
+      const untasked = ['pending', 'reviews', 'ideation'].some((key) => status.sketch?.[key]?.length)
+      const idle = !runnable.length && !status.issues?.length
+      const finished = scoped ?? (status.parkedOnly ? 'parked-only' : idle ? untasked ? 'needs-sketch' : 'no-work' : null)
       if (finished && !recovery) {
         // Publish before deciding there is no more work: CI can add a repair task.
         const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
@@ -773,6 +777,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (selected === null && queued.length) { reason = 'explore-no-time'; break }
       // Do not turn an unavailable repair into an unscoped planning unit that could take it anyway.
       if (selected === null && status.route === 'repair' && !recovery) { reason = 'spec-repair-unavailable'; break }
+      // Every unit has its task: no unit plans untasked work on its own.
+      if (selected === null) { reason = untasked ? 'needs-sketch' : 'no-work'; break }
       const limitMs = repairMs !== null ? Math.min(timeoutMs, Math.max(1, repairMs)) : Math.min(unitLimit(selected), Math.max(1, workLeft))
       if (status.concurrency === 'strict' && context.target) {
         await metadataCommit(`vibe ${options.tag}: session presence`)
@@ -950,6 +956,6 @@ export async function vibeLoop(options = {}, injected = {}) {
     await notify(async () => finishedEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, finishedSummary(closed, await readFile(stateFile, 'utf8').catch(() => ''))))
   }
   const terminalEvent = await readJSON(plan.notification.terminalEvent).catch(() => null)
-  return { ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
+  return { ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, ...(loopHint(reason) ? { hint: loopHint(reason) } : {}), stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
     time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }) }
 }

@@ -1,10 +1,8 @@
-# 함께 모드와 실행기 밖 세션
+# 실행기 밖 세션
 
-시작 질문은 한 번에 모은다: 함께/맡김, route:choose의 기획/구현 우선순위, 다른 기기의 배정(이어받기는 사용자 지시 필요). 인자로 답한 것은 묻지 않는다. 함께 모드가 기본이며 질문 도구가 없으면 텍스트 질문 뒤 답을 기다린다.
+시작 때 묻지 않는다 — 1절의 실행 정보를 보여 주고 바로 시작한다. 결정함은 실행 중에 쌓이고, 사용자는 돌아와 `/gusta-start inbox 정리`로 승인 항목을 지우거나(삭제+log) 결정을 바꾸려면 /gusta-sketch로 간다. 열린 보고서는 to를 채운다.
 
-함께는 `vibe status --section inbox --no-fetch --json`으로 결정함만 확인받는다. 승인 항목은 삭제+log, 수정은 gusta-update-ssot 후 삭제. 열린 보고서는 to를 채운다. 결정은 cfg.level에 맞춰 모아 묻는다.
-
-맡김도 이 대화가 목표·마감·총 회복 예산을 소유한다. 직렬 loop가 실제 checkout에서 preflight·active·보고서·절전 방지를 준비하므로 동일 점검을 앞에서 반복하지 않는다. 독립 probe가 필요하면 `vibe preflight --probe-workspace current --probe '<태스크 단계 명령>' --json`으로 실제 실행 공간을 확인한다. 의존성 부재·네트워크 제한·권한 거부를 구분하고, 네트워크 실패만으로 별도 worktree 의존성 설치를 반복하지 않는다. 작업 묶음 조정자는 실제 워커 공간에 맞는 probe를 쓰며 이 세션에서 active·보고서·awake를 준비한다.
+이 대화가 목표·마감·총 회복 예산을 소유한다. 직렬 loop가 실제 checkout에서 preflight·active·보고서·절전 방지를 준비하므로 동일 점검을 앞에서 반복하지 않는다. 독립 probe가 필요하면 `vibe preflight --probe-workspace current --probe '<태스크 단계 명령>' --json`으로 실제 실행 공간을 확인한다. 의존성 부재·네트워크 제한·권한 거부를 구분하고, 네트워크 실패만으로 별도 worktree 의존성 설치를 반복하지 않는다. 작업 묶음 조정자는 실제 워커 공간에 맞는 probe를 쓰며 이 세션에서 active·보고서·awake를 준비한다.
 
 ## loop 옵션
 

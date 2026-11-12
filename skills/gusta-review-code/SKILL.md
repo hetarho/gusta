@@ -5,7 +5,7 @@ description: >-
   (spec/review/)를 만든다. "코드 리뷰해줘 / 리팩토링할 데 찾아줘 / 기술 부채 정리하자 /
   코드 품질 점검 / 구조 개선할 곳 있어?" 일 때, 그리고 태스크를 몇 개 구현한 뒤 정리 시점에 사용.
   finding은 위치·문제·영향을 갖춰 우선순위(P1~P3)로 제안하고 채택은 사용자가 정한다. 코드는 고치지
-  않는다 — 채택된 finding은 gusta-create-task가 태스크로 쪼개고 gusta-implement-task가 구현한다.
+  않는다 — 채택된 finding은 /gusta-sketch가 태스크로 만들고 /gusta-start가 구현한다.
 ---
 
 # gusta-review-code — 개발 관점 점검 → 리팩토링 제안
@@ -19,7 +19,7 @@ SSOT가 비어 있으면 finding이 아니라 notes다. 코드를 직접 고치�
 1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
 2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
-4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(gusta-start)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 모드가 정해지지 않았으면 함께 모드다.
+4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
 5. **읽기**: status 요약·`vibe brief <T###|ID-n|ID@rev> --summary`로 필요한 범위를 찾는다. 큰 brief는 `--section decisions|tasks --offset <n> --limit <n>`으로 원문 블록째 읽고 모든 필요 블록의 coverage를 확인한다. 전체 brief의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 보고서도 필요한 절만 읽고, 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
 어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 `vibe format --section settings`의 `plan`).
@@ -48,5 +48,5 @@ findings는 전부 `[?]`로 문서에 먼저 적는다(문서 먼저). 그 다�
 
 ## 5. 마감
 - summary 1~3줄(전체 상태·가장 큰 위험) 확정. [o]가 하나라도 있으면 st→`ready@YYMMDD`, 하나도 없으면 바로 `converted@YYMMDD`.
-- STATE: review 행 갱신, next=`gusta-create-task review/<slug>`(채택이 있을 때), log 1줄. ssot·tasks 표는 건드리지 않는다 — 태스크는 gusta-create-task가 만든다.
+- STATE: review 행 갱신, next=`gusta-sketch review/<slug>`(채택이 있을 때), log 1줄. ssot·tasks 표는 건드리지 않는다 — 태스크는 /gusta-sketch가 gusta-create-task로 만든다.
 - 보고는 cfg.level대로 — expert: 채택·기각 목록 / novice: 무엇을 정리하기로 했고 그러면 무엇이 좋아지는지.

@@ -519,13 +519,18 @@ export async function vibeStatus(options = {}) {
   const reportTo = await Promise.all(reports.map(async (file) => quoteFields(quoteLine((await readOptional(path.join(root, 'spec/reports', file))) ?? '') ?? '').get('to')))
   const openReports = reports.filter((file, index) => reportTo[index] === '-').map((file) => `spec/reports/${file}`)
   const ownTag = (task) => task.st?.startsWith('doing@') && task.st.split('.')[1] === options.tag
+  // What execution (gusta-start, vibe loop) acts on: todo rows, this session's doing rows, and
+  // blocked rows (a recovery unit).
   const implementation = { todo: local.tasks.filter((task) => task.st === 'todo').map((task) => task.id),
     resume: local.tasks.filter(ownTag).map((task) => task.id),
-    blocked: local.tasks.filter((task) => task.st?.startsWith('blocked@')).map((task) => task.id),
-    pending: local.pending, reviews: local.reviews, explore }
-  const planning = { ideation: local.ideation }
-  const hasImplementation = implementation.todo.length + implementation.resume.length + implementation.pending.length + implementation.reviews.length > 0
-  const hasPlanning = planning.ideation.length > 0
+    blocked: local.tasks.filter((task) => task.st?.startsWith('blocked@')).map((task) => task.id), explore }
+  // Untasked planning input: SSOT deltas (rev > tasked), adopted reviews and legacy open/ready
+  // ideation. Only the user-invoked gusta-sketch turns it into tasks; execution never plans it, so it
+  // makes no route or unit and only ends a loop as needs-sketch. (Formerly implementation.pending,
+  // implementation.reviews and planning.ideation, with the same entries.)
+  const sketch = { pending: local.pending, reviews: local.reviews, ideation: local.ideation }
+  const executable = implementation.todo.length + implementation.resume.length + implementation.blocked.length > 0
+  const untasked = sketch.pending.length + sketch.reviews.length + sketch.ideation.length > 0
   const parked = new Set(local.inbox.filter((entry) => entry.kind === 'parked').flatMap((entry) => entry.refs))
   const doneFiles = await readdir(path.join(root, 'spec/tasks/done')).catch(() => [])
   const done = new Set(doneFiles.map((file) => file.split('.')[0]))
@@ -535,12 +540,15 @@ export async function vibeStatus(options = {}) {
     next: (sections(text).get('next') ?? []).filter((line) => line.startsWith('- ')).slice(0, 3),
     counts: { inbox: local.inbox.length, parked: local.inbox.filter((entry) => entry.kind === 'parked').length, remaining: local.tasks.length },
     remaining: local.tasks.map((task) => ({ ...task, title: task.title.slice(0, 120) })), runnable: runnable.map((task) => task.id),
-    issues, settled: !hasImplementation && !hasPlanning && !issues.length, parkedOnly: !runnable.length && !local.pending.length && !local.reviews.length && !hasPlanning && (parked.size > 0 || implementation.blocked.length > 0),
-    implementation, planning, inbox: local.inbox.slice(0, 3).map(({ date, kind, refs, text }) => ({ date, kind, refs, text: text.slice(0, 220) })), inboxMore: local.inbox.length > 3, openReports,
+    // settled: nothing to execute and nothing to repair (untasked sketch input may remain).
+    // parkedOnly: nothing runnable, nothing to sketch, only parked or blocked work left.
+    issues, settled: !executable && !issues.length, parkedOnly: !runnable.length && !untasked && (parked.size > 0 || implementation.blocked.length > 0),
+    implementation, sketch, inbox: local.inbox.slice(0, 3).map(({ date, kind, refs, text }) => ({ date, kind, refs, text: text.slice(0, 220) })), inboxMore: local.inbox.length > 3, openReports,
     design,
     // An open design comes first: its edits are uncommitted until the user ends it. A broken st
     // (a hand close) is fixed before anything else is chosen: gusta-implement-task's close, then lint.
-    route: design ? 'design' : issues.length ? 'repair' : hasImplementation && hasPlanning ? 'choose' : hasImplementation ? 'implementation' : hasPlanning ? 'planning' : 'ideation-first' }
+    // Execution only runs existing tasks: with none, planning is the user's /gusta-sketch.
+    route: design ? 'design' : issues.length ? 'repair' : executable ? 'implementation' : 'sketch-first' }
 }
 
 const which = (command) => execute('sh', ['-c', `command -v ${command}`], { timeout: 5000 }).then(() => true, () => false)

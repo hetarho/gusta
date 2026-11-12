@@ -80,6 +80,10 @@ export async function releaseLoop(lock, runId) {
 // info (the run ended, nothing waits). `finished` carries its own level. No per-unit or heartbeat notice.
 export const NOTIFY_LEVELS = { failed: 'failure', 'host-lost': 'failure', 'heartbeat-stale': 'failure', 'metadata-error': 'failure', 'supervisor-error': 'failure', 'needs-judgment': 'attention', finished: 'info' }
 export const NOTIFY_CAP = 10
+// What the owner does next after a stop reason that only a person can resolve (report, notice, result).
+// needs-sketch: nothing runnable while untasked SSOT deltas, reviews or ideation remain.
+export const LOOP_HINTS = { 'needs-sketch': '/gusta-sketch로 태스크까지 만든 뒤 다시 실행하세요' }
+export const loopHint = (reason) => LOOP_HINTS[reason] ?? null
 
 // A hook is a bridge candidate, not proof that a person (or the parent chat) received anything.
 export const notificationCapability = (directory, command) => ({ transport: command ? 'command' : 'local-file', hookConfigured: Boolean(command),
@@ -131,7 +135,8 @@ export function finishedSummary(state, stateText = '') {
   const push = last?.pushed ? { pushed: true, commit: last.pushed, target: last.target ?? null }
     : { pushed: false, reason: last?.reason ?? (last?.landed ? 'local' : status === 'stopped' ? 'not-attempted' : status), ...(last?.landed ? { landed: last.landed, target: last.target ?? null } : {}) }
   const ciUnchecked = (state.batches ?? []).filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => ({ commit: entry.ci.commit ?? null, url: entry.ci.checkUrl ?? null }))
-  return { level: status === 'failed' ? 'failure' : waiting.length || ciUnchecked.length ? 'attention' : 'info', status, reason: state.reason ?? null, ...(state.error ? { error: state.error } : {}),
+  const hint = loopHint(state.reason)
+  return { level: status === 'failed' ? 'failure' : waiting.length || ciUnchecked.length || hint ? 'attention' : 'info', status, reason: state.reason ?? null, ...(hint ? { hint } : {}), ...(state.error ? { error: state.error } : {}),
     units: state.units ?? 0, judgment: capped(waiting), parked: waiting.filter((item) => item.kind === 'parked').length, push, ...(ciUnchecked.length ? { ciUnchecked } : {}), report: state.report ?? null,
     ...(state.gate ? { verification: state.gate } : {}), ...(state.continuation ? { objectiveComplete: false, continuation: state.continuation } : {}),
     ...(state.deadline ? { deadline: state.deadline, workDeadline: state.workDeadline, reserve: state.reserve } : {}) }
@@ -161,7 +166,7 @@ export async function loopEvent(directory, state, type, detail = {}, { id = rand
     const receiptPath = path.join(directory, 'notifications', `${event.id}.json`)
     let receipt = { ...event, transport: state.notifyCommand ? 'command' : 'local-file', delivery: state.notifyCommand ? 'pending' : 'recorded-locally', deliveredToHook: false, externalDelivered: false }
     await atomicJSON(receiptPath, receipt)
-    const summary = type === 'needs-judgment' ? `${detail.count} item(s)` : type === 'finished' ? `${detail.status} (${detail.reason})` : detail.error ?? detail.reason ?? ''
+    const summary = type === 'needs-judgment' ? `${detail.count} item(s)` : type === 'finished' ? `${detail.status} (${detail.reason})${detail.hint ? ` — ${detail.hint}` : ''}` : detail.error ?? detail.reason ?? ''
     process.stderr.write(`vibe loop ${state.tag}: ${type}: ${summary} (${directory})\n`)
     if (state.notifyCommand) {
       const log = await open(path.join(directory, 'notification.log'), 'a', 0o600)

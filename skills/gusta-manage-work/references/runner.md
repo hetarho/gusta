@@ -113,7 +113,7 @@ runner는 빈 슬롯을 채우고 수정 요청을 우선 배정하며 리뷰 �
 ### 맡김(autopilot)
 
 `work run --autopilot`은 사람이 없다는 전제로 돈다.
-- 결정 요청만 남으면 조정자의 답을 기다린다(모델 호출 없음, 기본 15분=900000ms, 명시적인 `--decision-wait-ms` 우선, 지나면 `decision-wait`로 끝남). 대기를 시작하거나 대상이 바뀌면 attempt ID·태스크·질문·요청 시각·대기 시작·기한을 stderr와 runtime 이력에 남긴다. 함께 모드는 사용자가 결정하도록 대기 없이 반환한다.
+- 결정 요청만 남으면 조정자의 답을 기다린다(모델 호출 없음, 기본 15분=900000ms, 명시적인 `--decision-wait-ms` 우선, 지나면 `decision-wait`로 끝남). 대기를 시작하거나 대상이 바뀌면 attempt ID·태스크·질문·요청 시각·대기 시작·기한을 stderr와 runtime 이력에 남긴다. `--autopilot` 없이 띄운 실행은 사용자가 결정하도록 대기 없이 반환한다.
 - 승인됐지만 통합하지 못한 제출물이 남으면 결정 대기로 숨기지 않는다. 새 제출물은 다시 통합하고, 같은 제출물이 이미 실패해 더 진행할 수 없으면 즉시 `needs-attention`으로 끝내고 `remaining`에 그 attempt를 남긴다.
 - 조정자의 `decide` 처리는 gusta-start [조정자 절차](../../gusta-start/references/coordinator.md) 3절을 따른다. 조정자는 단위·리뷰를 맡지 않는다.
 - timeout이면 끊기 전에 작업 공간을 `refs/gusta/checkpoints/<attempt>`로 스냅샷하고(30분마다도, `--checkpoint-ms`) 진행분을 `WIP` 커밋으로 남긴 뒤, 같은 세션으로 한 번 더 이어 간다(태스크 실행 횟수 한도 안에서). `--push`가 있는 묶음은 스냅샷을 `wip/<attempt 8자>`로도 push한다.

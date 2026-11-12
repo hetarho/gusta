@@ -3,6 +3,7 @@ import { vibePlanSync, vibePlanPush } from './vibe-plan.mjs'
 import { vibeLoop } from './vibe-loop.mjs'
 import { vibeCIWait } from './vibe-ci.mjs'
 import { AB_STEPS } from './vibe-ab.mjs'
+import { SKETCH_STEPS, renderSketch } from './vibe-sketch.mjs'
 import { vibeBrief, vibeFormat, renderBriefView } from './vibe-brief.mjs'
 import { vibeDesign } from './vibe-design.mjs'
 import { renderBrief } from './spec-context.mjs'
@@ -32,7 +33,7 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
     [--summary | --section tasks|decisions|sections|history|refs|referrers|inbox|issues|guidance] [--offset <n>] [--limit 20] [--snapshot <sha256>]
                                                 결정 원문 블록·필수 의존·전역 규칙·flow·constraints·stale base 이후 chg.
                                                 기본은 작업 트리(미커밋 포함), --ref는 그 커밋만. 마크다운이 기본이고 끝에 end 줄
-  vibe format --section task|state|ssot|report|reading|settings  FORMAT 발췌만
+  vibe format --section task|state|ssot|report|ideation|reading|settings  FORMAT 발췌만
   vibe status [--tag <tag>] [--no-fetch]        원격의 다른 세션·남은 일·추천 경로(route)
   vibe sync                                     원격 push 브랜치를 HEAD에 반영 (STATE는 섹션 단위 병합)
   vibe plan-sync                                기획 브랜치(SETTINGS plan, 미정이면 land)의 최신을 HEAD에 합침 — 기획·채번 전
@@ -80,12 +81,17 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 A/B 비교(gusta-showcase): 변형마다 브랜치·형제 worktree·포트. 변형 세션은 그 worktree만 고치고
                                                 커밋·서버·측정·정리는 CLI가 한다. status는 hub URL·메모·choose, pick은 그 변형만 현재 브랜치에 merge하고
                                                 STATE log에 채택 줄(접근은 --approach 또는 저장된 접근 첫 줄, 약 100자)을 쓴다(커밋은 호출자)
+  vibe sketch serve <slug> [--port 0] [--ttl-ms 28800000] [--json]
+                                                스케치(gusta-sketch): <checkout>/.tmp/sketch/<slug>/의 정적 파일을 127.0.0.1 포트 하나로(no-store).
+                                                같은 slug의 살아 있는 서버는 재사용(reused). .tmp/는 info/exclude로 무시(.gitignore 안 고침). ttl 뒤 스스로 종료
+  vibe sketch stop <slug> | --all [--json]      기록된 스케치 서버 정지·기록 삭제
+  vibe sketch status [--json]                   기록된 스케치 서버와 alive
   vibe preflight [--probe <command> [--provider claude|codex] [--allow-tool <rule> ...]]
                                                 맡김 전 점검: push 권한·lint·절전 방지·CI 접근·헤드리스 워커 실측
   vibe awake [--hours <n>] | --stop             macOS caffeinate로 절전 방지
   vibe check [--tier task|batch] [--diff-base <task-start-sha>] [--task T###] [--timeout-ms <ms>] [--heavy] [--no-cache] [--allow-final] -- <command>
                                                 batch/group은 조정자 전용·자동 heavy 락. --allow-final은 명시적 예외만
-공통: --target <path>, --remote <name>. 출력은 JSON(brief만 기본 마크다운). check는 요약·실패 이름·마지막 8줄·전체 로그 경로만 출력.
+공통: --target <path>, --remote <name>. 출력은 JSON(brief는 기본 마크다운, sketch는 --json 없으면 한 줄). check는 요약·실패 이름·마지막 8줄·전체 로그 경로만 출력.
 `
 
 const allowed = {
@@ -96,10 +102,12 @@ const allowed = {
   checkpoint: ['tag', 'message', 'remote', 'next'], prune: ['tag', 'work', 'remote'], settings: ['set'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
   awake: ['hours', 'remote'], check: ['tier', 'diff-base', 'task', 'timeout-ms'], design: ['tag', 'scope', 'verify', 'timeout-ms'],
   ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'reuse', 'from', 'shared-file', 'scaffold-prompt', 'scaffold', 'variant', 'approach', 'prompt-file', 'prompt-dir', 'follow-up-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
+  sketch: ['port', 'ttl-ms'],
 }
-const flags = { task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'] }
+const flags = { task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'], sketch: ['all'] }
 const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
-  ab: (options) => { if (!Object.hasOwn(AB_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe ab <${Object.keys(AB_STEPS).join('|')}> <slug>`); return AB_STEPS[options.step](options) } }
+  ab: (options) => { if (!Object.hasOwn(AB_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe ab <${Object.keys(AB_STEPS).join('|')}> <slug>`); return AB_STEPS[options.step](options) },
+  sketch: (options) => { if (!Object.hasOwn(SKETCH_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe sketch <${Object.keys(SKETCH_STEPS).join('|')}>`); return SKETCH_STEPS[options.step](options) } }
 
 export async function runVibeCLI(args) {
   if (!args.length || args.includes('--help') || args.includes('-h')) { process.stdout.write(HELP); return }
@@ -116,7 +124,7 @@ export async function runVibeCLI(args) {
   if (action === 'brief') while (args[0] && !args[0].startsWith('--')) (options.roots ??= []).push(args.shift())
   if (action === 'design' && args[0] && !args[0].startsWith('--')) options.step = args.shift()
   if (action === 'task') { options.step = args.shift(); if (args[0] && !args[0].startsWith('--')) options.task = args.shift() }
-  if (action === 'ab') { options.step = args.shift(); if (args[0] && !args[0].startsWith('--')) options.slug = args.shift() }
+  if (action === 'ab' || action === 'sketch') { options.step = args.shift(); if (args[0] && !args[0].startsWith('--')) options.slug = args.shift() }
   let command = null
   while (args.length) {
     const argument = args.shift()
@@ -144,7 +152,8 @@ export async function runVibeCLI(args) {
   try {
     const result = await actions[action](options)
     // A brief is read by a model: markdown with an end line unless JSON is asked for.
-    process.stdout.write(action === 'brief' && !options.json ? (result.view ? renderBriefView(result) : renderBrief(result)) : `${JSON.stringify(result, null, 2)}\n`)
+    process.stdout.write(action === 'brief' && !options.json ? (result.view ? renderBriefView(result) : renderBrief(result))
+      : action === 'sketch' && !options.json ? renderSketch(options.step, result) : `${JSON.stringify(result, null, 2)}\n`)
     if (result.ok === false || (action === 'brief' && (result.view ? result.sourceComplete === false : result.complete === false))) process.exitCode = 1
   } catch (error) {
     if (!(error instanceof SkillPackageError)) throw error

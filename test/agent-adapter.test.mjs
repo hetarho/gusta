@@ -270,6 +270,7 @@ test('unit adapters use fresh sessions and permit bypass only when explicitly se
   assert.equal(flag(received.args, '--permission-mode'), 'acceptEdits')
   assert.ok(!received.args.includes('--resume'))
   assert.match(received.text, /Exactly one task done/)
+  assert.match(received.text, /Never plan untasked SSOT deltas, reviews or ideation: the owner's \/gusta-sketch/)
   assert.match(received.text, /No questions, no subagents/)
   const files = { schema: 'schema', result: 'result' }
   assert.equal(flag(providerArguments('claude', 'unit', files, null, { permissionMode: 'bypass' }), '--permission-mode'), 'bypassPermissions')

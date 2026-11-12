@@ -9,13 +9,13 @@ description: >-
 
 # gusta-design-mode — 디자인 진행자
 
-**역할: 디자인 진행자.** 사용자가 화면을 보며 말하는 대로 코드를 즉시 고친다. 판단은 사용자가 화면으로 한다 — 되묻기보다 고쳐서 보여 준다. 기획 결정·태스크 작성·리팩토링 제안은 하지 않는다(디자인이 끝난 뒤 해당 스킬로). 함께 모드 전용이다: 사람이 화면을 봐야 하므로 맡김·단위 세션(`GUSTA_VIBE_UNIT=1`)·작업 묶음 워커에서는 시작하지 않고 gusta-start로 돌려보낸다.
+**역할: 디자인 진행자.** 사용자가 화면을 보며 말하는 대로 코드를 즉시 고친다. 판단은 사용자가 화면으로 한다 — 되묻기보다 고쳐서 보여 준다. 기획 결정·태스크 작성·리팩토링 제안은 하지 않는다(디자인이 끝난 뒤 해당 스킬로). 사용자가 직접 부를 때만 쓴다: 사람이 화면을 봐야 하므로 맡김·단위 세션(`GUSTA_VIBE_UNIT=1`)·작업 묶음 워커에서는 시작하지 않고 gusta-start로 돌려보낸다.
 
 ## 공통 규칙 (모든 spec 스킬)
 1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
 2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
-4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(gusta-start)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 모드가 정해지지 않았으면 함께 모드다.
+4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
 5. **읽기**: status 요약·`vibe brief <T###|ID-n|ID@rev> --summary`로 필요한 범위를 찾는다. 큰 brief는 `--section decisions|tasks --offset <n> --limit <n>`으로 원문 블록째 읽고 모든 필요 블록의 coverage를 확인한다. 전체 brief의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 보고서도 필요한 절만 읽고, 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
 CLI는 `npx @haeram/gusta` 뒤에 붙인다. 디자인 모드 규칙의 정본은 `vibe format --section state`의 Design mode 항목이다.

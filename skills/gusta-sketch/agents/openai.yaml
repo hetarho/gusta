@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Sketch"
+  short_description: "HTML 시안 한 페이지로 보고 골라 spec 문서와 태스크까지 만들기"
+  default_prompt: "Use $gusta-sketch to draw this idea as one HTML mockup page served on a local port, let me pick and refine it, then turn the choice into spec docs and tasks ready for $gusta-start."

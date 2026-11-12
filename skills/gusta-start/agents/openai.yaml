@@ -1,4 +1,4 @@
 interface:
   display_name: "Gusta Start"
-  short_description: "작업 진입점: 모드를 묻고 기획·구현을 골라 단위마다 push"
-  default_prompt: "Use $gusta-start to start working: ask the mode once, then route to planning or implementation and push every finished unit."
+  short_description: "만들어 둔 태스크를 보여 주고 묻지 않고 맡겨 실행"
+  default_prompt: "Use $gusta-start to run the tasks already planned: show the run (tasks, order, gates, push settings) and execute them unattended; if there are none, point me to $gusta-sketch."
