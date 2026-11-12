@@ -7,6 +7,8 @@ import { fixture, git, execute } from './helpers/vibe-fixture.mjs'
 import { vibeDesign } from '../src/vibe-design.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
+import { vibeBrief } from '../src/vibe-brief.mjs'
+import { runVibeCheck } from '../src/vibe-check.mjs'
 const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
 
 test('디자인 중 상태는 checkout 로컬이다: STATE를 바꾸지 않고 다른 worktree에 보이지 않는다', async (t) => {
@@ -93,6 +95,23 @@ test('vibe design verify: 미커밋 디자인에서 task·batch 명령을 모두
   assert.equal((await count()).length, 3)
   const override = await vibeDesign({ targetRoot: root, step: 'verify', verify: ['node --version'] })
   assert.deepEqual(override.results.map((result) => result.command), ['node fast.js', 'node --version'])
+})
+
+test('partial tiers preserve the design fallback gate and task guard while briefs expose the incomplete contract', async (t) => {
+  const { root, temporary } = await fixture(t, 1)
+  const file = path.join(root, 'spec/ssot/ARCH.md'), trace = path.join(temporary, 'fallback-ran')
+  await writeFile(file, (await readFile(file, 'utf8')).replace(/^  - batch,.*\n/m, ''))
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ scripts: { verify: 'node batch.js' } }))
+  await writeFile(path.join(root, 'batch.js'), `require('fs').writeFileSync(${JSON.stringify(trace)}, 'ran');process.exit(1)\n`)
+  await git(root, 'add', '-A'); await git(root, 'commit', '-qm', 'partial tier compatibility fixture')
+  const brief = await vibeBrief({ targetRoot: root, task: 'T001', summary: true })
+  assert.equal(brief.verify.declared, false); assert.equal(brief.verify.partial, true)
+  await assert.rejects(runVibeCheck({ targetRoot: root, tier: 'task' }, 'npm run verify'), /ARCH batch/)
+  await vibeDesign({ targetRoot: root, step: 'start', tag: 'k3f9' })
+  const result = await vibeDesign({ targetRoot: root, step: 'verify' })
+  assert.equal(result.ok, false)
+  assert.deepEqual(result.results.map(({ command, ok }) => [command, ok]), [['node --version', true], ['npm run verify', false]])
+  assert.equal(await readFile(trace, 'utf8'), 'ran', 'the required package fallback actually executes')
 })
 
 test('vibe CLI: design start·end는 JSON을, 잘못된 단계는 오류 JSON을 출력한다', async (t) => {
