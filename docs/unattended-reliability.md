@@ -46,6 +46,34 @@
   diagnostic outcomes. A successful equivalent preflight is not duplicated by
   the launcher.
 
+## Task completion and specification repair
+
+- An out-of-format task status, active task missing its STATE row, or unfinished
+  done archive/STATE transition requires repair. None is evidence that the
+  specification is settled or a reason to start unrelated ideation.
+- A task unit receives the implementation skill body once, without duplicated
+  common rules, and the provider's installed paths for any subsequently routed
+  skills. Task closing instructions remain available without a separate skill
+  tool.
+- A completed worker report is a claim. The host accepts task completion only
+  when the task is archived with a dated done status, its STATE task row has
+  been removed, and the unit has introduced no specification lint errors.
+  Warnings alone do not reject completion. A violation gets one bounded repair
+  unit, then is parked with evidence for the initiating conversation to handle.
+  Repair preserves an already-valid dated archive and changes only the remaining
+  violations; a malformed lifecycle close uses the task start/done commands.
+  Unresolved rejected closes block automatic final publication. The host can
+  reconcile a supervised repair by rechecking the actual close evidence without
+  requiring a helper restart or a fabricated worker report.
+- Final integration checks a bootstrapped specification with lint before
+  verification or publication. Repositories with no specification documents
+  (including an empty or SETTINGS-only spec directory) retain ordinary branch
+  operations. Lint errors prevent a verified publication and a successful
+  no-work result. This
+  does not prohibit an explicitly requested, unverified remote handoff. A helper
+  stopping on this gate still returns actionable continuation to its initiating
+  conversation; it does not decide the user's objective is complete.
+
 ## Verification and limits
 
 Regression tests use fake workers and isolated Git repositories. They cover

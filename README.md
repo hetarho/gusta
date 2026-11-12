@@ -46,7 +46,7 @@ Claude Code와 Codex가 바로 코드를 작성하기 전에 목표, 범위, 제
 | --- | --- | --- | --- | --- |
 | 진입점 | `start-vibe` | 진행자 | 원격의 다른 기기 진행 확인 → 모드 질문 → 다음 스킬 선택 → 태스크별 커밋 → 마감 관문(전체 검증 뒤 SETTINGS land로 반영 한 번). 맡김이면 결정함·보고서 | STATE `## active`·`## inbox`, `spec/reports/` |
 | 디자인 | `start-design` | 디자인 진행자 | 이 checkout만 디자인 중으로 표시하고 말하는 대로 코드만 즉시 수정(테스트·커밋·push 없음) → 디자인 끝이면 전체 테스트 후 커밋 하나. 커밋·push 전엔 항상 디자인이 끝났는지 묻는다 | checkout 로컬 디자인 상태, 디자인 커밋 |
-| 비교 | `show-ab` | 비교 진행자 | 문제 하나를 변형 2~6개로 병렬 구현(하위 세션·변형별 worktree) → 포트별로 띄우거나 같은 측정을 나란히 → 고른 변형만 현재 브랜치에 merge. 함께 전용 | `ab/<slug>/<v>` 브랜치, 채택 merge·STATE log |
+| 비교 | `show-ab` | 비교 진행자 | 문제 하나를 변형 2~6개로 병렬 구현(하위 세션·변형별 worktree, UI는 공용 mock scaffold 위) → 비교 페이지(hub)에 나란히 띄우거나 같은 측정을 번갈아 → 고른 변형만(scaffold 제외) 현재 브랜치에 merge. 함께 전용 | `ab/<slug>/<v>` 브랜치, 채택 merge·STATE log |
 | 아이디어 | `ideation` | 기획 전문가 | 흐릿한 아이디어를 발산·수렴 루프로 함께 구체화, SSOT 전환용 도메인 분할까지 | `spec/ideation/<slug>.md` |
 | 지속 개선 | `self-improve` | 개선 조정자 | 실행 기록·코드·업무 흐름에서 문제 발견 → 제한된 측정·구현 → 별도 세션 검토 → PR. 큰 변화는 사람 판단 | 기존 review/task/report + 개선 PR |
 | 로컬 개선 | `self-improve-local` | 호출 세션이 오케스트레이터 | 하위 탐색의 제안 → 오케스트레이터 승인 → 승인 범위 구현·독립 리뷰 → 현재 브랜치 통합 | 승인 기록 + 로컬 커밋·검증·보고서 |
@@ -54,7 +54,7 @@ Claude Code와 Codex가 바로 코드를 작성하기 전에 목표, 범위, 제
 | 1 | `create-ssot` | 기획자 | 기획 인터뷰로 도메인 SSOT 작성 | `spec/ssot/<ID>.md` |
 | 수시 | `update-ssot` | 기획자 | 기획 변경 반영 — rev+1, 변경 로그, 파급 표시 | 갱신된 SSOT + STATE pending |
 | 2 | `create-task` | 엔지니어 | SSOT 변경분(pending)과 채택된 리뷰 finding을 개발 인터뷰와 함께 태스크로 분해 | `spec/tasks/T###.md` |
-| 3 | `implement-task` | 엔지니어 | 태스크 선점(doing) → 구현 → 검증(영향 단위 테스트·typecheck·lint·format. 전체 스위트·CI는 마감 관문) → done | 코드 + 갱신된 태스크/STATE |
+| 3 | `implement-task` | 엔지니어 | 태스크 선점(`vibe task start`) → 구현 → 검증(영향 단위 테스트·typecheck·lint·format. 전체 스위트·CI는 마감 관문) → done(`vibe task done`이 보관·STATE 갱신) | 코드 + 갱신된 태스크/STATE |
 | 수시 | `review-code` | 리뷰어 | 코드를 ARCH 컨벤션·개발 관점에서 점검해 우선순위 붙은 리팩토링 finding을 제안, 사용자가 채택 | `spec/review/<slug>.md` |
 | 수시 | `doc-review` | 편집자 | 기존 SSOT를 의미 보존 원칙 아래 정리 — 복합 결정 분해, 과거 흔적·중복 제거. 정책이 바뀌어야 하는 문제는 `update-ssot`로 넘김 | 다듬어진 `spec/ssot/*.md` (rev 불변) |
 | 제출물 리뷰 | `review-task` | 리뷰어 | 제출 커밋 검토 → 승인 또는 수정 요청 | 커밋·상위 기준에 고정된 리뷰 기록 |
@@ -200,7 +200,7 @@ THEME SSOT가 너무 길어. 의미 바꾸지 말고 정리해줘.      → doc-
 
 설정은 `spec/SETTINGS.md`에 한 줄씩 남고, 파일이나 키가 없으면 기본값을 씁니다. 브랜치 전략([아래 표](#브랜치-전략)) 말고는 `permission-mode`·`headless-mcp`·`prune-branches`가 있습니다.
 
-`permission-mode`(기본 `bypass`)는 CLI가 띄우는 헤드리스 작성 세션 — `vibe loop` 단위, `work run` 워커, show-ab 변형, `vibe preflight --probe` — 의 권한입니다. 맡김에는 권한 창에 답할 사람이 없으므로 기본은 권한 확인과 sandbox를 건너뜁니다(Claude bypassPermissions, Codex `--dangerously-bypass-approvals-and-sandbox`, 네트워크 허용). `acceptEdits`로 바꾸면 Claude는 편집+`--allow-tool` 목록만, Codex는 workspace-write sandbox(네트워크 없음)에서 돕니다. 리뷰어는 어느 쪽이든 읽기 전용이고, 명령의 `--permission-mode`는 그 실행에만 적용됩니다.
+`permission-mode`(기본 `bypass`)는 CLI가 띄우는 헤드리스 작성 세션 — `vibe loop` 단위, `work run` 워커, show-ab 변형·scaffold, `vibe preflight --probe` — 의 권한입니다. 맡김에는 권한 창에 답할 사람이 없으므로 기본은 권한 확인과 sandbox를 건너뜁니다(Claude bypassPermissions, Codex `--dangerously-bypass-approvals-and-sandbox`, 네트워크 허용). `acceptEdits`로 바꾸면 Claude는 편집+`--allow-tool` 목록만, Codex는 workspace-write sandbox(네트워크 없음)에서 돕니다. 리뷰어는 어느 쪽이든 읽기 전용이고, 명령의 `--permission-mode`는 그 실행에만 적용됩니다.
 
 `headless-mcp`(기본 `isolate`)는 같은 헤드리스 Claude 세션(리뷰어·`work scout` 포함)이 싣는 MCP 서버입니다. 기본은 `--strict-mcp-config`만 붙여 MCP 서버를 하나도 싣지 않습니다 — 사용자·계정에 연결된 서버도, checkout의 `.mcp.json`도 싣지 않습니다(`.mcp.json`은 워커가 커밋할 수 있는 코드라, 직접 넘기면 승인 없이 그 커밋을 검토하는 리뷰어나 다음 단위에서 실행됩니다). 권한 확인 없이 도는 세션이 프로젝트 밖 서비스를 바꾸지 못하고, 쓰지 않는 도구 정의만큼 프롬프트도 줄어듭니다. 이 flag가 없는 예전 CLI에는 붙이지 않습니다. 헤드리스 세션에 MCP가 필요한 프로젝트는 `inherit`로 사용자 설정을 그대로 씁니다. 스킬·CLAUDE.md·플러그인·훅은 어느 쪽이든 그대로이고, Codex 세션은 바뀌지 않습니다.
 
@@ -217,10 +217,14 @@ haeram 스킬을 쓴 세션 끝에 부르면, 그 세션에서 스킬·CLI가 �
 /show-ab 검색 응답이 느려. 캐시 방식 세 가지로 구현해서 벤치마크로 비교해줘
 ```
 
-1. 변형마다 `ab/<slug>/<a|b|…>` 브랜치와 형제 worktree, 포트(4101부터 빈 포트)가 생기고 의존성 설치(`--setup`)가 병렬로 돕니다(`vibe ab start`). lockfile이 그대로면 `--reuse node_modules`가 설치 대신 이 checkout의 의존성 폴더(git이 무시하는 것만)를 복사합니다.
-2. 변형마다 새 하위 세션이 자기 worktree만 고칩니다(`vibe ab run --all`이 한 번에 병렬로, 헤드리스 Claude·Codex 또는 에이전트의 하위 세션). 커밋은 CLI가 변형 브랜치에 하고, 진행자에게는 요약과 "어디를 보면 되는지"만 돌아옵니다.
-3. `vibe ab serve`가 변형마다 개발 서버를 `$PORT`로 띄우고 볼 화면이 HTTP로 응답하면 비교 페이지(hub) 하나를 엽니다. 사용자는 그 URL 하나에서 변형을 나란히(데스크톱·모바일 폭) 보고 메모를 남기거나 choose를 누릅니다. `vibe ab exec --repeat 3`은 변형을 번갈아 실행해 시간 중앙값·최소값을 모으고 hub에도 보여 줍니다. "A의 레이아웃에 B의 색"처럼 섞고 싶으면 `vibe ab add --from a`가 A에서 이어지는 새 변형을 만듭니다. 진행자는 변형 | 접근 | 측정값 | 장단점 비교표 하나로 보여 주고, 메모는 그 변형의 후속 수정에 씁니다.
-4. choose는 의사 표시일 뿐입니다 — 진행자가 `vibe ab status`로 읽고 사용자에게 확인한 뒤 `vibe ab pick`이 서버·hub를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리합니다(브랜치는 `prune-branches` 설정대로, 기본은 삭제). 채택은 결정이라 pick이 STATE log에 한 줄을 쓰고(커밋은 진행자), SSOT 규칙이 바뀌었으면 update-ssot로 이어집니다. 전체 테스트는 합친 뒤 평소 마감 관문에서 한 번입니다.
+1. 변형마다 `ab/<slug>/<a|b|…>` 브랜치와 형제 worktree, 포트(4101부터 빈 포트)가 생기고 의존성 설치(`--setup`)가 병렬로 돕니다(`vibe ab start`). 목표·제약·지킬 결정·볼 화면처럼 변형 공통 글은 `--shared-file`로 한 번만 쓰고, 변형마다는 접근만 씁니다. lockfile이 그대로면 `--reuse node_modules`가 설치 대신 이 checkout의 의존성 폴더(git이 무시하는 것만)를 복사합니다.
+   - 백엔드·로그인 없이는 화면이 뜨지 않는 UI 비교면 `--scaffold-prompt <file>`로 세션 하나가 먼저 그 화면을 mock 데이터·인증 stub으로 띄우는 커밋(`ab/<slug>/base`)을 만들고(가능하면 `?mock=empty|error` 상태도) 변형은 모두 그 위에서 시작합니다. 이미 있는 커밋은 `--scaffold <ref>`. 변형은 scaffold를 고치지 않습니다.
+2. 변형마다 새 하위 세션이 자기 worktree만 고칩니다(`vibe ab run --all`이 한 번에 병렬로, 헤드리스 Claude·Codex 또는 에이전트의 하위 세션). 커밋은 CLI가 변형 브랜치에 하고, 진행자에게는 요약과 "어디를 보면 되는지"만 돌아옵니다. 변형이 scaffold 줄을 고쳤으면 결과의 `scaffoldTouched`를 보고 보여 주기 전에 되돌리게 합니다.
+3. `vibe ab serve`가 변형마다 개발 서버를 `$PORT`로 띄우고 볼 화면이 HTTP로 응답하면 비교 페이지(hub) 하나를 엽니다. 사용자는 그 URL 하나에서 변형을 나란히(데스크톱·모바일 폭) 보고 메모를 남기거나 choose를 누릅니다. `vibe ab exec --repeat 3`은 변형을 번갈아 실행해 시간 중앙값·최소값을 모으고 hub에도 보여 줍니다. 진행자는 변형 | 접근 | 측정값 | 볼 곳 | 장단점 비교표 하나로 보여 줍니다.
+   - 한 변형을 고쳐 달라고 하면(말이나 hub 메모) `vibe ab run --variant b --follow-up-file <요청>`이 접근·지난 요약·메모를 붙여 같은 변형을 이어 고치고, `vibe ab serve --variant b`가 떠 있는 서버로 다시 확인합니다.
+   - "A의 레이아웃에 B의 색"처럼 섞고 싶으면 `vibe ab add --from a`가 A에서 이어지는 새 변형을 만들고 그것만 run합니다.
+4. choose는 의사 표시일 뿐입니다 — 진행자가 `vibe ab status`로 읽고 사용자에게 확인한 뒤 `vibe ab pick`이 서버·hub를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리합니다(브랜치는 `prune-branches` 설정대로, 기본은 삭제). scaffold는 줄·파일 단위로 빼고 합칩니다. 변형 코드에 scaffold의 mock 줄·경로가 옮겨져 남으면(`scaffoldResidue`) pick이 거절하니 지우는 후속 수정 뒤 다시 고르고, 사용자가 그 줄을 보고 받아들이면 `--accept-residue`입니다. 실제 데이터 연결은 create-task로 이어집니다.
+5. 채택은 결정이라 pick이 STATE log에 `- YYMMDD ab <slug>: adopt <v> — <approach>` 한 줄을 쓰고(접근 문구는 `--approach`, 커밋은 진행자), SSOT 규칙이 바뀌었으면 update-ssot로 이어집니다. 전체 테스트는 합친 뒤 평소 마감 관문에서 한 번입니다.
 
 변형마다 구현 세션 하나만큼 토큰·시간이 들고, 고를 사람이 있어야 하므로 맡김에서는 실행하지 않습니다. 변형은 spec/을 고치지 않으며 미커밋 변경이 있으면 시작하지 않습니다.
 
@@ -309,6 +313,8 @@ npx haeram-spec-creator vibe loop --tag k3f9 --stop --json
 반복기는 preflight·active·보고서를 한 번 준비한 뒤 태스크 하나, 기획 한 조각(SSOT+create-task), inbox 정리마다 새 세션을 시작합니다. 시간 한도의 마지막 구간은 **마감 관문 전용**입니다 — 그 구간에 들어서면 새 단위를 시작하지 않고(`reason: final-window`, 단위의 상한도 이 구간 시작까지라 실행 중이던 단위가 구간을 먹지 않습니다) 모은 코드 전체를 한 번 검증한 뒤 push·CI까지 진행합니다. 관문이 실패하면 근거를 담은 수정 태스크를 만들어 그 구간 안에서 고치고 다시 검증합니다. 누적 실패 관문 상한은 기본 3회(`--max-gate-attempts`, 2~5)이며 성공해도 실패 횟수를 초기화하지 않습니다. 두 번째 실패 뒤에는 같은 전체 명령 계획을 끝까지 관찰한 실패 명령 집합이 엄격히 줄어든 경우에만 추가 회복합니다. 명시적으로 완전성을 보증한 검사 어댑터는 테스트 ID를 비교할 수 있지만 일반 로그의 실패 개수는 진단 자료입니다. 새 실패·불명확한 결과·시간 부족이면 자동 회복을 끝내고 전체 시도·누적 실패/상한·남은 수정 태스크·push 여부를 반환합니다. 구간 길이는 실측입니다: `vibe check --tier batch`·`work finish`·`vibe design verify`가 기록한 전체 검증 시간×2 + 최근 단위 시간 + (push 브랜치가 있으면) CI 대기 시간. 아직 한 번도 측정되지 않았을 때만 max-hours의 20%를 쓰고, 측정은 단위 경계마다 다시 읽습니다. `--final-reserve-hours`로 직접 정할 수 있습니다.
 
 **단위 상한은 멈춘 세션을 끊는 장치이지 실행의 끝이 아닙니다.** 단위 하나는 `--timeout-ms`(기본 1시간)까지, explore 태스크는 timebox+30분까지 돕니다(남은 작업 시간에 timebox가 들어가지 않으면 그 태스크는 건너뛰고, 그것만 남으면 `explore-no-time`으로 마감합니다). 상한이나 출력 한도로 끊긴 단위, 실패한 단위가 남긴 미커밋 변경은 로컬 ref(`refs/haeram/units/<tag>/…`, push 안 함)에 스냅샷한 뒤 그 경로만 HEAD로 되돌리고, 새 세션이 그 스냅샷에서 이어갑니다. 같은 태스크가 다시 끊기면 한 단위에 맞게 쪼개는 기획 단위를 돌리고, 쪼갠 뒤에도 끊기면 inbox에 parked로 남기고 다른 태스크로 넘어갑니다. 변경 없이 끊긴 단위만 실패로 세며(2회 연속이면 `session-failures`로 정지), 실패로 멈춰도 앞 단위들이 커밋한 코드는 마감 관문을 거쳐 push됩니다. 이어받은 태스크가 끝나면 스냅샷 ref를 지우고, 남은 ref는 보고서 next에 적습니다.
+
+**태스크 완료는 단위의 보고가 아니라 spec 마감으로 셉니다** — `tasks/done/`에 `done@날짜`로 옮겨지고 STATE 행이 사라졌으며 새 lint 오류가 없어야 합니다. 어기면(손으로 닫은 태스크 포함) 고치는 단위를 한 번 주고 다시 어기면 parked로 넘기며, spec lint 오류나 미해결 마감 거절이 있으면 최종 반영하지 않고 마감은 실패로 끝납니다. 명시적 WIP 원격 인계는 가능하며, 시작 대화는 수리·주차 근거를 받아 후속 처리합니다.
 
 `--tasks 'T### …'`는 그 태스크만 합니다. 범위 밖 선행 태스크가 끝나지 않았으면 시작하지 않고, 이번 실행이 범위 태스크를 위해 만든 태스크(쪼갠 후속·선행·관문 수정)는 범위에 들어갑니다. 범위가 끝나면 `scope-done`으로 마감 관문을 돌고 멈춥니다. STATE next 줄의 형식이나 갱신에 기대지 않습니다.
 
@@ -433,6 +439,8 @@ npx haeram-spec-creator vibe plan-sync                # 기획 브랜치(SETTING
 npx haeram-spec-creator vibe plan-push                # spec/만 담은 기획 커밋을 기획 브랜치에 올림 (태스크 ID 충돌이면 거절)
 npx haeram-spec-creator vibe push                     # 끝난 작업을 SETTINGS land로 반영(push면 원격을 합친 뒤 push, 아니면 로컬 병합, pr이면 PR)
 npx haeram-spec-creator vibe deploy                   # '배포해줘': deploy 브랜치를 land로 fast-forward
+npx haeram-spec-creator vibe task start T012 --tag k3f9  # 단독 선점: 태스크·STATE 행·이 세션 active를 doing으로 (todo·dep 완료만)
+npx haeram-spec-creator vibe task done T012 --tag k3f9   # done@날짜·tasks/done 이동·STATE 행·next·log (미체크·빈 result면 거절, 커밋은 호출자)
 npx haeram-spec-creator vibe claim --tag a1b2 --task T001 # 선점 정보만 공유하고 미검증 로컬 코드는 남김
 npx haeram-spec-creator vibe checkpoint --tag k3f9    # 작업 트리 스냅샷을 wip/k3f9로 (현재 브랜치는 그대로)
 npx haeram-spec-creator vibe checkpoint --tag k3f9 --handoff --next 'continue pending verification' --json

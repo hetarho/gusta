@@ -6,6 +6,7 @@ import os from 'node:os'
 import { SkillPackageError } from './errors.mjs'
 import { renderBrief } from './spec-context.mjs'
 import { OPTIONAL_FLAGS, STRICT_MCP } from './work-providers.mjs'
+import { AGENT_CONFIG } from './constants.mjs'
 
 const fail = (message) => { throw new SkillPackageError(message) }
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
@@ -119,10 +120,12 @@ function splitBrief(job) {
   return { data: { ...job, brief: meta }, text: `Brief (reading scope):\n${renderBrief(job.brief)}\n` }
 }
 
-// What a recovery unit inherits: the blocker, or the unfinished attempt the host kept aside.
-export function recoveryText(recovery) {
+// What a recovery unit inherits: the blocker, the unfinished attempt the host kept aside, or the
+// spec close the host's gate rejected.
+export function recoveryText(recovery, tag = '<tag>') {
   if (!recovery) return ''
   const { taskId: id, snapshot } = recovery
+  if (recovery.reason === 'spec-gate') return `\nSpec repair unit for ${id}: it was reported completed, but the host's spec check failed: ${(recovery.violations ?? []).join('; ')}. Keep the committed code; do not reimplement it. Repair only the listed evidence. Preserve a valid dated archive and its acceptance/result history: if it is already complete, fix only a stale STATE row, lint or report identity rather than reopening it. Only when archive/lifecycle evidence is missing or invalid, restore the task under spec/tasks/ and its STATE row as todo, run cliCommand vibe task start ${id} --tag ${tag}, check acceptance with [v] and fill the four result lines (outcome, at, verified, limits) from evidence, then close with cliCommand vibe task done ${id} --tag ${tag}. Run spec lint and commit the scoped repair. Return kind task, id ${id}, outcome completed; the host checks again and parks ${id} if it still fails.`
   const kept = snapshot ? ` The previous attempt's uncommitted changes are snapshot ${snapshot.commit} on top of ${snapshot.base}; the tree was reset to HEAD. List them with \`git diff --stat ${snapshot.base} ${snapshot.commit}\` and restore what is worth keeping with \`git checkout ${snapshot.commit} -- <paths>\`.` : ''
   if (recovery.reason === 'interrupted') return `\nContinuation unit for ${id}: the previous unit ended before finishing it (${recovery.cause}).${kept} Continue from there rather than starting over.`
   if (recovery.reason === 'split') return `\nSplit unit for ${id}: units keep ending before finishing it. Do not implement it now. As one planning slice, narrow ${id} to a first part that fits one unit and move the rest of its acceptance into new todo tasks that depend on it (create-task, consistent deps/base in task files and STATE)${snapshot ? `; note snapshot ${snapshot.commit} (on ${snapshot.base}) in ${id}'s impl notes as reusable work` : ''}. Return kind planning.`
@@ -132,16 +135,35 @@ export function recoveryText(recovery) {
 // The frontmatter only triggers a skill; a unit is already inside it. No frontmatter: unchanged.
 export const skillBody = (text) => text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n+/, '')
 
+const bundledSkill = async (name) => skillBody(await readFile(new URL(`../skills/${name}/SKILL.md`, import.meta.url), 'utf8'))
+// A split or blocked recovery rewrites the task as planning; any other unit with a task implements it.
+const PLANNING_RECOVERY = ['split', 'blocked-task']
+const unitTask = (job) => PLANNING_RECOVERY.includes(job.recovery?.reason) ? null : job.brief?.taskId ?? job.recovery?.taskId ?? null
+
+// Unit sessions have no Skill tool: start-vibe (and implement-task for a task unit) ride in the
+// prompt, every other routed skill is read from where install put it for this provider.
+async function unitSkills(job, provider) {
+  const root = AGENT_CONFIG[provider]?.root ?? AGENT_CONFIG.claude.root
+  const id = unitTask(job)
+  const other = `Other skills it routes to (update-ssot, create-task...) are not loaded and there is no Skill tool: Read ${root}/<name>/SKILL.md before acting on one.`
+  if (!id) return { note: ` ${other}`, text: '' }
+  const close = ` This unit's task is ${id}: implement-task is included below too and already loaded (its relative links are under ${root}/implement-task/). Close ${id} only through its §5 lifecycle (acceptance checks, the four result lines, then cliCommand vibe task done ${id} --tag ${job.tag}); never close it by hand (st done, archive move, STATE row edit). The host rejects a completed report unless ${id} is archived in tasks/done with done@date, its STATE row is gone and spec lint has no new errors.`
+  // Every spec skill repeats the same common rules (test/skill-rules): start-vibe above already holds them.
+  const body = (await bundledSkill('implement-task')).replace(/\n## 공통 규칙[^\n]*\n[\s\S]*?(?=\n## )/, '\n(Common rules: as in start-vibe above.)\n')
+  return { note: `${close} ${other}`, text: `\n\nimplement-task skill (already loaded):\n${body}` }
+}
+
 // The full prompt a session gets; A/B runs save it next to their log for debugging.
-export async function agentPrompt(job) {
+export async function agentPrompt(job, provider = 'claude') {
   if (job.role === 'unit') {
     if (!job.workspace || job.resume) fail('단위는 workspace와 새 세션이 필요합니다 (resume 금지).')
-    const skill = skillBody(await readFile(new URL('../skills/start-vibe/SKILL.md', import.meta.url), 'utf8'))
+    const skill = await bundledSkill('start-vibe')
+    const routed = await unitSkills(job, provider)
     const autonomy = 'Autopilot delegates reversible planning and technical decisions to you. Do not wait for a person or park work merely because a decision is needed. Apply the recommended option through update-ssot and create-task when needed, record question/choice/alternatives/reason in STATE inbox decided, and leave the task runnable for the next unit. You may reorder unstarted tasks to bring an already-approved prerequisite or CI fix forward after checking real dependencies and touches; update task and STATE deps together. Preserve acceptance criteria and verification gates. Park only the affected work when it needs unavailable access, explicit authorization for irreversible/external effects, or a billing, data-deletion, privacy or security-policy decision; continue other runnable work.'
-    const recovery = recoveryText(job.recovery)
+    const recovery = recoveryText(job.recovery, job.tag)
     const limit = job.timeLimit ? ` The host cuts this unit after ${job.timeLimit.minutes} minutes (${job.timeLimit.cutAt}) and hands uncommitted work to a fresh unit; write measurements and findings into the task result as you go.` : ''
     // The skill rides in the prompt; without this note Codex units re-read it from .codex/skills first.
-    return `Run /start-vibe 맡김 단위1. The start-vibe skill is included below and already loaded: do not open its SKILL.md or call a Skill tool for it. Load the skills it routes to (implement-task, create-task, update-ssot...) as usual. Exactly one task done, one planning slice (update-ssot + create-task together), or inbox cleanup. No questions, no subagents. ${autonomy}${recovery}${limit} ${TASK_CHECKS} Host owns preflight, active row lifecycle, report lifecycle, batch checks, push and CI wait. Do not run them again. Use the same tag/report. Commit each completed task, including only its related changes. In strict concurrency the host publishes your claim with vibe claim before dispatch; never publish claims or pending code yourself. Never push completed code here: host runs the batch gate first. Do not close the shared report or remove active. Use cliCommand to call this installed CLI; do not download a different CLI. Read vibe brief for a task, exact FORMAT sections only for writing, never whole STATE/FORMAT/ARCH or large code files. Read scoped code with rg and ranges. Long checks: one blocking call (Codex) or shell background completion notification (Claude), no model polling. Return only the unit JSON schema.\n\nstart-vibe skill (already loaded):\n${skill}\n\n${splitBrief(job).text}Assignment JSON:\n${JSON.stringify(splitBrief(job).data)}`
+    return `Run /start-vibe 맡김 단위1. The start-vibe skill is included below and already loaded: do not open its SKILL.md or call a Skill tool for it.${routed.note} Exactly one task done, one planning slice (update-ssot + create-task together), or inbox cleanup. No questions, no subagents. ${autonomy}${recovery}${limit} ${TASK_CHECKS} Host owns preflight, active row lifecycle, report lifecycle, batch checks, push and CI wait. Do not run them again. Use the same tag/report. Commit each completed task, including only its related changes. In strict concurrency the host publishes your claim with vibe claim before dispatch; never publish claims or pending code yourself. Never push completed code here: host runs the batch gate first. Do not close the shared report or remove active. Use cliCommand to call this installed CLI; do not download a different CLI. Read vibe brief for a task, exact FORMAT sections only for writing, never whole STATE/FORMAT/ARCH or large code files. Read scoped code with rg and ranges. Long checks: one blocking call (Codex) or shell background completion notification (Claude), no model polling. Return only the unit JSON schema.\n\nstart-vibe skill (already loaded):\n${skill}${routed.text}\n\n${splitBrief(job).text}Assignment JSON:\n${JSON.stringify(splitBrief(job).data)}`
   }
   if (job.role === 'scout') {
     if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('탐색은 workspace·prompt와 새 세션이 필요합니다.')
@@ -210,7 +232,7 @@ export function providerArguments(provider, role, files, model, { allowTools = [
 
 // flags: the caller's providerFlags answer; none by default (this never probes the CLI).
 export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text), flags = [] }) {
-  const prompt = await agentPrompt(job)
+  const prompt = await agentPrompt(job, provider)
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-agent-'))
   const files = { schema: path.join(temporary, 'schema.json'), result: path.join(temporary, 'result.json') }
   try {

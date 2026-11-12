@@ -12,6 +12,7 @@ import { withHeavyLock } from '../src/check-cache.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 import { vibeDesign } from '../src/vibe-design.mjs'
 import { vibePrune } from '../src/prune.mjs'
+import { archiveTask } from './helpers/vibe-fixture.mjs'
 
 const execute = promisify(execFile)
 const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
@@ -167,7 +168,7 @@ test('push가 거부되면 원격을 가져와 STATE를 섹션 단위로 합치�
     await writeFile(file, (await readFile(file, 'utf8')).replace(from, to))
   }
   await edit(a, '- 261012 create-task ARCH', '- 261013 a: T001 done\n- 261012 create-task ARCH')
-  await edit(a, '| T001 | first | ARCH | - | todo |\n', '')
+  await archiveTask(a, 'T001')
   await writeFile(path.join(a, 'a.txt'), 'a\n')
   await commitAll(a, 'A unit')
   await vibePush({ targetRoot: a })
@@ -204,6 +205,58 @@ test('claims share task ownership without publishing pending code, including sub
   await vibeBeat({ targetRoot: b, tag: 'bbbb', mode: 'autopilot' })
   await commitAll(b, 'other session')
   await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T002' }), /다른 세션이 선점/)
+})
+
+test('repair claims preserve malformed task state and reserve it against ordinary and repair claimants', async (t) => {
+  const { a, b, remote } = await machines(t)
+  const state = path.join(a, 'spec/STATE.md')
+  await writeFile(state, (await readFile(state, 'utf8')).replace('| T001 | first | ARCH | - | todo |', '| T001 | first | ARCH | - | done |'))
+  await commitAll(a, 'malformed task close')
+  await git(a, 'push', '-q', 'origin', 'main')
+  await git(b, 'pull', '--ff-only', '-q')
+  await vibeBeat({ targetRoot: a, tag: 'aaaa', mode: 'autopilot' })
+  await writeFile(path.join(a, 'pending.txt'), 'unverified\n')
+  await commitAll(a, 'pending local repair')
+  const reserved = await vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T001', repairTask: true })
+  assert.equal(reserved.progressOnly, true)
+  const shared = (await execute('git', ['--git-dir', remote, 'show', 'main:spec/STATE.md'])).stdout
+  assert.match(shared, /\| T001 \| first \| ARCH \| - \| done \|/)
+  assert.equal(activeRows(shared).find(({ tag }) => tag === 'aaaa').doing, 'T001')
+  assert.match(await readFile(state, 'utf8'), /\| T001 \| first \| ARCH \| - \| done \|/)
+  await assert.rejects(execute('git', ['--git-dir', remote, 'show', 'main:pending.txt']))
+  await vibeBeat({ targetRoot: b, tag: 'bbbb', mode: 'autopilot' })
+  await commitAll(b, 'competing session')
+  for (const repairTask of [false, true]) await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001', repairTask }), /다른 세션이 선점/)
+})
+
+test('repair claims respect remote task-file ownership even when the STATE row is malformed', async (t) => {
+  const { a } = await machines(t)
+  const state = path.join(a, 'spec/STATE.md'), file = path.join(a, 'spec/tasks/T001.first.md')
+  await writeFile(state, (await readFile(state, 'utf8')).replace('| T001 | first | ARCH | - | todo |', '| T001 | first | ARCH | - | done |'))
+  await writeFile(file, (await readFile(file, 'utf8')).replace('st:todo', 'st:doing@261112.zzzz'))
+  await commitAll(a, 'malformed STATE retains a file owner')
+  await git(a, 'push', '-q', 'origin', 'main')
+  await vibeBeat({ targetRoot: a, tag: 'aaaa', mode: 'autopilot' })
+  await commitAll(a, 'repair session')
+  await assert.rejects(vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T001', repairTask: true }), /다른 세션이 선점/)
+})
+
+test('stale active reservations allow reclaim only without a foreign task owner or a recent WIP heartbeat', async (t) => {
+  const { a, b } = await machines(t)
+  const state = path.join(a, 'spec/STATE.md')
+  await vibeBeat({ targetRoot: a, tag: 'aaaa', mode: 'autopilot', doing: 'T001' })
+  await writeFile(state, (await readFile(state, 'utf8')).replace(/\| aaaa \| ([^|]+) \| autopilot \| ([^|]+) \| [^|]+ \|/, `| aaaa | $1 | autopilot | $2 | ${minutesAgo(180)} |`))
+  await commitAll(a, 'stale reservation')
+  await git(a, 'push', '-q', 'origin', 'main')
+  await vibeCheckpoint({ targetRoot: a, tag: 'aaaa' })
+  await vibeBeat({ targetRoot: b, tag: 'bbbb', mode: 'autopilot' })
+  await commitAll(b, 'new session')
+  await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001', repairTask: true }), /다른 세션이 선점/)
+  // Explicitly remove the WIP heartbeat; the stale presence alone carries no tagged claim.
+  await git(a, 'push', '-q', 'origin', ':refs/heads/wip/aaaa')
+  const claimed = await vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001' })
+  assert.equal(claimed.ok, true)
+  assert.match(await readFile(path.join(b, 'spec/STATE.md'), 'utf8'), /T001.*doing@\d{6}\.bbbb/)
 })
 
 test('verified push rejects code introduced by sync and accepts progress-only commits', async (t) => {
@@ -278,6 +331,32 @@ test('route: 기획 거리·구현 거리에 따라 planning·implementation·ch
   const empty = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-route-')))
   t.after(() => rm(empty, { recursive: true, force: true }))
   assert.equal((await vibeStatus({ targetRoot: empty })).route, 'architecture')
+})
+
+// A hand close (`done` without a date) used to read as neither todo nor done: settled, ideation-first.
+test('status: a row or task-file st outside FORMAT is an issue, never settled, and routes to repair; valid states keep their route', async (t) => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-st-')))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(path.join(root, 'spec/tasks'), { recursive: true })
+  const status = async (rows, files = {}) => {
+    await writeFile(path.join(root, 'spec/STATE.md'), STATE.replace('| T001 | first | ARCH | - | todo |\n| T002 | second | ARCH | - | todo |\n', rows))
+    await rm(path.join(root, 'spec/tasks'), { recursive: true, force: true }); await mkdir(path.join(root, 'spec/tasks'))
+    for (const [id, st] of Object.entries(files)) await writeFile(path.join(root, `spec/tasks/${id}.x.md`), task(id).replace('st:todo', `st:${st}`))
+    return vibeStatus({ targetRoot: root })
+  }
+  const broken = await status('| T001 | first | ARCH | - | done |\n', { T001: 'done' })
+  assert.deepEqual(broken.issues, [{ id: 'T001', where: 'STATE', st: 'done' }, { id: 'T001', where: 'file', st: 'done' }])
+  assert.equal(broken.settled, false); assert.equal(broken.route, 'repair'); assert.deepEqual(broken.runnable, [])
+  // A valid row with a broken file (and the other way round) is still an issue.
+  assert.deepEqual((await status('| T001 | first | ARCH | - | todo |\n', { T001: 'finished' })).issues, [{ id: 'T001', where: 'file', st: 'finished' }])
+  assert.deepEqual((await status('| T001 | first | ARCH | - | doing |\n', { T001: 'doing@261112.ab' })).issues, [{ id: 'T001', where: 'STATE', st: 'doing' }])
+  // Every FORMAT st is valid: the routes are what they were.
+  for (const [st, route, settled] of [['todo', 'implementation', false], ['doing@261112.ab', 'ideation-first', true], ['doing@261112', 'implementation', false], ['blocked@261112', 'ideation-first', true]]) {
+    const valid = await status(`| T001 | first | ARCH | - | ${st} |\n`, { T001: st })
+    assert.deepEqual([valid.issues, valid.route, valid.settled], [[], route, settled], st)
+  }
+  // No task file: lint reports it; status judges the row alone.
+  assert.deepEqual((await status('| T001 | first | ARCH | - | todo |\n')).issues, [])
 })
 
 test('route: 완료 ideation 파일은 새 기획 후보나 기본 읽기 입력이 아니다', async (t) => {
@@ -448,4 +527,76 @@ test('vibe CLI: beat·status는 JSON을, 오류도 JSON을 출력한다', async 
   const failed = await run('beat', '--tag', 'x').catch((error) => error)
   assert.equal(failed.code, 1)
   assert.match(JSON.parse(failed.stdout).error, /세션 tag/)
+})
+
+
+test('final publication rejects invalid spec, while explicit WIP handoff preserves it', async (t) => {
+  const { a, remote } = await machines(t)
+  const before = (await execute('git', ['--git-dir', remote, 'rev-parse', 'main'], { encoding: 'utf8' })).stdout.trim()
+  const file = path.join(a, 'spec/tasks/T001.first.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('st:todo', 'st:done'))
+  await commitAll(a, 'invalid hand close')
+  await assert.rejects(vibePush({ targetRoot: a }), /spec lint 실패/)
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'main'], { encoding: 'utf8' })).stdout.trim(), before)
+  const kept = await vibeCheckpoint({ targetRoot: a, tag: 'keep01', handoff: true })
+  assert.equal(kept.ok, true); assert.deepEqual(kept.verification, { status: 'unverified', checksRun: false })
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'wip/keep01'], { encoding: 'utf8' })).stdout.trim(), kept.commit)
+})
+
+test('final publication rejects an invalid committed spec even when its unstaged repair passes lint', async (t) => {
+  const { a, remote } = await machines(t)
+  const before = (await git(a, 'rev-parse', 'HEAD')).stdout.trim()
+  const file = path.join(a, 'spec/tasks/T001.first.md'), valid = await readFile(file, 'utf8')
+  await writeFile(file, valid.replace('st:todo', 'st:done'))
+  await commitAll(a, 'invalid committed task close')
+  await writeFile(file, valid)
+  assert.deepEqual((await lintSpec({ targetRoot: a })).errors, [])
+  await assert.rejects(vibePush({ targetRoot: a }), /spec lint 실패/)
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'main'], { encoding: 'utf8' })).stdout.trim(), before)
+  assert.equal(await readFile(file, 'utf8'), valid, 'the unstaged repair is preserved')
+})
+
+test('final publication checks a valid committed spec without publishing or rejecting unstaged changes', async (t) => {
+  const { a, remote } = await machines(t)
+  await writeFile(path.join(a, 'app.txt'), 'completed work\n')
+  const candidate = await commitAll(a, 'valid candidate')
+  const file = path.join(a, 'spec/tasks/T001.first.md'), valid = await readFile(file, 'utf8')
+  const invalid = valid.replace('st:todo', 'st:finished')
+  await writeFile(file, invalid)
+  await writeFile(path.join(a, 'app.txt'), 'uncommitted work\n')
+  assert.ok((await lintSpec({ targetRoot: a })).errors.length)
+  const result = await vibePush({ targetRoot: a })
+  assert.equal(result.pushed, candidate)
+  assert.equal((await execute('git', ['--git-dir', remote, 'show', 'main:spec/tasks/T001.first.md'], { encoding: 'utf8' })).stdout, valid)
+  assert.equal((await execute('git', ['--git-dir', remote, 'show', 'main:app.txt'], { encoding: 'utf8' })).stdout, 'completed work\n')
+  assert.equal(await readFile(file, 'utf8'), invalid)
+  assert.equal(await readFile(path.join(a, 'app.txt'), 'utf8'), 'uncommitted work\n')
+})
+
+test('local land and PR publication reject invalid candidate spec before advancing refs', async (t) => {
+  const { a, remote } = await machines(t)
+  await git(a, 'branch', 'next')
+  const previous = (await git(a, 'rev-parse', 'next')).stdout.trim()
+  await git(a, 'checkout', '-q', '-b', 'candidate')
+  const file = path.join(a, 'spec/tasks/T001.first.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('st:todo', 'st:finished'))
+  await writeFile(path.join(a, 'spec/SETTINGS.md'), '# SETTINGS\n- land: next\n- push: false\n')
+  await commitAll(a, 'invalid local candidate')
+  await assert.rejects(vibePush({ targetRoot: a }), /spec lint 실패/)
+  assert.equal((await git(a, 'rev-parse', 'next')).stdout.trim(), previous)
+  await writeFile(path.join(a, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- land-via: pr\n- push: true\n')
+  await commitAll(a, 'PR candidate')
+  await assert.rejects(vibePush({ targetRoot: a }), /spec lint 실패/)
+  await assert.rejects(execute('git', ['--git-dir', remote, 'rev-parse', '--verify', 'refs/heads/candidate']))
+})
+
+test('final publication still supports branch settings without spec documents', async (t) => {
+  const { a, remote } = await machines(t)
+  await git(a, 'rm', '-qr', 'spec')
+  await mkdir(path.join(a, 'spec'))
+  await writeFile(path.join(a, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- push: true\n')
+  const candidate = await commitAll(a, 'plain repository')
+  const result = await vibePush({ targetRoot: a })
+  assert.equal(result.pushed, candidate)
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'main'], { encoding: 'utf8' })).stdout.trim(), candidate)
 })

@@ -1,10 +1,24 @@
-import { mkdtemp, mkdir, readFile, writeFile, rm, realpath } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, writeFile, rm, realpath } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
 export const execute = promisify(execFile)
 export const git = async (root, ...args) => (await execute('git', ['-C', root, ...args], { encoding: 'utf8' })).stdout.trim()
+// What `vibe task done` leaves (implement-task §5), without committing: acceptance checked, the
+// result filled, done@date in the file archived under tasks/done, the STATE row gone. false: no open file.
+export async function archiveTask(root, id) {
+  const name = (await readdir(path.join(root, 'spec/tasks')).catch(() => [])).find((file) => file.startsWith(`${id}.`))
+  if (!name) return false
+  const text = (await readFile(path.join(root, 'spec/tasks', name), 'utf8')).replace(/st:[^\s|]+/, 'st:done@261112').replaceAll('- [ ]', '- [v]')
+    .replace(/## result\n*$/, '## result\n- outcome: done\n- at: -\n- verified: unit tests\n- limits: -\n')
+  await mkdir(path.join(root, 'spec/tasks/done'), { recursive: true })
+  await writeFile(path.join(root, 'spec/tasks/done', name), text)
+  await rm(path.join(root, 'spec/tasks', name))
+  const state = path.join(root, 'spec/STATE.md')
+  await writeFile(state, (await readFile(state, 'utf8')).split('\n').filter((line) => !line.startsWith(`| ${id} |`)).join('\n'))
+  return true
+}
 export async function fixture(t, count = 3) {
   const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-v060-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))

@@ -2,23 +2,21 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, readdir, mkdir } from 'node:fs/promises'
 import path from 'node:path'
-import { fixture, git } from './helpers/vibe-fixture.mjs'
+import { fixture, git, archiveTask } from './helpers/vibe-fixture.mjs'
 import { vibeLoop, executeVibeUnit, closingReserve, nextRung, timeboxMs, EXPLORE_EXIT_MS, unitStatus, UNIT_LISTED } from '../src/vibe-loop.mjs'
 import { timingKey } from '../src/check-cache.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
 import { activeRows, appendInbox } from '../src/state-doc.mjs'
 import { recoveryText } from '../src/agent-adapter.mjs'
+import { vibeTask } from '../src/vibe-task.mjs'
+import { lintSpec } from '../src/spec-lint.mjs'
 
 const passed = async () => ({ ok: true, checks: [] })
 const unit = (outcome = 'completed') => ({ exitCode: 0, result: { kind: 'task', id: 'T001', outcome, pushed: false, next: 'implementation' } })
 const opts = (root) => ({ targetRoot: root, tag: 't060', provider: 'claude', maxUnits: 3 })
-async function completeTask(root, id) {
-  const name = (await readdir(path.join(root, 'spec/tasks'))).find((name) => name.startsWith(`${id}.`))
-  await git(root, 'mv', `spec/tasks/${name}`, `spec/tasks/done/${name}`)
-  const file = path.join(root, 'spec/STATE.md')
-  const state = (await readFile(file, 'utf8')).split('\n').filter((line) => !line.startsWith(`| ${id} |`)).join('\n')
-  await writeFile(file, state)
-  await writeFile(path.join(root, 'app.js'), `// ${id}\n`)
+async function completeTask(root, id, code = `// ${id}\n`) {
+  await archiveTask(root, id)
+  await writeFile(path.join(root, 'app.js'), code)
   await git(root, 'add', 'spec', 'app.js')
   await git(root, 'commit', '-q', '-m', `${id} done`)
   return { exitCode: 0, result: { kind: 'task', id, outcome: 'completed', pushed: false, next: 'implementation' } }
@@ -53,7 +51,7 @@ test('command adapter runs one new process/session per task, preflights once, an
     fs.writeFileSync(job.sessionFile,'session-'+process.pid);
     const stateFile='spec/STATE.md';let state=fs.readFileSync(stateFile,'utf8');
     const id=job.brief.taskId;state=state.split('\\n').filter(line=>!line.startsWith('| '+id+' |')).join('\\n');fs.writeFileSync(stateFile,state);
-    fs.renameSync('spec/tasks/'+id+'.example.md','spec/tasks/done/'+id+'.example.md');
+    fs.writeFileSync('spec/tasks/done/'+id+'.example.md',fs.readFileSync('spec/tasks/'+id+'.example.md','utf8').replace('st:todo','st:done@261112'));fs.rmSync('spec/tasks/'+id+'.example.md');
     cp.execFileSync('git',['add','spec']);cp.execFileSync('git',['commit','-q','-m',id+' done']);
     console.log(JSON.stringify({kind:'task',id,outcome:'completed',pushed:false,next:'implementation'}));`)
   let preflights = 0, pushes = 0
@@ -72,7 +70,7 @@ test('command adapter runs one new process/session per task, preflights once, an
 })
 
 for (const [name, execute, expected] of [
-  ['unchanged HEAD/STATE', async () => unit(), 'no-progress'],
+  ['unchanged HEAD/STATE', async () => ({ exitCode: 0, result: { kind: 'none', id: '', outcome: 'no_work', pushed: false, next: 'implementation' } }), 'no-progress'],
   ['repeated session errors', async () => ({ exitCode: 1, result: null }), 'session-failures'],
 ]) test(`loop stops after two ${name}`, async (t) => {
   const { root } = await fixture(t)
@@ -116,7 +114,7 @@ test('the closing window starts no new work and still runs the one gate and push
   let now = start, calls = 0, checks = 0, pushes = 0
   // Nothing measured yet: the first run reserves 20% of 10 hours.
   const result = await vibeLoop({ ...opts(root), maxUnits: 10, maxHours: 10 }, { preflight: passed, now: () => now,
-    execute: async () => { calls++; now += 3 * 3600000; await writeFile(path.join(root, 'app.js'), `// ${calls}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit() },
+    execute: async (options, job) => { calls++; now += 3 * 3600000; return completeTask(root, job.brief.taskId, `// ${calls}\n`) },
     check: async (options) => { checks++; assert.equal(options.tier, 'batch'); assert.ok(options.timeoutMs <= 3600000); return { ok: true } },
     push: async () => { pushes++; return { ok: true, pushed: null } },
   })
@@ -140,13 +138,13 @@ for (const fixed of [true, false]) test(`a failed closing gate queues one repair
     execute: async (options, job, directory, limits) => {
       jobs.push({ task: job.brief?.taskId, timeoutMs: limits.timeoutMs })
       if (job.brief?.taskId === 'T004') { now += 30 * 60000; return completeTask(root, 'T004') }
-      now += 3 * 3600000; await writeFile(path.join(root, 'app.js'), `// ${jobs.length}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit()
+      now += 3 * 3600000; return completeTask(root, job.brief.taskId, `// ${jobs.length}\n`)
     },
     check: async () => { checks++; return checks === 1 || !fixed ? { ok: false, log: '/test/log', failedTests: ['FAIL checkout total'], tail: ['1 failed'] } : { ok: true } },
     push: async () => { pushes++; return { ok: true, pushed: null } },
   })
   // Units at 0h, 3h, 6h; the window opens at 8h; the repair gets the time left before the deadline.
-  assert.deepEqual(jobs.map((job) => job.task), ['T001', 'T001', 'T001', 'T004'])
+  assert.deepEqual(jobs.map((job) => job.task), ['T001', 'T002', 'T003', 'T004'])
   assert.ok(jobs[3].timeoutMs <= 3600000)
   assert.match(await readFile(path.join(root, 'spec/tasks/done/T004.fix-gate.md'), 'utf8'), /FAIL checkout total/)
   if (fixed) {
@@ -162,7 +160,7 @@ test('batch gate and CI run once for multiple task commits, entirely outside mod
   const { root } = await fixture(t)
   let calls = 0, checks = 0, waits = 0
   const result = await vibeLoop({ ...opts(root), maxUnits: 2 }, { preflight: passed,
-    execute: async () => { calls++; await writeFile(path.join(root, 'app.js'), `// ${calls}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit() },
+    execute: async (options, job) => { calls++; return completeTask(root, job.brief.taskId, `// ${calls}\n`) },
     check: async (options) => { checks++; assert.equal(options.tier, 'batch'); return { ok: true } },
     push: async () => ({ ok: true, pushed: await git(root, 'rev-parse', 'HEAD') }),
     ci: async () => { waits++; assert.equal(calls, 2); return { ok: true, outcome: 'success', jobs: [] } },
@@ -173,7 +171,7 @@ test('batch gate and CI run once for multiple task commits, entirely outside mod
 test('failed batch gate prevents code push and preserves commits and logs', async (t) => {
   const { root } = await fixture(t)
   const result = await vibeLoop({ ...opts(root), maxUnits: 1 }, { preflight: passed,
-    execute: async () => { await writeFile(path.join(root, 'app.js'), '// changed\n'); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit() },
+    execute: async (options, job) => { return completeTask(root, job.brief.taskId, '// changed\n') },
     check: async () => ({ ok: false, log: '/test/log' }), push: () => assert.fail('gate failed'),
   })
   assert.equal(result.ok, false); assert.match(result.error, /묶음 검증 실패/)
@@ -183,7 +181,7 @@ test('failed batch gate prevents code push and preserves commits and logs', asyn
 test('CI failure at the unit limit preserves a prioritized fix task with evidence for resumption', async (t) => {
   const { root } = await fixture(t)
   const result = await vibeLoop({ ...opts(root), maxUnits: 1 }, { preflight: passed,
-    execute: async () => { await writeFile(path.join(root, 'app.js'), '// code\n'); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit() },
+    execute: async (options, job) => { return completeTask(root, job.brief.taskId, '// code\n') },
     check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: await git(root, 'rev-parse', 'HEAD') }),
     ci: async () => ({ ok: false, outcome: 'failure', runUrl: 'https://example.test/run/1', jobs: [{ name: 'unit', conclusion: 'failure', failedSteps: ['Regression'] }] }),
   })
@@ -199,7 +197,7 @@ test('CI failure at the unit limit preserves a prioritized fix task with evidenc
 test('unchecked CI (nobody can read it) neither stops the run nor queues a repair; the report asks the owner to check later', async (t) => {
   const { root } = await fixture(t)
   const result = await vibeLoop({ ...opts(root), maxUnits: 1 }, { preflight: passed,
-    execute: async () => { await writeFile(path.join(root, 'app.js'), '// code\n'); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit() },
+    execute: async (options, job) => { return completeTask(root, job.brief.taskId, '// code\n') },
     check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: await git(root, 'rev-parse', 'HEAD') }),
     ci: async ({ commit }) => ({ ok: true, outcome: 'unchecked', reason: 'no-ci-access', commit, runUrl: null, checkUrl: `https://github.com/owner/project/commit/${commit}`, jobs: [] }),
   })
@@ -434,7 +432,7 @@ for (const pushEachUnit of [false, true]) test(`strict concurrency runs one fina
   const result = await vibeLoop({ ...opts(root), maxUnits: 3, pushEachUnit }, { preflight: passed,
     status: async (options) => ({ ...await vibeStatus(options), concurrency: 'strict' }),
     claim: async () => ({ ok: true }),
-    execute: async () => { await writeFile(path.join(root, 'app.js'), `// ${++n}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit() },
+    execute: async (_options, job) => completeTask(root, job.brief.taskId, `// ${++n}\n`),
     sync: async () => ({ ok: true }),
     check: async () => { checks++; return { ok: true } }, push: async (options) => { pushes++; assert.ok(options.verifiedCommit); return { ok: true, pushed: null } },
   })
@@ -483,10 +481,10 @@ test('one fetch per unit boundary: the post-claim and post-unit status stay loca
 })
 
 test('hourly snapshots span fresh unit sessions instead of resetting at each launch', async (t) => {
-  const { root } = await fixture(t)
+  const { root } = await fixture(t, 4)
   let now = Date.now(), n = 0, snapshots = 0
   const result = await vibeLoop({ ...opts(root), maxUnits: 4, maxHours: 5 }, { preflight: passed, now: () => now,
-    execute: async () => { now += 30 * 60000; await writeFile(path.join(root, 'app.js'), `// ${++n}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task'); return unit() },
+    execute: async (_options, job) => { now += 30 * 60000; return completeTask(root, job.brief.taskId, `// ${++n}\n`) },
     checkpoint: async () => { snapshots++ }, check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: null }),
   })
   assert.equal(result.ok, true, result.error); assert.equal(result.units, 4); assert.equal(snapshots, 2)
@@ -510,8 +508,8 @@ test('the loop result, manifest and closing report carry the time breakdown', as
   const { root } = await fixture(t)
   let calls = 0
   const result = await vibeLoop({ ...opts(root), maxUnits: 2 }, { preflight: passed,
-    execute: async () => { calls++; await writeFile(path.join(root, 'app.js'), `// ${calls}\n`); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'task')
-      return { ...unit(), checks: { runs: 1, cached: 0, ms: 1000 }, usage: { input: 1, cacheWrite: 2, cacheRead: 3, output: 4 } } },
+    execute: async (_options, job) => ({ ...(await completeTask(root, job.brief.taskId, `// ${++calls}\n`)),
+      checks: { runs: 1, cached: 0, ms: 1000 }, usage: { input: 1, cacheWrite: 2, cacheRead: 3, output: 4 } }),
     check: async () => ({ ok: true, ms: 120000 }),
   })
   assert.equal(result.ok, true, result.error)
@@ -610,7 +608,7 @@ test('an idle cut counts as a session failure; two stop the run, which still pub
 async function exploreFixture(t) {
   const made = await fixture(t)
   const file = path.join(made.root, 'spec/tasks/T001.example.md')
-  await writeFile(file, (await readFile(file, 'utf8')).replace('touches:src/', 'touches:src/ | explore:2h'))
+  await writeFile(file, (await readFile(file, 'utf8')).replace('touches:src/', 'touches:src/ | explore:2h').replace('## impl notes', '- [ ] exit: record the best measured setting.\n\n## impl notes'))
   await git(made.root, 'commit', '-qam', 'explore T001')
   return made
 }
@@ -672,4 +670,85 @@ test('ladder, timebox, inbox and recovery prompt helpers', () => {
   assert.match(recoveryText({ reason: 'interrupted', cause: 'unit-timeout', taskId: 'T001', snapshot }), /git checkout abc -- <paths>/)
   assert.match(recoveryText({ reason: 'split', taskId: 'T001', snapshot }), /Do not implement it now/)
   assert.match(recoveryText({ reason: 'blocked-task', taskId: 'T001' }), /read the blocker/)
+})
+
+// The smoke run's units closed tasks with sed: `st:done` without a date, `[x]`, free text, a `| done |` row.
+async function handClose(root, id, n) {
+  const name = (await readdir(path.join(root, 'spec/tasks'))).find((file) => file.startsWith(`${id}.`))
+  const file = path.join(root, 'spec/tasks', name), state = path.join(root, 'spec/STATE.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('st:todo', 'st:done').replaceAll('- [ ]', '- [x]').replace(/## result\n*$/, '## result\nImplemented and tested.\n'))
+  await writeFile(state, (await readFile(state, 'utf8')).replace(`| ${id} | example | ARCH | - | todo |`, `| ${id} | example | ARCH | - | done |`))
+  await writeFile(path.join(root, 'app.js'), `// ${id} ${n}\n`)
+  await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', `${id} by hand`)
+  return { exitCode: 0, result: { kind: 'task', id, outcome: 'completed', pushed: false, next: 'implementation' } }
+}
+// implement-task §5 through the real CLI: start, check acceptance, fill the four result lines, done.
+async function lifecycleClose(root, id, tag) {
+  await vibeTask({ step: 'start', task: id, tag, targetRoot: root })
+  const name = (await readdir(path.join(root, 'spec/tasks'))).find((file) => file.startsWith(`${id}.`))
+  const file = path.join(root, 'spec/tasks', name)
+  await writeFile(file, (await readFile(file, 'utf8')).replaceAll('- [ ]', '- [v]').replace(/## result\n*$/, '## result\n- outcome: implemented\n- at: -\n- verified: node --test (task tier)\n- limits: -\n'))
+  await writeFile(path.join(root, 'app.js'), `// ${id}\n`)
+  await vibeTask({ step: 'done', task: id, tag, targetRoot: root })
+  await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', `${id} done`)
+  return { exitCode: 0, result: { kind: 'task', id, outcome: 'completed', pushed: false, next: 'implementation' } }
+}
+const events = async (result) => (await readFile(path.join(path.dirname(result.manifest), 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+
+test('a task closed by hand is not done: one spec repair unit names the violations, a second rejection parks it, the rest runs and the close fails on lint', async (t) => {
+  const { root } = await fixture(t)
+  const jobs = []
+  const result = await vibeLoop({ ...opts(root), maxUnits: 10 }, { preflight: passed, ...published(),
+    execute: async (options, job) => {
+      const id = job.recovery?.taskId ?? job.brief.taskId
+      jobs.push({ id, recovery: job.recovery?.reason ?? null, violations: job.recovery?.violations ?? null })
+      return id === 'T001' ? handClose(root, id, jobs.length) : completeTask(root, id)
+    } })
+  assert.deepEqual(jobs.map(({ id, recovery }) => [id, recovery]), [['T001', null], ['T001', 'spec-gate'], ['T002', null], ['T003', null]])
+  const violations = jobs[1].violations
+  assert.ok(violations.includes('spec/tasks/done/T001.<slug>.md is missing (not archived)'), violations)
+  assert.ok(violations.includes('spec/STATE.md tasks row T001 remains (st done)'), violations)
+  assert.ok(violations.some((line) => /^lint: T001: st 형식 오류: done/.test(line)), violations)
+  assert.match(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), /^- \d{6} parked T001: reported completed, but its spec close still failed after a repair unit/m)
+  assert.deepEqual((await events(result)).filter((event) => event.type === 'spec-gate').map((event) => event.next), ['spec-gate', 'parked'])
+  // The close never reads as settled work: the failed lint check replaces no-work / parked-only.
+  assert.equal(result.ok, false); assert.equal(result.reason, 'failed'); assert.match(result.error, /spec lint 실패/)
+  const report = await readFile(path.join(root, result.report), 'utf8')
+  assert.equal(report.match(/- task T001: rejected by spec gate/g).length, 2)
+  assert.match(report, /- task T002: completed/)
+  assert.match(report, /- spec lint: fail \(\d+ errors; first: /)
+  assert.doesNotMatch(report, /loop stopped: (no-work|parked-only)/)
+  const status = await vibeStatus({ targetRoot: root, tag: 't060' })
+  assert.equal(status.route, 'repair'); assert.equal(status.settled, false)
+})
+
+test('a task closed through the lifecycle passes the spec gate with no extra unit', async (t) => {
+  const { root } = await fixture(t)
+  const jobs = []
+  const result = await vibeLoop({ ...opts(root), maxUnits: 10 }, { preflight: passed, ...published(),
+    execute: async (options, job) => { jobs.push([job.brief.taskId, job.recovery?.reason ?? null]); return lifecycleClose(root, job.brief.taskId, options.tag) } })
+  assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'no-work'); assert.equal(result.units, 3)
+  assert.deepEqual(jobs, [['T001', null], ['T002', null], ['T003', null]])
+  assert.ok(!(await events(result)).some((event) => event.type === 'spec-gate'))
+  assert.equal((await lintSpec({ targetRoot: root })).errors.length, 0)
+})
+
+test('a hand-closed task from before the run gets one repair unit first; a correct repair closes it', async (t) => {
+  const { root } = await fixture(t)
+  await handClose(root, 'T002', 0)
+  const jobs = []
+  const result = await vibeLoop({ ...opts(root), maxUnits: 10 }, { preflight: passed, ...published(),
+    execute: async (options, job) => {
+      const id = job.recovery?.taskId ?? job.brief.taskId
+      jobs.push([id, job.recovery?.reason ?? null])
+      if (job.recovery?.reason === 'spec-gate') {
+        // Undo the hand close as the repair text says, then close through the lifecycle.
+        const file = path.join(root, 'spec/tasks/T002.example.md'), state = path.join(root, 'spec/STATE.md')
+        await writeFile(file, (await readFile(file, 'utf8')).replace('st:done', 'st:todo').replaceAll('- [x]', '- [ ]').replace(/## result\n[\s\S]*$/, '## result\n'))
+        await writeFile(state, (await readFile(state, 'utf8')).replace('| T002 | example | ARCH | - | done |', '| T002 | example | ARCH | - | todo |'))
+      }
+      return lifecycleClose(root, id, options.tag)
+    } })
+  assert.deepEqual(jobs, [['T002', 'spec-gate'], ['T001', null], ['T003', null]])
+  assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'no-work')
 })
