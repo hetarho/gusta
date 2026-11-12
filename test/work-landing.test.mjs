@@ -23,7 +23,7 @@ const taskFile = (id, { dep = '-', touches = '-', explore = '', acceptance = '- 
 
 // tasks: [{ id, title, ...taskFile options }]
 async function fixture(t, tasks) {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-landing-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-landing-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'repo')
   await mkdir(path.join(root, 'spec/tasks'), { recursive: true })
@@ -32,7 +32,7 @@ async function fixture(t, tasks) {
   for (const [key, value] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.hooksPath', path.join(temporary, 'no-hooks')]]) await git(root, 'config', key, value)
   const rows = tasks.map((task) => `| ${task.id} | ${task.title} | ARCH | ${task.dep ?? '-'} | todo |`).join('\n')
   await writeFile(path.join(root, 'spec/FORMAT.md'), '# FORMAT\n')
-  await writeFile(path.join(root, 'spec/STATE.md'), `# STATE\n\n## cfg\n- level: expert\n- lang: ko\n- docs: en\n- push: trunk\n\n## ssot\n| id | rev | tasked | pending | [?] |\n|---|---|---|---|---|\n| ARCH | 1 | 1 | - | 0 |\n\n## tasks\n| id | title | ssot | dep | st |\n|---|---|---|---|---|\n${rows}\n\n## next\n- implement-task\n\n## log\n- 261012 create-task ARCH\n`)
+  await writeFile(path.join(root, 'spec/STATE.md'), `# STATE\n\n## cfg\n- level: expert\n- lang: ko\n- docs: en\n- push: trunk\n\n## ssot\n| id | rev | tasked | pending | [?] |\n|---|---|---|---|---|\n| ARCH | 1 | 1 | - | 0 |\n\n## tasks\n| id | title | ssot | dep | st |\n|---|---|---|---|---|\n${rows}\n\n## next\n- gusta-implement-task\n\n## log\n- 261012 gusta-create-task ARCH\n`)
   await writeFile(path.join(root, 'spec/ssot/ARCH.md'), '# ARCH architecture\n> r1 | architecture\n\n## decisions\n- ARCH-1 [o] runtime: node\n  - only LTS releases\n- ARCH-2 [o] tests: node --test\n\n## chg\n- r1 260924 initial\n')
   for (const task of tasks) await writeFile(path.join(root, `spec/tasks/${task.id}.${task.title}.md`), taskFile(task.id, task))
   await commit(root, 'spec')
@@ -134,10 +134,10 @@ test('risky 정책: touches 안의 작은 변경에 테스트가 있으면 정�
   assert.equal(all.review, 'all')
 })
 
-test('재제출은 고친 커밋부터의 변경만 HAERAM_DIFF_BASE로 넘기고, 같은 트리의 검사는 다시 돌리지 않는다', async (t) => {
+test('재제출은 고친 커밋부터의 변경만 GUSTA_DIFF_BASE로 넘기고, 같은 트리의 검사는 다시 돌리지 않는다', async (t) => {
   const setup = await fixture(t, [{ id: 'T001', title: 'first' }])
   const record = path.join(setup.temporary, 'bases.txt')
-  const taskVerify = `node -e "require('fs').appendFileSync('${record}', process.env.HAERAM_DIFF_BASE + '\\n')"`
+  const taskVerify = `node -e "require('fs').appendFileSync('${record}', process.env.GUSTA_DIFF_BASE + '\\n')"`
   const counted = path.join(setup.temporary, 'runs.txt')
   const plain = `node -e "require('fs').appendFileSync('${counted}', 'x')"`
   const group = await startWork({ ...setup, name: 'feature', verify: [always], taskVerify: [taskVerify, plain] })

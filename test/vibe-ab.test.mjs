@@ -50,7 +50,7 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   assert.equal(started.ok, true); assert.deepEqual(started.variants.map((entry) => entry.variant), ['a', 'b'])
   assert.notEqual(started.variants[0].port, started.variants[1].port)
   for (const entry of started.variants) {
-    assert.ok(entry.path.startsWith(path.join(temporary, '.haeram-worktrees')))
+    assert.ok(entry.path.startsWith(path.join(temporary, '.gusta-worktrees')))
     assert.equal(await readFile(path.join(entry.path, '.env.local'), 'utf8'), 'SECRET=1\n')
     assert.ok(await exists(path.join(entry.path, 'installed')))
   }
@@ -99,7 +99,7 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before); assert.equal(await git(root, 'rev-parse', 'HEAD^2'), winner)
   for (const entry of started.variants) assert.equal(await exists(entry.path), false)
   // The emptied sibling worktree folders go; with pruning, so do the comparison's logs, feedback and prompts.
-  assert.equal(await exists(path.join(temporary, '.haeram-worktrees')), false)
+  assert.equal(await exists(path.join(temporary, '.gusta-worktrees')), false)
   assert.equal(await exists(path.dirname(measured.variants[0].log)), false)
   // prune-branches defaults to true: no variant branch outlives the pick.
   assert.deepEqual(adopted.branches, [])
@@ -158,7 +158,7 @@ test('--reuse clones ignored dependency dirs whose lockfiles are unchanged at th
 })
 
 test('copyTree clones natively and falls back to fs.cp when the platform cp fails or is missing', async (t) => {
-  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-ab-copy-')))
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-ab-copy-')))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const source = path.join(directory, 'node_modules')
   await mkdir(path.join(source, 'pkg'), { recursive: true }); await mkdir(path.join(source, '.bin'))
@@ -310,7 +310,7 @@ test('hub page escapes session text and frames each variant at URL plus view pat
 })
 
 test('hub records notes and a choice for known variants only, and ends with its comparison', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'haeram-ab-hub-'))
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'gusta-ab-hub-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const recordFile = path.join(directory, 'hero.json'), feedbackFile = path.join(directory, 'hero', 'feedback.json')
   await writeFile(recordFile, JSON.stringify({ slug: 'hero', variants: { a: { port: 4101, runs: [{ summary: 'cards', view: 'home', path: '/home' }] }, b: { port: 4102, runs: [] } } }))
@@ -767,7 +767,7 @@ test('pick logs the adoption on top of a STATE log kept to 20 lines, and writes 
 })
 
 test('the detached hub reports its port, answers on localhost and exits once its comparison is gone', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'haeram-ab-hub-'))
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'gusta-ab-hub-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const recordFile = path.join(directory, 'hero.json'), readyFile = path.join(directory, 'hub.json')
   await writeFile(recordFile, JSON.stringify({ slug: 'hero', variants: { a: { port: 4101, runs: [] } } }))

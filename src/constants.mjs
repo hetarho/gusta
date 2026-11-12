@@ -1,5 +1,5 @@
-export const PACKAGE_NAME = 'haeram-spec-creator'
-export const LOCK_FILE = '.haeram-spec-creator-lock.json'
+export const PACKAGE_NAME = '@haeram/gusta'
+export const LOCK_FILE = '.gusta-lock.json'
 
 export const AGENT_CONFIG = Object.freeze({
   claude: {

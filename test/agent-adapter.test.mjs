@@ -8,7 +8,7 @@ import { executeAgentAdapter, claudeResult, claudeEnvelope, providerArguments, s
 import { builtInAdapter, inspectProviders, inspectOrca, providerFlags } from '../src/work-providers.mjs'
 
 async function stub(t, name, body) {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-provider-test-')))
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-provider-test-')))
   t.after(() => rm(root, { recursive: true, force: true }))
   await writeFile(path.join(root, name), `#!${process.execPath}\n${body}`, { mode: 0o755 })
   return { root, env: { ...process.env, PATH: root } }
@@ -25,7 +25,7 @@ test('Codex는 최종 결과 파일만 해석하고 진행 JSONL은 로그로 �
   const received = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
   assert.equal(flag(received.args, '--sandbox'), 'workspace-write')
   assert.match(received.text, /host runner validates scope, commits/)
-  assert.match(received.text, /# implement-task/)
+  assert.match(received.text, /# gusta-implement-task/)
   assert.ok(!received.args.some((item) => item.includes('dangerously')))
 })
 
@@ -74,7 +74,7 @@ test('리뷰어는 읽기 정책으로 실행하며 모델 이름은 해석 없�
   assert.equal(flag(args, '--permission-prompts'), 'none')
   assert.equal(flag(args, '--model'), 'model with spaces')
   assert.ok(!flag(args, '--tools').includes('Edit'))
-  assert.match(text, /# review-task/)
+  assert.match(text, /# gusta-review-task/)
   assert.equal(flag(providerArguments('codex', 'reviewer', { schema: 'schema', result: 'result' }), '--sandbox'), 'read-only')
 })
 
@@ -238,13 +238,13 @@ test('워커는 결정 요청을 돌려줄 수 있고, 세션 ID를 미리 정�
   assert.equal(flag(call.args, '--allowedTools'), 'Read,Edit,Write,Glob,Grep,Bash(npm test *)')
   assert.match(call.text, /Nobody is available to answer questions/)
   assert.match(call.text, /reading scope/)
-  assert.match(call.text, /# implement-task/)
+  assert.match(call.text, /# gusta-implement-task/)
   await executeAgentAdapter({ provider: 'claude', job: { ...job(fixture.root), resume: session, directive: { note: 'ITEM-4 r2: cap is 10' } }, env: fixture.env, log: () => {} })
   const resumed = (await readFile(path.join(fixture.root, 'calls.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line))[1]
   assert.equal(flag(resumed.args, '--resume'), session)
   assert.ok(!resumed.args.includes('--session-id'))
   assert.match(resumed.text, /Coordinator note: ITEM-4 r2: cap is 10/)
-  assert.doesNotMatch(resumed.text, /# implement-task/)
+  assert.doesNotMatch(resumed.text, /# gusta-implement-task/)
 })
 
 test('Codex 세션은 첫 이벤트의 thread_id로 기록하고 exec resume으로 이어 간다', async (t) => {
@@ -280,54 +280,54 @@ test('unit adapters use fresh sessions and permit bypass only when explicitly se
   await assert.rejects(executeAgentAdapter({ provider: 'claude', job: { role: 'unit', workspace: fixture.root, resume: first.session }, env: fixture.env }), /resume 금지/)
 })
 
-// Codex units used to `cat .codex/skills/start-vibe/SKILL.md` first, loading the inlined skill twice.
-test('unit prompt inlines the start-vibe body once, without frontmatter, and says it is already loaded', async (t) => {
+// Codex units used to `cat .codex/skills/gusta-start/SKILL.md` first, loading the inlined skill twice.
+test('unit prompt inlines the gusta-start body once, without frontmatter, and says it is already loaded', async (t) => {
   const fixture = await stub(t, 'codex', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('prompt.txt',text);const out=process.argv[process.argv.indexOf('--output-last-message')+1];fs.writeFileSync(out,JSON.stringify({kind:'none',id:'',outcome:'no_work',pushed:false,next:''}));});`)
   await executeAgentAdapter({ provider: 'codex', job: { role: 'unit', workspace: fixture.root, tag: 't061' }, env: fixture.env, log: () => {} })
   const text = await readFile(path.join(fixture.root, 'prompt.txt'), 'utf8')
-  const file = await readFile(new URL('../skills/start-vibe/SKILL.md', import.meta.url), 'utf8')
+  const file = await readFile(new URL('../skills/gusta-start/SKILL.md', import.meta.url), 'utf8')
   const [, frontmatter, body] = file.match(/^---\n([\s\S]*?)\n---\n+([\s\S]*)$/)
-  const note = text.search(/start-vibe skill is included below and already loaded: do not open its SKILL\.md or call a Skill tool for it/)
+  const note = text.search(/gusta-start skill is included below and already loaded: do not open its SKILL\.md or call a Skill tool for it/)
   assert.ok(note >= 0 && note < text.indexOf(body), 'the no-reload note comes before the skill')
-  // A unit without a task gets no implement-task body, only where its routed skills are installed.
-  assert.match(text, /Other skills it routes to \(update-ssot, create-task\.\.\.\) are not loaded and there is no Skill tool: Read \.codex\/skills\/<name>\/SKILL\.md before acting on one\./)
-  assert.ok(!text.includes('implement-task skill (already loaded)'))
+  // A unit without a task gets no gusta-implement-task body, only where its routed skills are installed.
+  assert.match(text, /Other skills it routes to \(gusta-update-ssot, gusta-create-task\.\.\.\) are not loaded and there is no Skill tool: Read \.codex\/skills\/<name>\/SKILL\.md before acting on one\./)
+  assert.ok(!text.includes('gusta-implement-task skill (already loaded)'))
   assert.equal(text.split(body).length, 2, 'the skill body appears exactly once')
   // The trigger description is frontmatter only; none of its lines reach the unit.
   const description = frontmatter.split('\n').filter((line) => /^\s{2}\S/.test(line)).map((line) => line.trim())
   assert.ok(description.length > 0)
   for (const line of description) assert.ok(!text.includes(line), `frontmatter line leaked: ${line}`)
-  assert.ok(!text.includes('name: start-vibe'))
+  assert.ok(!text.includes('name: gusta-start'))
   assert.equal(skillBody('---\nname: x\n---\n\n# x\nbody\n'), '# x\nbody\n')
   assert.equal(skillBody('# x\n---\nbody\n---\n'), '# x\n---\nbody\n---\n')
 })
 
-// Unit sessions have no Skill tool: a task unit that never saw implement-task closed its task by hand.
-test('a task unit carries the implement-task body and its close; planning recoveries and other units read routed skills', async (t) => {
+// Unit sessions have no Skill tool: a task unit that never saw gusta-implement-task closed its task by hand.
+test('a task unit carries the gusta-implement-task body and its close; planning recoveries and other units read routed skills', async (t) => {
   const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',chunk=>text+=chunk);process.stdin.on('end',()=>{fs.writeFileSync('last.txt',text);console.log(JSON.stringify({type:'result',is_error:false,structured_output:{kind:'none',id:'',outcome:'no_work',pushed:false,next:''}}))});`)
   const prompt = async (extra) => {
     await executeAgentAdapter({ provider: 'claude', job: { role: 'unit', workspace: fixture.root, tag: 't062', ...extra }, env: fixture.env, log: () => {} })
     return readFile(path.join(fixture.root, 'last.txt'), 'utf8')
   }
-  const implement = skillBody(await readFile(new URL('../skills/implement-task/SKILL.md', import.meta.url), 'utf8'))
+  const implement = skillBody(await readFile(new URL('../skills/gusta-implement-task/SKILL.md', import.meta.url), 'utf8'))
   const section = (title) => implement.slice(implement.indexOf(title), implement.indexOf('\n## ', implement.indexOf(title) + 1))
   for (const job of [{ brief: { taskId: 'T007' } }, { recovery: { reason: 'interrupted', taskId: 'T007', cause: 'unit-timeout' } }, { recovery: { reason: 'spec-gate', taskId: 'T007', violations: ['spec/STATE.md tasks row T007 remains (st done)'] } }]) {
     const text = await prompt(job)
-    assert.equal(text.split('implement-task skill (already loaded):').length, 2, JSON.stringify(job))
-    // Its sections ride once; its common rules are start-vibe's and are not repeated.
+    assert.equal(text.split('gusta-implement-task skill (already loaded):').length, 2, JSON.stringify(job))
+    // Its sections ride once; its common rules are gusta-start's and are not repeated.
     for (const title of ['## 1. 선택과 브리핑', '## 5. 마감']) assert.equal(text.split(section(title)).length, 2, title)
-    assert.ok(!implement.includes('(Common rules') && text.includes('(Common rules: as in start-vibe above.)'))
-    assert.equal(text.split('## 공통 규칙').length, 2, 'common rules once (start-vibe)')
+    assert.ok(!implement.includes('(Common rules') && text.includes('(Common rules: as in gusta-start above.)'))
+    assert.equal(text.split('## 공통 규칙').length, 2, 'common rules once (gusta-start)')
     assert.match(text, /This unit's task is T007: .*cliCommand vibe task done T007 --tag t062.*never close it by hand/)
     assert.match(text, /Read \.claude\/skills\/<name>\/SKILL\.md before acting on one/)
   }
   const repair = await prompt({ recovery: { reason: 'spec-gate', taskId: 'T007', violations: ['spec/tasks/done/T007.<slug>.md is missing (not archived)', 'spec/STATE.md tasks row T007 remains (st done)'] } })
   assert.match(repair, /Spec repair unit for T007: .*spec check failed: spec\/tasks\/done\/T007\.<slug>\.md is missing \(not archived\); spec\/STATE\.md tasks row T007 remains \(st done\)\..*vibe task start T007 --tag t062.*vibe task done T007 --tag t062/)
   assert.match(repair, /Preserve a valid dated archive/); assert.match(repair, /Only when archive\/lifecycle evidence is missing or invalid/); assert.match(repair, /Repair only the listed evidence/)
-  // A split or a blocked recovery is planning: no implement-task body.
+  // A split or a blocked recovery is planning: no gusta-implement-task body.
   for (const reason of ['split', 'blocked-task']) {
     const text = await prompt({ brief: { taskId: 'T007' }, recovery: { reason, taskId: 'T007' } })
-    assert.ok(!text.includes('implement-task skill (already loaded)'), reason)
+    assert.ok(!text.includes('gusta-implement-task skill (already loaded)'), reason)
     assert.match(text, /Read \.claude\/skills\/<name>\/SKILL\.md before acting on one/)
   }
 })

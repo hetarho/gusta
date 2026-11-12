@@ -9,7 +9,7 @@ import { vibeBrief } from '../src/vibe-brief.mjs'
 import { workStatus, inspectWork } from '../src/work-groups.mjs'
 import { runtimeRoot } from '../src/work-runtime.mjs'
 import { inspectWorkspace } from '../src/workspace.mjs'
-const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 
 test('explicit handoff preserves unverified WIP remotely when final push is disabled and retries unchanged snapshots', async (t) => {
   const { root, temporary, initial } = await fixture(t)
@@ -158,7 +158,7 @@ test('summary and pages alone preserve standalone verification instructions and 
   const page = await vibeBrief({ targetRoot: root, task: 'T001', section: 'tasks' })
   assert.equal(page.diffBase, initial)
   assert.deepEqual(page.verify.batch, ['node --version'])
-  assert.equal(JSON.parse(await readFile(path.join(root, '.git/haeram-task-start.json'), 'utf8')).diffBase, initial)
+  assert.equal(JSON.parse(await readFile(path.join(root, '.git/gusta-task-start.json'), 'utf8')).diffBase, initial)
 })
 
 test('custom verification guidance is discoverable and fully readable through bounded snapshot pages', async (t) => {

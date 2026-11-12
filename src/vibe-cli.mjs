@@ -11,7 +11,7 @@ import { vibePrune } from './prune.mjs'
 import { vibeTask } from './vibe-task.mjs'
 import { SkillPackageError } from './errors.mjs'
 
-const HELP = `세션 도구 (start-vibe·start-design이 사용)
+const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
   vibe loop --tag <tag> --provider claude|codex [--model <name>] [--max-units 100] [--max-hours 8]
     [--deadline <ISO>] [--final-reserve-hours <measured>] [--max-gate-attempts 3] [--batch-size 3] [--permission-mode bypass|acceptEdits] [--allow-tool <rule> ...]
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
@@ -56,7 +56,7 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
                                                 spec/SETTINGS.md prune-branches가 false면 건너뜀. 안 합쳐진 커밋·미커밋 변경은 보존
   vibe settings [--set <key>=<value> ...]       spec/SETTINGS.md의 유효 설정(없으면 기본값) 보기·바꾸기 (커밋은 호출자)
   vibe design [start --tag <tag> [--scope <text>] | verify [--verify <command> ...] [--timeout-ms <ms>] | end]
-                                                디자인 모드(start-design): 이 checkout의 Git 디렉터리에 디자인 중 상태 쓰기·전체 검증·삭제.
+                                                디자인 모드(gusta-design-mode): 이 checkout의 Git 디렉터리에 디자인 중 상태 쓰기·전체 검증·삭제.
                                                 STATE·다른 worktree는 건드리지 않음 (커밋은 호출자). verify는 ARCH task·batch 명령 전부를
                                                 미커밋 작업 트리에서 한 번씩. 디자인 중 이 checkout의 push·맡김은 거절
   vibe ab start <slug> [--variants 2] [--base HEAD] [--base-port 4101] [--setup <install command>] [--reuse <dir> ...] [--copy <untracked file> ...] [--shared-file <file>] [--scaffold-prompt <file> | --scaffold <ref>] [--timeout-ms <ms>]
@@ -77,7 +77,7 @@ const HELP = `세션 도구 (start-vibe·start-design이 사용)
   vibe ab exec <slug> --command '<measure or check>' [--repeat 1] [--variant <v>]
                                                 변형을 번갈아 실행해 중앙값·종료 코드·마지막 줄. 최근 결과는 hub에도(변형마다 명령이 다르면 명령도)
   vibe ab status <slug> | pick <slug> --variant <v> [--approach <English line>] [--accept-residue] [--prune-branches] | stop <slug> [--remove] [--prune-branches]
-                                                A/B 비교(show-ab): 변형마다 브랜치·형제 worktree·포트. 변형 세션은 그 worktree만 고치고
+                                                A/B 비교(gusta-showcase): 변형마다 브랜치·형제 worktree·포트. 변형 세션은 그 worktree만 고치고
                                                 커밋·서버·측정·정리는 CLI가 한다. status는 hub URL·메모·choose, pick은 그 변형만 현재 브랜치에 merge하고
                                                 STATE log에 채택 줄(접근은 --approach 또는 저장된 접근 첫 줄, 약 100자)을 쓴다(커밋은 호출자)
   vibe preflight [--probe <command> [--provider claude|codex] [--allow-tool <rule> ...]]

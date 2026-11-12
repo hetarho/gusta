@@ -9,11 +9,11 @@ import { fileURLToPath } from 'node:url'
 import { inspectWorkspace, readTaskBoard } from '../src/index.mjs'
 
 const execute = promisify(execFile)
-const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const git = (cwd, ...args) => execute('git', ['-C', cwd, ...args])
 
 async function fixture(t, committed = true) {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-workspace-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-workspace-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'project with spaces')
   await mkdir(root)

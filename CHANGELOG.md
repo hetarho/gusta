@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.14.0
+
+Released: 2026-11-12.
+
+- Rename the package to GUSTA for its open-source release — *Gustum usque
+  sere, tuum aperi.* The npm package is now `@haeram/gusta` (`npx @haeram/gusta ...`;
+  npm refuses the unscoped `gusta` as too similar to an existing name and
+  `@gusta` is another account's scope), its
+  command `gusta`, the repository `hetarho/gusta`, and every skill takes the
+  `gusta-` prefix (`ideation` keeps its name): start-vibe → gusta-start, start-design →
+  gusta-design-mode, show-ab → gusta-showcase, self-improve →
+  gusta-self-improve-remote, self-improve-local → gusta-self-improve,
+  haeram-init → gusta-init, haeram-setting → gusta-preference, haeram-report →
+  gusta-send-issue, update-haeram-spec-creator → gusta-update, and the internal
+  skills become gusta-<name>.
+- Breaking, no compatibility layer: the install lock is `.gusta-lock.json`,
+  verification commands receive `GUSTA_*` (e.g. `GUSTA_DIFF_BASE`), runtime
+  state lives in `.git/gusta/v1`, refs under `refs/gusta/`, sibling worktrees
+  in `.gusta-worktrees`. Finish running loops, work groups and design mode,
+  remove the old skills and lock, then install `gusta`; update ARCH commands
+  that read `HAERAM_*`.
+- gusta-send-issue (was haeram-report) now files its anonymized findings as a
+  GitHub issue on `hetarho/gusta` after the user confirms the preview; without
+  `gh` or a login it hands over the new-issue link and body instead. It never
+  posts unattended.
+- README rewritten in English (`README.ko.md` in Korean); detailed guides
+  moved to `docs/`, past design notes to `docs/history/`.
+
 ## 0.13.1
 
 Released: 2026-11-12.
@@ -100,7 +128,7 @@ Released: 2026-11-12.
 - Add `/show-ab` and `vibe ab`: build 2–6 variants of one change in parallel and compare them side by side. `vibe ab start` creates a branch (`ab/<slug>/<v>`), a sibling worktree and a free port per variant and runs the dependency setup in all of them at once; `vibe ab run` launches one write-capable headless session (Claude or Codex, new `variant` adapter role) in a variant's worktree and commits its changes on the variant branch, returning only a summary and where to look; `vibe ab serve` starts each variant's dev server on its own `$PORT` and waits until it listens (a server that never listens is reported with its log tail); `vibe ab exec` runs one measurement in every variant, alternating them per repetition, and reports median/min/max and exit codes; `vibe ab pick` merges only the chosen variant into the current branch and cleans up, `vibe ab stop --remove` discards. Variants never edit spec/; adoption is recorded like a design ending (STATE log, then update-ssot if a rule changed). Pair mode only.
 - Prompt-cache-aware waiting and returning. The bundle coordinator waits `work next --wait 3300`: it returns just before the 1-hour prompt cache expires, so waking reads its context at the cache price instead of rewriting all of it at 2× (0.10.0 used 3600, which landed just past the TTL). An autopilot launcher tells the user to come back in a new conversation — its state lives in the report, inbox and loop.json — instead of reviving an expired one. The loop's `- time:` line adds the input-token total and its cache-read share, so per-unit fresh sessions can be checked to still reuse the shared prompt prefix.
 - `availableProvider` resolves the provider for one-off headless sessions and is shared by `work scout` and `vibe ab run`.
-- Decisions, measurements and open questions: [docs/0.11.0.md](docs/0.11.0.md).
+- Decisions, measurements and open questions: [docs/history/0.11.0.md](docs/history/0.11.0.md).
 
 ## 0.10.1
 
@@ -192,7 +220,7 @@ Released: 2026-11-12.
 
 ## 0.7.0
 
-- Report with measurements, limits and migration steps: [docs/0.7.0.md](docs/0.7.0.md).
+- Report with measurements, limits and migration steps: [docs/history/0.7.0.md](docs/history/0.7.0.md).
 - One brief assembler for `vibe brief` (standalone) and `work brief` (work groups, runner, `vibe loop`): the task; the current rules of each cited domain (STATE cfg `brief: domain`, the default) or only the cited decisions (`brief: cited`); what they require (`→!`) or delegate to (`→=`), transitively; decisions that reference a cited one; the global rules (cfg `always`, default every ARCH decision); the flow·constraints of each domain it draws from; chg lines after a stale base; the inbox lines about it. Whole blocks, never cut to a size.
 - Reference kinds in FORMAT: `→!` requires, `→=` canonical, `→~` related, `→` unclassified (every existing reference). Unclassified references are followed one hop from a block the task depends on and listed beyond it; `/` lists, `–` ranges, whole-domain `→ID` and bare IDs are parsed. Existing SSOTs are not reclassified.
 - `vibe brief` takes `T###`, `ID-n` (with referrers), `ID` and `ID@rev` (history since rev), `--ref <commit>` and `--deep`; it prints markdown ending in an `end … chars:N` line (`--json` for data) and exits 1 when incomplete. Provenance: source (working tree with HEAD and dirty spec files, or one commit), domain path·rev·sha256, block path·lines·sha256.
@@ -203,7 +231,7 @@ Released: 2026-11-12.
 
 ## 0.6.0
 
-- Report with measurements and limits: [docs/0.6.0.md](docs/0.6.0.md).
+- Report with measurements and limits: [docs/history/0.6.0.md](docs/history/0.6.0.md).
 - Add `vibe loop`: serial fresh Claude/Codex sessions, single-unit results, one preflight/report/tag, bounded retries and work/time limits, stop markers, detached hosts and persistent logs/session IDs.
 - Add `vibe ci wait` and `vibe push --wait-ci`: CLI-owned waiting with backoff, authenticated gh/token API or public HTML, exact commit checks, bounded no-run handling and workflow path filters. No anonymous API polling.
 - Add standalone `vibe brief` and scoped FORMAT excerpts; summarize STATE and test output, retain full check logs and persist the task-start diff base.

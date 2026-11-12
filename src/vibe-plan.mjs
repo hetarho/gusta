@@ -32,7 +32,7 @@ async function planTip(context) {
   }
   const local = `refs/heads/${plan}`
   if (await exists(root, local)) return { commit: await sha(root, local), remote: false, label: plan }
-  return fail(`기획 브랜치 ${plan}이 없습니다. spec/SETTINGS.md plan에 기획 정본 브랜치를 적거나 -로 두세요(/haeram-setting).`)
+  return fail(`기획 브랜치 ${plan}이 없습니다. spec/SETTINGS.md plan에 기획 정본 브랜치를 적거나 -로 두세요(/gusta-preference).`)
 }
 
 // merge-tree never touches the working tree; STATE merges by section like every other merge.

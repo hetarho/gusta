@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Review Task"
+  short_description: "제출 태스크의 고정 커밋을 검토하고 승인·수정 요청 기록"
+  default_prompt: "Use $gusta-review-task to review the next submitted task against its acceptance criteria and record a verdict."

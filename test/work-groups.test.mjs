@@ -231,7 +231,7 @@ test('프로세스 중단 후 검증된 후보가 이미 반영됐다면 recover
 })
 
 test('Git 없는 프로젝트는 single로 감지하고 work 생성은 기존 흐름을 안내한다', async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'haeram-single-'))
+  const root = await mkdtemp(path.join(os.tmpdir(), 'gusta-single-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   assert.equal((await inspectWork({ targetRoot: root })).mode, 'single')
   await assert.rejects(startWork({ targetRoot: root, name: 'new' }), /단독 구현/)
@@ -304,9 +304,9 @@ test('prune-branches 기본값: cleanup이 ignored 산출물째 공간을 지우
   await writeFile(exclude, (await readFile(exclude, 'utf8')) + '\nnode_modules/\n')
   await mkdir(path.join(attempt.workspace, 'node_modules'))
   await writeFile(path.join(attempt.workspace, 'node_modules/dep.js'), 'installed')
-  await git(root, 'update-ref', `refs/haeram/checkpoints/${attempt.id}`, setup.sha)
+  await git(root, 'update-ref', `refs/gusta/checkpoints/${attempt.id}`, setup.sha)
   const cleaned = await cleanupWork({ ...setup, attempt: attempt.id })
-  assert.deepEqual(cleaned.prunedRefs, [attempt.branch, `refs/haeram/checkpoints/${attempt.id}`])
+  assert.deepEqual(cleaned.prunedRefs, [attempt.branch, `refs/gusta/checkpoints/${attempt.id}`])
   assert.equal(cleaned.branchKept, null)
   await assert.rejects(access(attempt.workspace), { code: 'ENOENT' })
   assert.equal((await git(root, 'branch', '--list', 'task/*')).stdout, '')
@@ -420,7 +420,7 @@ test('새 clone에서도 저장된 묶음 이름과 다른 묶음의 STATE 기�
 })
 
 test('검사 명령의 중단·시간 초과는 셸이 fork한 명령까지 프로세스 그룹째 멈추고, 결과는 출력 꼬리만 남긴다', { skip: process.platform === 'win32' }, async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'haeram-check-kill-'))
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'gusta-check-kill-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const beat = path.join(dir, 'beat')

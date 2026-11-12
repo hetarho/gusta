@@ -100,7 +100,7 @@ test('migrate: cfg push·plan을 SETTINGS로 옮기고 다시 돌리면 바꾸�
   assert.equal(once.state, '# STATE\n\n## cfg\n- level: expert\n\n## log\n- push: not cfg\n')
   assert.deepEqual(parseSettings(once.settings).values, { land: 'next', push: true, plan: 'trunk' })
   assert.deepEqual(branch.run(once), once)
-  // An owner's explicit choice wins; commit-only cfg leaves land for haeram-init.
+  // An owner's explicit choice wins; commit-only cfg leaves land for gusta-init.
   const kept = branch.run({ state: state.replace('- push: next  # old', '- push: -'), settings: '# SETTINGS\n- plan: main\n' })
   assert.deepEqual(parseSettings(kept.settings).values, { plan: 'main' })
   assert.deepEqual(formatDrift('## A\n- one\n- two\n', '## A\n- one\n- mine\n'), { missing: [{ section: 'A', line: '- two' }], extra: [{ section: 'A', line: '- mine' }] })
@@ -129,7 +129,7 @@ for (const settings of [
     assert.deepEqual(result.applied, []); assert.deepEqual(result.settingsErrors, expectedErrors)
     assert.equal(result.lint, null)
     assert.deepEqual(await snapshot(), before)
-    const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+    const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
     const error = await execute(process.execPath, [cli, 'migrate', '--target', root, ...(dryRun ? ['--dry-run'] : [])]).then(
       () => assert.fail('invalid settings must fail the migration command'), (error) => error)
     assert.equal(error.code, 1)
@@ -163,7 +163,7 @@ test('outdated: lock 버전·npm 최신·그 사이 CHANGELOG 항목을 돌려�
   const changelog = '# Changelog\n\n## Unreleased\n\n- Next thing. More.\n\n## 0.3.0\n\n- Third. Detail.\n\n## 0.2.0\n\n- Second.\n\n## 0.1.0\n\n- First.\n'
   assert.deepEqual(changesSince(changelog, '0.1.0', '0.3.0'), [{ version: '0.3.0', items: ['Third.'] }, { version: '0.2.0', items: ['Second.'] }])
   const { root } = await fixture(t, 0)
-  await writeFile(path.join(root, '.haeram-spec-creator-lock.json'), JSON.stringify({ packageVersion: '0.0.1' }))
+  await writeFile(path.join(root, '.gusta-lock.json'), JSON.stringify({ packageVersion: '0.0.1' }))
   const found = await packageVersions({ targetRoot: root }, { view: async () => '99.0.0' })
   assert.deepEqual([found.installed, found.latest, found.outdated, found.error], ['0.0.1', '99.0.0', true, null])
   assert.ok(found.changes.length > 0)

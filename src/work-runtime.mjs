@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { SkillPackageError } from './errors.mjs'
 import { recordProgress } from './work-progress.mjs'
 
-export const runtimeRoot = (workspace) => path.join(workspace.git.commonDir, 'haeram', 'v1')
+export const runtimeRoot = (workspace) => path.join(workspace.git.commonDir, 'gusta', 'v1')
 const empty = () => ({ schemaVersion: 1, groups: {}, attempts: {}, history: [] })
 
 export async function readRuntime(root) {

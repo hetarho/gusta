@@ -10,7 +10,7 @@ import { LOCK_FILE, PACKAGE_NAME } from './constants.mjs'
 import { SkillPackageError } from './errors.mjs'
 
 const execute = promisify(execFile)
-const BUNDLED_FORMAT = new URL('../skills/create-architecture/assets/FORMAT.md', import.meta.url)
+const BUNDLED_FORMAT = new URL('../skills/gusta-create-architecture/assets/FORMAT.md', import.meta.url)
 const CHANGELOG = new URL('../CHANGELOG.md', import.meta.url)
 
 // Structural changes between versions, applied to a project's spec/ in order. Each run is pure
@@ -73,14 +73,14 @@ async function readOptional(file) {
   }
 }
 
-// haeram-spec-creator migrate [--dry-run]: apply every pending migration to spec/, then report
+// gusta migrate [--dry-run]: apply every pending migration to spec/, then report
 // FORMAT drift, unset settings and lint. The caller reviews and commits (spec/ only).
 export async function migrateSpec(options = {}) {
   const workspace = await inspectWorkspace(options)
   const root = workspace.git?.root ?? workspace.targetRoot
   const files = { state: path.join(root, 'spec/STATE.md'), settings: path.join(root, SETTINGS_FILE) }
   let current = { state: await readOptional(files.state), settings: await readOptional(files.settings) }
-  if (current.state === null) throw new SkillPackageError('spec/STATE.md가 없습니다. 새 프로젝트는 create-architecture로 시작하세요.')
+  if (current.state === null) throw new SkillPackageError('spec/STATE.md가 없습니다. 새 프로젝트는 gusta-create-architecture로 시작하세요.')
   const applied = []
   // Invalid owner choices are evidence to preserve, not absent keys for a migration to fill.
   const invalidInput = effectiveSettings(current.settings, current.state).errors.length > 0
@@ -126,7 +126,7 @@ export function changesSince(changelog, since, until) {
   return result
 }
 
-// haeram-spec-creator outdated: the version this project installed (lock file), the one running,
+// gusta outdated: the version this project installed (lock file), the one running,
 // and the newest on npm, plus the running package's CHANGELOG since the installed version.
 // A failed npm lookup is reported, not fatal.
 export async function packageVersions(options = {}, { view = (name) => execute('npm', ['view', name, 'version'], { encoding: 'utf8', timeout: 30000 }).then((result) => result.stdout.trim()) } = {}) {

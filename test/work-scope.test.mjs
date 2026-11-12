@@ -9,7 +9,7 @@ import { claimReview, finishReview } from '../src/work-review.mjs'
 import { nextWork } from '../src/work-wait.mjs'
 import { scopedBoard } from '../src/work-policy.mjs'
 
-const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const checks = ['node --version']
 async function setup(t) {
   const result = await fixture(t)

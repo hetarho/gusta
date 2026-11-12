@@ -9,7 +9,7 @@ import { runVibeCheck } from '../src/vibe-check.mjs'
 import { readTimings, measured, timingKey } from '../src/check-cache.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
-const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 
 test('standalone brief contains exact cited blocks, freshness, touches and runnable tiers only', async (t) => {
   const { root, arch, initial } = await fixture(t)
@@ -35,7 +35,7 @@ test('standalone brief contains exact cited blocks, freshness, touches and runna
 })
 
 test('conditional verification prose is preserved without executing backticked paths', () => {
-  const arch = '## decisions\n- ARCH-3 [o] Verification runs in three tiers.\n  - task, before each done commit: `pnpm run typecheck`, `pnpm exec vitest run --changed "$HAERAM_DIFF_BASE" --passWithNoTests`.\n  - conditional browser coverage uses the `tests/e2e` specs: `PREVIEW_BUILD=1 pnpm exec playwright test --project=chromium` with spec paths at the batch gate.\n  - batch, once before a push (`work integrate --verify`): `pnpm run test:unit`, `pnpm run build`.\n  - CI, after code push: run the remote checks; `spec/`, `docs/` do not trigger them.\n'
+  const arch = '## decisions\n- ARCH-3 [o] Verification runs in three tiers.\n  - task, before each done commit: `pnpm run typecheck`, `pnpm exec vitest run --changed "$GUSTA_DIFF_BASE" --passWithNoTests`.\n  - conditional browser coverage uses the `tests/e2e` specs: `PREVIEW_BUILD=1 pnpm exec playwright test --project=chromium` with spec paths at the batch gate.\n  - batch, once before a push (`work integrate --verify`): `pnpm run test:unit`, `pnpm run build`.\n  - CI, after code push: run the remote checks; `spec/`, `docs/` do not trigger them.\n'
   const v = verificationTiers(arch)
   assert.equal(v.task.length, 2); assert.equal(v.batch.length, 2)
   assert.deepEqual(v.ci, [])
@@ -45,14 +45,14 @@ test('conditional verification prose is preserved without executing backticked p
 
 test('check passes scope, bounds output, retains full log and includes scope in cached checks', async (t) => {
   const { root, initial } = await fixture(t)
-  const command = 'node -e \'console.log(process.env.HAERAM_TIER,process.env.HAERAM_DIFF_BASE,process.env.HAERAM_TASK);console.log("x".repeat(50000));console.log("FAIL regression name");process.exit(2)\''
+  const command = 'node -e \'console.log(process.env.GUSTA_TIER,process.env.GUSTA_DIFF_BASE,process.env.GUSTA_TASK);console.log("x".repeat(50000));console.log("FAIL regression name");process.exit(2)\''
   const checked = await runVibeCheck({ targetRoot: root, diffBase: initial, task: 'T001' }, command)
   assert.equal(checked.ok, false); assert.equal(checked.exitCode, 2)
   assert.deepEqual(checked.failedTests, ['FAIL regression name'])
   assert.ok(JSON.stringify(checked).length < 6000)
   assert.match(await readFile(checked.log, 'utf8'), new RegExp(`task ${initial} T001`))
   assert.ok((await readFile(checked.log)).length > 50000)
-  const cmd = 'node -e \'console.log(process.env.HAERAM_DIFF_BASE)\''
+  const cmd = 'node -e \'console.log(process.env.GUSTA_DIFF_BASE)\''
   const first = await runVibeCheck({ targetRoot: root, diffBase: initial }, cmd)
   assert.equal((await runVibeCheck({ targetRoot: root, diffBase: initial }, cmd)).cached, true)
   const second = await runVibeCheck({ targetRoot: root, diffBase: initial, tier: 'batch' }, cmd)
@@ -114,7 +114,7 @@ test('concurrent final checks share one run across linked worktrees without --he
 
 test('final verification rejects delegated sessions unless explicitly overridden', async (t) => {
   const { root } = await fixture(t)
-  const runtime = path.join(root, '.git/haeram/v1')
+  const runtime = path.join(root, '.git/gusta/v1')
   await mkdir(runtime, { recursive: true })
   for (const entry of [{ workspace: root }, { review: { workspace: root } }]) {
     await writeFile(path.join(runtime, 'state.json'), JSON.stringify({ schemaVersion: 1, groups: {}, attempts: { example: entry } }))
@@ -123,7 +123,7 @@ test('final verification rejects delegated sessions unless explicitly overridden
     assert.equal((await runVibeCheck({ targetRoot: root, tier: 'batch', allowFinal: true }, 'node --version')).ok, true)
   }
   await writeFile(path.join(runtime, 'state.json'), JSON.stringify({ schemaVersion: 1, groups: {}, attempts: {} }))
-  await assert.rejects(runVibeCheck({ targetRoot: root, tier: 'group', env: { HAERAM_VIBE_UNIT: '1' } }, 'node --version'), /조정자\/호스트/)
+  await assert.rejects(runVibeCheck({ targetRoot: root, tier: 'group', env: { GUSTA_VIBE_UNIT: '1' } }, 'node --version'), /조정자\/호스트/)
 })
 
 test('the task tier refuses the ARCH batch suite; the coordinator runs it once at the batch tier', async (t) => {
@@ -137,7 +137,7 @@ test('the task tier refuses the ARCH batch suite; the coordinator runs it once a
   assert.equal((await runVibeCheck({ targetRoot: root, tier: 'task', allowFinal: true }, 'node -e "0"')).ok, true)
   assert.equal((await runVibeCheck({ targetRoot: root, tier: 'batch' }, 'node -e "0"')).ok, true)
   // The real duration of a final-tier run sizes the next timed loop's closing reserve.
-  assert.ok(measured(await readTimings(path.join(root, '.git/haeram/v1')), timingKey('final', 'node -e "0"')) >= 0)
+  assert.ok(measured(await readTimings(path.join(root, '.git/gusta/v1')), timingKey('final', 'node -e "0"')) >= 0)
 })
 
 test('a final check cannot pass on dirty input or code changed while it ran', async (t) => {

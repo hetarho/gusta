@@ -25,7 +25,7 @@ async function taskFiles(directory, errors, optional = false) {
     return files.sort()
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
-    if (!optional) errors.push(`${directory}가 없습니다 — create-architecture로 부트스트랩하세요.`)
+    if (!optional) errors.push(`${directory}가 없습니다 — gusta-create-architecture로 부트스트랩하세요.`)
     return []
   }
 }

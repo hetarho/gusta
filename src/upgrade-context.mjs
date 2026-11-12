@@ -12,7 +12,7 @@ import { SkillPackageError } from './errors.mjs'
 const BOUNDARIES = new Map([
   ['.git', 'git-metadata'], ['.hg', 'vcs-metadata'], ['.svn', 'vcs-metadata'],
   ['node_modules', 'dependency-tree'], ['.venv', 'dependency-environment'],
-  ['__pycache__', 'generated-bytecode'], ['.haeram-worktrees', 'generated-worktrees'],
+  ['__pycache__', 'generated-bytecode'], ['.gusta-worktrees', 'generated-worktrees'],
 ])
 const CAPTURE = new Set([LOCK_FILE, SETTINGS_FILE, 'spec/STATE.md'])
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0

@@ -9,7 +9,7 @@ import { startWork, claimWork, submitWork, integrateWork } from '../../src/work-
 import { claimReview, finishReview } from '../../src/work-review.mjs'
 
 export const execute = promisify(execFile)
-export const cli = fileURLToPath(new URL('../../bin/haeram-spec-creator.mjs', import.meta.url))
+export const cli = fileURLToPath(new URL('../../bin/gusta.mjs', import.meta.url))
 export const git = (cwd, ...args) => execute('git', ['-C', cwd, ...args], { encoding: 'utf8' })
 export const commit = async (cwd, message = 'change') => {
   await git(cwd, 'add', '.')
@@ -21,7 +21,7 @@ export const checkFile = (file) => `node -e "require('fs').accessSync('${file}')
 export const checks = [checkFile('one.txt')]
 
 export async function fixture(t) {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-work-flow-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-work-flow-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'repo with spaces')
   await mkdir(path.join(root, 'spec/tasks'), { recursive: true })
@@ -29,7 +29,7 @@ export async function fixture(t) {
   await git(root, 'init', '-b', 'trunk')
   for (const [key, value] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.hooksPath', path.join(temporary, 'no-hooks')]]) await git(root, 'config', key, value)
   await writeFile(path.join(root, 'spec/FORMAT.md'), '# FORMAT\n')
-  await writeFile(path.join(root, 'spec/STATE.md'), `# STATE\n\n## cfg\n- level: expert\n- lang: ko\n- docs: en\n\n## ssot\n| id | rev | tasked | pending | [?] |\n|---|---|---|---|---|\n| ARCH | 1 | 1 | - | 0 |\n\n## tasks\n| id | title | ssot | dep | st |\n|---|---|---|---|---|\n| T001 | first | ARCH | - | todo |\n| T002 | second | ARCH | - | todo |\n| T003 | after | ARCH | T001 | todo |\n\n## next\n- implement-task T001\n\n## log\n`)
+  await writeFile(path.join(root, 'spec/STATE.md'), `# STATE\n\n## cfg\n- level: expert\n- lang: ko\n- docs: en\n\n## ssot\n| id | rev | tasked | pending | [?] |\n|---|---|---|---|---|\n| ARCH | 1 | 1 | - | 0 |\n\n## tasks\n| id | title | ssot | dep | st |\n|---|---|---|---|---|\n| T001 | first | ARCH | - | todo |\n| T002 | second | ARCH | - | todo |\n| T003 | after | ARCH | T001 | todo |\n\n## next\n- gusta-implement-task T001\n\n## log\n`)
   await writeFile(path.join(root, 'spec/ssot/ARCH.md'), '# ARCH architecture\n> r1 | architecture\n\n## decisions\n- ARCH-1 [o] runtime: node\n\n## chg\n- r1 260924 initial\n')
   await writeFile(path.join(root, 'spec/tasks/T001.first.md'), task('T001'))
   await writeFile(path.join(root, 'spec/tasks/T002.second.md'), task('T002'))
@@ -129,7 +129,7 @@ export async function laneAdapter(setup, log) {
   await writeFile(adapter, `import fs from 'node:fs'; import {execFileSync} from 'node:child_process';
 let input=''; for await(const chunk of process.stdin) input+=chunk;
 const job=JSON.parse(input);
-fs.appendFileSync(process.env.HAERAM_TEST_LOG, JSON.stringify({role:job.role,taskId:job.taskId,tasks:job.tasks,workspace:job.workspace})+'\\n');
+fs.appendFileSync(process.env.GUSTA_TEST_LOG, JSON.stringify({role:job.role,taskId:job.taskId,tasks:job.tasks,workspace:job.workspace})+'\\n');
 if(job.role==='worker') {
  const file='spec/tasks/'+job.taskId+'.lane.md';
  fs.writeFileSync(file, fs.readFileSync(file,'utf8').replace('- [ ]','- [v]')+'- outcome: implemented\\n- at: -\\n- verified: fixture\\n- limits: -\\n');
@@ -139,5 +139,5 @@ if(job.role==='worker') {
 } else process.stdout.write(JSON.stringify({verdict:'approved',summary:'reviewed',findings:[]}));`)
   const config = path.join(setup.temporary, 'lane-adapter.json')
   await writeFile(config, JSON.stringify({ command: process.execPath, args: [adapter] }))
-  return { adapter: config, env: { ...process.env, HAERAM_TEST_LOG: log } }
+  return { adapter: config, env: { ...process.env, GUSTA_TEST_LOG: log } }
 }

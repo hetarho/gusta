@@ -128,7 +128,7 @@ export function recoveryText(recovery, tag = '<tag>') {
   if (recovery.reason === 'spec-gate') return `\nSpec repair unit for ${id}: it was reported completed, but the host's spec check failed: ${(recovery.violations ?? []).join('; ')}. Keep the committed code; do not reimplement it. Repair only the listed evidence. Preserve a valid dated archive and its acceptance/result history: if it is already complete, fix only a stale STATE row, lint or report identity rather than reopening it. Only when archive/lifecycle evidence is missing or invalid, restore the task under spec/tasks/ and its STATE row as todo, run cliCommand vibe task start ${id} --tag ${tag}, check acceptance with [v] and fill the four result lines (outcome, at, verified, limits) from evidence, then close with cliCommand vibe task done ${id} --tag ${tag}. Run spec lint and commit the scoped repair. Return kind task, id ${id}, outcome completed; the host checks again and parks ${id} if it still fails.`
   const kept = snapshot ? ` The previous attempt's uncommitted changes are snapshot ${snapshot.commit} on top of ${snapshot.base}; the tree was reset to HEAD. List them with \`git diff --stat ${snapshot.base} ${snapshot.commit}\` and restore what is worth keeping with \`git checkout ${snapshot.commit} -- <paths>\`.` : ''
   if (recovery.reason === 'interrupted') return `\nContinuation unit for ${id}: the previous unit ended before finishing it (${recovery.cause}).${kept} Continue from there rather than starting over.`
-  if (recovery.reason === 'split') return `\nSplit unit for ${id}: units keep ending before finishing it. Do not implement it now. As one planning slice, narrow ${id} to a first part that fits one unit and move the rest of its acceptance into new todo tasks that depend on it (create-task, consistent deps/base in task files and STATE)${snapshot ? `; note snapshot ${snapshot.commit} (on ${snapshot.base}) in ${id}'s impl notes as reusable work` : ''}. Return kind planning.`
+  if (recovery.reason === 'split') return `\nSplit unit for ${id}: units keep ending before finishing it. Do not implement it now. As one planning slice, narrow ${id} to a first part that fits one unit and move the rest of its acceptance into new todo tasks that depend on it (gusta-create-task, consistent deps/base in task files and STATE)${snapshot ? `; note snapshot ${snapshot.commit} (on ${snapshot.base}) in ${id}'s impl notes as reusable work` : ''}. Return kind planning.`
   return `\nRecovery unit for ${id}: read the blocker in its task result and relevant inbox entries. Resolve reversible planning/technical gaps as one planning slice, record the decision and restore todo with consistent deps/base in the task and STATE. If it is an implementation failure, make the scoped fix. If it truly needs the reserved authorization above, record parked for this task and return outcome parked. Do not repeat the same blocked implementation or wait for a user.${kept}`
 }
 
@@ -140,30 +140,30 @@ const bundledSkill = async (name) => skillBody(await readFile(new URL(`../skills
 const PLANNING_RECOVERY = ['split', 'blocked-task']
 const unitTask = (job) => PLANNING_RECOVERY.includes(job.recovery?.reason) ? null : job.brief?.taskId ?? job.recovery?.taskId ?? null
 
-// Unit sessions have no Skill tool: start-vibe (and implement-task for a task unit) ride in the
+// Unit sessions have no Skill tool: gusta-start (and gusta-implement-task for a task unit) ride in the
 // prompt, every other routed skill is read from where install put it for this provider.
 async function unitSkills(job, provider) {
   const root = AGENT_CONFIG[provider]?.root ?? AGENT_CONFIG.claude.root
   const id = unitTask(job)
-  const other = `Other skills it routes to (update-ssot, create-task...) are not loaded and there is no Skill tool: Read ${root}/<name>/SKILL.md before acting on one.`
+  const other = `Other skills it routes to (gusta-update-ssot, gusta-create-task...) are not loaded and there is no Skill tool: Read ${root}/<name>/SKILL.md before acting on one.`
   if (!id) return { note: ` ${other}`, text: '' }
-  const close = ` This unit's task is ${id}: implement-task is included below too and already loaded (its relative links are under ${root}/implement-task/). Close ${id} only through its §5 lifecycle (acceptance checks, the four result lines, then cliCommand vibe task done ${id} --tag ${job.tag}); never close it by hand (st done, archive move, STATE row edit). The host rejects a completed report unless ${id} is archived in tasks/done with done@date, its STATE row is gone and spec lint has no new errors.`
-  // Every spec skill repeats the same common rules (test/skill-rules): start-vibe above already holds them.
-  const body = (await bundledSkill('implement-task')).replace(/\n## 공통 규칙[^\n]*\n[\s\S]*?(?=\n## )/, '\n(Common rules: as in start-vibe above.)\n')
-  return { note: `${close} ${other}`, text: `\n\nimplement-task skill (already loaded):\n${body}` }
+  const close = ` This unit's task is ${id}: gusta-implement-task is included below too and already loaded (its relative links are under ${root}/gusta-implement-task/). Close ${id} only through its §5 lifecycle (acceptance checks, the four result lines, then cliCommand vibe task done ${id} --tag ${job.tag}); never close it by hand (st done, archive move, STATE row edit). The host rejects a completed report unless ${id} is archived in tasks/done with done@date, its STATE row is gone and spec lint has no new errors.`
+  // Every spec skill repeats the same common rules (test/skill-rules): gusta-start above already holds them.
+  const body = (await bundledSkill('gusta-implement-task')).replace(/\n## 공통 규칙[^\n]*\n[\s\S]*?(?=\n## )/, '\n(Common rules: as in gusta-start above.)\n')
+  return { note: `${close} ${other}`, text: `\n\ngusta-implement-task skill (already loaded):\n${body}` }
 }
 
 // The full prompt a session gets; A/B runs save it next to their log for debugging.
 export async function agentPrompt(job, provider = 'claude') {
   if (job.role === 'unit') {
     if (!job.workspace || job.resume) fail('단위는 workspace와 새 세션이 필요합니다 (resume 금지).')
-    const skill = await bundledSkill('start-vibe')
+    const skill = await bundledSkill('gusta-start')
     const routed = await unitSkills(job, provider)
-    const autonomy = 'Autopilot delegates reversible planning and technical decisions to you. Do not wait for a person or park work merely because a decision is needed. Apply the recommended option through update-ssot and create-task when needed, record question/choice/alternatives/reason in STATE inbox decided, and leave the task runnable for the next unit. You may reorder unstarted tasks to bring an already-approved prerequisite or CI fix forward after checking real dependencies and touches; update task and STATE deps together. Preserve acceptance criteria and verification gates. Park only the affected work when it needs unavailable access, explicit authorization for irreversible/external effects, or a billing, data-deletion, privacy or security-policy decision; continue other runnable work.'
+    const autonomy = 'Autopilot delegates reversible planning and technical decisions to you. Do not wait for a person or park work merely because a decision is needed. Apply the recommended option through gusta-update-ssot and gusta-create-task when needed, record question/choice/alternatives/reason in STATE inbox decided, and leave the task runnable for the next unit. You may reorder unstarted tasks to bring an already-approved prerequisite or CI fix forward after checking real dependencies and touches; update task and STATE deps together. Preserve acceptance criteria and verification gates. Park only the affected work when it needs unavailable access, explicit authorization for irreversible/external effects, or a billing, data-deletion, privacy or security-policy decision; continue other runnable work.'
     const recovery = recoveryText(job.recovery, job.tag)
     const limit = job.timeLimit ? ` The host cuts this unit after ${job.timeLimit.minutes} minutes (${job.timeLimit.cutAt}) and hands uncommitted work to a fresh unit; write measurements and findings into the task result as you go.` : ''
     // The skill rides in the prompt; without this note Codex units re-read it from .codex/skills first.
-    return `Run /start-vibe 맡김 단위1. The start-vibe skill is included below and already loaded: do not open its SKILL.md or call a Skill tool for it.${routed.note} Exactly one task done, one planning slice (update-ssot + create-task together), or inbox cleanup. No questions, no subagents. ${autonomy}${recovery}${limit} ${TASK_CHECKS} Host owns preflight, active row lifecycle, report lifecycle, batch checks, push and CI wait. Do not run them again. Use the same tag/report. Commit each completed task, including only its related changes. In strict concurrency the host publishes your claim with vibe claim before dispatch; never publish claims or pending code yourself. Never push completed code here: host runs the batch gate first. Do not close the shared report or remove active. Use cliCommand to call this installed CLI; do not download a different CLI. Read vibe brief for a task, exact FORMAT sections only for writing, never whole STATE/FORMAT/ARCH or large code files. Read scoped code with rg and ranges. Long checks: one blocking call (Codex) or shell background completion notification (Claude), no model polling. Return only the unit JSON schema.\n\nstart-vibe skill (already loaded):\n${skill}${routed.text}\n\n${splitBrief(job).text}Assignment JSON:\n${JSON.stringify(splitBrief(job).data)}`
+    return `Run /gusta-start 맡김 단위1. The gusta-start skill is included below and already loaded: do not open its SKILL.md or call a Skill tool for it.${routed.note} Exactly one task done, one planning slice (gusta-update-ssot + gusta-create-task together), or inbox cleanup. No questions, no subagents. ${autonomy}${recovery}${limit} ${TASK_CHECKS} Host owns preflight, active row lifecycle, report lifecycle, batch checks, push and CI wait. Do not run them again. Use the same tag/report. Commit each completed task, including only its related changes. In strict concurrency the host publishes your claim with vibe claim before dispatch; never publish claims or pending code yourself. Never push completed code here: host runs the batch gate first. Do not close the shared report or remove active. Use cliCommand to call this installed CLI; do not download a different CLI. Read vibe brief for a task, exact FORMAT sections only for writing, never whole STATE/FORMAT/ARCH or large code files. Read scoped code with rg and ranges. Long checks: one blocking call (Codex) or shell background completion notification (Claude), no model polling. Return only the unit JSON schema.\n\ngusta-start skill (already loaded):\n${skill}${routed.text}\n\n${splitBrief(job).text}Assignment JSON:\n${JSON.stringify(splitBrief(job).data)}`
   }
   if (job.role === 'scout') {
     if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('탐색은 workspace·prompt와 새 세션이 필요합니다.')
@@ -189,10 +189,10 @@ export async function agentPrompt(job, provider = 'claude') {
     const what = job.directive?.note ? `Coordinator note: ${job.directive.note}` : job.correction ? 'Fix the correction findings in the assignment first.' : `Continue with taskId ${job.taskId}.`
     return `${override}\nContinue the same assignment in this workspace. ${what} The planning branch has been merged into your workspace where needed; re-read only the files the note or the brief names.\n\n${assignment}`
   }
-  const name = job.role === 'worker' ? 'implement-task' : 'review-task'
+  const name = job.role === 'worker' ? 'gusta-implement-task' : 'gusta-review-task'
   const skill = await readFile(new URL(`../skills/${name}/SKILL.md`, import.meta.url), 'utf8')
-  const reference = job.role === 'worker' ? await readFile(new URL('../skills/implement-task/references/work-group.md', import.meta.url), 'utf8') : ''
-  return `${override}\n${job.brief ? `${BRIEF}\n` : ''}For haeram CLI reads, use the provided cliCommand executable/arguments followed by boardCommand or other read-only arguments. This selects the current package; do not download an older CLI with npx.\n\nApply this bundled skill subject to the host-owned steps above:\n${skill}\n${reference}\n\n${assignment}`
+  const reference = job.role === 'worker' ? await readFile(new URL('../skills/gusta-implement-task/references/work-group.md', import.meta.url), 'utf8') : ''
+  return `${override}\n${job.brief ? `${BRIEF}\n` : ''}For gusta CLI reads, use the provided cliCommand executable/arguments followed by boardCommand or other read-only arguments. This selects the current package; do not download an older CLI with npx.\n\nApply this bundled skill subject to the host-owned steps above:\n${skill}\n${reference}\n\n${assignment}`
 }
 
 const WORKER_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep']
@@ -233,7 +233,7 @@ export function providerArguments(provider, role, files, model, { allowTools = [
 // flags: the caller's providerFlags answer; none by default (this never probes the CLI).
 export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text), flags = [] }) {
   const prompt = await agentPrompt(job, provider)
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-agent-'))
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'gusta-agent-'))
   const files = { schema: path.join(temporary, 'schema.json'), result: path.join(temporary, 'result.json') }
   try {
     await writeFile(files.schema, JSON.stringify(RESULT_SCHEMAS[job.role]))

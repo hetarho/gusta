@@ -18,12 +18,12 @@ if (result.status !== 0) {
 const report = JSON.parse(result.stdout)
 const packedFiles = new Set(report[0].files.map((file) => file.path))
 const requiredCoreFiles = [
-  'bin/haeram-spec-creator.mjs',
-  'bin/haeram-agent-adapter.mjs',
-  'bin/haeram-vibe-loop.mjs',
-  'bin/haeram-vibe-watch.mjs',
-  'bin/haeram-work-run.mjs',
-  'bin/haeram-ab-hub.mjs',
+  'bin/gusta.mjs',
+  'bin/gusta-agent-adapter.mjs',
+  'bin/gusta-vibe-loop.mjs',
+  'bin/gusta-vibe-watch.mjs',
+  'bin/gusta-work-run.mjs',
+  'bin/gusta-ab-hub.mjs',
   'src/vibe-loop.mjs',
   'src/loop-control.mjs',
   'src/loop-metadata.mjs',

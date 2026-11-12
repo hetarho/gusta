@@ -24,13 +24,13 @@ jobs:
         id: guard
         run: |
           VERSION="$(node -p "require('./package.json').version")"
-          PUBLISHED="$(npm view "haeram-spec-creator@${VERSION}" version 2>/dev/null || true)"
+          PUBLISHED="$(npm view "@haeram/gusta@${VERSION}" version 2>/dev/null || true)"
           if [ -n "$PUBLISHED" ]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "haeram-spec-creator@${VERSION} is already on npm — skipping publish."
+            echo "@haeram/gusta@${VERSION} is already on npm — skipping publish."
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "haeram-spec-creator@${VERSION} is not on npm yet — publishing."
+            echo "@haeram/gusta@${VERSION} is not on npm yet — publishing."
           fi
       - if: steps.guard.outputs.publish == 'true'
         run: npm run release:check
@@ -41,7 +41,7 @@ jobs:
         run: |
           npm install --global npm@11.21.2 --ignore-scripts --no-audit --no-fund
           node scripts/prepare-publish.mjs "$(npm root -g)/npm"
-          HAERAM_PUBLISH_NPM_ROOT="$(npm root -g)/npm" node --test test/publish-tools.test.mjs
+          GUSTA_PUBLISH_NPM_ROOT="$(npm root -g)/npm" node --test test/publish-tools.test.mjs
       - if: steps.guard.outputs.publish == 'true'
         # release:check above already ran the prepublishOnly validation.
         run: npm publish --ignore-scripts --provenance

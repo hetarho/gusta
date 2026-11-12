@@ -44,7 +44,7 @@ test('showMany shows on its own exactly what the batch could not answer', async 
 })
 
 test('showMany equals git show for blobs, missing paths, trees and odd names in a real repository', async (t) => {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-batch-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-batch-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'repo with spaces')
   await mkdir(path.join(root, 'spec/tasks/T009.dir.md'), { recursive: true })
@@ -64,7 +64,7 @@ test('showMany equals git show for blobs, missing paths, trees and odd names in 
 })
 
 test('showMany equals git show for binary, invalid UTF-8, symlink and gitlink entries', async (t) => {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-batch-odd-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-batch-odd-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'repo')
   await mkdir(path.join(root, 'spec'), { recursive: true })
@@ -88,7 +88,7 @@ test('showMany equals git show for binary, invalid UTF-8, symlink and gitlink en
 })
 
 test('readTaskBoard at a commit lists tasks and the done archive like the checkout it came from', async (t) => {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-batch-board-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-batch-board-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'repo')
   await mkdir(path.join(root, 'spec/tasks/done/older'), { recursive: true })
@@ -183,7 +183,7 @@ test('gitOperation: two processes find the first operation in the original order
 })
 
 test('gitOperation agrees with one rev-parse per marker in a real repository and linked worktree', async (t) => {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-batch-op-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-batch-op-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'repo')
   await execute('git', ['init', '-q', '-b', 'trunk', root])
@@ -220,7 +220,7 @@ test('gitOperation agrees with one rev-parse per marker in a real repository and
 })
 
 test('inspectWorkspace asks three questions in one round and answers like one question at a time', async (t) => {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-batch-inspect-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-batch-inspect-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'repo with spaces')
   await mkdir(path.join(root, 'sub dir'), { recursive: true })

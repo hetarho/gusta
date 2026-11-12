@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Send Issue"
+  short_description: "이 세션의 gusta 스킬 동작 개선점을 gusta 저장소 이슈로 보내기"
+  default_prompt: "Use $gusta-send-issue to review how gusta skills behaved in this session, show the anonymized findings, and after my confirmation file them as an issue on hetarho/gusta."

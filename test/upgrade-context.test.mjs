@@ -11,11 +11,11 @@ import { upgradeContext } from '../src/upgrade-context.mjs'
 import { readSettings } from '../src/settings.mjs'
 
 const execute = promisify(execFile)
-const cli = new URL('../bin/haeram-spec-creator.mjs', import.meta.url).pathname
+const cli = new URL('../bin/gusta.mjs', import.meta.url).pathname
 const hash = (text) => createHash('sha256').update(text).digest('hex')
 const filesOnly = { inspect: async ({ targetRoot }) => ({ targetRoot: await realpath(targetRoot), git: null }) }
 async function fixture(t) {
-  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-upgrade-context-')))
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-upgrade-context-')))
   const root = path.join(directory, 'project')
   await mkdir(root)
   t.after(() => rm(directory, { recursive: true, force: true }))
@@ -54,13 +54,13 @@ test('inventory includes arbitrary text, hidden and ignored-looking documents, s
 
 test('known dependency/metadata/generated boundaries and symlinks have explicit reasons and are never followed', async (t) => {
   const { root, directory, put } = await fixture(t)
-  for (const name of ['.git/hidden', 'node_modules/pkg/AGENTS.md', '__pycache__/cache', '.haeram-worktrees/other/guide']) await put(name, 'Do not read this subtree.')
+  for (const name of ['.git/hidden', 'node_modules/pkg/AGENTS.md', '__pycache__/cache', '.gusta-worktrees/other/guide']) await put(name, 'Do not read this subtree.')
   const outside = path.join(directory, 'outside')
   await mkdir(outside); await writeFile(path.join(outside, 'AGENTS.md'), 'Outside instruction.')
   await symlink(outside, path.join(root, 'linked-docs'))
   const result = await upgradeContext({ targetRoot: root }, filesOnly)
   assert.equal(result.ok, true)
-  assert.deepEqual(result.entries.map(({ path: name }) => name), ['.git', '.haeram-worktrees', '__pycache__', 'linked-docs', 'node_modules'])
+  assert.deepEqual(result.entries.map(({ path: name }) => name), ['.git', '.gusta-worktrees', '__pycache__', 'linked-docs', 'node_modules'])
   assert.ok(result.entries.every((entry) => entry.disposition === 'excluded' && entry.reason))
   assert.equal(result.entries.find(({ path: name }) => name === 'linked-docs').kind, 'symlink')
 })
@@ -161,7 +161,7 @@ test('only hash-proven unchanged managed skills are excluded; modified copies re
   const { root, put } = await fixture(t)
   const unchanged = '.codex/skills/one/SKILL.md', changed = '.claude/skills/two/SKILL.md'
   await put(unchanged, 'Original rules.'); await put(changed, 'Locally customized rules.')
-  await put('.haeram-spec-creator-lock.json', JSON.stringify({ schemaVersion: 1, packageName: 'haeram-spec-creator', files: {
+  await put('.gusta-lock.json', JSON.stringify({ schemaVersion: 1, packageName: '@haeram/gusta', files: {
     [unchanged]: { sha256: hash('Original rules.') }, [changed]: { sha256: hash('Previous rules.') },
   } }))
   const result = await upgradeContext({ targetRoot: root }, filesOnly)
@@ -203,7 +203,7 @@ test('critical configuration parsing preserves the same UTF-8 bytes and errors a
 
 test('unreadable files, invalid manifests and unavailable settings never look like complete successful inspection', async (t) => {
   const { root, put } = await fixture(t)
-  await put('blocked', 'Read failure.'); await put('.haeram-spec-creator-lock.json', '{invalid')
+  await put('blocked', 'Read failure.'); await put('.gusta-lock.json', '{invalid')
   await put('spec/STATE.md', '# STATE\n')
   await symlink(path.join(root, 'blocked'), path.join(root, 'spec/SETTINGS.md'))
   const result = await upgradeContext({ targetRoot: root }, { ...filesOnly, open: async (file, flags) => {
@@ -213,7 +213,7 @@ test('unreadable files, invalid manifests and unavailable settings never look li
   assert.equal(result.ok, false); assert.equal(result.coverage.inventoryComplete, false)
   assert.equal(result.settings.available, false)
   assert.ok(result.errors.some(({ path: name, code }) => name === 'blocked' && code === 'EACCES'))
-  assert.ok(result.errors.some(({ path: name }) => name === '.haeram-spec-creator-lock.json'))
+  assert.ok(result.errors.some(({ path: name }) => name === '.gusta-lock.json'))
   assert.equal(result.entries.find(({ path: name }) => name === 'blocked').disposition, 'unreadable')
 })
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Update SSOT"
+  short_description: "기획 변경을 SSOT rev+1로 반영"
+  default_prompt: "Use $gusta-update-ssot to apply a planning change to an existing SSOT (rev+1, chg, STATE pending)."

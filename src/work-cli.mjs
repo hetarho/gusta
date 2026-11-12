@@ -52,7 +52,7 @@ push: 통합된 단위마다 그 브랜치로 push합니다(원격이 앞서 있
 review: risky(기본)는 위험한 단위만 리뷰하고 나머지는 정책 승인합니다. all은 모든 단위를 리뷰합니다.
 explore 태스크와 그 후속은 배정하지 않습니다 — 메인 세션에서 단독으로 진행합니다.
 검증 단계: submit=태스크(선택, 변경 영향) · integrate=단위 통합 · finish=묶음 완료. start/configure가 저장한
-  --task-verify/--verify/--group-verify를 기본값으로 쓰며, 명령에는 HAERAM_TIER·HAERAM_DIFF_BASE·HAERAM_TASK(S)가 전달됩니다.
+  --task-verify/--verify/--group-verify를 기본값으로 쓰며, 명령에는 GUSTA_TIER·GUSTA_DIFF_BASE·GUSTA_TASK(S)가 전달됩니다.
 next: 세션 루프. 자기 단위 → 수정 요청 → 리뷰 → 다음 단위 순으로 action(implement|review|blocked|wait|complete|stalled)을
   반환하고, 승인된 단위의 통합과 묶음 완료 검증은 백그라운드 CLI로 시작합니다. --start는 활성 묶음이 없으면 새로 만듭니다.
 submit/integrate/finish: 지정한 검증 명령을 셸로 실행합니다(--verify-timeout-ms, 기본 1시간). 워커 변경은 먼저 커밋하세요.

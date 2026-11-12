@@ -12,7 +12,7 @@ import { vibeBrief } from '../src/vibe-brief.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 
 const execute = promisify(execFile)
-const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const git = async (cwd, ...args) => (await execute('git', ['-C', cwd, ...args], { encoding: 'utf8' })).stdout.trim()
 
 // AUTH-1 is cited by T001 and pulls a chain: requires AUTH-4 → requires SEC-2, canonical SEC-1
@@ -133,13 +133,13 @@ ${cfg}
 | T004 | example | AUTH | - | todo |
 
 ## next
-- implement-task T001
+- gusta-implement-task T001
 
 ## log
 `
 
 async function project(t, { cfg, files = {} } = {}) {
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'haeram-brief-'))
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'gusta-brief-'))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'project')
   const write = async (relative, content) => {
@@ -149,7 +149,7 @@ async function project(t, { cfg, files = {} } = {}) {
   await mkdir(root)
   await git(root, 'init', '-q', '-b', 'main')
   for (const [key, value] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.hooksPath', '/dev/null']]) await git(root, 'config', key, value)
-  await write('spec/FORMAT.md', await readFile(new URL('../skills/create-architecture/assets/FORMAT.md', import.meta.url), 'utf8'))
+  await write('spec/FORMAT.md', await readFile(new URL('../skills/gusta-create-architecture/assets/FORMAT.md', import.meta.url), 'utf8'))
   await write('spec/STATE.md', STATE(cfg))
   for (const [id, text] of Object.entries({ ARCH, AUTH, PAY, SEC })) await write(`spec/ssot/${id}.md`, text)
   await write('spec/tasks/T001.example.md', task('T001', 'AUTH-1', 'AUTH@3'))

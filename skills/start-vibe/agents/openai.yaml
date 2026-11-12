@@ -1,4 +1,0 @@
-interface:
-  display_name: "Start Vibe"
-  short_description: "작업 진입점: 모드를 묻고 기획·구현을 골라 단위마다 push"
-  default_prompt: "Use $start-vibe to start working: ask the mode once, then route to planning or implementation and push every finished unit."

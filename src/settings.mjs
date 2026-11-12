@@ -6,7 +6,7 @@ import { SkillPackageError } from './errors.mjs'
 
 // spec/SETTINGS.md holds package behavior the owner chose: one `- key: value  # note` line per key.
 // A missing file or key means the default, so projects need no migration when a key is added.
-// `?` marks a choice nobody made yet: haeram-init asks for it before work starts.
+// `?` marks a choice nobody made yet: gusta-init asks for it before work starts.
 const BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[A-Za-z0-9._/-]+(?<![./])$/
 const isBranch = (value) => typeof value === 'string' && BRANCH.test(value) && value !== 'HEAD' && !value.endsWith('.lock')
 const oneOf = (...values) => ({ values: values.join('|'), accepts: (value) => values.includes(value) })
@@ -16,7 +16,7 @@ export const SETTINGS = {
   'prune-branches': { default: true, ...oneOf(true, false),
     note: 'true = when work ends, delete the branches, worktrees and wip refs the CLI created once their work is merged; false = keep them' },
   land: { default: '?', required: true, ...branchOr('?', 'current'),
-    note: 'branch finished work lands on (start-vibe session end, self-improve, work groups); current = stay on the branch the work was done on' },
+    note: 'branch finished work lands on (gusta-start session end, gusta-self-improve-remote, work groups); current = stay on the branch the work was done on' },
   'land-via': { default: 'merge', ...oneOf('merge', 'pr'),
     note: 'merge = merge into land (on the remote when push is true); pr = push the work branch and open a PR into land' },
   push: { default: false, ...oneOf(true, false),
@@ -26,13 +26,13 @@ export const SETTINGS = {
   plan: { default: '?', ...branchOr('?', '-'),
     note: 'planning branch where task IDs and SSOT revs are numbered (vibe plan-sync/plan-push); ? = land when it names a branch, else the repository default branch; - = this checkout only' },
   'permission-mode': { default: 'bypass', ...oneOf('bypass', 'acceptEdits'),
-    note: 'headless sessions the CLI starts to write code (vibe loop units, work run workers, show-ab variants, preflight probe): bypass = no permission prompts or sandbox, network allowed; acceptEdits = edits plus the allow-tool list only, Codex in its workspace-write sandbox (no network)' },
+    note: 'headless sessions the CLI starts to write code (vibe loop units, work run workers, gusta-showcase variants, preflight probe): bypass = no permission prompts or sandbox, network allowed; acceptEdits = edits plus the allow-tool list only, Codex in its workspace-write sandbox (no network)' },
   'headless-mcp': { default: 'isolate', ...oneOf('isolate', 'inherit'),
     note: "MCP servers of the headless Claude sessions the CLI starts: isolate = none (no user, account or project .mcp.json servers); inherit = whatever the user's Claude setup loads, for projects whose headless sessions need MCP" },
 }
 export const SETTINGS_FILE = 'spec/SETTINGS.md'
 const TITLE = '# SETTINGS'
-const PREAMBLE = '> Package behavior the owner chose. Show or change with /haeram-setting (`vibe settings`); decide unset (?) keys with /haeram-init. A missing key uses its default.'
+const PREAMBLE = '> Package behavior the owner chose. Show or change with /gusta-preference (`vibe settings`); decide unset (?) keys with /gusta-init. A missing key uses its default.'
 const LINE = /^-\s+([\w-]+):\s*([^#]*?)\s*(?:#.*)?$/
 const coerce = (raw) => raw === 'true' ? true : raw === 'false' ? false : raw
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
@@ -111,7 +111,7 @@ async function settingsRoot(options) {
 export async function readSettings(options) {
   const root = await settingsRoot(options)
   const result = effectiveSettings(await readOptional(path.join(root, SETTINGS_FILE)), await readOptional(path.join(root, 'spec/STATE.md')))
-  if (result.errors.length) fail(`${SETTINGS_FILE} 값이 잘못됐습니다. /haeram-setting으로 고치세요.`, result.errors)
+  if (result.errors.length) fail(`${SETTINGS_FILE} 값이 잘못됐습니다. /gusta-preference로 고치세요.`, result.errors)
   return { ...result, values: Object.fromEntries(result.settings.map((entry) => [entry.key, entry.value])) }
 }
 

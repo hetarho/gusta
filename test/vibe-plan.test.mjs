@@ -27,10 +27,10 @@ const STATE = `# STATE
 | T001 | first | ARCH | - | todo |
 
 ## next
-- implement-task T001
+- gusta-implement-task T001
 
 ## log
-- 261012 create-task ARCH
+- 261012 gusta-create-task ARCH
 `
 const task = (id, title) => `# ${id} ${title}\n> st:todo | ssot:ARCH-1 | base:ARCH@1 | dep:-\n\n## goal\n${title}\n\n## acceptance\n- [ ] works\n\n## impl notes\n- -\n\n## result\n`
 const present = (file) => access(file).then(() => true, () => false)
@@ -41,7 +41,7 @@ async function configure(root, temporary) {
 
 // A main checkout and two feature worktrees, optionally sharing a bare remote.
 async function project(t, { remote = true } = {}) {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-plan-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-plan-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const main = path.join(temporary, 'main')
   await execute('git', ['init', '-q', '-b', 'main', main])
@@ -68,12 +68,12 @@ async function project(t, { remote = true } = {}) {
   return { temporary, main, origin, one: await worktree('feat-one'), two: await worktree('feat-two') }
 }
 
-// What create-task writes: one task file and its STATE row, committed alone.
+// What gusta-create-task writes: one task file and its STATE row, committed alone.
 async function planTask(root, id, title) {
   await writeFile(path.join(root, `spec/tasks/${id}.${title}.md`), task(id, title))
   const state = await readFile(path.join(root, 'spec/STATE.md'), 'utf8')
   await writeFile(path.join(root, 'spec/STATE.md'), state.replace('\n\n## next', `\n| ${id} | ${title} | ARCH | - | todo |\n\n## next`))
-  await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', `create-task ${id}`)
+  await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', `gusta-create-task ${id}`)
 }
 
 test('두 worktree가 같은 번호를 만들면 먼저 올린 쪽이 이기고, 진 쪽은 다시 채번해 올린다', async (t) => {

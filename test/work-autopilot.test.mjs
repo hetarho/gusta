@@ -14,7 +14,7 @@ import { inspectWorkspace } from '../src/workspace.mjs'
 import { runtimeRoot, readRuntime } from '../src/work-runtime.mjs'
 
 const execute = promisify(execFile)
-const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const git = (cwd, ...args) => execute('git', ['-C', cwd, ...args], { encoding: 'utf8' })
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const commit = async (cwd, message) => {
@@ -25,7 +25,7 @@ const commit = async (cwd, message) => {
 const taskFile = (id, ssot, base) => `# ${id} example\n> st:todo | ssot:${ssot} | base:${base} | dep:- | touches:- | lane:-\n\n## goal\nimplement ${id}\n\n## acceptance\n- [ ] result exists\n\n## impl notes\n- -\n\n## result\n`
 
 async function fixture(t) {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'haeram-autopilot-')))
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-autopilot-')))
   t.after(() => rm(temporary, { recursive: true, force: true }))
   const root = path.join(temporary, 'repo')
   await mkdir(path.join(root, 'spec/tasks'), { recursive: true })
@@ -33,7 +33,7 @@ async function fixture(t) {
   await git(temporary, 'init', '-q', '-b', 'trunk', root)
   for (const [key, value] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.hooksPath', path.join(temporary, 'no-hooks')]]) await git(root, 'config', key, value)
   await writeFile(path.join(root, 'spec/FORMAT.md'), '# FORMAT\n')
-  await writeFile(path.join(root, 'spec/STATE.md'), '# STATE\n\n## cfg\n- level: expert\n- lang: ko\n- docs: en\n- push: trunk\n\n## ssot\n| id | rev | tasked | pending | [?] |\n|---|---|---|---|---|\n| ARCH | 1 | 1 | - | 0 |\n| ITEM | 1 | 1 | - | 0 |\n\n## tasks\n| id | title | ssot | dep | st |\n|---|---|---|---|---|\n| T001 | limits | ITEM | - | todo |\n| T002 | runtime | ARCH | - | todo |\n\n## next\n- implement-task\n\n## log\n- 261012 create-task ARCH ITEM\n')
+  await writeFile(path.join(root, 'spec/STATE.md'), '# STATE\n\n## cfg\n- level: expert\n- lang: ko\n- docs: en\n- push: trunk\n\n## ssot\n| id | rev | tasked | pending | [?] |\n|---|---|---|---|---|\n| ARCH | 1 | 1 | - | 0 |\n| ITEM | 1 | 1 | - | 0 |\n\n## tasks\n| id | title | ssot | dep | st |\n|---|---|---|---|---|\n| T001 | limits | ITEM | - | todo |\n| T002 | runtime | ARCH | - | todo |\n\n## next\n- gusta-implement-task\n\n## log\n- 261012 gusta-create-task ARCH ITEM\n')
   await writeFile(path.join(root, 'spec/ssot/ARCH.md'), '# ARCH architecture\n> r1 | architecture\n\n## decisions\n- ARCH-1 [o] runtime: node\n\n## chg\n- r1 261012 initial\n')
   await writeFile(path.join(root, 'spec/ssot/ITEM.md'), '# ITEM items\n> r1 | items a user keeps\n\n## decisions\n- ITEM-1 [o] a user keeps items\n\n## chg\n- r1 261012 initial\n')
   await writeFile(path.join(root, 'spec/tasks/T001.limits.md'), taskFile('T001', 'ITEM-1', 'ITEM@1'))
@@ -85,10 +85,10 @@ if('${provider}'==='codex')fs.writeFileSync(flag('--output-last-message'),JSON.s
 else console.log(JSON.stringify({type:'result',is_error:false,structured_output:result}));
 })().catch(error=>{console.error(error);process.exit(1)});
 `, { mode: 0o755 })
-  return { env: { ...process.env, PATH: `${directory}${path.delimiter}${process.env.PATH}`, HAERAM_NO_AWAKE: '1' }, log, release }
+  return { env: { ...process.env, PATH: `${directory}${path.delimiter}${process.env.PATH}`, GUSTA_NO_AWAKE: '1' }, log, release }
 }
 
-// What a coordinator does with a filed decision: provisional update-ssot in the planning
+// What a coordinator does with a filed decision: provisional gusta-update-ssot in the planning
 // checkout (rev+1, chg, refreshed task base, inbox line), then resume with a note.
 async function answer(setup, group, decided) {
   const plan = group.path
@@ -103,7 +103,7 @@ async function answer(setup, group, decided) {
   await edit('spec/STATE.md', '| ITEM | 1 | 1 | - | 0 |', '| ITEM | 2 | 2 | - | 0 |')
   await edit('spec/STATE.md', '## ssot\n', `## inbox\n- 261013 decided ITEM-2 T001: ${decided.attempt.decision.question} → 10 (alt: unlimited)\n\n## ssot\n`)
   assert.deepEqual((await lintSpec({ targetRoot: plan })).errors, [])
-  await commit(plan, 'update-ssot ITEM r2 (provisional)')
+  await commit(plan, 'gusta-update-ssot ITEM r2 (provisional)')
   return updateWork({ ...setup, attempt: decided.attempt.id, status: 'doing', note: 'ITEM-2 r2: a user keeps at most 10 items' })
 }
 
@@ -123,7 +123,7 @@ for (const provider of ['claude', 'codex']) test(`맡김 ${provider}: 기획 공
   assert.ok(decided, 'no decision was filed')
   assert.equal(decided.attempt.taskId, 'T001')
   assert.equal(decided.attempt.decision.recommendation, '10')
-  assert.match(decided.instruction, /recommendation으로 update-ssot/)
+  assert.match(decided.instruction, /recommendation으로 gusta-update-ssot/)
   await answer(setup, group, decided)
   const result = await running
   assert.equal(result.outcome, 'completed', JSON.stringify(result))
@@ -205,8 +205,8 @@ async function unitCheck(setup) {
   const script = path.join(setup.temporary, 'unit-check.cjs')
   const log = path.join(setup.temporary, 'unit-checks.jsonl')
   await writeFile(script, `const fs=require('node:fs');
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({tasks:process.env.HAERAM_TASKS})+'\\n');
-if(process.env.HAERAM_TASKS==='T002'&&fs.readFileSync('T002.txt','utf8')!=='fixed')throw Error('non-transient unit check failure');
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({tasks:process.env.GUSTA_TASKS})+'\\n');
+if(process.env.GUSTA_TASKS==='T002'&&fs.readFileSync('T002.txt','utf8')!=='fixed')throw Error('non-transient unit check failure');
 `)
   const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`
   return { verify: [`${quote(process.execPath)} ${quote(script)}`], log }
@@ -312,7 +312,7 @@ if(job.role==='worker') {
 console.log(JSON.stringify({type:'result',is_error:false,structured_output:result}));
 })().catch(error=>{console.error(error);process.exit(1)});
 `, { mode: 0o755 })
-  const env = { ...process.env, PATH: `${directory}${path.delimiter}${process.env.PATH}`, HAERAM_NO_AWAKE: '1' }
+  const env = { ...process.env, PATH: `${directory}${path.delimiter}${process.env.PATH}`, GUSTA_NO_AWAKE: '1' }
   const group = await startWork({ ...setup, name: 'auto', verify: ['node -e "0"'] })
   const runtime = runtimeRoot(await inspectWorkspace(setup))
   const running = runWork({ ...setup, work: group.id, provider: 'claude', env, autopilot: true, pollMs: 20, timeoutMs: 3000 })
@@ -342,7 +342,7 @@ console.log(JSON.stringify({type:'result',is_error:false,structured_output:resul
   assert.equal((await readRuntime(runtime)).attempts[attempt.id].dispatch.stderr, undefined, 'the record keeps no log content')
   // The snapshot ref lived until the run pruned the integrated unit (prune-branches default);
   // the measurement it protected is on the group branch.
-  assert.ok(result.pruned.pruned.includes(`refs/haeram/checkpoints/${attempt.id}`), JSON.stringify(result.pruned))
+  assert.ok(result.pruned.pruned.includes(`refs/gusta/checkpoints/${attempt.id}`), JSON.stringify(result.pruned))
   assert.ok(result.pruned.cleaned.includes(attempt.id))
   assert.equal((await git(setup.root, 'show', `${group.branch}:measured.txt`)).stdout, 'round 1: 36.2%')
   assert.match((await git(setup.root, 'log', '--format=%s', group.branch)).stdout, /WIP T001: checkpoint after the time limit/)
