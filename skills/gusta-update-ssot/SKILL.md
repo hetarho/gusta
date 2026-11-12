@@ -2,7 +2,7 @@
 name: gusta-update-ssot
 description: >-
   기존 SSOT의 기획 변경을 기획자 역할로 반영한다(rev+1, chg 기록, STATE pending 갱신).
-  gusta-sketch의 기획 변경, gusta-start 실행 중 발견한 SSOT 모순·공백,
+  gusta-sketch의 기획 변경, gusta-start 요청 실행·실행 중 발견한 SSOT 모순·공백,
   gusta-design-mode·gusta-showcase 마감, gusta-doc-review 보류 항목에서 부르는 내부
   스킬이다. 태스크 파일은 건드리지 않는다 — 변경분을 태스크로 만드는 것은 gusta-create-task. 기획을 바꾸려는
   요청은 gusta-sketch로.
@@ -24,6 +24,7 @@ description: >-
 ## 1. 시작
 STATE → 대상 SSOT 식별 → `vibe brief <ID>`로 현재 결정 블록을 받는다 → log에 `- YYMMDD gusta-update-ssot <ID> start`.
 gusta-sketch에서 넘어온 변경이면 고른 시안의 결정이 출발점이고 인터뷰는 시안에서 정하지 못한 공백만 묻는다. sketch가 미뤄 둔 ideation 문서를 재료로 쓰면 원본 활성 문서의 domains·vision·shape·explored를 읽고 반영 범위를 확인하며 open 문서는 문서·STATE st를 ready로 바꾼다. ideation/done/은 기본 입력이 아니다.
+gusta-start 요청 실행이면 요청문이 출발점이다 — 요청문이 정한 것은 사용자 결정으로 그대로 쓰고, 정하지 않은 공백만 맡김 규칙으로 채운다.
 입력이 gusta-doc-review가 넘긴 보류 항목(모순·공백·애매한 문장)이면 그 원문이 출발점이다. 직접 호출은 어느 쪽이 맞는지 확인받고, 맡김은 추천안으로 결정해 inbox decided에 선택·대안·이유를 남긴다. 단순 편집으로 모순을 감추지 않는다.
 
 ## 2. 변경 분석

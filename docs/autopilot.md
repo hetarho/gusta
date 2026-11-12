@@ -2,7 +2,7 @@
 
 [README](../README.ko.md) · [개발 흐름](workflow.md) · [브랜치·검증](branching.md) · **오래 맡기기** · [병렬 작업](parallel-work.md) · [자가 개선](self-improve.md) · [CLI](cli.md)
 
-`/gusta-start`가 맡긴 실행의 결정·주차 규칙은 [개발 흐름의 실행하기](workflow.md#실행하기--gusta-start)를, 검증·반영 규칙은 [검증과 push](branching.md#검증과-push)를 따릅니다. 실행은 이미 만든 태스크만 합니다 — 구상과 태스크 만들기는 그 전에 [`/gusta-sketch`](workflow.md#구상하기--gusta-sketch)에서 끝냅니다.
+`/gusta-start`가 맡긴 실행의 결정·주차 규칙은 [개발 흐름의 실행하기](workflow.md#실행하기--gusta-start)를, 검증·반영 규칙은 [검증과 push](branching.md#검증과-push)를 따릅니다. 실행은 이미 만든 태스크만 합니다 — 구상과 태스크 만들기는 그 전에 [`/gusta-sketch`](workflow.md#구상하기--gusta-sketch)에서 끝냅니다. `/gusta-start <요청>`은 시작한 대화가 요청을 SSOT·태스크로 먼저 옮긴 뒤 그 태스크만 `--tasks`로 맡깁니다([요청 실행](workflow.md#실행하기--gusta-start)).
 
 ## 오래 맡기기 — `vibe loop`
 

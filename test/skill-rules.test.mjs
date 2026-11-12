@@ -83,3 +83,13 @@ test('공통 규칙은 정해진 예외 스킬 밖에서 한 글자까지 같다
 test('공통 규칙 4번은 모든 스킬에서 같은 모드 문장으로 끝난다', async () => {
   for (const [name, entry] of await commonRules()) assert.ok(entry['4'].endsWith(MODE), `${name}: 공통 규칙 4번에 모드 문장이 없습니다.`)
 })
+
+test('gusta-start: 인자 없으면 STATE·태스크로 실행하고, 기획 변경 요청이면 SSOT·태스크부터 만들어 그 범위만 구현한다', async () => {
+  const start = await readFile(new URL('gusta-start/SKILL.md', skillsRoot), 'utf8')
+  const request = await readFile(new URL('gusta-start/references/request.md', skillsRoot), 'utf8')
+  assert.match(start, /인자가 없으면 STATE·태스크대로 실행한다/)
+  assert.match(start, /\[요청 실행\]\(references\/request\.md\)/)
+  assert.match(start, /기획 변경 요청 인자 없이 실행할 태스크가 없으면\(route `sketch-first`\)/)
+  for (const pattern of [/시작 대화만 읽는다/, /요청문이 직접 정한 것은 사용자 결정이다/, /`vibe plan-sync`/, /`vibe plan-push`/, /gusta-update-ssot/, /gusta-create-task/, /`vibe loop --tasks '<범위>'`/, /다른 기존 태스크는 하지 않는다/, /`\[\?\]`/]) assert.match(request, pattern)
+  for (const name of ['gusta-update-ssot', 'gusta-create-ssot']) assert.match(await readFile(new URL(`${name}/SKILL.md`, skillsRoot), 'utf8'), /gusta-start 요청 실행이면 요청문이/, name)
+})
