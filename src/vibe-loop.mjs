@@ -111,6 +111,19 @@ export async function specGate(root, id, { lint = lintSpec, baseline = [] } = {}
   violations.push(...errors.slice(0, SPEC_GATE_LINT).map((error) => `lint: ${error}`), ...(errors.length > SPEC_GATE_LINT ? [`lint: ${errors.length - SPEC_GATE_LINT} more errors`] : []))
   return { ok: !violations.length, violations }
 }
+// A broken close does not release another session's claim. Read both current files because a
+// malformed STATE row can hide a valid file owner; a stale doing claim also needs an explicit takeover.
+async function specRepairOwner(root, id, tag, status) {
+  // Remote claims remain authoritative even when a malformed local close replaced its doing row.
+  const remote = (status.orphanDoing ?? []).find((task) => task.id === id && task.tag !== tag)
+  if (remote) return remote.tag ?? 'unknown'
+  const state = await readFile(path.join(root, 'spec/STATE.md'), 'utf8')
+  const names = (await readdir(path.join(root, 'spec/tasks')).catch(() => [])).filter((name) => name.startsWith(`${id}.`) && name.endsWith('.md'))
+  const claims = [taskRow(state, id)?.st, ...await Promise.all(names.map(async (name) =>
+    quoteFields(quoteLine(await readFile(path.join(root, 'spec/tasks', name), 'utf8')) ?? '').get('st')))]
+  const claimed = claims.find((st) => st?.startsWith('doing@') && st.split('.')[1] !== tag)
+  return claimed ?? (status.others ?? []).find((row) => row.tag !== tag && !row.stale && row.doing === id)?.tag ?? null
+}
 // The last publication, compact: a later call that published nothing keeps an earlier push.
 const published = (result, previous) => result.pushed || !previous?.pushed ? { pushed: result.pushed ?? null, target: result.target ?? null, ...(result.landed ? { landed: result.landed } : {}), ...(result.reason ? { reason: result.reason } : {}) } : previous
 const depIds = (dep) => String(dep ?? '').split(/[\s,]+/).filter((id) => TASK_ID.test(id))
@@ -689,13 +702,20 @@ export async function vibeLoop(options = {}, injected = {}) {
       await reconcileSpecRejected()
       // A spec repair outlives its STATE row: a hand close may have deleted it.
       if (recovery && recovery.reason !== 'spec-gate' && status.remaining && !status.remaining.some((task) => task.id === recovery.taskId)) recovery = null
+      if (recovery?.reason === 'spec-gate' && await specRepairOwner(root, recovery.taskId, options.tag, status)) {
+        if (priorityTask === recovery.taskId) priorityTask = null
+        recovery = null
+      }
       if (scope) growScope(status.remaining ?? [])
       // An st outside FORMAT (a hand close from before this run) is repaired like a rejected close:
       // one repair unit, then parked. The closing lint still reports what stays broken.
       if (!recovery && status.issues?.length) {
         const inbox = await deps.status({ ...options, targetRoot: root, section: 'inbox', fetch: false })
         const parked = new Set((inbox.inbox ?? []).filter((entry) => entry.kind === 'parked').flatMap((entry) => entry.refs))
-        const issue = status.issues.find((entry) => !parked.has(entry.id) && inScope(entry.id))
+        let issue
+        for (const id of new Set(status.issues.filter((entry) => !parked.has(entry.id) && inScope(entry.id)).map((entry) => entry.id))) {
+          if (!await specRepairOwner(root, id, options.tag, status)) { issue = status.issues.find((entry) => entry.id === id); break }
+        }
         if (issue) {
           recovery = await specFailed(issue.id, status.issues.filter((entry) => entry.id === issue.id).map((entry) => entry.reason === 'missing-state-row' ? `task file ${entry.id} has no spec/STATE.md tasks row (st:${entry.st ?? '(none)'})` : entry.reason === 'stale-done-row' ? `spec/STATE.md tasks row ${entry.id} remains after done@date` : entry.reason === 'unarchived-done' ? `task file ${entry.id} has done@date but remains outside spec/tasks/done` : `${entry.where === 'STATE' ? 'spec/STATE.md tasks row' : 'task file'} ${entry.id} has st:${entry.st ?? '(none)'}, outside FORMAT (todo|doing@date.tag|done@date|blocked@date)`))
           if (!recovery) continue
@@ -736,13 +756,21 @@ export async function vibeLoop(options = {}, injected = {}) {
       const queued = [priorityTask, ...(status.implementation?.resume ?? []), nextTask, ...runnable].filter((id) => id && runnable.includes(id))
       const selected = repairMs !== null ? repairTask : recovery?.taskId ?? queued.find((id) => !exploreMs.has(id) || unitLimit(id) <= workLeft) ?? null
       if (selected === null && queued.length) { reason = 'explore-no-time'; break }
+      // Do not turn an unavailable repair into an unscoped planning unit that could take it anyway.
+      if (selected === null && status.route === 'repair' && !recovery) { reason = 'spec-repair-unavailable'; break }
       const limitMs = repairMs !== null ? Math.min(timeoutMs, Math.max(1, repairMs)) : Math.min(unitLimit(selected), Math.max(1, workLeft))
       if (status.concurrency === 'strict' && context.target) {
         await metadataCommit(`vibe ${options.tag}: session presence`)
-        // A spec repair finishes this run's own task, whose st is no longer todo: presence only.
-        await deps.claim({ ...options, targetRoot: root, task: recovery?.reason === 'spec-gate' ? null : selected })
+        // Repair reserves active.doing atomically while preserving the malformed task row.
+        // This also keeps ordinary workers and other repair sessions from claiming the same task.
+        await deps.claim({ ...options, targetRoot: root, task: selected, ...(recovery?.reason === 'spec-gate' ? { repairTask: true } : {}) })
         // The claim fetched and pushed the target just now: re-read locally.
         status = await deps.status({ ...options, targetRoot: root, tag: options.tag, fetch: false })
+      }
+      if (recovery?.reason === 'spec-gate' && await specRepairOwner(root, selected, options.tag, status)) {
+        if (priorityTask === selected) priorityTask = null
+        recovery = null
+        continue
       }
       const before = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
       await metadata.assertClean()

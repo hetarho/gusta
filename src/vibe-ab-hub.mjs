@@ -14,7 +14,7 @@ export function viewPath(value) {
   if (!text || text === '/' || /\s/.test(text)) return ''
   return text.startsWith('/') ? text : `/${text}`
 }
-export const urlOf = (variant) => `http://localhost:${variant.port}${viewPath(variant.runs?.at(-1)?.path)}`
+export const urlOf = (variant) => `http://${variant.server?.host === '::1' ? '[::1]' : variant.server?.host === '127.0.0.1' ? '127.0.0.1' : 'localhost'}:${variant.port}${viewPath(variant.runs?.at(-1)?.path)}`
 // The first line a variant was asked to build, without markdown markers, cut to about 100 characters: the
 // hub's title for it and, unless pick gets --approach, the approach in the STATE adoption line.
 export function approachLine(text) {

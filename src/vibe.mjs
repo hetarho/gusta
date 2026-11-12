@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { inspectWorkspace, git } from './workspace.mjs'
+import { inspectWorkspace, git, batchShow } from './workspace.mjs'
 import { runtimeRoot } from './work-runtime.mjs'
 import { sections, tableRows, quoteLine, quoteFields, exploreValue, yymmdd, INBOX_LINE, SESSION_TAG, TASK_ID, TASK_ST } from './spec-format.mjs'
 import { activeRows, upsertActive, mergeState, taskRow, setTaskSt } from './state-doc.mjs'
@@ -146,13 +146,29 @@ export async function vibeSync(options = {}) {
 
 // Final integration uses the candidate after sync/merge. A project without spec/ stays supported;
 // an existing but incomplete spec is an error. WIP checkpoint/handoff does not call this gate.
-async function assertSpecClose(root) {
-  const entries = await readdir(path.join(root, 'spec')).catch((error) => { if (error.code === 'ENOENT') return []; throw error })
+async function assertSpecClose(root, commit) {
+  const spec = await git(root, ['ls-tree', '-z', commit, '--', 'spec'])
+  if (!spec) return
+  if (!spec.startsWith('040000 tree ')) fail('spec lint 실패: spec/은 디렉터리여야 합니다.')
+  const entries = (await git(root, ['ls-tree', '--name-only', '-z', `${commit}:spec`])).split('\0').filter(Boolean)
   // SETTINGS alone configures branch movement without bootstrapping a spec document tree.
   if (entries.every((name) => name === 'SETTINGS.md')) return
-  const { errors } = await lintSpec({ targetRoot: root })
-  const issues = await specCloseIssues(root)
-  if (errors.length || issues.length) fail(`${errors.length ? 'spec lint' : 'spec close'} 실패: 문서 구조와 마감 상태를 고친 뒤 최종 반영하세요. 원격 인계는 vibe checkpoint --handoff를 사용하세요.`, [...errors, ...issues.map((issue) => `${issue.where} ${issue.id}: ${issue.reason ?? `invalid st:${issue.st ?? '(none)'}`}`)].slice(0, 10))
+  // Publication sends this commit, not the index or working tree. Snapshot only Markdown spec
+  // inputs so unrelated dirty files remain supported and an unstaged repair cannot mask HEAD.
+  const files = (await git(root, ['ls-tree', '-r', '--name-only', '-z', commit, '--', 'spec'])).split('\0').filter((file) => file.endsWith('.md'))
+  const candidate = await mkdtemp(path.join(os.tmpdir(), 'haeram-spec-close-'))
+  try {
+    const specs = files.map((file) => `${commit}:${file}`)
+    const contents = await batchShow(root, specs)
+    await Promise.all(files.map(async (file, index) => {
+      const destination = path.join(candidate, file)
+      await mkdir(path.dirname(destination), { recursive: true })
+      await writeFile(destination, contents[index] ?? await git(root, ['show', specs[index]]))
+    }))
+    const { errors } = await lintSpec({ targetRoot: candidate })
+    const issues = await specCloseIssues(candidate)
+    if (errors.length || issues.length) fail(`${errors.length ? 'spec lint' : 'spec close'} 실패: 문서 구조와 마감 상태를 고친 뒤 최종 반영하세요. 원격 인계는 vibe checkpoint --handoff를 사용하세요.`, [...errors, ...issues.map((issue) => `${issue.where} ${issue.id}: ${issue.reason ?? `invalid st:${issue.st ?? '(none)'}`}`)].slice(0, 10))
+  } finally { await rm(candidate, { recursive: true, force: true }) }
 }
 
 // Land HEAD the way SETTINGS says: land-via pr opens a PR into land; push: true publishes to the
@@ -171,7 +187,7 @@ export async function vibePush(options = {}) {
     const synced = await vibeSync(options)
     const pushed = await sha(context.root, 'HEAD')
     await assertVerified(context.root, options.verifiedCommit, pushed)
-    await assertSpecClose(context.root)
+    await assertSpecClose(context.root, pushed)
     try {
       const tracking = `refs/remotes/${context.remote}/${context.target}`
       const diffBase = options.diffBase ?? (await exists(context.root, tracking) ? await sha(context.root, tracking) : undefined)
@@ -208,7 +224,7 @@ async function landLocal(context, options) {
   }
   const head = await sha(root, 'HEAD')
   await assertVerified(root, options.verifiedCommit, head)
-  await assertSpecClose(root)
+  await assertSpecClose(root, head)
   const moved = await advanceBranch(context, land, head)
   if (['dirty', 'diverged', 'moved'].includes(moved)) fail(`${land}에 반영하지 못했습니다(${moved === 'dirty' ? '그 브랜치 checkout에 커밋하지 않은 변경' : '그 사이 브랜치가 움직임'}). 다시 실행하세요.`, [head])
   return { schemaVersion: 1, ok: true, pushed: null, landed: head, target: land, mode: 'local', merged, local: moved }
@@ -224,7 +240,7 @@ async function landByPR(context, options) {
   if ((await git(root, ['status', '--porcelain', '--untracked-files=no'])).trim()) fail('커밋하지 않은 변경이 있습니다. 먼저 커밋하세요.')
   const head = await sha(root, 'HEAD')
   await assertVerified(root, options.verifiedCommit, head)
-  await assertSpecClose(root)
+  await assertSpecClose(root, head)
   await git(root, ['push', '--quiet', remote, `${head}:refs/heads/${branch}`])
   const gh = (args) => execute('gh', args, { cwd: root, encoding: 'utf8', timeout: 60000, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }).then((result) => result.stdout.trim())
   let pr = null, prError = null
@@ -276,6 +292,7 @@ export async function vibeDeploy(options = {}) {
 // Merging the receipt back makes later task-row removal a normal three-way merge.
 export async function vibeClaim(options = {}) {
   if (!SESSION_TAG.test(options.tag ?? '') || (options.task && !TASK_ID.test(options.task))) fail('claim에는 --tag와 선택적 --task T###가 필요합니다.')
+  if (options.repairTask !== undefined && (typeof options.repairTask !== 'boolean' || options.repairTask && !options.task)) fail('repairTask에는 task와 boolean 값이 필요합니다.')
   const context = await vibeSession(options)
   if (!context.target) return { schemaVersion: 1, ok: true, pushed: null, reason: 'push-disabled' }
   if (!context.remote) fail('선점을 push할 원격이 없습니다.')
@@ -293,9 +310,12 @@ export async function vibeClaim(options = {}) {
       let remoteState = await git(context.root, ['show', `${parent}:spec/STATE.md`])
       if (options.task) {
         const claimed = taskRow(remoteState, options.task)
-        if (!claimed) fail('원격에 선점할 태스크가 없습니다. 기획 기준을 먼저 공유하세요.', [options.task])
-        if (claimed.st !== 'todo' && !claimed.st?.endsWith(`.${options.tag}`)) fail('다른 세션이 선점했거나 실행할 수 없는 태스크입니다.', [options.task, claimed.st])
-        remoteState = setTaskSt(remoteState, options.task, `doing@${yymmdd()}.${options.tag}`)
+        await assertRemoteTaskAvailable(context, parent, remoteState, options.task, options.tag)
+        if (!options.repairTask) {
+          if (!claimed) fail('원격에 선점할 태스크가 없습니다. 기획 기준을 먼저 공유하세요.', [options.task])
+          if (claimed.st !== 'todo' && !claimed.st?.endsWith(`.${options.tag}`)) fail('다른 세션이 선점했거나 실행할 수 없는 태스크입니다.', [options.task, claimed.st])
+          remoteState = setTaskSt(remoteState, options.task, `doing@${yymmdd()}.${options.tag}`)
+        }
       }
       const state = upsertActive(remoteState, { ...row, doing: options.task ?? '-', at: minuteNow() })
       const file = path.join(temporary, 'STATE.md')
@@ -315,6 +335,26 @@ export async function vibeClaim(options = {}) {
       return { schemaVersion: 1, ok: true, pushed: commit, task: options.task ?? null, progressOnly: true }
     }
   } finally { await rm(temporary, { recursive: true, force: true }) }
+}
+
+// Repair reserves the task through active.doing without changing its malformed lifecycle row.
+// Every claimant checks that reservation, plus ownership in either task source, on every retry.
+async function assertRemoteTaskAvailable(context, parent, state, task, tag) {
+  const { root, remote } = context
+  const names = (await git(root, ['ls-tree', '--name-only', '-z', `${parent}:spec/tasks`], [128]))?.split('\0').filter((name) => name.startsWith(`${task}.`) && name.endsWith('.md')) ?? []
+  const specs = names.map((name) => `${parent}:spec/tasks/${name}`), contents = await batchShow(root, specs)
+  const files = await Promise.all(specs.map((spec, index) => contents[index] ?? git(root, ['show', spec])))
+  const statuses = [taskRow(state, task)?.st, ...files.map((text) => quoteFields(quoteLine(text ?? '') ?? '').get('st'))]
+  const owner = statuses.find((st) => st?.startsWith('doing@') && st.split('.')[1] !== tag)
+  if (owner) fail('다른 세션이 선점했거나 소유자를 확인해야 하는 태스크입니다.', [task, owner])
+  for (const row of activeRows(state).filter((entry) => entry.tag !== tag && entry.doing === task)) {
+    let live = !(minutesSince(row.at) > STALE_MINUTES)
+    if (!live) {
+      const wip = `refs/remotes/${remote}/wip/${row.tag}`
+      if (await fetchBranch(root, remote, `refs/heads/wip/${row.tag}`, wip)) live = !(minutesSince(await commitTime(root, wip)) > STALE_MINUTES)
+    }
+    if (live) fail('다른 세션이 선점한 태스크입니다.', [task, row.tag])
+  }
 }
 
 // This session's presence row; the caller commits and pushes it.

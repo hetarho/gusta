@@ -467,11 +467,24 @@ async function readiness(variant, deadline, probe) {
     up = await listening(variant.port)
     if (!up) await sleep(500)
   }
-  return up ? probe(urlOf(variant), Math.max(5000, deadline - Date.now())) : null
+  if (!up) return null
+  // Some hosts map localhost only to IPv4 even when the dev server binds only ::1.
+  // Prefer localhost, then publish the actual reachable loopback in every preview URL.
+  delete variant.server.host
+  const answer = await probe(urlOf(variant), Math.max(5000, deadline - Date.now()))
+  if (!answer?.error) return answer
+  for (const host of LOOPBACKS) {
+    if (!(await connects(variant.port, host))) continue
+    variant.server.host = host
+    const alternate = await probe(urlOf(variant), Math.max(5000, deadline - Date.now()))
+    if (!alternate?.error) return alternate
+  }
+  delete variant.server.host
+  return answer
 }
 
 // The hub is detached like the dev servers and reports its own free port. Its URL uses localhost,
-// the variants' host, so their cookies stay same-site inside the hub's frames. The start decision
+// which the variants also prefer for same-site cookies. The start decision
 // is made under the record lock, so two concurrent serves share one hub.
 async function ensureHub(ctx, slug) {
   const ready = fileOf(ctx, slug, 'hub.json')
@@ -534,6 +547,14 @@ export async function abServe(options = {}, injected = {}) {
     return { variant: name, url: urlOf(variant), ready, ...(Object.hasOwn(changed, name) ? {} : { kept: true }), ...(answer ? { http } : {}), view: variant.runs.at(-1)?.view ?? null,
       ...(ready ? {} : { exited: !processAlive(variant.server?.pid), tail, log: variant.server?.log ?? null }) }
   }))
+  await update(ctx, slug, (current) => {
+    for (const name of names) {
+      const server = current.variants[name].server, checked = live.variants[name].server
+      if (server?.pid !== checked?.pid) continue
+      if (checked?.host) server.host = checked.host
+      else if (server) delete server.host
+    }
+  })
   const hub = await ensureHub(ctx, slug)
   return { schemaVersion: 1, ok: Boolean(hub) && results.every((entry) => entry.ready), slug, hub: hub?.url ?? null, ...(hub ? {} : { hubLog: fileOf(ctx, slug, 'hub.log') }), variants: results }
 }
