@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Stop specification migration before writing when SETTINGS is invalid. Preserve
+  the original settings and legacy STATE configuration for an explicit correction
+  instead of replacing invalid owner choices with inferred branch settings.
+
 ## 0.13.0
 
 Released: 2026-11-12.
