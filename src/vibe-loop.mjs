@@ -264,16 +264,27 @@ export async function vibeLoop(options = {}, injected = {}) {
     const outside = scopeIds.flatMap((id) => depIds(rows.get(id)?.dep).filter((dep) => !scopeIds.includes(dep) && !done.has(dep)).map((dep) => `${id} → ${dep}`))
     if (outside.length) throw new SkillPackageError('--tasks: 범위 밖 선행 태스크가 끝나지 않았습니다. 범위에 넣거나 먼저 끝내세요.', outside)
   }
-  const verify = await readVerification(root)
-  const batchVerify = options.verify ?? verify.batch
-  if (!Array.isArray(batchVerify) || batchVerify.some((command) => typeof command !== 'string' || !command.trim())) throw new SkillPackageError('--verify에는 실행 가능한 명령이 필요합니다.')
+  let verify = await readVerification(root)
+  let requiredVerificationTiers = Boolean(previous?.requiredVerificationTiers || previous?.verify?.declared || previous?.verify?.partial || verify.declared || verify.partial)
+  const selectBatch = (verify) => {
+    if (options.verify === undefined && requiredVerificationTiers && !verify.declared) throw new SkillPackageError('ARCH 검증 단계가 불완전합니다. task·batch·CI 단계를 고치거나 --verify를 명시하세요.')
+    const commands = options.verify ?? verify.batch
+    if (!Array.isArray(commands) || commands.some((command) => typeof command !== 'string' || !command.trim())) throw new SkillPackageError('--verify에는 실행 가능한 명령이 필요합니다.')
+    return [...commands]
+  }
+  let batchVerify = selectBatch(verify)
+  const refreshVerification = async () => {
+    verify = await readVerification(root)
+    requiredVerificationTiers ||= verify.declared || verify.partial
+    batchVerify = selectBatch(verify)
+  }
   // The tail of a timed run belongs to the closing gate (full suites, push, CI): no new work
   // starts inside it, so implementation time never eats the verification.
   const estimateReserve = async () => closingReserve({ timings: await readTimings(context.runtime), commands: batchVerify, push: Boolean(context.target), hours, timeoutMs, optionHours })
   let reserve = await estimateReserve()
   if (reserve.ms >= hours * 3600000) throw new SkillPackageError(`마감 관문 실측(전체 검증 2회+수정 1회+CI)이 ${(reserve.ms / 3600000).toFixed(2)}시간이라 max-hours 안에 구현 시간이 없습니다. --max-hours를 늘리거나 --final-reserve-hours를 지정하세요.`)
   const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? 'command', permissionMode: mode, headlessMcp: mcp,
-    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS, maxGateAttempts }, scope: scopeIds, reserve, verify, batchVerify,
+    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS, maxGateAttempts }, scope: scopeIds, reserve, verify, batchVerify, requiredVerificationTiers,
     deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), notification: notificationCapability(directory, options.notifyCommand),
     directory, stopFile, manifest, freshSessionPerUnit: true, pushEachUnit: Boolean(options.pushEachUnit), notifyCommand: options.notifyCommand ?? null }
   if (options.dryRun) return { ...plan, dryRun: true, modelRequests: 0 }
@@ -304,6 +315,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const report = `spec/reports/${new Date(start).toISOString().slice(2, 10).replaceAll('-', '')}-${options.tag}.md`
   const reportPath = path.join(root, report)
   let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false, pruned = null, publication = null
+  let lastBatchPlan = JSON.stringify(batchVerify)
   // scope grows with the tasks this run creates for scoped work (a split, a prerequisite, a repair).
   const scope = scopeIds ? new Set(scopeIds) : null
   const inScope = (id) => !scope || scope.has(id)
@@ -379,7 +391,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     return { objectiveComplete: false, recoverable: !hardStop, hardStop, reason, remainingMs, remainingUnits, deadline: new Date(deadline).toISOString(),
       pendingRepairTasks: [...new Set([repairTask, ...specRejected.keys(), recovery?.reason === 'spec-gate' ? recovery.taskId : null].filter(Boolean))], next: hardStop ? 'report stop and preserve remaining work' : repairTask ? 'delegate the pending repair within the existing session budget, then verify before publication' : 'reconcile the result with the user objective and continue within the existing session budget' }
   }
-  const snapshot = () => ({ ...plan, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
+  const snapshot = () => ({ ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
     report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, reason, stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
@@ -569,6 +581,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     await metadataCommit(`vibe ${options.tag}: ${closing ? 'close report' : 'batch report'}`)
     await metadata.assertClean()
     if (publish && context.target) await deps.sync({ ...options, targetRoot: root })
+    if (closing || publish) { await refreshVerification(); reserve = await estimateReserve() }
     const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
     // Spec structure is part of every publication's gate, code or not: a run never ends as if
     // the work were settled (no-work) while lint has errors, and never pushes them.
@@ -588,10 +601,11 @@ export async function vibeLoop(options = {}, injected = {}) {
       }
     }
     const code = await codeChanged(base, head)
-    if (code && publish) {
+    const needsGate = code || lastBatchPlan !== JSON.stringify(batchVerify)
+    if (needsGate && publish) {
       if (!batchVerify.length) throw new SkillPackageError('코드 push 전 묶음 검증이 없습니다. ARCH batch 단계 또는 --verify를 지정하세요.')
       // The same code already failed: re-running the suite cannot pass.
-      if (failedGate && !(await codeChanged(failedGate.head, head))) {
+      if (failedGate && failedGate.plan === JSON.stringify(batchVerify) && !(await codeChanged(failedGate.head, head))) {
         if (closing) throw new SkillPackageError(`묶음 검증 실패: ${failedGate.command}`, [failedGate.log ?? ''])
         return false
       }
@@ -622,7 +636,7 @@ export async function vibeLoop(options = {}, injected = {}) {
         if (closing) throw new SkillPackageError(`묶음 검증 실패: ${current.command}`, [current.log ?? ''])
         return false
       }
-      verifiedCommit = head; failedGate = null; gateRetryAllowed = true; gateStopReason = null
+      verifiedCommit = head; lastBatchPlan = JSON.stringify(batchVerify); failedGate = null; gateRetryAllowed = true; gateStopReason = null
     }
     await recordReport(closing)
     await metadataCommit(`vibe ${options.tag}: record checks`)
@@ -630,7 +644,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     if (!publish) { pending = []; await save(); return true }
     await ensureActive()
     await metadata.assertClean()
-    const pushed = await deps.push({ ...options, targetRoot: root, ...(code ? { verifiedCommit: head } : {}) })
+    const pushed = await deps.push({ ...options, targetRoot: root, ...(needsGate ? { verifiedCommit: head } : {}) })
     if (pushed.ok === false) throw new SkillPackageError('묶음 push 실패')
     publication = published(pushed, publication)
     if (pushed.pushed && code) {
@@ -691,6 +705,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       // Extra repair is earned only by complete strictly shrinking failures, within the hard cap.
       if (!gateRetryAllowed) { reason = 'gate-failures'; break }
       phase = 'boundary'
+      await refreshVerification()
       await applyRequests()
       if (reason) break
       let status = await deps.status({ ...options, targetRoot: root, tag: options.tag })
@@ -734,7 +749,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       let repairMs = null
       if (deps.now() >= deadline - reserve.ms - MIN_UNIT_MS) {
         const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
-        if (head !== base && head !== lintBlocked && !(failedGate && !(await codeChanged(failedGate.head, head)))) { await flush(false, true); continue }
+        if (head !== base && head !== lintBlocked && !(failedGate && failedGate.plan === JSON.stringify(batchVerify) && !(await codeChanged(failedGate.head, head)))) { await flush(false, true); continue }
         repairMs = deadline - deps.now() - (reserve.gateMs ?? (failedGate?.ms > 0 ? failedGate.ms : 0)) - (reserve.ciMs ?? 0)
         if (!repairTask || !status.runnable?.includes(repairTask) || repairMs <= 0) { reason = 'final-window'; break }
       }
@@ -935,6 +950,6 @@ export async function vibeLoop(options = {}, injected = {}) {
     await notify(async () => finishedEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, finishedSummary(closed, await readFile(stateFile, 'utf8').catch(() => ''))))
   }
   const terminalEvent = await readJSON(plan.notification.terminalEvent).catch(() => null)
-  return { ...plan, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
+  return { ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
     time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }) }
 }

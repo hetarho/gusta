@@ -33,6 +33,7 @@ export function verificationTiers(markdown) {
     }
   }
   result.declared = ['task', 'batch', 'ci'].every((tier) => labels.has(tier))
+  result.partial = labels.size > 0 && !result.declared
   for (const name of ['task', 'batch', 'ci']) result[name] = [...new Set(result[name])]
   return result
 }
@@ -114,7 +115,7 @@ function briefView(brief, options) {
     chars: (entry.text ?? entry.content ?? entry.message ?? entry.lines?.join('\n') ?? '').length }
   return { schemaVersion: 1, view: options.summary ? 'summary' : 'page', roots: brief.roots, source: brief.source, snapshot,
     ...(brief.taskId ? { taskId: brief.taskId, commit: brief.commit, diffBase: brief.diffBase, freshness: brief.freshness, touches: brief.touches,
-      verify: { task: brief.verify.task, batch: brief.verify.batch, ci: brief.verify.ci, declared: brief.verify.declared, guidanceCount: brief.verify.guidance.length, guidanceSection: 'guidance' } } : {}),
+      verify: { task: brief.verify.task, batch: brief.verify.batch, ci: brief.verify.ci, declared: brief.verify.declared, partial: brief.verify.partial, guidanceCount: brief.verify.guidance.length, guidanceSection: 'guidance' } } : {}),
     complete: false, readingComplete: false, sourceComplete: brief.complete, scope: brief.scope, size: brief.size,
     counts: Object.fromEntries(Object.entries(collections).map(([name, list]) => [name, list.length])),
     page: { section, offset, limit, total: collections[section].length, returned: entries.length,

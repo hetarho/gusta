@@ -351,7 +351,9 @@ npx haeram-spec-creator vibe brief T201 --deep --json   # 미분류 참조까지
 
 ## 기존 프로젝트 이관
 
-`/update-haeram-spec-creator`가 아래를 한 번에 합니다: `outdated`로 새 버전 확인 → 설치 → `migrate` → FORMAT 병합 → lint → 커밋. 직접 할 때는:
+`/update-haeram-spec-creator`는 새 버전 확인 → 프로젝트 규칙 조사 → 설치·구조 이관 → 문서·설정·실제 실행 대조 → lint → 커밋을 수행합니다. 최신 버전이어도 조사를 생략하지 않습니다. 실제 정책 차이는 프레임워크 기본 절차에 맞추는 안과 원문·범위·영향을 보여 주고 괜찮은지 확인한 뒤 반영합니다.
+
+`npx haeram-spec-creator@latest upgrade-context --limit 1`은 항상 JSON으로 문서·지침·구현 후보 목록과 설정 출처를 돌려줍니다. 정책 일치 판정이나 본문 읽기를 대신하지 않습니다. 첫 결과의 snapshot·total로 `upgrade-context --snapshot <snapshot> --limit <total>`을 실행해 전체 JSON을 대상 프로젝트 밖 임시 파일에 저장하고, 네이티브 도구로 나눠 읽으면 큰 트리의 반복 스캔을 줄일 수 있습니다(total이 0이면 limit 1). 목록의 complete는 정책 검토 완료가 아닙니다. 실제 원문·참조·적용 범위와 소유권은 [프로젝트 규칙 대조](skills/update-haeram-spec-creator/references/project-rules.md)대로 확인합니다. 직접 이관할 때는:
 
 1. `npx haeram-spec-creator@latest outdated`로 설치 버전·최신 버전·그 사이 변경(`changes`)을 봅니다. 그다음 `npx haeram-spec-creator@latest install --dry-run` → `install` → `check`. 설치는 `.claude/skills`·`.codex/skills`만 바꾸고, 로컬에서 고친 스킬 파일은 충돌로 보고하며 `--force` 없이 덮어쓰지 않습니다. `spec/`은 건드리지 않습니다.
 2. `lint`로 기존 문서를 검사합니다. 새 검사는 기존 문서를 오류로 만들지 않고 경고·검토 후보로 알립니다.

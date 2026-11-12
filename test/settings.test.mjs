@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { parseSettings, effectiveSettings, applySettings, readSetting, vibeSettings, branchPlan, permissionMode } from '../src/settings.mjs'
-import { MIGRATIONS, formatDrift, changesSince, packageVersions } from '../src/migrate.mjs'
+import { MIGRATIONS, migrateSpec, formatDrift, changesSince, packageVersions } from '../src/migrate.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
-import { fixture } from './helpers/vibe-fixture.mjs'
+import { fixture, execute } from './helpers/vibe-fixture.mjs'
 
 test('설정: 파일·키가 없으면 기본값, 잘못된 값은 오류로 남고 읽는 쪽은 추측하지 않는다', async (t) => {
   assert.deepEqual(effectiveSettings(null).settings.map(({ key, value, source }) => [key, value, source]),
@@ -103,6 +104,59 @@ test('migrate: cfg push·plan을 SETTINGS로 옮기고 다시 돌리면 바꾸�
   const kept = branch.run({ state: state.replace('- push: next  # old', '- push: -'), settings: '# SETTINGS\n- plan: main\n' })
   assert.deepEqual(parseSettings(kept.settings).values, { plan: 'main' })
   assert.deepEqual(formatDrift('## A\n- one\n- two\n', '## A\n- one\n- mine\n'), { missing: [{ section: 'A', line: '- two' }], extra: [{ section: 'A', line: '- mine' }] })
+})
+
+for (const settings of [
+  '# SETTINGS\n- land: false  # owner must correct this\n',
+  '# SETTINGS\n- prune-branches: maybe\n',
+  '# INVALID\n- land: integration\n',
+]) test(`migrate preserves invalid SETTINGS and legacy cfg: ${settings.split('\n')[1]}`, async (t) => {
+  const { root } = await fixture(t, 0)
+  const stateFile = path.join(root, 'spec/STATE.md')
+  const state = (await readFile(stateFile, 'utf8')).replace('- lang: ko', '- lang: ko\n- push: integration\n- plan: planning')
+  await writeFile(stateFile, state)
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), settings)
+  for (const migration of MIGRATIONS) assert.deepEqual(migration.run({ state, settings }), { state, settings })
+  const snapshot = () => Promise.all(['STATE.md', 'SETTINGS.md', 'FORMAT.md', 'ssot/ARCH.md'].map(async (name) => {
+    const file = path.join(root, 'spec', name)
+    return { name, text: await readFile(file, 'utf8'), modified: (await stat(file, { bigint: true })).mtimeNs }
+  }))
+  const before = await snapshot()
+  const expectedErrors = parseSettings(settings).errors
+  for (const dryRun of [true, false]) {
+    const result = await migrateSpec({ targetRoot: root, dryRun })
+    assert.equal(result.ok, false); assert.equal(result.dryRun, dryRun)
+    assert.deepEqual(result.applied, []); assert.deepEqual(result.settingsErrors, expectedErrors)
+    assert.equal(result.lint, null)
+    assert.deepEqual(await snapshot(), before)
+    const cli = fileURLToPath(new URL('../bin/haeram-spec-creator.mjs', import.meta.url))
+    const error = await execute(process.execPath, [cli, 'migrate', '--target', root, ...(dryRun ? ['--dry-run'] : [])]).then(
+      () => assert.fail('invalid settings must fail the migration command'), (error) => error)
+    assert.equal(error.code, 1)
+    assert.deepEqual(JSON.parse(error.stdout).settingsErrors, expectedErrors)
+    assert.equal(JSON.parse(error.stdout).ok, false)
+    assert.deepEqual(await snapshot(), before)
+  }
+})
+
+test('migrate validates generated settings before writing and valid migrations remain idempotent', async (t) => {
+  const { root } = await fixture(t, 0)
+  const file = path.join(root, 'spec/STATE.md')
+  const state = (await readFile(file, 'utf8')).replace('- lang: ko', '- lang: ko\n- push: bad..branch')
+  await writeFile(file, state)
+  for (const dryRun of [true, false]) {
+    const result = await migrateSpec({ targetRoot: root, dryRun })
+    assert.equal(result.ok, false); assert.deepEqual(result.applied, [])
+    assert.match(result.settingsErrors.join(), /land: bad\.\.branch/)
+    assert.equal(await readFile(file, 'utf8'), state)
+    await assert.rejects(readFile(path.join(root, 'spec/SETTINGS.md')), { code: 'ENOENT' })
+  }
+  await writeFile(file, state.replace('bad..branch', 'integration'))
+  const first = await migrateSpec({ targetRoot: root })
+  assert.equal(first.ok, true); assert.equal(first.applied.length, 1)
+  assert.deepEqual(parseSettings(await readFile(path.join(root, 'spec/SETTINGS.md'), 'utf8')).values, { land: 'integration', push: true })
+  const again = await migrateSpec({ targetRoot: root })
+  assert.equal(again.ok, true); assert.deepEqual(again.applied, [])
 })
 
 test('outdated: lock 버전·npm 최신·그 사이 CHANGELOG 항목을 돌려주고 조회 실패는 오류로 남긴다', async (t) => {

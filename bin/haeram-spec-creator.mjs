@@ -6,6 +6,7 @@ import { runWorkCLI } from '../src/work-cli.mjs'
 import { runVibeCLI } from '../src/vibe-cli.mjs'
 import { inspectWork } from '../src/work-groups.mjs'
 import { migrateSpec, packageVersions } from '../src/migrate.mjs'
+import { upgradeContext } from '../src/upgrade-context.mjs'
 
 const HELP = `haeram-spec-creator
 
@@ -16,6 +17,8 @@ const HELP = `haeram-spec-creator
   haeram-spec-creator check [--target <path>] [--agent both|claude|codex]
   haeram-spec-creator lint [--target <path>] [--hints]
   haeram-spec-creator outdated [--target <path>]   설치 버전(lock)·실행 버전·npm 최신 버전 (JSON)
+  haeram-spec-creator upgrade-context [--target <path>] [--offset <n>] [--limit <n>] [--snapshot <sha256>]
+                                 업데이트 전 전체 문서·지침·설정 inventory (읽기 전용 JSON, 의미 판단은 별도)
   haeram-spec-creator migrate [--target <path>] [--dry-run]
                                  spec/ 구조 변경 이관(예: STATE cfg push/plan → SETTINGS.md) 뒤 FORMAT 차이·미정 설정·lint 보고 (JSON)
   haeram-spec-creator context [--target <path>] [--json]
@@ -31,7 +34,7 @@ const HELP = `haeram-spec-creator
   --force          충돌한 로컬 파일을 패키지 버전으로 교체
   --allow-empty    validate에서 빈 skills/ 폴더 허용
   --hints          lint의 검토 후보를 전부 출력 (기본: 앞 10건)
-  --json           context/board의 기계 판독용 JSON 출력
+  --json           context/board의 기계 판독용 JSON 출력 (upgrade-context는 항상 JSON)
   -h, --help       도움말
   -v, --version    버전
 `
@@ -46,7 +49,7 @@ function takeValue(args, index, option) {
   return { value, consumed: 1 }
 }
 
-function parseOptions(args) {
+function parseOptions(args, command) {
   const options = { agents: ['claude', 'codex'] }
 
   for (let index = 0; index < args.length; index += 1) {
@@ -58,6 +61,12 @@ function parseOptions(args) {
     else if (argument === '--allow-empty') options.allowEmpty = true
     else if (argument === '--hints') options.hints = true
     else if (argument === '--json') options.json = true
+    else if (command === 'upgrade-context' && /^(--offset|--limit|--snapshot)(=|$)/.test(argument)) {
+      const option = argument.split('=')[0]
+      const { value, consumed } = takeValue(args, index, option)
+      options[option.slice(2)] = value
+      index += consumed
+    }
     else if (argument === '--target' || argument.startsWith('--target=')) {
       const { value, consumed } = takeValue(args, index, '--target')
       options.targetRoot = value
@@ -92,7 +101,7 @@ async function main() {
   const command = rawArgs[0] && !rawArgs[0].startsWith('-') ? rawArgs.shift() : undefined
   if (command === 'work') return runWorkCLI(rawArgs)
   if (command === 'vibe') return runVibeCLI(rawArgs)
-  const options = parseOptions(rawArgs)
+  const options = parseOptions(rawArgs, command)
 
   if (options.version || command === 'version') {
     const info = await getPackageInfo()
@@ -107,6 +116,12 @@ async function main() {
     const result = command === 'migrate' ? await migrateSpec(options) : await packageVersions(options)
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
     if (result.ok === false || (result.lint && !result.lint.ok)) process.exitCode = 1
+    return
+  }
+  if (command === 'upgrade-context') {
+    const result = await upgradeContext(options)
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    if (!result.ok) process.exitCode = 1
     return
   }
   if (options.json && !['context', 'board'].includes(command)) {

@@ -12,6 +12,7 @@ description: >-
 
 ## 1. 확인
 - `npx haeram-spec-creator vibe settings --json`으로 `unset`·`legacy`·현재 값을 본다. `legacy`가 있으면(예전 STATE cfg push·plan) 먼저 `npx haeram-spec-creator migrate`로 옮기고 다시 본다. `unset`이 비어 있으면 이미 정해져 있다고 한 줄로 알리고 원래 일로 돌아간다.
+- 묻기 전에 적용 지침과 브랜치·기획 발행·배포의 기존 운영 규칙을 [프로젝트 규칙 대조](../update-haeram-spec-creator/references/project-rules.md)대로 확인한다. 같은 주제·겹치는 범위의 실제 차이만 현재 프레임워크 절차로 맞추길 권유하고 변경안·영향과 함께 괜찮은지 묻는다. 설정에 없는 프로젝트 제약도 보존하며, 기존에 정한 값을 프리셋으로 덮지 않는다.
 - 후보 브랜치는 실제 브랜치(`git branch -a --format='%(refname:short)'`)와 원격 기본 브랜치(`git symbolic-ref --short refs/remotes/origin/HEAD`)에서만 고른다. 브랜치 이름을 지어내지 않는다. 사용자가 새 이름을 말한 경우는 예외다.
 
 ## 2. 묻기 (한 번에 모아서)
@@ -26,6 +27,6 @@ description: >-
 - land로 고른 브랜치가 로컬에 없으면 기본 브랜치에서 만든다는 점을 알린 뒤 `git branch <land> <기본>`으로 만든다.
 
 ## 3. 쓰기
-- `vibe settings --set land=<값> --set land-via=<값> --set push=<값> --set deploy=<값> [--set plan=<값>] --json`을 실행한다.
-- spec/SETTINGS.md를 커밋한다. migrate로 spec/STATE.md도 바뀌었으면 함께 넣는다. 메시지는 `settings: branch strategy`다. plan이 `-`가 아니면 `vibe plan-push`로 올린다.
+- 이번에 결정한 미정 키만 `vibe settings --set <key>=<value> ... --json`으로 쓴다. 예를 들어 미정 land만 승인받았다면 `vibe settings --set land=<approved-branch> --json`으로 쓴다. 기존 값의 변경도 함께 승인받은 경우에만 그 키를 포함한다. 선택한 정책에 영향을 받는 활성 문서도 일치시키며 SSOT 정책 변경은 update-ssot를 쓴다.
+- spec/SETTINGS.md와 승인된 spec 변경을 `settings: branch strategy`로 커밋하고, spec 외 운영 문서는 분리한다. 프로젝트 정책과 기획 발행이 합치할 때만 `vibe plan-push`한다. PR 필수 정책과 기획 직접 push가 충돌하면 미지원 범위를 알리고 선택받으며, 공유 채번을 끄는 `plan=-`로 임의 우회하지 않는다.
 - 정한 전략을 한 줄로 요약한다(예: "끝나면 next에 병합하고 push, '배포해줘'로 main 반영"). 그다음 원래 요청한 스킬로 돌아가 이어서 진행한다.

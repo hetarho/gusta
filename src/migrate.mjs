@@ -22,9 +22,11 @@ export const MIGRATIONS = [
     summary: 'STATE cfg push/plan → spec/SETTINGS.md land·push·plan',
     run({ state, settings }) {
       if (state === null) return { state, settings }
+      const parsed = settings === null ? { values: {}, errors: [] } : parseSettings(settings)
+      if (parsed.errors.length) return { state, settings }
       const legacy = legacyCfg(state)
       if (legacy.push === null && legacy.plan === null) return { state, settings }
-      const present = settings === null ? {} : parseSettings(settings).values
+      const present = parsed.values
       const changes = {}
       if (legacy.push && !['-', '?'].includes(legacy.push)) {
         if (present.land === undefined || present.land === '?') changes.land = legacy.push
@@ -80,13 +82,16 @@ export async function migrateSpec(options = {}) {
   let current = { state: await readOptional(files.state), settings: await readOptional(files.settings) }
   if (current.state === null) throw new SkillPackageError('spec/STATE.md가 없습니다. 새 프로젝트는 create-architecture로 시작하세요.')
   const applied = []
-  for (const migration of MIGRATIONS) {
+  // Invalid owner choices are evidence to preserve, not absent keys for a migration to fill.
+  const invalidInput = effectiveSettings(current.settings, current.state).errors.length > 0
+  for (const migration of invalidInput ? [] : MIGRATIONS) {
     const next = migration.run(current)
     const changed = Object.keys(files).filter((key) => next[key] !== current[key])
     if (changed.length) applied.push({ id: migration.id, summary: migration.summary, files: changed.map((key) => path.relative(root, files[key])) })
     current = next
   }
-  if (!options.dryRun) {
+  const settings = effectiveSettings(current.settings, current.state)
+  if (!options.dryRun && !settings.errors.length) {
     for (const key of new Set(applied.flatMap((entry) => entry.files))) {
       const name = Object.keys(files).find((entry) => path.relative(root, files[entry]) === key)
       await mkdir(path.dirname(files[name]), { recursive: true })
@@ -95,9 +100,8 @@ export async function migrateSpec(options = {}) {
   }
   const projectFormat = await readOptional(path.join(root, 'spec/FORMAT.md'))
   const format = projectFormat === null ? { missing: [], extra: [], absent: true } : formatDrift(await readFile(BUNDLED_FORMAT, 'utf8'), projectFormat)
-  const settings = effectiveSettings(current.settings, current.state)
-  const lint = options.dryRun ? null : await lintSpec({ targetRoot: root })
-  return { schemaVersion: 1, ok: true, dryRun: Boolean(options.dryRun), applied, format, unset: settings.unset, settingsErrors: settings.errors,
+  const lint = options.dryRun || settings.errors.length ? null : await lintSpec({ targetRoot: root })
+  return { schemaVersion: 1, ok: !settings.errors.length, dryRun: Boolean(options.dryRun), applied: settings.errors.length ? [] : applied, format, unset: settings.unset, settingsErrors: settings.errors,
     lint: lint && { ok: lint.ok, errors: lint.errors, warnings: lint.warnings } }
 }
 

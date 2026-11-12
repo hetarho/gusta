@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.13.1
+
+Released: 2026-11-12.
+
+- Add a read-only upgrade-context inventory covering first-party documents,
+  scoped instructions and execution evidence. Upgrades audit even when current,
+  recommend framework alignment and confirm semantic policy changes before
+  updating settings and active documents; history and ownership stay protected.
+- Refresh unattended loop verification from the current ARCH at unit and final
+  boundaries so approved planning changes cannot leave the final gate running
+  obsolete commands. Incomplete tier contracts remain blocked across restarts;
+  explicit caller verification overrides remain unchanged.
+- Stop specification migration before writing when SETTINGS is invalid. Preserve
+  the original settings and legacy STATE configuration for an explicit correction
+  instead of replacing invalid owner choices with inferred branch settings.
+
 ## 0.13.0
 
 Released: 2026-11-12.
