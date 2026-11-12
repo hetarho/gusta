@@ -10,7 +10,7 @@ import { fixture, execute } from './helpers/vibe-fixture.mjs'
 
 test('설정: 파일·키가 없으면 기본값, 잘못된 값은 오류로 남고 읽는 쪽은 추측하지 않는다', async (t) => {
   assert.deepEqual(effectiveSettings(null).settings.map(({ key, value, source }) => [key, value, source]),
-    [['prune-branches', true, 'default'], ['land', '?', 'default'], ['land-via', 'merge', 'default'], ['push', false, 'default'], ['deploy', '-', 'default'], ['plan', '?', 'default'], ['permission-mode', 'bypass', 'default'], ['headless-mcp', 'isolate', 'default']])
+    [['prune-branches', true, 'default'], ['land', '?', 'default'], ['land-via', 'merge', 'default'], ['push', false, 'default'], ['deploy', '-', 'default'], ['plan', '?', 'default'], ['permission-mode', 'bypass', 'default'], ['headless-mcp', 'isolate', 'default'], ['usage-measurement', false, 'default']])
   assert.deepEqual(effectiveSettings(null).unset, ['land'])
   assert.match(parseSettings('# SETTINGS\n- land: bad..name\n- deploy: true\n').errors.join(), /land: bad\.\.name.*deploy: true/)
   const parsed = parseSettings('# SETTINGS\n- prune-branches: false  # keep\n- color: blue\n')

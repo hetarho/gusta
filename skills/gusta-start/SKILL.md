@@ -24,6 +24,7 @@ CLI는 `npx @haeram/gusta` 뒤에 붙인다. 실행기의 cliCommand가 있으�
 
 ## 1. 시작 — 보여 주고 바로 실행
 `vibe status --tag <tag> --json`으로 cfg·active·inbox 수·runnable·남은 일만 본다. 원격 오류면 선점하지 않는다. 앞선 원격은 깨끗한 트리에서 sync한다. 실행기 밖 초기화·strict 선점은 필요할 때만 [세션 절차](references/session.md)를 읽는다.
+- SETTINGS `usage-measurement`가 true인 시작 대화는 분기 전에 [사용량 기준선](references/usage.md)을 시작하고 아래 조기 종료에도 5절의 Markdown 보고·채팅 요약/링크를 붙인다(false면 실행하지 않음).
 - 기획 변경 요청 인자 없이 실행할 태스크가 없으면(route `sketch-first`) "실행할 태스크가 없습니다 — /gusta-sketch로 먼저 구상하고 태스크까지 만드세요" 한 줄로 끝낸다. 미룬 구상(open/ready ideation)·태스크로 아직 안 쪼갠 SSOT 변경·채택 review가 있으면 그 목록도 붙인다. 여기서 기획·태스크를 만들지 않는다.
 - route `design`(이 checkout이 디자인 중)이면 디자인 변경을 건드리지 않고 "디자인이 열려 있습니다 — /gusta-design-mode로 마감한 뒤 다시 실행하세요"로 끝낸다.
 - 실행 전에 한 번 보여 준다 — 질문이 아니므로 답을 기다리지 않고 바로 시작한다: 대상 태스크(ID·제목, 인자로 범위를 줬으면 그 범위), dep 순서와 병렬 여부(작업 묶음이면 lane), 마감·예약 시간, 검증 단계(태스크 단계·최종 관문 명령 요약), 반영 설정(SETTINGS land·land-via·push), 다른 기기가 잡은 태스크(건너뛴다 — 가로채지 않는다), 결정함 미확인 수, 완료 알림 연결 여부.
@@ -76,6 +77,7 @@ hostManaged 실행기에서는 초기화·active·보고서 생성/종료·묶�
 - 1시간마다, 긴 명령 전 `vibe checkpoint --tag <tag>` 유지(push 브랜치가 없으면 로컬 `wip/<tag>`에만 남는다). 무관한 사용자 변경은 커밋하지 않는다.
 
 ## 5. 마감
+측정을 시작한 최상위 대화는 [사용량 보고](references/usage.md)로 Markdown 파일을 저장하고 최종 **채팅**에 summary·reportFile 링크를 전달한다(할 일 없음·실패·주차도 동일, JSON artifact만으로 끝내지 않음).
 단위1은 다음 단위로 넘어가지 않고 JSON 한 줄(호스트가 요구하면 스키마 결과):
 `{"kind":"task","id":"T001","outcome":"completed","pushed":false,"next":"implementation"}`
 kind=task|planning|inbox|fix|none, outcome=completed|parked|blocked|no_work. pushed는 실제 여부. 시작 대화는 종료 영수증을 받아 사용자 목표의 완료 또는 실제 중단 사유를 확인한 뒤 보고한다: 검증 실패/시도 횟수·남은 수정 태스크·push 여부·원격 SHA·보고서. 자동 통지 연결 여부도 실행 전에 밝힌다. 종료 뒤 돌아오는 사용자는 새 대화에서 `/gusta-start`로 이어갈 수 있다 — 상태는 보고서·결정함·loop.json에 남긴다.

@@ -20,7 +20,8 @@ import { lintSpec } from './spec-lint.mjs'
 import { validateAgentResult, compactUsage } from './agent-adapter.mjs'
 import { adapterArgs, providerFlags } from './work-providers.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { permissionMode, readSetting, SETTINGS } from './settings.mjs'
+import { permissionMode, readSettings, SETTINGS } from './settings.mjs'
+import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive, notificationCapability, loopDeadline, requestedLoopConfig, loopHint } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine } from './loop-time.mjs'
@@ -220,7 +221,8 @@ export async function vibeLoop(options = {}, injected = {}) {
   const context = await vibeSession(options), root = context.root
   // Units are headless: SETTINGS permission-mode (default bypass) unless this run names one.
   const mode = control.length ? null : await permissionMode(options, root)
-  const mcp = control.length ? null : await readSetting({ root }, 'headless-mcp')
+  const settings = control.length ? null : (await readSettings({ root })).values
+  const mcp = settings?.['headless-mcp'] ?? null
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'gusta-vibe-loop.lock')
   const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {}, ...injected }
@@ -311,6 +313,8 @@ export async function vibeLoop(options = {}, injected = {}) {
     } finally { await log.close() }
   }
   const runId = options.runId ?? randomUUID()
+  const measurementRun = usageRun(settings?.['usage-measurement'], context.runtime, runId)
+  let measurement
   await acquireLoop(lock, { pid: process.pid, host: os.hostname(), tag: options.tag, runId })
   const report = `spec/reports/${new Date(start).toISOString().slice(2, 10).replaceAll('-', '')}-${options.tag}.md`
   const reportPath = path.join(root, report)
@@ -394,7 +398,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const snapshot = () => ({ ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, reason, ...(loopHint(reason) ? { hint: loopHint(reason) } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, reason, ...(loopHint(reason) ? { hint: loopHint(reason) } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -440,6 +444,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     if (checks.length) text = text.replace('\n## next', `${checks.join('\n')}\n\n## next`)
     // Where the run's time went, once, when the run closes (a reopened report gets a fresh line).
     if (closing) text = text.replace(/^- time: .*\n/m, '').replace('\n## next', `${timeLine(timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }))}\n\n## next`)
+    if (closing && measurement?.summary) text = text.replace(/^- usage: .*\n/m, '').replace('\n## next', `- usage: ${measurement.summary} ${measurement.reportLink ?? 'Human-readable usage report unavailable.'}\n\n## next`)
     const kept = snapshots.filter((snapshot) => !snapshot.dropped).map((snapshot) => `- uncommitted work kept: ${snapshot.ref} (${snapshot.task ?? '-'}, ${snapshot.fileCount} files)\n`).join('')
     // CI the run could not read waits for the owner, not for the run.
     const ciLater = batches.filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => `- check CI later: ${entry.ci.commit ?? '-'} ${entry.ci.checkUrl ?? ''}`.trimEnd() + '\n').join('')
@@ -802,6 +807,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       const dispatched = recovery
       const job = { schemaVersion: 1, role: 'unit', mode: 'autopilot', workspaceMode: 'single', workspace: root, tag: options.tag, report, status: unitStatus(status, selected, recovery), brief,
         cliCommand: [process.execPath, cli], allowTools: allowTool, permissionMode: mode, headlessMcp: mcp, diffBase: before.head, hostManaged: true,
+        ...(measurementRun ? { usageMeasurement: measurementRun, unit: count + 1, ...(selected ? { taskId: selected } : {}) } : {}),
         timeLimit: { minutes: Math.max(1, Math.round(limitMs / 60000)), cutAt: new Date(Date.now() + limitMs).toISOString() },
         ...(recovery ? { recovery } : {}) }
       // A continuation consumes its snapshot; once the task is done the ref is dropped.
@@ -919,6 +925,10 @@ export async function vibeLoop(options = {}, injected = {}) {
         if (controller.signal.aborted || stopReason) reason = stopReason ?? reason
         else { error ??= caught.message; reason = 'failed'; await event('failed', { error: caught.message }) }
       }
+    }
+    // Also report preflight/no-work exits, before the owned spec report exists.
+    if (measurementRun) measurement = await finishUsageRun(measurementRun, dispatches.length)
+    if (initialized) {
       // Always persist the final reason and commit the owned report, including failures.
       try { await recordReport(true); await metadataCommit(`vibe ${options.tag}: stopped (${reason})`) }
       catch { /* metadataStep recorded a separate operational error and durable journal */ }
@@ -957,5 +967,5 @@ export async function vibeLoop(options = {}, injected = {}) {
   }
   const terminalEvent = await readJSON(plan.notification.terminalEvent).catch(() => null)
   return { ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, ...(loopHint(reason) ? { hint: loopHint(reason) } : {}), stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
-    time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }) }
+    time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}) }
 }

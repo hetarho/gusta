@@ -11,7 +11,8 @@ import { runtimeRoot, canonicalDestination } from './work-runtime.mjs'
 import { atomicJSON, processAlive, controlTransaction } from './loop-control.mjs'
 import { executeAgentAdapter, compactUsage, agentPrompt } from './agent-adapter.mjs'
 import { inspectProviders, availableProvider, providerFlags } from './work-providers.mjs'
-import { readSetting, permissionMode } from './settings.mjs'
+import { readSetting, readSettings, permissionMode } from './settings.mjs'
+import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 import { closeTasks } from './state-doc.mjs'
 import { yymmdd } from './spec-format.mjs'
 import { SkillPackageError } from './errors.mjs'
@@ -230,23 +231,37 @@ async function sessionOptions(ctx, options, deps) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) fail('timeout-ms는 양의 정수입니다.')
   const provider = await availableProvider(options, deps.inspect)
   // Optional flags (e.g. Claude's static system prompt) let the variants' shared prefix hit one cache across worktrees.
-  return { provider, model: options.model, timeoutMs, allowTools: options.allowTool ?? [], permissionMode: await permissionMode(options, ctx.root), headlessMcp: await readSetting({ root: ctx.root }, 'headless-mcp'),
+  const settings = (await readSettings({ root: ctx.root })).values
+  return { provider, model: options.model, timeoutMs, allowTools: options.allowTool ?? [], permissionMode: await permissionMode(options, ctx.root), headlessMcp: settings['headless-mcp'],
+    ...(settings['usage-measurement'] ? { measurementRuntime: ctx.runtime } : {}),
     flags: await (deps.flags ?? providerFlags)(provider, { env: options.env ?? process.env }) }
 }
 // One headless session in a worktree. The transcript and the full prompt it got go to runtime files
 // (results name their paths, never their content); the host commits, so the session needs no Git permission.
 async function headless(execute, session, { role, cwd, prompt, log, subject }) {
   const started = Date.now()
-  const job = { schemaVersion: 1, role, workspace: cwd, prompt, timeoutMs: session.timeoutMs, allowTools: session.allowTools, permissionMode: session.permissionMode, headlessMcp: session.headlessMcp }
+  const measurementRun = session.measurementRuntime ? usageRun(true, session.measurementRuntime) : null
+  const job = { schemaVersion: 1, role, workspace: cwd, prompt, timeoutMs: session.timeoutMs, allowTools: session.allowTools, permissionMode: session.permissionMode, headlessMcp: session.headlessMcp, ...(measurementRun ? { usageMeasurement: measurementRun } : {}) }
   await mkdir(path.dirname(log), { recursive: true })
   const promptPath = log.replace(/\.log$/, '.prompt.md')
-  await writeFile(promptPath, await agentPrompt(job).catch(() => prompt), { mode: 0o600 })
+  const { usageMeasurement, ...promptJob } = job
+  await writeFile(promptPath, await agentPrompt(promptJob).catch(() => prompt), { mode: 0o600 })
   await chmod(promptPath, 0o600)
   const file = await open(log, 'w', 0o600)
-  let result
+  let result, measurement, failure
   try { result = await execute({ provider: session.provider, model: session.model, job, log: (text) => { try { writeSync(file.fd, text) } catch {} }, flags: session.flags }) } catch (error) {
-    throw new SkillPackageError(error.message, [...(error.details ?? []).map((detail) => String(detail).slice(-2000)), `log: ${log}`])
-  } finally { await file.close() }
+    failure = new SkillPackageError(error.message, [...(error.details ?? []).map((detail) => String(detail).slice(-2000)), `log: ${log}`])
+  } finally {
+    await file.close()
+    if (measurementRun) {
+      try { measurement = await finishUsageRun(measurementRun, 1) }
+      catch (error) { measurement = { status: 'unavailable', error: error.message }; process.stderr.write(`Usage measurement unavailable: ${error.message}\n`) }
+    }
+  }
+  if (failure) {
+    if (measurement) { failure.measurement = measurement; failure.details.push(measurement.chatSummary) }
+    throw failure
+  }
   const changed = (await git(cwd, ['status', '--porcelain'])).trim() !== ''
   if (changed) {
     await git(cwd, ['add', '-A'])
@@ -254,7 +269,7 @@ async function headless(execute, session, { role, cwd, prompt, log, subject }) {
   }
   const commit = (await git(cwd, ['rev-parse', 'HEAD'])).trim()
   return { at: new Date().toISOString(), provider: session.provider, model: session.model ?? null, outcome: result.outcome, summary: result.summary, view: result.view, path: result.path ?? '',
-    commit, changed, ms: Date.now() - started, usage: compactUsage(result.usage), log, promptPath }
+    commit, changed, ms: Date.now() - started, usage: compactUsage(result.usage), log, promptPath, ...(measurement ? { measurement } : {}) }
 }
 
 const fields = (text) => text.split('\0').filter(Boolean)
@@ -347,7 +362,7 @@ export async function abStart(options = {}, injected = {}) {
   const files = await scaffoldFiles(ctx.root, record), warnings = scaffoldWarnings(files.modified)
   return { schemaVersion: 1, ok: installed.ok, slug, base: record.base, ...(scaffold ? { origin, scaffold, scaffoldFiles: { added: files.added, modified: files.modified } } : {}),
     ...(warnings.length ? { scaffoldWarnings: warnings } : {}),
-    ...(run ? { scaffoldRun: { summary: run.summary, view: run.view, path: run.path, ms: run.ms, usage: run.usage, log: run.log, promptPath: run.promptPath } } : {}),
+    ...(run ? { scaffoldRun: { summary: run.summary, view: run.view, path: run.path, ms: run.ms, usage: run.usage, log: run.log, promptPath: run.promptPath, ...(run.measurement ? { measurement: run.measurement } : {}) } } : {}),
     variants: Object.entries(record.variants).map(([name, variant]) => ({ variant: name, branch: variant.branch, path: variant.path, port: variant.port, url: urlOf(variant) })), ...installed.report }
 }
 

@@ -106,8 +106,11 @@ npx @haeram/gusta vibe sketch serve tag-filter   # .tmp/sketch/tag-filter/의 �
 npx @haeram/gusta vibe brief T012           # 태스크가 기대는 결정 블록
 npx @haeram/gusta vibe loop --tag k3f9 --provider claude --json    # 맡긴 실행: 단위마다 새 세션
 npx @haeram/gusta vibe push                 # 끝난 작업을 spec/SETTINGS.md대로 반영
+npx @haeram/gusta vibe settings --set usage-measurement=true  # 사용량·캐시 측정 켜기 (기본 false)
 npx @haeram/gusta work run --work feature --provider codex --json  # 병렬 워커와 리뷰어
 ```
+
+측정을 켜면 추가 모델 호출 없이 로컬 JSON과 완료 요약을 남깁니다. 네이티브 Claude 대화는 정확한 세션의 시작/마감 훅으로 별도 측정하며, 알 수 없는 값은 unknown으로 표시합니다. 캐시 적중률만으로 절감을 입증할 수 없고 USD는 구독 한도가 아닙니다. [측정 범위와 집계 규칙](docs/usage-measurement.md)을 확인하세요.
 
 ## 문서
 

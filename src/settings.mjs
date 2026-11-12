@@ -29,6 +29,8 @@ export const SETTINGS = {
     note: 'headless sessions the CLI starts to write code (vibe loop units, work run workers, gusta-showcase variants, preflight probe): bypass = no permission prompts or sandbox, network allowed; acceptEdits = edits plus the allow-tool list only, Codex in its workspace-write sandbox (no network)' },
   'headless-mcp': { default: 'isolate', ...oneOf('isolate', 'inherit'),
     note: "MCP servers of the headless Claude sessions the CLI starts: isolate = none (no user, account or project .mcp.json servers); inherit = whatever the user's Claude setup loads, for projects whose headless sessions need MCP" },
+  'usage-measurement': { default: false, ...oneOf(true, false),
+    note: 'true = collect provider-reported CLI adapter usage and enable scoped native Claude start/report hooks; false = no measurement collection (preflight probes and unsupported hosts remain outside scope)' },
 }
 export const SETTINGS_FILE = 'spec/SETTINGS.md'
 const TITLE = '# SETTINGS'

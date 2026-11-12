@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.15.2
+
+Released: 2026-11-13.
+
+- Add opt-in `usage-measurement` (default `false`) for local token, model and
+  cache accounting across shared Claude/Codex adapters and native Claude
+  conversations. Native reports use an exact session baseline and include only
+  proven child sessions; duplicate observations and missing counters remain
+  explicit rather than inflating totals or presenting unknown usage as zero.
+- Save JSON and readable Markdown usage reports, and deliver their summary and
+  clickable report link in the initiating start/self-improvement conversation's
+  final reply. Native and adapter totals retain separate scopes and coverage
+  limits; no prices, savings or subscription quota are inferred.
+
 ## 0.15.0
 
 Released: 2026-11-12.

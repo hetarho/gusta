@@ -3,7 +3,10 @@ import path from 'node:path'
 import { executeAgentAdapter, compactUsage } from './agent-adapter.mjs'
 import { inspectProviders, availableProvider, providerFlags } from './work-providers.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { readSetting } from './settings.mjs'
+import { readSettings } from './settings.mjs'
+import { inspectWorkspace } from './workspace.mjs'
+import { runtimeRoot } from './work-runtime.mjs'
+import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 
 // One read-only headless session that returns proposals only. Orchestrators that cannot
 // start native subagents (autopilot, headless or Codex runs) delegate exploration here,
@@ -18,11 +21,24 @@ export async function workScout(options = {}, injected = {}) {
   const flags = await deps.flags(provider, { env: options.env ?? process.env })
   const started = deps.now()
   const workspace = path.resolve(options.targetRoot ?? process.cwd())
-  const job = { schemaVersion: 1, role: 'scout', workspace, prompt, timeoutMs, headlessMcp: await readSetting({ targetRoot: workspace }, 'headless-mcp') }
-  let result
+  const settings = (await readSettings({ targetRoot: workspace })).values
+  const measuredWorkspace = settings['usage-measurement'] ? await inspectWorkspace({ targetRoot: workspace }) : null
+  const measurementRun = measuredWorkspace ? usageRun(true, measuredWorkspace.git ? runtimeRoot(measuredWorkspace) : path.join(workspace, '.tmp/gusta/v1')) : null
+  const job = { schemaVersion: 1, role: 'scout', workspace, prompt, timeoutMs, headlessMcp: settings['headless-mcp'], ...(measurementRun ? { usageMeasurement: measurementRun } : {}) }
+  let result, failure
+  let measurement
   // Provider progress stays out of the returned JSON; only a short failure tail is kept.
-  try { result = await deps.execute({ provider, model: options.model, job, log: () => {}, flags }) } catch (error) {
-    throw new SkillPackageError(error.message, (error.details ?? []).map((detail) => String(detail).slice(-2000)))
+  try { result = await deps.execute({ provider, model: options.model, job, env: options.env, log: () => {}, flags }) } catch (error) {
+    failure = new SkillPackageError(error.message, (error.details ?? []).map((detail) => String(detail).slice(-2000)))
+  } finally {
+    if (measurementRun) {
+      try { measurement = await finishUsageRun(measurementRun, 1) }
+      catch (error) { measurement = { status: 'unavailable', error: error.message }; process.stderr.write(`Usage measurement unavailable: ${error.message}\n`) }
+    }
   }
-  return { schemaVersion: 1, ok: true, provider, model: options.model ?? null, ms: deps.now() - started, summary: result.summary, proposals: result.proposals, usage: compactUsage(result.usage) }
+  if (failure) {
+    if (measurement) { failure.measurement = measurement; failure.details.push(measurement.chatSummary) }
+    throw failure
+  }
+  return { schemaVersion: 1, ok: true, provider, model: options.model ?? null, ms: deps.now() - started, summary: result.summary, proposals: result.proposals, usage: compactUsage(result.usage), ...(measurement ? { measurement } : {}) }
 }

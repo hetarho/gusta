@@ -20,6 +20,7 @@ description: >-
 5. **읽기**: status 요약·`vibe brief <T###|ID-n|ID@rev> --summary`로 필요한 범위를 찾는다. 큰 brief는 `--section decisions|tasks --offset <n> --limit <n>`으로 원문 블록째 읽고 모든 필요 블록의 coverage를 확인한다. 전체 brief의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 보고서도 필요한 절만 읽고, 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
 ## 1. 변형 설계
+SETTINGS `usage-measurement`가 true인 시작 대화는 [사용량 절차](../gusta-start/references/usage.md)로 작업 전 기준선을 시작하고 마감 응답(실패·주차 포함)에 summary·로컬 artifact를 붙인다(false면 실행하지 않음).
 - 요청을 한 문장 목표와 비교 축(디자인·UX·UI·기능·성능)으로 정리한다. 변형 수는 사용자가 말한 대로, 없으면 2개(최대 6 — 변형마다 세션 하나만큼 토큰·시간이 든다).
 - 변형마다 접근 하나: 목표·제약은 같고 방식은 확실히 다르게(사소한 차이 여럿보다 의미 있는 차이 하나). 사용자가 안을 말했으면 그대로 쓴다. 문제 자체가 모호할 때만 한 번 묻는다.
 - 변형은 실험이다 — spec/을 고치지 않고 기존 SSOT 결정·계약을 모두 지킨다. 결정을 바꿔야 성립하는 안이면 변형 설명에 그 결정 ID를 적는다.

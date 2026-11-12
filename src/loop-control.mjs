@@ -138,6 +138,7 @@ export function finishedSummary(state, stateText = '') {
   const hint = loopHint(state.reason)
   return { level: status === 'failed' ? 'failure' : waiting.length || ciUnchecked.length || hint ? 'attention' : 'info', status, reason: state.reason ?? null, ...(hint ? { hint } : {}), ...(state.error ? { error: state.error } : {}),
     units: state.units ?? 0, judgment: capped(waiting), parked: waiting.filter((item) => item.kind === 'parked').length, push, ...(ciUnchecked.length ? { ciUnchecked } : {}), report: state.report ?? null,
+    ...(state.measurement ? { measurement: state.measurement } : {}),
     ...(state.gate ? { verification: state.gate } : {}), ...(state.continuation ? { objectiveComplete: false, continuation: state.continuation } : {}),
     ...(state.deadline ? { deadline: state.deadline, workDeadline: state.workDeadline, reserve: state.reserve } : {}) }
 }

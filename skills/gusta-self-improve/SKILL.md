@@ -18,6 +18,7 @@ description: >-
 5. **읽기**: status 요약·`vibe brief <T###|ID-n|ID@rev> --summary`로 필요한 범위를 찾는다. 큰 brief는 `--section decisions|tasks --offset <n> --limit <n>`으로 원문 블록째 읽고 모든 필요 블록의 coverage를 확인한다. 전체 brief의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 보고서도 필요한 절만 읽고, 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
 ## 1. 호출과 실행 준비
+SETTINGS `usage-measurement`가 true인 시작 대화는 [사용량 절차](../gusta-start/references/usage.md)로 작업 전 기준선을 시작한다. 최상위 대화는 마감(할 일 없음·실패·주차 포함)에 Markdown 파일을 저장하고 최종 **채팅**에 summary·reportFile 링크를 전달한다(JSON artifact만으로 끝내지 않음, false면 실행하지 않음).
 
 이 스킬 호출은 이번 실행 범위 안의 동작 보존 개선을 오케스트레이터가 채택하고 로컬에 통합하라는 위임이다. 후보마다 사람에게 채택을 묻지 않는다. 지속 정책이 있으면 범위·예산을 이어받고, 없으면 이번 실행의 범위·예산·호출 권한을 review notes와 보고서에 기록한다. 호출만으로 상시 스케줄을 켜거나 큰 변화·원격 발행 권한을 추가하지 않는다.
 

@@ -7,6 +7,7 @@ import { SkillPackageError } from './errors.mjs'
 import { renderBrief } from './spec-context.mjs'
 import { OPTIONAL_FLAGS, STRICT_MCP } from './work-providers.mjs'
 import { AGENT_CONFIG } from './constants.mjs'
+import { usageCollector, persistUsage } from './usage-measurement.mjs'
 
 const fail = (message) => { throw new SkillPackageError(message) }
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
@@ -231,8 +232,11 @@ export function providerArguments(provider, role, files, model, { allowTools = [
 }
 
 // flags: the caller's providerFlags answer; none by default (this never probes the CLI).
-export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text), flags = [] }) {
-  const prompt = await agentPrompt(job, provider)
+export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text), flags = [], measurementDeps = {} }) {
+  const { usageMeasurement, ...promptJob } = job
+  const prompt = await agentPrompt(promptJob, provider)
+  const collector = usageMeasurement ? usageCollector(provider, model) : null
+  let sessionId = job.resume ?? null, returned, succeeded = false, failure
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'gusta-agent-'))
   const files = { schema: path.join(temporary, 'schema.json'), result: path.join(temporary, 'result.json') }
   try {
@@ -240,6 +244,7 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     // The session ID is known before the run ends (Claude: chosen here; Codex: its first event)
     // and written to sessionFile at once, so even a run killed at its timeout can be resumed.
     const session = provider === 'claude' ? job.resume ?? randomUUID() : job.resume ?? null
+    sessionId = session
     const remember = (id) => job.sessionFile && id ? writeFile(job.sessionFile, id).catch(() => {}) : null
     await remember(session)
     // job.headlessMcp is the host's SETTINGS value; a job without one is isolated.
@@ -269,6 +274,7 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
         child.stdout.on('data', (chunk) => {
           // Both providers stream events: the log follows the session as it runs.
           log(chunk)
+          collector?.push(chunk)
           if (provider === 'codex') {
             // Keep only the head of the event stream: the session ID comes first.
             if (events.length < 64 * 1024) {
@@ -294,8 +300,26 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     if (provider === 'claude') {
       keep(partial)
       const output = answer || last
-      return { ...claudeResult(output, job.role), session, ...(['unit', 'scout', 'variant', 'scaffold'].includes(job.role) ? { usage: claudeEnvelope(output).usage ?? null } : {}) }
+      returned = { ...claudeResult(output, job.role), session, ...(['unit', 'scout', 'variant', 'scaffold'].includes(job.role) ? { usage: claudeEnvelope(output).usage ?? null } : {}) }
+    } else {
+      sessionId = codexSession(events) ?? job.resume ?? null
+      returned = { ...validateAgentResult(job.role, JSON.parse(await readFile(files.result, 'utf8'))), session: sessionId }
     }
-    return { ...validateAgentResult(job.role, JSON.parse(await readFile(files.result, 'utf8'))), session: codexSession(events) ?? job.resume ?? null }
-  } finally { await rm(temporary, { recursive: true, force: true }) }
+    succeeded = true
+    return returned
+  } catch (error) { failure = error; throw error }
+  finally {
+    if (collector) {
+      try {
+        const measurement = await persistUsage(usageMeasurement, collector.finish({ ok: succeeded, resumed: Boolean(job.resume) }), { provider, model, job, session: sessionId }, measurementDeps)
+        if (returned) returned.measurement = measurement
+        if (failure) failure.details = [...(failure.details ?? []), `Usage measurement: ${usageMeasurement.directory} (${measurement.status})`]
+      } catch (error) {
+        if (returned) returned.measurementError = error.message
+        if (failure) failure.details = [...(failure.details ?? []), `Usage measurement unavailable: ${error.message}`]
+        log(`Usage measurement unavailable: ${error.message}\n`)
+      }
+    }
+    await rm(temporary, { recursive: true, force: true })
+  }
 }

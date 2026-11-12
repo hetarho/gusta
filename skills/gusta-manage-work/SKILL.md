@@ -18,6 +18,7 @@ description: >-
 5. **읽기**: status 요약·`vibe brief <T###|ID-n|ID@rev> --summary`로 필요한 범위를 찾는다. 큰 brief는 `--section decisions|tasks --offset <n> --limit <n>`으로 원문 블록째 읽고 모든 필요 블록의 coverage를 확인한다. 전체 brief의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 보고서도 필요한 절만 읽고, 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
 작은 단독 작업은 gusta-implement-task로 보낸다. 작업 묶음을 만들거나 운영할 때만 [전체 절차](references/workflow.md)를 읽는다. 단독 세션에서 이 참조를 로드하지 않는다.
+SETTINGS `usage-measurement`가 true인 시작 대화는 [사용량 절차](../gusta-start/references/usage.md)로 작업 전 기준선을 시작하고 마감 응답(실패·주차 포함)에 summary·로컬 artifact를 붙인다(false면 실행하지 않음).
 
 - 검증 단계·소유권은 조정자 소유 [최종 검증 절차](../gusta-start/references/verification.md)를 따른다. 직렬 단독 맡김은 `vibe loop`(gusta-start).
 - 오케스트레이터가 승인한 일부 태스크만 실행할 때는 start/configure `--tasks 'T### T###'`로 범위를 저장한다. lane은 전체를 포함하고 미승인 선행 작업을 자동 채택하지 않는다. gusta-self-improve는 `--workspace current --review all --push -`로 현재 브랜치에 통합하며 범위 밖 todo를 소비하지 않는다.

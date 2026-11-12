@@ -15,7 +15,8 @@ import { stateMergeArgs } from './git-merge.mjs'
 import { git } from './workspace.mjs'
 import { pruneWork, dispatchLogDir } from './prune.mjs'
 import { processAlive, atomicJSON, readJSON } from './loop-control.mjs'
-import { permissionMode, readSetting } from './settings.mjs'
+import { permissionMode, readSettings } from './settings.mjs'
+import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 
 const { repository, groupOf, attemptOf, now, fail, requireStopped, commands, tierChecks, briefFor } = workInternals
 // A session carries its context into the next lane task, correction or answered decision,
@@ -88,7 +89,8 @@ export async function runWork(options) {
   const context = await repository(options)
   // Workers are headless: SETTINGS permission-mode (default bypass) unless this run names one.
   const mode = await permissionMode(options, context.cwd)
-  const mcp = await readSetting({ root: context.cwd }, 'headless-mcp')
+  const settings = (await readSettings({ root: context.cwd })).values
+  const mcp = settings['headless-mcp']
   const stored = groupOf(await readRuntime(context.root), options.work)
   const verify = tierChecks(options, stored, 'unit')
   const taskVerify = options.taskVerify ?? stored.verify?.task ?? []
@@ -106,6 +108,8 @@ export async function runWork(options) {
     group.runner = run
     return structuredClone(group)
   })
+  const measurementRun = usageRun(settings['usage-measurement'], context.root, run.id)
+  let measurement
   const limits = workLimits(group.limits)
   const jobs = new Map()
   const failures = []
@@ -272,6 +276,7 @@ export async function runWork(options) {
       boardCommand: ['work', 'board', '--work', group.id, '--json'],
       verify, taskVerify, review: review ?? null, correction: attempt.correction ?? null,
       mode: autopilot ? 'autopilot' : 'pair', resume, directive, sessionFile: job.sessionFile, allowTools: role === 'worker' ? liveGroup.allowTools ?? [] : [], ...(role === 'worker' ? { permissionMode: mode } : {}), headlessMcp: mcp,
+      ...(measurementRun ? { usageMeasurement: measurementRun } : {}),
       brief: role === 'worker' ? await briefFor(context, liveGroup, current).catch(() => null) : null, risk: role === 'reviewer' ? current.risk ?? null : null,
       instruction: role === 'worker'
         ? 'Use gusta-implement-task. Implement only taskId (or fix review findings) in this workspace, run the checks this task adds or affects, check acceptance, fill result, and commit. Full suites run at unit integration. Return JSON {"outcome":"completed","summary":"..."}. The runner owns submit and dispatches the next lane task to this workspace; do not submit, integrate, or claim another task. For a blocker return {"outcome":"blocked","summary":"reason"}; when only a planning decision blocks you, add "decision":{"question":"...","options":["..."],"recommendation":"..."} and commit your partial work.'
@@ -486,6 +491,10 @@ export async function runWork(options) {
     // This runs while the runner record still holds the group, so no session reads a unit mid-cleanup
     // as live work. The group itself stays for the coordinator; vibe prune closes it at session end.
     try { pruned = await pruneWork({ ...options, work: group.id }) } catch (error) { pruneError = error.message }
+    if (measurementRun) {
+      try { measurement = await finishUsageRun(measurementRun, dispatched); run.measurement = measurement }
+      catch (error) { measurement = { status: 'unavailable', error: error.message }; process.stderr.write(`Usage measurement unavailable: ${error.message}\n`) }
+    }
     recorded = true
     try {
       await transaction(context.root, (state) => {
@@ -503,6 +512,7 @@ export async function runWork(options) {
   const status = await inspectWork(options)
   const attempts = status.attempts.filter((entry) => entry.group === group.id)
   return { schemaVersion: 1, run: run.id, dispatched, failures, decisions, heartbeatError, snapshot, snapshotError, finish, finishError, pruned, pruneError, summary: board.summary,
+    ...(measurement ? { measurement } : {}),
     outcome: outcomeFor(board),
     remaining: board.tasks.map(({ id, waitingOn, runtimeStatus, attempt }) => ({ id, waitingOn, runtimeStatus, attempt: attempt?.id ?? null })),
     attempts: attempts.map(({ id, taskId, status, reason }) => ({ id, taskId, status, reason })) }
@@ -517,6 +527,7 @@ const runnerHealth = (runner, alive, at) => runner.host !== os.hostname() ? 'unk
   : at - Date.parse(runner.heartbeatAt ?? runner.startedAt) > STALE_MS ? 'heartbeat-stale' : 'running'
 const brief = (text) => String(text).slice(0, 300)
 const outcomeOf = (result) => result.ok === false ? { ok: false, error: brief(result.error) } : { outcome: result.outcome, dispatched: result.dispatched, summary: result.summary,
+  ...(result.measurement ? { measurement: result.measurement } : {}),
   decisions: result.decisions ?? [], failures: result.failures?.length ?? 0, remaining: result.remaining?.length ?? 0,
   errors: Object.fromEntries(['heartbeatError', 'finishError', 'pruneError', 'snapshotError'].filter((key) => result[key]).map((key) => [key, brief(result[key])])) }
 const runnerExists = (runner) => fail('작업 묶음에 runner가 이미 있습니다. 종료 후 runner-recover로 확인하세요.', [JSON.stringify(runner)])
@@ -541,7 +552,8 @@ export async function workRunStatus(options, deps = {}) {
   const file = runFiles(context.root, last.id).result
   const result = await readJSON(file).catch(() => null)
   return { schemaVersion: 1, work: group.id, state: 'stopped', running: false, runId: last.id, log: last.log ?? null, startedAt: last.startedAt, stoppedAt: last.stoppedAt ?? null,
-    outcome: last.outcome, dispatches: [], result: result ? { ...outcomeOf(result), file } : null }
+    outcome: last.outcome, dispatches: [], result: result ? { ...outcomeOf(result), file } : null,
+    ...((result?.measurement ?? last.measurement) ? { measurement: result?.measurement ?? last.measurement } : {}) }
 }
 
 // Unattended sessions must not run kill themselves: the CLI sends the signal the runner already
