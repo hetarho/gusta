@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.15.0
+
+Released: 2026-11-12.
 
 - Plan first, then let it run. New `/gusta-sketch` is the planning entry: it
   draws the idea as one self-contained HTML mockup page in the untracked
