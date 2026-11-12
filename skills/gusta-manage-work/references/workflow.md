@@ -43,7 +43,7 @@
 - 보고: novice에게는 완료·진행·막힌 일과 다음 행동을 설명한다. expert에게는 묶음 브랜치, attempt, 검증 커밋, 통합 결과, 보존한 경로를 간결하게 보고한다.
 
 ## 5. 계속 작업하는 워커와 대기 리뷰어
-- 사용자가 자리를 비우는 맡김 모드면 `work run --autopilot`으로 실행하고 조정자는 `work next --coordinator --autopilot` 루프로 결정 요청(`decide`)을 처리한다. 절차는 gusta-start의 [조정자 절차](../../gusta-start/references/coordinator.md).
+- gusta-start가 맡긴 실행이면 `work run --autopilot`으로 실행하고 조정자는 `work next --coordinator --autopilot` 루프로 결정 요청(`decide`)을 처리한다. 절차는 gusta-start의 [조정자 절차](../../gusta-start/references/coordinator.md).
 - 여러 태스크를 계속 처리하도록 요청받았으면 [실행기 연결](runner.md)을 읽는다. `work doctor`와 `work run --dry-run`으로 도구·역할·한도를 확인한다. `work run`은 기본 Codex/Claude 또는 command 어댑터를 사용해 워커 보충, lane 다음 태스크 이어 배정, 수정 우선 재배정, 리뷰, 직렬 통합, 묶음 완료 검증을 진행한다. 실제 실행 전 단계별 검증 명령(`--task-verify` 선택, `--verify` 단위 통합, `--group-verify` 묶음 완료)을 지정하고, 검사·미리보기만으로 에이전트를 실행했다고 보고하지 않는다.
 - Orca·수동 세션 오케스트레이터 연결은 [runner.md](runner.md)의 'Orca 또는 다른 coordinator'.
 - Orca에서는 같은 CLI의 선점·리뷰 프로토콜을 사용하고 실행/완료 알림은 Orca가 맡게 할 수 있다. Orca coordinator와 로컬 runner가 같은 워커 슬롯을 동시에 관리하지 않게 한다.

@@ -14,7 +14,8 @@ import { SkillPackageError } from './errors.mjs'
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
 const STATE = 'spec/STATE.md'
 const NEXT_LIMIT = 3
-// next lines this command writes, replaced on its next run.
+// next lines this command writes, replaced on its next run — in any wording it has used (e.g. the
+// older `plan next with ideation or gusta-create-task`), so existing STATE files regenerate cleanly.
 const GENERATED_NEXT = /^- (gusta-implement-task T\d{3,}( T\d{3,})*|no runnable task\b.*)$/
 // result lines still holding the template text (`at` is fine when --at replaces it).
 const UNFILLED = /^- (outcome|at|verified|limits): <[^>]*>$/
@@ -89,7 +90,7 @@ async function done({ options, board, root, state, id, date }) {
     const kept = lines.filter((line) => !GENERATED_NEXT.test(line) && !new RegExp(`\\b${id}\\b`).test(line))
     const lead = runnable.length ? `- gusta-implement-task ${runnable.slice(0, NEXT_LIMIT).join(' ')}` : remaining ? '- no runnable task: resolve blocked, parked or deps' : null
     const result = [lead, ...kept].filter(Boolean).slice(0, NEXT_LIMIT)
-    return result.length ? result : ['- no runnable task: plan next with ideation or gusta-create-task']
+    return result.length ? result : ['- no runnable task: plan next with gusta-sketch']
   }
   const closed = closeTasks(state, [id], { log: `- ${date} ${id} done`, next })
   await writeFile(path.join(root, STATE), closed.text)

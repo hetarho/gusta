@@ -1,10 +1,10 @@
 ---
 name: gusta-create-ssot
 description: >-
-  기획자 역할로 사용자를 인터뷰해 새 도메인 SSOT(spec/ssot/)를 작성한다. "기능 기획하자 /
-  스펙 만들어줘 / SSOT 작성 / ~기능 추가하고 싶어(아직 스펙 없음)" 일 때 사용. 기획 관점 질문만 한다
-  (목적·타겟·범위·플로우·정책) — 기술 결정은 하지 않는다. 기존 SSOT 수정은 gusta-update-ssot,
-  구현 분해는 gusta-create-task.
+  gusta-sketch가 고른 시안을 새 도메인 SSOT(spec/ssot/)로 옮기는 내부 기획 스킬. 기획자 역할로
+  시안에서 정하지 못한 공백만 인터뷰한다(목적·타겟·범위·플로우·정책) — 기술 결정은 하지 않는다. 기존 SSOT 수정은
+  gusta-update-ssot, 구현 분해는 gusta-create-task. 기능을 기획하려는 요청은
+  gusta-sketch로.
 ---
 
 # gusta-create-ssot — 기획자 인터뷰 → 도메인 SSOT
@@ -17,7 +17,7 @@ description: >-
 1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
 2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
-4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(gusta-start)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 모드가 정해지지 않았으면 함께 모드다.
+4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
 5. **읽기**: status 요약·`vibe brief <T###|ID-n|ID@rev> --summary`로 필요한 범위를 찾는다. 큰 brief는 `--section decisions|tasks --offset <n> --limit <n>`으로 원문 블록째 읽고 모든 필요 블록의 coverage를 확인한다. 전체 brief의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 보고서도 필요한 절만 읽고, 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
 어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 `vibe format --section settings`의 `plan`).
@@ -25,7 +25,7 @@ description: >-
 ## 1. 시작
 STATE 읽기 → log에 `- YYMMDD gusta-create-ssot <topic> start` → STATE ssot 표(도메인 목록)와 `rg <키워드> spec/ssot`로 중복·연관 확인(ssot/ 전체를 읽지 않는다).
 같은 도메인이 이미 있으면 gusta-update-ssot로 전환을 제안한다.
-spec/ideation/ 바로 아래 st:ready 문서가 재료다(gusta-start가 기획 경로로 고른 open 문서도 — 이때 문서·STATE st를 ready로 바꾼다). domains의 다음 미반영 채택 줄과 vision·shape·explored를 읽고, 2단계 인터뷰는 문서의 공백과 [?]만 채운다. ideation/done/은 기본 입력이 아니다. 같은 도메인이 이미 있으면 원본 ideation 경로·반영할 범위를 gusta-update-ssot로 함께 넘긴다.
+gusta-sketch에서 고른 시안의 결정(채택·안 할 것·v1 경계)이 재료다 — 2단계 인터뷰는 시안에서 정하지 못한 공백과 [?]만 채운다. sketch가 미뤄 둔 spec/ideation/ 문서(open·ready)를 재료로 쓰면 domains의 다음 미반영 채택 줄과 vision·shape·explored를 읽고 문서·STATE st를 ready로 바꾼다. ideation/done/은 기본 입력이 아니다. 같은 도메인이 이미 있으면 원본 경로·반영할 범위를 gusta-update-ssot로 함께 넘긴다.
 
 ## 2. 기획 인터뷰
 아래를 전부 결정으로 만들 수 있을 때까지 묻는다. 한 번에 2~4개씩. 이미 문서·대화에 답이 있으면 묻지 않는다.
@@ -40,7 +40,7 @@ level별 질문법:
 - **expert**: 정책 엣지(동시성, 악용, 한도 초과 시 UX)까지 직접 묻는다. 선택지는 용어 나열로 짧게.
 - **mid**: 핵심 갈림길만 선택지 + 영향 1줄. 엣지는 추천안을 제시하고 확인.
 - **novice**: 기획 결정을 AI가 대신 정하지 않는다 — 기술과 달리 기획은 novice일수록 오히려 더 촘촘히 묻는다. 다만 용어 없이 "이런 상황이 생기면 어떻게 되면 좋겠어요?" 식 시나리오로 풀고, 질문마다 추천안을 붙여 고르기 쉽게 한다. 사용자가 "알아서 해줘"라고 넘긴 항목도 과금·데이터 삭제·개인정보만큼은 반드시 명시적으로 확인받는다.
-- **맡김 모드**: 위 질문을 똑같이 만들되 묻지 않고 추천안으로 결정을 쓴다. 질문마다 inbox `decided` 한 줄(`<question> → <choice> (alt: …)`)을 남겨 사용자가 나중에 같은 질문을 검토하게 한다. 과금·데이터 삭제·개인정보·보안은 정하지 않고 `[?]`로 두고 inbox `parked`.
+- **맡김(gusta-start 실행)**: 위 질문을 똑같이 만들되 묻지 않고 추천안으로 결정을 쓴다. 질문마다 inbox `decided` 한 줄(`<question> → <choice> (alt: …)`)을 남겨 사용자가 나중에 같은 질문을 검토하게 한다. 과금·데이터 삭제·개인정보·보안은 정하지 않고 `[?]`로 두고 inbox `parked`.
 
 ## 3. 작성
 도메인 ID 확정(기존과 충돌 금지) → 이 스킬 폴더의 assets/ssot.md를 `spec/ssot/<ID>.md`로 복사해 채운다. (opt) 섹션(flow·constraints)은 안 쓰면 삭제, `<...>` 자리표시는 전부 실제 내용으로 교체.
@@ -62,4 +62,4 @@ level별 질문법:
 
 ## 4. 마감
 STATE: ssot 행 추가 `<ID> | 1 | 0 | all | <[?] 수>` / next에 `gusta-create-task <ID>` / log 1줄.
-ideation에서 시작했다면 [전환 마감 절차](references/ideation.md)를 수행한다.
+ideation 문서에서 시작했다면 [전환 마감 절차](references/ideation.md)를 수행한다.

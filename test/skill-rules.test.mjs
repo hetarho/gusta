@@ -4,9 +4,9 @@ import test from 'node:test'
 
 const skillsRoot = new URL('../skills/', import.meta.url)
 const HEADING = '## 공통 규칙 (모든 spec 스킬)'
-const MODE = '맡김 모드(gusta-start)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 모드가 정해지지 않았으면 함께 모드다.'
+const MODE = 'gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.'
 // CLAUDE.md principle 2: the same five rules everywhere, except these documented wordings.
-const EXCEPTIONS = { 1: ['gusta-create-architecture', 'ideation', 'gusta-start'], 3: ['gusta-create-narrative', 'ideation'], 4: ['gusta-create-narrative', 'ideation'] }
+const EXCEPTIONS = { 1: ['gusta-create-architecture', 'gusta-start'], 3: ['gusta-create-narrative'], 4: ['gusta-create-narrative'] }
 // Meta skills review this skill set itself; they write no spec documents and carry no common rules.
 const META = ['gusta-send-issue', 'gusta-preference', 'gusta-init', 'gusta-update']
 
@@ -43,9 +43,9 @@ test('메타 스킬 gusta-preference는 공통 규칙 없이 CLI(vibe settings)�
   assert.ok(!text.includes(HEADING)); assert.match(text, /vibe settings --json/); assert.match(text, /vibe settings --set/); assert.match(text, /직접 편집하지 않는다/)
 })
 
-test('spec 스킬은 gusta-self-improve·gusta-showcase를 포함해 16종이고 모두 공통 규칙 5줄을 가진다', async () => {
+test('spec 스킬은 gusta-sketch·gusta-self-improve·gusta-showcase를 포함해 16종이고 모두 공통 규칙 5줄을 가진다', async () => {
   const rules = await commonRules()
-  assert.deepEqual([...rules.keys()].sort(), ['gusta-create-architecture', 'gusta-create-narrative', 'gusta-create-ssot', 'gusta-create-task', 'gusta-design-mode', 'gusta-doc-review', 'gusta-implement-task', 'gusta-manage-work', 'gusta-review-code', 'gusta-review-task', 'gusta-self-improve', 'gusta-self-improve-remote', 'gusta-showcase', 'gusta-start', 'gusta-update-ssot', 'ideation'])
+  assert.deepEqual([...rules.keys()].sort(), ['gusta-create-architecture', 'gusta-create-narrative', 'gusta-create-ssot', 'gusta-create-task', 'gusta-design-mode', 'gusta-doc-review', 'gusta-implement-task', 'gusta-manage-work', 'gusta-review-code', 'gusta-review-task', 'gusta-self-improve', 'gusta-self-improve-remote', 'gusta-showcase', 'gusta-sketch', 'gusta-start', 'gusta-update-ssot'])
 })
 
 test('공통 규칙 1번은 미정 설정(settings.unset)을 gusta-init으로 먼저 정하게 하고 맡김은 묻지 않는다', async () => {

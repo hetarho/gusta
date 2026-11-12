@@ -131,14 +131,14 @@ export function renderBriefView(view) {
 
 export async function vibeFormat(options = {}) {
   const markdown = await readFile(new URL('../skills/gusta-create-architecture/assets/FORMAT.md', import.meta.url), 'utf8')
-  const names = { task: ['Notation', 'Skeletons (section order fixed; only (opt) may be omitted; no sections beyond the skeleton)', 'State rules'], state: ['State rules', 'Sessions'], ssot: ['Principles', 'Notation'], report: ['Sessions'], reading: ['Reading'], settings: ['Settings'] }
+  const names = { task: ['Notation', 'Skeletons (section order fixed; only (opt) may be omitted; no sections beyond the skeleton)', 'State rules'], state: ['State rules', 'Sessions'], ssot: ['Principles', 'Notation'], report: ['Sessions'], ideation: ['Notation', 'Skeletons (section order fixed; only (opt) may be omitted; no sections beyond the skeleton)', 'Reading', 'State rules'], reading: ['Reading'], settings: ['Settings'] }
   const requested = names[options.section] ?? [options.section]
   const map = sections(markdown)
   if (!requested.every((name) => map.has(name))) throw new SkillPackageError(`알 수 없는 FORMAT section: ${options.section}`)
   const entries = requested.map((name) => {
     let lines = map.get(name)
-    if (['task', 'state', 'report', 'ssot'].includes(options.section)) {
-      const topic = { task: /task|acceptance|result|touches|base:|st:|dep:|\[v\]/i, state: /STATE|active|inbox|log|push|report/i, report: /report|autopilot|loop/i, ssot: /decision|SSOT|\[o\]|\[x\]|\[\?\]|rev|chg/i }[options.section]
+    if (['task', 'state', 'report', 'ssot', 'ideation'].includes(options.section)) {
+      const topic = { task: /task|acceptance|result|touches|base:|st:|dep:|\[v\]/i, state: /STATE|active|inbox|log|push|report/i, report: /report|autopilot|loop/i, ssot: /decision|SSOT|\[o\]|\[x\]|\[\?\]|rev|chg/i, ideation: /ideation|IDEATION|flow/i }[options.section]
       const selected = []
       let keep = false
       for (const line of lines) {

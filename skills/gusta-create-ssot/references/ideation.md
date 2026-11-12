@@ -1,6 +1,6 @@
 # Ideation 전환 마감
 
-gusta-create-ssot·gusta-update-ssot가 활성 ideation을 반영했을 때만 수행한다. SSOT 승인·적용 뒤에 마감하며, 문서를 만들었다는 이유만으로 완료 처리하지 않는다.
+ideation 문서는 gusta-sketch가 사용자가 아직 정하지 않은 구상을 남긴 기록이다. 그 채택 범위를 gusta-create-ssot·gusta-update-ssot가 반영했을 때만 수행한다. SSOT 승인·적용 뒤에 마감하며, 문서를 만들었다는 이유만으로 완료 처리하지 않는다.
 
 1. 원본 문서의 채택 explored·shape·domains를 실제 SSOT 결정·제약과 대조한다. domains의 해당 줄 전체가 반영됐을 때만 `→<ID>`를 붙인다(여러 정본이면 각각 표시). 기존 화살표도 범위가 빠졌으면 완료 근거로 쓰지 않는다. 상태 없는 기존 domains 줄은 [o]로 취급한다.
 2. 일부만 반영됐으면 문서·STATE를 `ready@YYMMDD`로 유지하고 남은 미반영 도메인의 gusta-create-ssot 또는 gusta-update-ssot를 next에 남긴다. 이번 도메인의 gusta-create-task도 유지한다.

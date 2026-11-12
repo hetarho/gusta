@@ -1,10 +1,10 @@
 ---
 name: gusta-create-architecture
 description: >-
-  spec 시스템 초기화 + 아키텍처 SSOT(spec/ssot/ARCH.md) 작성. 새 프로젝트를 시작할 때, spec/이 아직
-  없을 때, "아키텍처 잡아줘 / 스택 정해줘 / 프로젝트 세팅하자" 요청일 때 사용. 인터뷰로 스택·구조·
-  컨벤션·검증 명령을 결정해 이후 모든 태스크가 따를 기준을 만든다. 코드 구현은 하지 않는다
-  (그건 gusta-implement-task). 기존 ARCH 수정도 이 스킬로.
+  spec 시스템 초기화 + 아키텍처 SSOT(spec/ssot/ARCH.md) 작성. gusta-sketch가 spec/이
+  없을 때나 스택·구조·검증 명령이 바뀔 때 부르는 내부 기획 스킬이다. 인터뷰로 스택·구조·컨벤션·검증 명령을 결정해 이후
+  모든 태스크가 따를 기준을 만든다. 코드 구현은 하지 않는다(그건 gusta-implement-task). 프로젝트를 새로
+  시작하거나 기획하려는 요청은 gusta-sketch로.
 ---
 
 # gusta-create-architecture — 초기화 + 아키텍처 SSOT
@@ -15,7 +15,7 @@ description: >-
 1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 0단계 부트스트랩. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
 2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
-4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. 맡김 모드(gusta-start)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 모드가 정해지지 않았으면 함께 모드다.
+4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
 5. **읽기**: status 요약·`vibe brief <T###|ID-n|ID@rev> --summary`로 필요한 범위를 찾는다. 큰 brief는 `--section decisions|tasks --offset <n> --limit <n>`으로 원문 블록째 읽고 모든 필요 블록의 coverage를 확인한다. 전체 brief의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 보고서도 필요한 절만 읽고, 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
 ## 0. 부트스트랩 (spec/ 없을 때만)
@@ -44,7 +44,7 @@ spec/이 이미 있으면 0단계 생략, ARCH 개정 모드 — 진행과 마�
 - **novice**: 기술명으로 묻지 않는다. "사용자가 몇 명쯤 될까요? / 서버 비용을 쓸 수 있나요? / 폰에서도 쓰나요?" 같은 결과 수준 질문 → 답으로 AI가 스택을 결정하고 "데이터는 ○○에 저장할게요 — 무료로 시작 가능해요" 식으로 한 줄씩 보고만.
 
 사용자가 답을 모르면 강요하지 말고 [?]로 등록하고 진행한다.
-맡김 모드: 같은 질문에 추천안으로 답해 ARCH를 쓰고 inbox `decided`에 남긴다. 스택은 되돌리기 비싸므로 사용자가 inbox를 확인하기 전에는 스캐폴딩 태스크를 구현하지 않는다(inbox `parked`).
+맡김(gusta-start 실행): 같은 질문에 추천안으로 답해 ARCH를 쓰고 inbox `decided`에 남긴다. 스택은 되돌리기 비싸므로 사용자가 inbox를 확인하기 전에는 스캐폴딩 태스크를 구현하지 않는다(inbox `parked`).
 
 ## 3. ssot/ARCH.md 작성
 gusta-create-ssot 스킬 폴더의 assets/ssot.md 템플릿을 `spec/ssot/ARCH.md`로 복사해 시작한다(r1). ARCH-n 결정으로: 스택 / 폴더 구조(트리 압축) / 데이터 저장·스키마 원칙 / 코드 컨벤션(네이밍·상태관리·에러 처리) / 모듈 경계와 의존 방향 / 테스트 정책 / verify 명령(test·lint·format) / CI/CD / 배포. 근거(←)는 트레이드오프가 있던 결정에만 붙인다. 폴더 구조·컨벤션처럼 항목이 여러 개인 결정은 한 줄로 늘이지 말고 결정 블록(2칸 들여쓴 하위 항목·표)으로 편다. verify 명령은 백틱 코드로, 설명을 섞지 않은 실행 가능한 형태 그대로 적는다.

@@ -24,6 +24,7 @@ const requiredCoreFiles = [
   'bin/gusta-vibe-watch.mjs',
   'bin/gusta-work-run.mjs',
   'bin/gusta-ab-hub.mjs',
+  'bin/gusta-sketch-serve.mjs',
   'src/vibe-loop.mjs',
   'src/loop-control.mjs',
   'src/loop-metadata.mjs',

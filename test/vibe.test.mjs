@@ -316,24 +316,34 @@ test('prune: 이 세션의 wip/<tag>는 미커밋 변경 동안 보존하고, �
   assert.deepEqual(await vibePrune({ targetRoot: a, tag: 'aaaa' }), { schemaVersion: 1, ok: true, skipped: 'prune-branches: false' })
 })
 
-test('route: 기획 거리·구현 거리에 따라 planning·implementation·choose·ideation-first', async (t) => {
+// Execution runs only existing tasks; untasked SSOT deltas, adopted reviews and ideation are sketch
+// input (gusta-sketch), reported but never a route of their own.
+test('route: 태스크가 있으면 implementation, 없으면 sketch-first — 미태스크 기획 거리는 sketch에만', async (t) => {
   const plain = STATE.replace('| T001 | first | ARCH | - | todo |\n| T002 | second | ARCH | - | todo |\n', '')
-  const withIdeation = plain.replace('## ssot\n', '## ideation\n| id | st |\n|---|---|\n| tags | open@261013 |\n\n## ssot\n')
-  for (const [state, route] of [[plain, 'ideation-first'], [withIdeation, 'planning'], [STATE, 'implementation'],
-    [STATE.replace('## ssot\n', '## ideation\n| id | st |\n|---|---|\n| tags | ready@261013 |\n\n## ssot\n'), 'choose'],
-    [plain.replace('| ARCH | 1 | 1 | - | 0 |', '| ARCH | 2 | 1 | ARCH-2+ | 0 |'), 'implementation']]) {
+  const ideation = (st) => `## ideation\n| id | st |\n|---|---|\n| tags | ${st} |\n\n## ssot\n`
+  const review = '## review\n| id | st |\n|---|---|\n| R1 | ready@261013 |\n\n## ssot\n'
+  const pending = '| ARCH | 2 | 1 | ARCH-2+ | 0 |'
+  for (const [state, route, sketch, settled] of [[plain, 'sketch-first', {}, true],
+    [plain.replace('## ssot\n', ideation('open@261013')), 'sketch-first', { ideation: ['tags'] }, true],
+    [plain.replace('| ARCH | 1 | 1 | - | 0 |', pending), 'sketch-first', { pending: ['ARCH'] }, true],
+    [plain.replace('## ssot\n', review), 'sketch-first', { reviews: ['R1'] }, true],
+    [STATE, 'implementation', {}, false],
+    [STATE.replace('## ssot\n', ideation('ready@261013')).replace('| ARCH | 1 | 1 | - | 0 |', pending), 'implementation', { pending: ['ARCH'], ideation: ['tags'] }, false]]) {
     const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-route-')))
     t.after(() => rm(root, { recursive: true, force: true }))
     await mkdir(path.join(root, 'spec'), { recursive: true })
     await writeFile(path.join(root, 'spec/STATE.md'), state)
-    assert.equal((await vibeStatus({ targetRoot: root })).route, route)
+    const status = await vibeStatus({ targetRoot: root })
+    assert.equal(status.route, route); assert.equal(status.settled, settled); assert.equal(status.parkedOnly, false)
+    assert.deepEqual(Object.fromEntries(Object.entries(status.sketch).map(([key, rows]) => [key, rows.map((row) => row.id)]).filter(([, ids]) => ids.length)), sketch)
+    assert.deepEqual(Object.keys(status.implementation), ['todo', 'resume', 'blocked', 'explore']); assert.equal(status.planning, undefined)
   }
   const empty = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-route-')))
   t.after(() => rm(empty, { recursive: true, force: true }))
   assert.equal((await vibeStatus({ targetRoot: empty })).route, 'architecture')
 })
 
-// A hand close (`done` without a date) used to read as neither todo nor done: settled, ideation-first.
+// A hand close (`done` without a date) used to read as neither todo nor done: settled, nothing to execute.
 test('status: a row or task-file st outside FORMAT is an issue, never settled, and routes to repair; valid states keep their route', async (t) => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-st-')))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -351,7 +361,8 @@ test('status: a row or task-file st outside FORMAT is an issue, never settled, a
   assert.deepEqual((await status('| T001 | first | ARCH | - | todo |\n', { T001: 'finished' })).issues, [{ id: 'T001', where: 'file', st: 'finished' }])
   assert.deepEqual((await status('| T001 | first | ARCH | - | doing |\n', { T001: 'doing@261112.ab' })).issues, [{ id: 'T001', where: 'STATE', st: 'doing' }])
   // Every FORMAT st is valid: the routes are what they were.
-  for (const [st, route, settled] of [['todo', 'implementation', false], ['doing@261112.ab', 'ideation-first', true], ['doing@261112', 'implementation', false], ['blocked@261112', 'ideation-first', true]]) {
+  // Another session's doing row is not this session's to execute; a blocked row gets a recovery unit.
+  for (const [st, route, settled] of [['todo', 'implementation', false], ['doing@261112.ab', 'sketch-first', true], ['doing@261112', 'implementation', false], ['blocked@261112', 'implementation', false]]) {
     const valid = await status(`| T001 | first | ARCH | - | ${st} |\n`, { T001: st })
     assert.deepEqual([valid.issues, valid.route, valid.settled], [[], route, settled], st)
   }
@@ -368,7 +379,7 @@ test('route: 완료 ideation 파일은 새 기획 후보나 기본 읽기 입력
   await writeFile(path.join(root, 'spec/ideation/done/outline.md'), 'historical discussion without current planning metadata')
   const status = await vibeStatus({ targetRoot: root })
   assert.equal(status.route, 'implementation')
-  assert.deepEqual(status.planning.ideation, [])
+  assert.deepEqual(status.sketch.ideation, [])
 })
 
 test('explore timeboxes: one listing, row order, a row matches only its own `<id>.` file', async (t) => {

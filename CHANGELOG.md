@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Plan first, then let it run. New `/gusta-sketch` is the planning entry: it
+  draws the idea as one self-contained HTML mockup page in the untracked
+  `.tmp/sketch/<slug>/`, served on one local port by the new
+  `vibe sketch serve|stop|status`, with variants side by side when there is a
+  real choice. What the user decides becomes ARCH/SSOT and tasks through the
+  internal planning skills; what they defer is recorded in `spec/ideation/`.
+- `/gusta-start` only executes existing tasks, unattended: no mode question —
+  it shows the run (tasks, order, gates, land/push, tasks other devices hold)
+  and starts. With no runnable task it stops and points to `/gusta-sketch`;
+  `vibe loop` stops with `needs-sketch` instead of planning untasked work.
+- The together/hand-off mode is gone. Skills ask only when the user called
+  them directly; anything gusta-start runs never asks (common rule 4).
+- The `ideation` skill is removed; its document template moves to
+  gusta-sketch. `gusta-showcase` (code variants, one port each) now says it
+  carries the change from docs to code. `vibe format --section ideation`.
+
 ## 0.14.0
 
 Released: 2026-11-12.

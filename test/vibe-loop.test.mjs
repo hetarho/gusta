@@ -91,10 +91,42 @@ test('stop file and parked-only route stop without dispatching a model', async (
 test('no-work and max-hours routes terminate, closing report once', async (t) => {
   const { root } = await fixture(t, 0)
   const noWork = await vibeLoop(opts(root), { preflight: passed, execute: () => assert.fail('no work') })
-  assert.equal(noWork.reason, 'no-work'); assert.equal(noWork.units, 0)
+  assert.equal(noWork.reason, 'no-work'); assert.equal(noWork.units, 0); assert.equal(noWork.hint, undefined)
   let now = 0
   const timed = await vibeLoop({ ...opts(root), tag: 't062', maxHours: 1 }, { preflight: async () => { now = 3600001; return passed() }, now: () => now, execute: () => assert.fail('time limit') })
   assert.equal(timed.reason, 'max-hours')
+})
+
+// Planning belongs to the owner's /gusta-sketch: execution never opens a unit without a task.
+test('untasked SSOT deltas end the loop as needs-sketch without a unit; tasks no unit can take end as no-work', async (t) => {
+  const { root, arch } = await fixture(t, 0)
+  const stateFile = path.join(root, 'spec/STATE.md')
+  await writeFile(stateFile, (await readFile(stateFile, 'utf8')).replace('| ARCH | 1 | 1 | - | 0 |', '| ARCH | 2 | 1 | ARCH-3+ | 0 |'))
+  await writeFile(path.join(root, 'spec/ssot/ARCH.md'), arch.replace('> r1 |', '> r2 |').replace('\n\n## chg\n', '\n- ARCH-3 [o] Logs are JSON lines.\n\n## chg\n- r2 261020 ARCH-3+ log format\n'))
+  await git(root, 'add', 'spec'); await git(root, 'commit', '-qm', 'untasked planning')
+  const status = await vibeStatus({ targetRoot: root, tag: 't060' })
+  assert.equal(status.route, 'sketch-first'); assert.deepEqual(status.sketch.pending.map((row) => row.id), ['ARCH'])
+  const result = await vibeLoop(opts(root), { preflight: passed, execute: () => assert.fail('no planning unit') })
+  assert.equal(result.ok, true, result.error); assert.equal(result.units, 0)
+  assert.equal(result.reason, 'needs-sketch'); assert.equal(result.hint, '/gusta-sketch로 태스크까지 만든 뒤 다시 실행하세요')
+  assert.match(result.continuation.next, /\/gusta-sketch/)
+  assert.match(await readFile(path.join(root, result.report), 'utf8'), /^- loop stopped: needs-sketch — \/gusta-sketch로 태스크까지 만든 뒤 다시 실행하세요$/m)
+  const manifest = JSON.parse(await readFile(result.manifest, 'utf8'))
+  assert.equal(manifest.hint, result.hint)
+  const notices = await readdir(path.join(path.dirname(result.manifest), 'notifications'))
+  const finished = (await Promise.all(notices.map(async (name) => JSON.parse(await readFile(path.join(path.dirname(result.manifest), 'notifications', name), 'utf8'))))).find((event) => event.type === 'finished')
+  assert.deepEqual([finished.reason, finished.level, finished.hint], ['needs-sketch', 'attention', result.hint])
+  // A todo waiting on another session's task is not this loop's to run, nor a reason to plan.
+  const header = '## tasks\n| id | title | ssot | dep | st |\n|---|---|---|---|---|\n'
+  await writeFile(stateFile, (await readFile(stateFile, 'utf8')).replace('| ARCH | 2 | 1 | ARCH-3+ | 0 |', '| ARCH | 2 | 2 | - | 0 |')
+    .replace(header, `${header}| T001 | first | ARCH | - | doing@261020.zz99 |\n| T002 | second | ARCH | T001 | todo |\n`))
+  for (const [id, st, dep] of [['T001', 'doing@261020.zz99', '-'], ['T002', 'todo', 'T001']]) {
+    await writeFile(path.join(root, `spec/tasks/${id}.example.md`), `# ${id} Example\n> st:${st} | ssot:ARCH-3 | base:ARCH@2 | dep:${dep} | touches:src/\n\n## goal\nLog JSON.\n\n## acceptance\n- [ ] Works with a regression test.\n\n## impl notes\n- -\n\n## result\n`)
+  }
+  await git(root, 'add', 'spec'); await git(root, 'commit', '-qm', 'tasked, held by another session')
+  assert.deepEqual([(await vibeStatus({ targetRoot: root, tag: 't061' })).route, (await lintSpec({ targetRoot: root })).errors], ['implementation', []])
+  const waiting = await vibeLoop({ ...opts(root), tag: 't061' }, { preflight: passed, execute: () => assert.fail('no unit for a waiting todo') })
+  assert.equal(waiting.reason, 'no-work'); assert.equal(waiting.units, 0)
 })
 
 test('closing reserve is the measured gate twice, one repair unit and CI; unmeasured runs fall back once', () => {
@@ -441,11 +473,11 @@ for (const pushEachUnit of [false, true]) test(`strict concurrency runs one fina
   assert.equal(pushes, pushEachUnit ? 3 : 1)
 })
 
-test('unit assignment status: a task unit drops the remaining rows, a planning unit keeps them', () => {
+test('unit assignment status: a task unit drops the remaining rows, a split or blocked recovery keeps them', () => {
   const ids = Array.from({ length: 8 }, (_, i) => `T00${i + 1}`)
   const status = { tag: 't060', route: 'implementation', parkedOnly: false, concurrency: 'solo', next: ['- gusta-implement-task T001'],
     counts: { inbox: 2, parked: 0, remaining: 8 }, remaining: ids.map((id) => ({ id, title: `task ${id}`, dep: '-', st: 'todo' })), runnable: ids,
-    implementation: { todo: ids, resume: [], blocked: [], pending: [], reviews: [], explore: [{ id: 'T008', timebox: '1h' }] }, planning: { ideation: [] } }
+    implementation: { todo: ids, resume: [], blocked: [], explore: [{ id: 'T008', timebox: '1h' }] }, sketch: { pending: [], reviews: [], ideation: [] } }
   const trimmed = unitStatus(status, 'T007', null)
   assert.equal(trimmed.remaining, undefined)
   assert.deepEqual(trimmed.task, { id: 'T007', title: 'task T007', dep: '-', st: 'todo' })
@@ -456,8 +488,8 @@ test('unit assignment status: a task unit drops the remaining rows, a planning u
   assert.deepEqual(trimmed.counts, { inbox: 2, parked: 0, remaining: 8, runnable: 8, todo: 8 })
   assert.deepEqual(trimmed.implementation.explore, status.implementation.explore)
   assert.match(trimmed.listed, /vibe status --tag t060 --no-fetch --json/)
-  for (const key of ['route', 'parkedOnly', 'concurrency', 'next', 'planning']) assert.deepEqual(trimmed[key], status[key])
-  // A continuation still implements its task; a planning unit, a split and a blocked recovery rewrite tasks and deps.
+  for (const key of ['route', 'parkedOnly', 'concurrency', 'next', 'sketch']) assert.deepEqual(trimmed[key], status[key])
+  // A continuation still implements its task; a split and a blocked recovery rewrite tasks and deps.
   assert.equal(unitStatus(status, 'T007', { reason: 'interrupted', taskId: 'T007' }).remaining, undefined)
   for (const [selected, recovery] of [[null, null], ['T007', { reason: 'split', taskId: 'T007' }], ['T007', { reason: 'blocked-task', taskId: 'T007' }]]) assert.equal(unitStatus(status, selected, recovery), status)
   const stub = { route: 'implementation', parkedOnly: true }
