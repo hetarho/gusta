@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.13.0
+
+Released: 2026-11-12.
 
 - Route out-of-format task statuses to repair instead of treating the
   specification as settled. Task units receive the implementation skill and
@@ -11,6 +13,12 @@
   gates reject specification lint errors and unresolved close rejections. The
   host reconciles actual repaired evidence without a synthetic child report;
   explicit unverified WIP handoff remains available.
+- Validate the committed candidate before final publication. An uncommitted
+  specification repair cannot make an invalid commit publishable.
+- Respect another active session's task ownership when repairing a malformed
+  task close; repair does not authorize taking over its in-progress task.
+- Keep IPv6-only A/B previews reachable when localhost resolves only to IPv4;
+  serve results, status and hub frames share the verified loopback URL.
 - Document standalone task start/close commands and the existing A/B scaffold,
   follow-up, residue and adoption flow.
 
