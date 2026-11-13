@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { vibeLoop } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -6,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fixture, git, archiveTask } from './helpers/vibe-fixture.mjs'
-import { vibeLoop, executeVibeUnit } from '../src/vibe-loop.mjs'
+import { executeVibeUnit } from '../src/vibe-loop.mjs'
 import { buildCatalog } from '../src/agent-catalog.mjs'
 
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))

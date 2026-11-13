@@ -3,12 +3,13 @@ import { access, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, write
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { vibePush } from './helpers/unit-policy.mjs'
 import { fileURLToPath } from 'node:url'
 import { BEGIN_PREFIX, END_MARKER, renderBlock, inspectBlock, applyBlock, removeBlock, agentBlockTargets, agentBlock } from '../src/agent-block.mjs'
 import { installSkills, installedAgents } from '../src/installer.mjs'
 import { SETTINGS, vibeSettings } from '../src/settings.mjs'
 import { SkillPackageError } from '../src/errors.mjs'
-import { vibeStatus, vibePreflight, vibePush } from '../src/vibe.mjs'
+import { vibeStatus, vibePreflight } from '../src/vibe.mjs'
 import { fixture, execute, git } from './helpers/vibe-fixture.mjs'
 
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))

@@ -1,15 +1,16 @@
 import test from 'node:test'
+import { vibeLoop, vibePush } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, readdir, realpath, mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { fixture, git, execute, archiveTask } from './helpers/vibe-fixture.mjs'
-import { vibeLoop } from '../src/vibe-loop.mjs'
+
 import { atomicJSON, readJSON, watchLoop, acquireLoop, releaseLoop, loopEvent, judgmentItems, finishedSummary, finishedEvent } from '../src/loop-control.mjs'
 import { appendInbox } from '../src/state-doc.mjs'
 import { readSessions } from '../src/coord-doc.mjs'
-import { vibePush } from '../src/vibe.mjs'
+
 import { vibeInbox } from '../src/vibe-inbox.mjs'
 
 const options = (root) => ({ targetRoot: root, tag: 'ctrl01', provider: 'codex', maxUnits: 3 })
@@ -245,7 +246,7 @@ test('configuration and metadata retries preserve elapsed time and unit limits',
 test('independent supervisor observes an actually killed isolated host and emits durable failure; it never restarts a worker', async (t) => {
   const { root, temporary } = await fixture(t)
   const helper = path.join(temporary, 'host.mjs'), notify = await hook(temporary)
-  const module = new URL('../src/vibe-loop.mjs', import.meta.url).href
+  const module = new URL('./helpers/unit-policy.mjs', import.meta.url).href
   await writeFile(helper, `import {vibeLoop} from ${JSON.stringify(module)}; await vibeLoop(${JSON.stringify({ ...options(root), notifyCommand: notify.command })}, {preflight:async()=>({ok:true,checks:[]}), execute:async()=>new Promise(()=>{})});`)
   const child = spawn(process.execPath, [helper], { stdio: 'ignore' })
   t.after(() => { try { child.kill('SIGKILL') } catch {} })

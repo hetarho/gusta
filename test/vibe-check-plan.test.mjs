@@ -1,15 +1,16 @@
 import test from 'node:test'
+import { runVibeCheck, vibeLoop, vibePush } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fixture, git, execute, archiveTask } from './helpers/vibe-fixture.mjs'
-import { runVibeCheck } from '../src/vibe-check.mjs'
+
 import { readVerification, vibeBrief } from '../src/vibe-brief.mjs'
-import { vibeLoop } from '../src/vibe-loop.mjs'
+
 import { lintSpec } from '../src/spec-lint.mjs'
 import { readGates, gateCount } from '../src/gate-ledger.mjs'
-import { vibePush } from '../src/vibe.mjs'
+
 
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`

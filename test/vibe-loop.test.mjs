@@ -1,10 +1,12 @@
 import test from 'node:test'
+import { vibeLoop } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, readdir, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fixture, git, archiveTask } from './helpers/vibe-fixture.mjs'
-import { vibeLoop, executeVibeUnit, closingReserve, unitStatus, UNIT_LISTED } from '../src/vibe-loop.mjs'
+import { executeVibeUnit, closingReserve, unitStatus, UNIT_LISTED } from '../src/vibe-loop.mjs'
 import { timingKey } from '../src/check-cache.mjs'
+import { prepareSessionWorkspace } from '../src/session-workspace.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
 import { vibeInbox } from '../src/vibe-inbox.mjs'
 import { readSessions } from '../src/coord-doc.mjs'
@@ -133,13 +135,13 @@ test('untasked SSOT deltas end the loop as needs-sketch without a unit; tasks no
   assert.equal(waiting.reason, 'no-work'); assert.equal(waiting.units, 0)
 })
 
-test('closing reserve is the measured gate twice, one repair unit and CI; unmeasured runs fall back once', () => {
+test('closing reserve is one measured gate, one repair unit and CI; unmeasured runs fall back once', () => {
   const store = (entries) => ({ schemaVersion: 1, entries: Object.fromEntries(Object.entries(entries).map(([key, samples]) => [key, { samples }])) })
   const min = 60000, base = { commands: ['npm test', 'npm run e2e'], hours: 10, timeoutMs: 3600000 }
   const timings = store({ [timingKey('final', 'npm  test')]: [20 * min, 25 * min], [timingKey('final', 'npm run e2e')]: [5 * min], [timingKey('unit')]: [15 * min], [timingKey('ci')]: [10 * min] })
-  // gate = max of recent samples per command: 25 + 5 = 30 min; reserve = 30 + 15 (repair) + 30 (re-run) + 10 (CI)
-  assert.deepEqual(closingReserve({ ...base, timings, push: true }), { ms: 85 * min, source: 'measured', gateMs: 30 * min, fixMs: 15 * min, ciMs: 10 * min })
-  assert.equal(closingReserve({ ...base, timings }).ms, 75 * min)
+  // gate = max of recent samples per command: 25 + 5 = 30 min; reserve = 30 + 15 (repair) + 10 (CI)
+  assert.deepEqual(closingReserve({ ...base, timings, push: true }), { ms: 55 * min, source: 'measured', gateMs: 30 * min, fixMs: 15 * min, ciMs: 10 * min })
+  assert.equal(closingReserve({ ...base, timings }).ms, 45 * min)
   assert.deepEqual(closingReserve({ ...base, timings: store({ [timingKey('final', 'npm test')]: [min] }) }), { ms: 120 * min, source: 'unmeasured' })
   assert.deepEqual(closingReserve({ ...base, timings, optionHours: 1 }), { ms: 60 * min, source: 'option' })
 })
@@ -439,7 +441,10 @@ test('a built-in Claude unit carries the optional flags the installed CLI lists'
 })
 
 test('detached host survives parent return and writes its final manifest with one shared report', async (t) => {
-  const { root, temporary } = await fixture(t)
+  const source = await fixture(t)
+  const { temporary } = source
+  // The detached production host receives a real session-owned linked checkout.
+  const { root } = await prepareSessionWorkspace({ targetRoot: source.root, tag: 't060' })
   const bin = path.join(temporary, 'bin'); await mkdir(bin)
   await writeFile(path.join(bin, 'claude'), `#!${process.execPath}\nprocess.stdin.resume();process.stdin.on('end',()=>console.log(JSON.stringify({structured_output:{ran:true,exitCode:0,denied:false,note:'fake main checkout probe'}})));`, { mode: 0o755 })
   const adapter = await fakeAdapter(temporary, "console.log(JSON.stringify({kind:'none',id:'',outcome:'no_work',pushed:false,next:'stop'}));")

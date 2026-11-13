@@ -27,13 +27,20 @@ export function validateAgentAcceptance(value = []) {
 
 export function mergeAgentAcceptance(previous = [], incoming = []) {
   const entries = new Map(validateAgentAcceptance(previous).map((entry) => [entry.id, entry]))
-  for (const entry of validateAgentAcceptance(incoming)) entries.set(entry.id, entry)
+  // Execution evidence and the acting owner can change; the criterion and its allocated
+  // coverage cannot. Otherwise another task's pass could erase a required pending check.
+  const contract = (entry) => JSON.stringify([entry.scenario, entry.steps, entry.expected, entry.stage, entry.required, [...entry.replaces].sort(), entry.duplicationReason])
+  for (const entry of validateAgentAcceptance(incoming)) {
+    const recorded = entries.get(entry.id)
+    if (recorded && contract(recorded) !== contract(entry)) fail(`서로 다른 인수검증 기준에 같은 ID를 쓸 수 없습니다. 태스크·세션별 고유 ID를 사용하세요: ${entry.id}`)
+    entries.set(entry.id, entry)
+  }
   return [...entries.values()]
 }
 
 export function validateAcceptanceAllocation(checks, automatedIds = []) {
   const entries = validateAgentAcceptance(checks), selected = new Set(automatedIds)
-  for (const entry of entries) if (entry.replaces.some((id) => selected.has(id)) && !entry.duplicationReason.trim()) fail(`agent로 대체한 자동 검사를 함께 실행할 수 없습니다. 범위를 줄이거나 중복 근거·비용을 기록하세요: ${entry.id}`)
+  for (const entry of entries) if (entry.replaces.some((id) => selected.has(id))) fail(`agent로 대체한 자동 검사를 함께 실행할 수 없습니다. 중복 사유로 승인하지 말고 주 검증 방법에 맞춰 자동 실행 범위를 제거·축소하세요: ${entry.id}`)
   return entries
 }
 

@@ -1,10 +1,11 @@
 import test from 'node:test'
+import { vibeLoop, runVibeCheck } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fixture, git, archiveTask } from './helpers/vibe-fixture.mjs'
-import { vibeLoop, improvingGate } from '../src/vibe-loop.mjs'
-import { runVibeCheck } from '../src/vibe-check.mjs'
+import { improvingGate } from '../src/vibe-loop.mjs'
+
 
 const options = (root) => ({ targetRoot: root, tag: 'reliable', provider: 'codex', maxUnits: 8, pushEachUnit: true })
 const passed = async () => ({ ok: true, checks: [] })
