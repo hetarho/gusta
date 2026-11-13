@@ -126,6 +126,7 @@ async function answer(setup, group, decided, { legacy = false } = {}) {
 for (const provider of ['claude', 'codex']) test(`맡김 ${provider}: 기획 공백이 생긴 워커는 결정을 요청하고 다른 일이 계속되며, 조정자가 잠정 결정하면 같은 세션이 이어서 끝낸다 (시나리오 b)`, async (t) => {
   const setup = await fixture(t)
   const { env, log } = await fakeProvider(setup, provider)
+  const landBase = (await git(setup.root, 'rev-parse', 'HEAD')).stdout.trim()
   const group = await startWork({ ...setup, name: 'auto', verify: ['node -e "0"'], push: 'trunk', allowTool: ['Bash(npm test *)'] })
   const running = runWork({ ...setup, work: group.id, provider, env, autopilot: true, pollMs: 50, decisionWaitMs: 60000 })
   // The coordinator loop: answer the filed decision, never wait for a person.
@@ -163,25 +164,29 @@ for (const provider of ['claude', 'codex']) test(`맡김 ${provider}: 기획 공
   // SETTINGS headless-mcp (default isolate): Claude workers and reviewers load no MCP server and get
   // no --mcp-config; Codex has no such flag.
   assert.ok(all.every((call) => call.strict === (provider === 'claude') && call.mcpConfig === null))
-  // Every landed unit is on the remote push branch; T001 was reviewed (an autopilot decision
+  // Every integrated unit is on the remote owned working branch; T001 was reviewed (an autopilot decision
   // makes it risky), and the half done before the question survived.
-  const trunk = (await execute('git', ['--git-dir', setup.remote, 'show', 'trunk:spec/STATE.md'], { encoding: 'utf8' })).stdout
-  assert.doesNotMatch(trunk, /\| T00[12] \|/)
+  const working = (await execute('git', ['--git-dir', setup.remote, 'show', `${group.branch}:spec/STATE.md`], { encoding: 'utf8' })).stdout
+  assert.doesNotMatch(working, /\| T00[12] \|/)
+  assert.equal((await execute('git', ['--git-dir', setup.remote, 'rev-parse', 'trunk'], { encoding: 'utf8' })).stdout.trim(), landBase)
+  assert.equal(result.finish, null)
   // The decision waits in the owner's inbox: on the coordination branch (pushed with every event),
   // or in STATE's own section where a project has not moved it yet. Integration writes its log
-  // line and the finished tasks to the coordination branch — from the background gate too — and
-  // the group's push to the land branch took them out of unlanded again.
+  // line and the finished tasks to the coordination branch. Publishing the working branch keeps
+  // those tasks unlanded until the shared final candidate is verified and landed.
   const shared = readSessions((await execute('git', ['--git-dir', setup.remote, 'show', 'gusta:SESSIONS.md'], { encoding: 'utf8' })).stdout)
-  if (legacy) { assert.match(trunk, /## inbox\n- 261013 decided ITEM-2 T001/); assert.deepEqual(shared.inbox, []) }
-  else { assert.doesNotMatch(trunk, /## inbox/); assert.deepEqual(shared.inbox.map((line) => line.replace(/^- \d{6} /, '')), ['decided ITEM-2 T001: How many items may a user keep? → 10 (alt: unlimited)']) }
-  assert.deepEqual([shared.log.map((line) => line.replace(/^- \d{6} /, '')).sort(), shared.unlanded, shared.active], [['T001 integrated', 'T002 integrated'], [], []])
-  assert.doesNotMatch(trunk, /integrated/)
-  assert.equal((await execute('git', ['--git-dir', setup.remote, 'show', 'trunk:half.txt'], { encoding: 'utf8' })).stdout, 'first half')
+  if (legacy) { assert.match(working, /## inbox\n- 261013 decided ITEM-2 T001/); assert.deepEqual(shared.inbox, []) }
+  else { assert.doesNotMatch(working, /## inbox/); assert.deepEqual(shared.inbox.map((line) => line.replace(/^- \d{6} /, '')), ['decided ITEM-2 T001: How many items may a user keep? → 10 (alt: unlimited)']) }
+  assert.deepEqual([shared.log.map((line) => line.replace(/^- \d{6} /, '')).sort(), shared.active], [['T001 integrated', 'T002 integrated'], []])
+  assert.deepEqual(shared.unlanded.map(({ id, branch }) => [id, branch]).sort(), [['T001', group.branch], ['T002', group.branch]])
+  assert.doesNotMatch(working, /integrated/)
+  assert.equal((await execute('git', ['--git-dir', setup.remote, 'show', `${group.branch}:half.txt`], { encoding: 'utf8' })).stdout, 'first half')
   const board = await workBoard({ ...setup, work: group.id })
+  assert.equal(board.verified, null)
   const t001 = board.attempts.find((entry) => entry.taskId === 'T001')
   assert.equal(t001.review.owner.endsWith('/reviewer-1'), true)
   assert.ok(t001.risk.reasons.includes('autopilot decisions awaiting the owner'))
-  const history = (await execute('git', ['--git-dir', setup.remote, 'log', '--format=%s', 'trunk'], { encoding: 'utf8' })).stdout
+  const history = (await execute('git', ['--git-dir', setup.remote, 'log', '--format=%s', group.branch], { encoding: 'utf8' })).stdout
   assert.match(history, /WIP T001: waiting for a planning decision/)
 })
 

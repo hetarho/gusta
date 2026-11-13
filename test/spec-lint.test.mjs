@@ -731,7 +731,7 @@ test('STATE 골격은 FORMAT·템플릿·lint가 같이 말한다: 세션 섹션
   }
   // 세션 조정 섹션은 모두 선택이고 SESSIONS 골격에만 있다. 칸 정의는 그 아래 하위 줄이다.
   assert.deepEqual(skeleton('sessions'), ['active', 'inbox', 'unlanded', 'log'].map((name) => ({ name, optional: true })))
-  assert.match(format, /\n  - active row `tag\|host\|mode\|since\|at\|doing\|branch\|commit`: /)
+  assert.match(format, /\n  - active row `tag\|host\|mode\|since\|at\|doing\|branch\|commit\|session`: /)
   assert.match(format, /\n  - unlanded row `id\|tag\|branch\|commit\|at`: /)
 })
 

@@ -76,11 +76,12 @@ test('다른 기기의 진행을 조정 브랜치에서 감지하고, checkpoint
   // Machine A registers three hours ago, takes T001 and works on a branch it has not pushed.
   await git(a, 'checkout', '-q', '-b', 'feat/first')
   await writeFile(path.join(a, 'first.txt'), 'half way\n')
-  await commitAll(a, 'T001 work in progress')
+  const unpublished = await commitAll(a, 'T001 work in progress')
   const claimed = await vibeBeat({ targetRoot: a, tag: 'aaaa', mode: 'autopilot', doing: 'T001', host: 'machine-a' }, clock(-180))
   assert.deepEqual([claimed.row.doing, claimed.row.branch, claimed.coordination.push.pushed], ['T001', 'feat/first', true])
-  // Nothing of A's code or STATE reached the remote: only the coordination branch did.
-  assert.equal((await remoteGit(remote, 'for-each-ref', '--format=%(refname:short)', 'refs/heads')).trim(), 'gusta\nmain')
+  // Only coordination/authority metadata reached the remote; A's code object did not.
+  assert.equal((await remoteGit(remote, 'for-each-ref', '--format=%(refname:short)', 'refs/heads')).trim(), 'gusta\ngusta-integration\nmain')
+  await assert.rejects(remoteGit(remote, 'cat-file', '-e', unpublished))
   assert.doesNotMatch(await remoteGit(remote, 'show', 'main:spec/STATE.md'), /doing@|## active/)
   // Machine B starts: it sees A, where it works, that its commit is not pushed, and routes to the rest.
   const status = await vibeStatus({ targetRoot: b, tag: 'bbbb' })
