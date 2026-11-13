@@ -2,22 +2,22 @@
 
 [README](../README.ko.md) · [개발 흐름](workflow.md) · [브랜치·검증](branching.md) · [오래 맡기기](autopilot.md) · [병렬 작업](parallel-work.md) · **자가 개선** · [CLI](cli.md)
 
-개선 스킬은 둘입니다. `/gusta-self-improve`는 호출한 세션이 하위 제안을 승인해 **현재 브랜치에 통합**하고(PR 없음), `/gusta-self-improve-remote`는 한 번 위임한 범위·예산 안에서 **스스로 문제를 찾아 PR**로 만듭니다. 제안만 원하는 코드 점검은 `gusta-review-code`입니다.
+개선 스킬은 둘입니다. `/gusta-self-improve`는 호출한 세션이 하위 제안을 승인해 **전용 세션 브랜치에 모아 공동 후보로 검수·통합**하고(PR 없음), `/gusta-self-improve-remote`는 한 번 위임한 범위·예산 안에서 **스스로 문제를 찾아 PR**로 만듭니다. 제안만 원하는 코드 점검은 `gusta-review-code`입니다.
 
-## PR 없이 현재 브랜치에서 개선하기 — `/gusta-self-improve`
+## PR 없이 전용 작업 공간에서 개선하기 — `/gusta-self-improve`
 
-`/gusta-self-improve`를 실행한 세션이 오케스트레이터가 됩니다. 하위 세션이 먼저 근거·수정 범위·비용·위험을 제안하고, 오케스트레이터가 승인한 작업만 다른 worktree에서 구현합니다. 별도 세션의 코드 리뷰와 단위 검사를 통과한 변경은 호출한 현재 브랜치에 통합하고, 마지막 전체 관문까지 통과해야 완료로 보고합니다. 제안 승인과 코드 리뷰 승인은 별개입니다.
+`/gusta-self-improve`를 실행한 세션이 오케스트레이터가 됩니다. 먼저 전용 linked worktree와 세션 브랜치를 확보하고, 하위 세션의 근거·범위·비용·위험을 검토해 승인한 작업만 배정합니다. 별도 리뷰와 영향 검사를 통과한 결과를 세션 브랜치에 모아 ready로 제출하고, 참여 세션이 모두 준비된 고정 공동 후보를 한 소유자가 한 번 검수합니다. 호출한 checkout은 그대로 두며 제안 승인과 코드 리뷰 승인은 별개입니다.
 
 ```text
 /gusta-self-improve
 성능·테스트 비용·반복 작업의 문제를 하위 세션이 찾아 제안하게 해줘.
-네가 검토해 동작을 보존하는 작은 개선만 승인하고 현재 브랜치에 통합해줘.
+네가 검토해 동작을 보존하는 작은 개선만 승인하고 전용 작업 공간에서 공동 통합까지 진행해줘.
 큰 변화는 근거와 대안을 보고하고, 원격 push는 하지 마.
 ```
 
 PR이나 GitHub CLI가 없어도 로컬 구현·리뷰·통합을 할 수 있습니다. 하위 세션은 에이전트의 하위 세션 도구로, 없거나 `/gusta-start`가 맡긴 실행이면 헤드리스 `work scout`(읽기 전용 탐색, 제안 JSON만 반환)·`work run`(구현·리뷰)으로 띄웁니다. 오케스트레이터는 코드를 직접 훑지 않습니다. 기존 작업 묶음의 `--workspace current --tasks '<approved IDs>' --review all --push -`를 사용해 승인 범위 밖 todo를 소비하지 않으며, 그 todo가 남아 있어도 승인 범위를 마칠 수 있습니다. 실행 도구가 없으면 하위 세션을 가장하지 않고 제안 패킷과 필요한 연결을 보고합니다.
 
-통합 뒤 반영은 SETTINGS land·land-via·push를 따르며 조정자가 최종 검증 후 한 번 수행합니다(land가 current이고 push가 false면 현재 브랜치의 로컬 커밋까지). 기획 문서는 SETTINGS plan을 따릅니다([브랜치 전략](branching.md#브랜치-전략)). 실제 origin/main이 갱신됐는지와 로컬에만 반영됐는지를 구분해 보고합니다. [실행 절차](../skills/gusta-self-improve/SKILL.md)에 역할·승인·통합 경계가 있습니다.
+반영은 SETTINGS land·land-via·push와 공유 통합 소유권을 따릅니다. 밖에서 land가 움직이면 자동 병합·전체 검수 초기화 대신 후보를 재조정하고 유효한 성공은 재사용합니다. 필수 agent 관찰이 남으면 후보와 검수 증거를 보존한 waiting-agent에서 이어갑니다. 기획 문서는 SETTINGS plan을 따릅니다([브랜치 전략](branching.md#브랜치-전략)). 실제 원격 land 반영과 전용 세션의 로컬 결과를 구분해 보고합니다. [실행 절차](../skills/gusta-self-improve/SKILL.md)에 역할·승인·통합 경계가 있습니다.
 
 ## 지시 없이 문제를 찾는 지속 개선 — `/gusta-self-improve-remote`
 

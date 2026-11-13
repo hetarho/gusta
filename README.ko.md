@@ -88,7 +88,7 @@ spec 문서는 영어 압축 표기로, 인터뷰·질문·보고는 사용자 �
 | `/gusta-start` | 실행. 실행 정보를 보여 준 뒤 있는 태스크를 묻지 않고 실행 — 태스크별 커밋, 결정함·보고서, 마감 관문. 변경 요청을 주면 기획(SSOT·태스크)부터 하고 그 태스크를 실행. 실행할 것이 없으면 멈추고 `/gusta-sketch` 안내 |
 | `/gusta-design-mode` | 실시간 디자인: 화면을 보며 말하는 대로 코드만 고치고, 디자인이 끝났다고 하면 테스트 후 커밋 하나 |
 | `/gusta-showcase` | 변형 2~6개를 실제 코드로 병렬 구현해 변형마다 포트 하나씩 띄우거나(또는 같은 측정으로 비교) 고른 것만 합치고 문서도 맞춤 |
-| `/gusta-self-improve` | 호출한 세션이 하위 세션의 개선 제안을 승인해 현재 브랜치에 통합 — PR 없음 |
+| `/gusta-self-improve` | 전용 worktree·세션 브랜치에서 개선 제안을 승인하고 검토된 결과를 공동 후보로 검수·통합 — PR 없음 |
 | `/gusta-self-improve-remote` | 한 번 위임한 범위·예산 안에서 문제를 찾아 측정·구현·독립 검토 후 PR |
 | `/gusta-init` | 미정인 설정(브랜치 전략, 자동 버전 관리, CLAUDE.md·AGENTS.md의 gusta 안내 블록)만 묻고 `spec/SETTINGS.md`에 저장 |
 | `/gusta-preference` | `spec/SETTINGS.md`를 표로 보여 주고, 말한 값만 바꿈 |
