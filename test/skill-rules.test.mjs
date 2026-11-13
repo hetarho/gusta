@@ -149,14 +149,14 @@ test('태스크 크기·실행 추천: gusta-create-task가 크기 예산과 가
   assert.match(format, /\n- Task run \(optional\): planned `<tool>\/<model>@<effort>` from `gusta agents`[^\n]*lint checks shape only\./)
 })
 
-test('검증 단계 계약: 태스크 검사는 커밋 직전 한 번, 태스크는 태스크 단계 검사만 적고, ARCH는 세 단계를 선언한다', async () => {
+test('검증 단계 계약: 태스크 영향 검사·공동 후보 전체 검수·CI 브라우저 검증을 구분한다', async () => {
   const read = (file) => readFile(new URL(file, skillsRoot), 'utf8')
-  assert.match(await read('gusta-implement-task/SKILL.md'), /바뀐 범위의 태스크 단계 검사[^\n]*커밋 직전에 `vibe check --tier task`로 한 번[^\n]*편집할 때마다 반복하지 않/)
-  assert.match(await read('gusta-create-task/SKILL.md'), /acceptance·검증 줄에는 태스크 단계 검사[^\n]*빌드·통합·e2e·전체 스위트는 적지 않고 최종 관문/)
-  assert.match(await read('gusta-create-task/assets/task.md'), /task-tier checks only: build, full suite and e2e run at the final gate/)
-  assert.match(await read('gusta-create-architecture/SKILL.md'), /세 단계를 모두 명시적으로 선언한다[^\n]*1분 넘게 걸리는\(측정 또는 예상\) 검사는 task가 아니라 batch/)
+  assert.match(await read('gusta-implement-task/SKILL.md'), /바뀐 범위의 작은 결정론적 검사와 빠른 ARCH task 명령을 커밋 직전 한 번[^\n]*`vibe check --tier task`[^\n]*편집마다 반복하지 않/)
+  assert.match(await read('gusta-create-task/SKILL.md'), /acceptance·검증 줄에는 태스크 단계 영향 검사만[^\n]*전체 검수는 공동 고정 후보[^\n]*지원 브라우저 호환 검사는 CI/)
+  assert.match(await read('gusta-create-task/assets/task.md'), /behavioral evidence and owner\/stage:[^\n]*existing affected checks[^\n]*integration-stage agent AC[^\n]*E2E replacement scope/)
+  assert.match(await read('gusta-create-architecture/SKILL.md'), /task\(변경 영향의 작은 결정론적 검사[^\n]*batch\(모든 참여 세션이 ready인 고정 통합 후보[^\n]*CI\(최소 자동 E2E와 선언한 지원 브라우저 호환 검사\)/)
   const format = await read('gusta-create-architecture/assets/FORMAT.md')
-  for (const pattern of [/a task names task-tier checks only/, /declares all three tiers as `task`, `batch` \(a work group's `--group-verify`\), `CI`/, /A check over a minute \(measured or expected\) goes under batch, not task/]) assert.match(format, pattern)
+  for (const pattern of [/a task names affected task-tier evidence and explicit handoffs/, /task = affected compact deterministic invariant checks[^\n]*batch = one full deterministic gate on the fixed shared integration candidate[^\n]*CI = minimal durable browser E2E and compatibility for explicitly supported browsers only/, /Computer-use agent acceptance replaces named E2E scope after removing\/narrowing that automatic execution/]) assert.match(format, pattern)
   assert.match(await read('gusta-update/references/project-rules.md'), /단계 선언이 없거나\(lint 검토 후보\) 태스크 단계에 느린 명령이 있으면\(`vibe status`의 `taskChecks\.slow`/)
   // The same contract reaches headless sessions through the CLI's prompt (a variant here: no skill files read).
   const { agentPrompt } = await import('../src/agent-adapter.mjs')

@@ -1,7 +1,9 @@
 name: Publish Package
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches:
       - main
 
@@ -11,18 +13,40 @@ permissions:
 
 jobs:
   publish:
+    # workflow_run has a privileged token even when its triggering workflow did
+    # not. Only a successful push from this repository may authorize publication.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    concurrency:
+      group: npm-publish-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
       - run: npm ci
-      - name: Skip when this version is already on npm
+      - name: Reuse the verified candidate and skip published versions
         id: guard
+        env:
+          VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
+          set -euo pipefail
+          CURRENT_SHA="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          test -n "$CURRENT_SHA"
+          if [ "$CURRENT_SHA" != "$VERIFIED_SHA" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "A newer main commit is awaiting its own CI result — skipping this candidate."
+            exit 0
+          fi
           VERSION="$(node -p "require('./package.json').version")"
           PUBLISHED="$(npm view "@haeram/gusta@${VERSION}" version 2>/dev/null || true)"
           if [ -n "$PUBLISHED" ]; then
@@ -32,8 +56,11 @@ jobs:
             echo "publish=true" >> "$GITHUB_OUTPUT"
             echo "@haeram/gusta@${VERSION} is not on npm yet — publishing."
           fi
-      - if: steps.guard.outputs.publish == 'true'
-        run: npm run release:check
+      - name: Reject an empty skill release
+        if: steps.guard.outputs.publish == 'true'
+        # CI permits an empty development snapshot; publication still requires
+        # a nonempty skill package. Reuse CI's tests and packaging result.
+        run: node ./bin/gusta.mjs validate
       - name: Prepare provenance conflict recovery
         if: steps.guard.outputs.publish == 'true'
         # npm/cli#10078: keep provenance enabled and fetch an existing Rekor
@@ -43,5 +70,6 @@ jobs:
           node scripts/prepare-publish.mjs "$(npm root -g)/npm"
           GUSTA_PUBLISH_NPM_ROOT="$(npm root -g)/npm" node --test test/publish-tools.test.mjs
       - if: steps.guard.outputs.publish == 'true'
-        # release:check above already ran the prepublishOnly validation.
+        # CI already ran the full checks for this exact SHA. Keep the pinned
+        # publishing-tool checks above without repeating prepublishOnly's suite.
         run: npm publish --ignore-scripts --provenance
