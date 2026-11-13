@@ -17,19 +17,56 @@ async function gitWith(root, args, env) {
 // The tree a check actually ran on: committed files plus uncommitted and untracked ones
 // (ignored files excluded). A copy of the real index keeps Git's stat cache, so only
 // changed files are hashed again.
-export async function workingTree(root) {
+async function withWorkingIndex(root, run, ref = null) {
   const temporary = path.join(os.tmpdir(), `gusta-index-${randomUUID()}`)
   try {
-    const index = path.resolve(root, await gitWith(root, ['rev-parse', '--git-path', 'index']))
     const env = { GIT_INDEX_FILE: temporary }
-    try { await copyFile(index, temporary) } catch (error) {
-      if (error.code !== 'ENOENT') throw error
-      await gitWith(root, ['read-tree', 'HEAD'], env)
+    if (ref !== null) {
+      await gitWith(root, ['read-tree', ref], env)
+    } else {
+      const index = path.resolve(root, await gitWith(root, ['rev-parse', '--git-path', 'index']))
+      try { await copyFile(index, temporary) } catch (error) {
+        if (error.code !== 'ENOENT') throw error
+        await gitWith(root, ['read-tree', 'HEAD'], env)
+      }
+      await gitWith(root, ['add', '-A'], env)
     }
-    await gitWith(root, ['add', '-A'], env)
-    return await gitWith(root, ['write-tree'], env)
+    return await run(env)
   } finally {
     await rm(temporary, { force: true })
+  }
+}
+
+export const workingTree = (root) => withWorkingIndex(root, (env) => gitWith(root, ['write-tree'], env))
+
+// A check plan declares its actual Git inputs. An isolated index includes local and
+// untracked changes without changing the user's index or inferring document exclusions.
+async function indexInputs(root, inputs, env) {
+  const output = await gitWith(root, ['ls-files', '--stage', '-z', '--', ...inputs], env)
+  return output.split('\u0000').filter(Boolean).map((entry) => {
+    const tab = entry.indexOf('\t'), [mode, hash] = entry.slice(0, tab).split(' ')
+    return { path: entry.slice(tab + 1), mode, hash }
+  }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
+}
+
+export const workingInputs = (root, inputs) => withWorkingIndex(root, (env) => indexInputs(root, inputs, env))
+
+// Historical fingerprints use only the selected commit, including symlink targets
+// outside a check's pathspec. They never supplement missing blobs from today's files.
+export const committedInputs = (root, ref, inputs) => withWorkingIndex(root, async (env) => ({
+  files: await indexInputs(root, inputs, env), all: await indexInputs(root, ['.'], env),
+}), ref)
+
+export const committedBlob = async (root, hash) => (await execute('git', ['-C', root, 'cat-file', 'blob', hash],
+  { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } })).stdout
+
+export async function ignoredInput(root, input) {
+  try {
+    await gitWith(root, ['check-ignore', '--quiet', '--', input])
+    return true
+  } catch (error) {
+    if (error.code === 1) return false
+    throw error
   }
 }
 

@@ -9,6 +9,7 @@ import { vibeSession } from './vibe-session.mjs'
 import { coordView } from './vibe-coord.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { taskBudget } from './work-policy.mjs'
+import { readVerificationPlan } from './verification-plan.mjs'
 
 // The owner's inbox for a brief: the coordination branch as the clone at `targetRoot` has it now
 // (nothing is fetched, nothing is written), with the commit it was read at. null where there is no
@@ -63,6 +64,14 @@ function scanTiers(lines, withGate) {
     let tier = null
     for (const line of block) {
       if (/\[x\]/.test(line)) continue
+      if (verification && /^\s*-\s*plan:/.test(line)) {
+        const plan = line.match(/^\s*-\s*plan:\s*`([^`]+)`[.]?\s*$/)?.[1]
+        if (!plan || (result.planFile && result.planFile !== plan)) throw new SkillPackageError('ARCH verification plan은 하나의 명시적 JSON 경로여야 합니다: plan: `<path>`')
+        result.planFile = plan
+        if (id) labelled.push(id)
+        tier = null
+        continue
+      }
       // A gate-only block is prose for the reader: its lines never become tier commands.
       const label = verification && line.match(/^\s*-\s*(task|batch|CI|태스크|묶음|push 전)(?=[,:\s])/i)
       if (label) {
@@ -81,7 +90,7 @@ function scanTiers(lines, withGate) {
       }
     }
   }
-  result.declared = ['task', 'batch', 'ci'].every((tier) => labels.has(tier))
+  result.declared = Boolean(result.planFile) || ['task', 'batch', 'ci'].every((tier) => labels.has(tier))
   result.partial = labels.size > 0 && !result.declared
   result.excluded = excluded
   result.decision = labelled[0] ?? decisions[0] ?? null
@@ -90,12 +99,23 @@ function scanTiers(lines, withGate) {
 }
 
 // archText lets a brief read ARCH from the same source (commit or working tree) as its policy.
-export async function readVerification(root, archText) {
+export async function readVerification(root, archText, deps = {}) {
   const arch = archText ?? await readFile(path.join(root, 'spec/ssot/ARCH.md'), 'utf8').catch((error) => {
     if (error.code === 'ENOENT') return ''
     throw error
   })
   const verify = verificationTiers(arch)
+  if (verify.planFile) {
+    verify.plan = await readVerificationPlan(root, verify.planFile, deps)
+    for (const tier of ['task', 'batch', 'ci']) {
+      const commands = verify.plan.checks.filter((check) => check.tier === tier).map((check) => check.command)
+      const missing = verify[tier].filter((command) => !commands.includes(command))
+      if (missing.length) throw new SkillPackageError(`ARCH ${tier} 명령이 검사 계획에 연결되지 않았습니다.`, missing)
+      verify[tier] = commands
+    }
+    verify.partial = false
+    return verify
+  }
   // Legacy ARCH: infer only familiar fast checks; never default a task to verify.
   if (!verify.declared) {
     let scripts = {}, manager = 'npm run'
@@ -154,7 +174,7 @@ export async function vibeBrief(options = {}) {
   const result = { schemaVersion: 1, taskId: single, commit: source.head, diffBase, task,
     decisions: brief.decisions,
     freshness: base.map((entry) => { const [domain, rev] = entry.split('@'); return { domain, base: Number(rev), current: revs.get(domain) ?? null, stale: Number(rev) !== revs.get(domain) } }),
-    verify: await readVerification(source.root, (await source.read('spec/ssot/ARCH.md')) ?? ''), touches: task?.touches ?? [],
+    verify: await readVerification(source.root, (await source.read('spec/ssot/ARCH.md')) ?? '', source.kind === 'worktree' ? {} : { readSource: source.read }), touches: task?.touches ?? [],
     reading: 'This brief is the reading scope: whole decision blocks the task cites or needs, global rules, flow·constraints and changes since a stale base. Do not re-read STATE, FORMAT or ARCH in full. Open an original only for what issues, unfollowed or related name and the task needs.',
     ...brief,
     // Planning's one-session size check (gusta-create-task 3): over[] names what to split along.
@@ -181,6 +201,7 @@ function briefView(brief, options) {
   return { schemaVersion: 1, view: options.summary ? 'summary' : 'page', roots: brief.roots, source: brief.source, snapshot,
     ...(brief.taskId ? { taskId: brief.taskId, commit: brief.commit, diffBase: brief.diffBase, freshness: brief.freshness, touches: brief.touches,
       verify: { task: brief.verify.task, batch: brief.verify.batch, ci: brief.verify.ci, declared: brief.verify.declared, partial: brief.verify.partial,
+        ...(brief.verify.plan ? { plan: brief.verify.plan } : {}),
         ...(brief.verify.inferred ? { inferred: brief.verify.inferred } : {}), ...(brief.verify.excluded?.length ? { excluded: brief.verify.excluded } : {}),
         guidanceCount: brief.verify.guidance.length, guidanceSection: 'guidance' } } : {}),
     complete: false, readingComplete: false, sourceComplete: brief.complete, scope: brief.scope, size: brief.size,

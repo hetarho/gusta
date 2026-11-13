@@ -11,6 +11,7 @@ import { inboxEntries, ClaimError, REFRESH_MINUTES } from './coord-doc.mjs'
 import { vibePrune } from './prune.mjs'
 import { readVerification, vibeBrief } from './vibe-brief.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
+import { fingerprintVerificationCheck } from './verification-plan.mjs'
 import { vibeCIWait } from './vibe-ci.mjs'
 import { git } from './workspace.mjs'
 import { readTimings, recordTiming, timingKey, measured, workingTree, taskCheckRows, taskCheckSummary } from './check-cache.mjs'
@@ -51,15 +52,15 @@ export function improvingGate(previous, current) {
 
 // Every command in the fixed plan must finish. Its exit receipt is authoritative even when its
 // human-readable test output is not; a single command's internal shrinking failures need a typed adapter.
-function gateEvidence(commands, round, head) {
+function gateEvidence(commands, round, head, plan = null) {
   const failures = round.filter((entry) => !entry.checked.ok), first = failures[0]
   if (!first) return null
-  const complete = round.length === commands.length && round.every(({ checked }) => typeof checked.ok === 'boolean' && !checked.timedOut && !checked.stale && !checked.cancelled)
-  const tests = failures.every(({ checked }) => checked.failureSetComplete === true && Array.isArray(checked.failedTests) && checked.failedTests.length > 0)
-  const identities = failures.flatMap(({ command, index, checked }) => tests ? checked.failedTests.map((id) => `${index}:${command}\n${id}`) : [`${index}:${command}`])
-  return { head, command: first.command, plan: JSON.stringify(commands), log: first.checked.log ?? null,
-    failedTests: failures.flatMap(({ checked }) => checked.failedTests ?? []).slice(0, 20), failedCommands: failures.map(({ command, index }) => ({ index, command })),
-    identities, evidence: tests ? 'adapter-tests' : 'commands', failureSetComplete: complete && (tests || round.every(({ checked }) => checked.ok || Number.isInteger(checked.exitCode))),
+  const complete = round.length === commands.length && round.every(({ checked }) => typeof checked.ok === 'boolean' && !checked.timedOut && !checked.stale && !checked.cancelled && (!plan || checked.failureSetComplete === true))
+  const tests = !plan && failures.every(({ checked }) => checked.failureSetComplete === true && Array.isArray(checked.failedTests) && checked.failedTests.length > 0)
+  const identities = failures.flatMap(({ command, index, id, checked }) => plan ? [`check:${id}`] : tests ? checked.failedTests.map((id) => `${index}:${command}\n${id}`) : [`${index}:${command}`])
+  return { head, command: first.command, plan: JSON.stringify(plan ?? commands), log: first.checked.log ?? null,
+    failedTests: failures.flatMap(({ checked }) => checked.failedTests ?? []).slice(0, 20), failedCommands: failures.map(({ command, index, id }) => ({ index, command, ...(id ? { id } : {}) })),
+    identities, evidence: plan ? 'checks' : tests ? 'adapter-tests' : 'commands', failureSetComplete: complete && (tests || round.every(({ checked }) => checked.ok || Number.isInteger(checked.exitCode))),
     timedOut: round.some(({ checked }) => checked.timedOut), stale: round.some(({ checked }) => checked.stale), ms: round.reduce((sum, { checked }) => sum + (Number.isFinite(checked.ms) ? checked.ms : 0), 0) }
 }
 export function closingReserve({ timings, commands, push = false, hours, timeoutMs, optionHours }) {
@@ -315,6 +316,19 @@ export async function vibeLoop(options = {}, injected = {}) {
     return [...commands]
   }
   let batchVerify = selectBatch(verify)
+  const batchPlan = () => options.verify === undefined ? verify.plan : null
+  const batchDefinition = () => batchPlan()?.checks.filter((check) => check.tier === 'batch') ?? null
+  const batchIdentity = () => JSON.stringify(batchDefinition() ?? batchVerify)
+  const batchInputs = async () => {
+    const planned = batchPlan()
+    if (!planned) return null
+    const inputs = []
+    for (const check of batchDefinition()) {
+      const fingerprint = await fingerprintVerificationCheck(root, planned, check, { scope: {}, env: {} })
+      inputs.push({ id: check.id, definition: fingerprint.definitionFingerprint, input: fingerprint.inputFingerprint })
+    }
+    return JSON.stringify({ source: planned.source, checks: inputs })
+  }
   const refreshVerification = async () => {
     verify = await readVerification(root)
     requiredVerificationTiers ||= verify.declared || verify.partial
@@ -374,7 +388,8 @@ export async function vibeLoop(options = {}, injected = {}) {
   const report = `spec/reports/${new Date(start).toISOString().slice(2, 10).replaceAll('-', '')}-${options.tag}.md`
   const reportPath = path.join(root, report)
   let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false, pruned = null, publication = null
-  let lastBatchPlan = JSON.stringify(batchVerify)
+  let lastBatchPlan = batchIdentity()
+  let lastBatchInputs = await batchInputs()
   // Usage limits this run met: every hit (limit-hit event, manifest), the notes a unit's done line carries
   // per task, a wait in progress, and the limits a usage-limit stop names in its hint.
   const limitHits = [], limitNotes = new Map(), loginParked = new Set()
@@ -731,30 +746,44 @@ export async function vibeLoop(options = {}, injected = {}) {
       }
     }
     const code = await codeChanged(base, head)
-    const needsGate = code || lastBatchPlan !== JSON.stringify(batchVerify)
+    const candidateInputs = await batchInputs()
+    const planProof = batchPlan() ? candidateInputs : null
+    const assertPlanProof = async () => {
+      if (planProof === null) return
+      await refreshVerification()
+      if (await batchInputs() !== planProof) throw new SkillPackageError('검증 후 검사 계획의 입력 또는 정의가 변경되어 반영하지 않습니다. 생성 보고서를 포함한 실제 입력을 고정한 뒤 검증하거나, 검사가 실제로 읽는 입력 경계를 명시하세요. 전체 관문을 자동 재실행하지 않습니다.')
+    }
+    const needsGate = code || lastBatchPlan !== batchIdentity() || (batchPlan() && candidateInputs !== lastBatchInputs)
     if (needsGate && publish) {
       if (!batchVerify.length) throw new SkillPackageError('코드 push 전 묶음 검증이 없습니다. ARCH batch 단계 또는 --verify를 지정하세요.')
       // The same code already failed: re-running the suite cannot pass.
-      if (failedGate && failedGate.plan === JSON.stringify(batchVerify) && !(await codeChanged(failedGate.head, head))) {
+      if (failedGate && failedGate.plan === batchIdentity() && (batchPlan() ? failedGate.inputIdentity === candidateInputs : !(await codeChanged(failedGate.head, head)))) {
         if (closing) throw new SkillPackageError(`묶음 검증 실패: ${failedGate.command}`, [failedGate.log ?? ''])
         return false
       }
       gateAttempts++
       const round = []
-      for (const [index, command] of batchVerify.entries()) {
+      const planned = batchPlan(), runs = planned ? [{ plan: planned.source }] : batchVerify.map((command) => ({ command }))
+      for (const [index, run] of runs.entries()) {
         await ensureActive()
+        const command = run.command ?? `verification-plan:${planned.source}#batch`
         let checked
         // The gate may use its whole reserve even when a unit's timeout is shorter. Its rounds go to the
         // session's gate record (a later standalone gate with this tag continues the count), but this
         // loop stops on its own counter, so 'record' never refuses it.
-        try { checked = await deps.check({ targetRoot: root, tier: 'batch', tag: options.tag, gateLedger: 'record', diffBase: base, heavy: true, signal: controller.signal, timeoutMs: Math.min(Math.max(timeoutMs, reserve.ms), Math.max(1, deadline - deps.now())) }, command) }
+        try { checked = await deps.check({ targetRoot: root, tier: 'batch', tag: options.tag, gateLedger: 'record', diffBase: base, heavy: true, signal: controller.signal, timeoutMs: Math.min(Math.max(timeoutMs, reserve.ms), Math.max(1, deadline - deps.now())), ...(run.plan ? { plan: run.plan } : {}) }, run.command) }
         catch (caught) { batches.push({ command, ok: false, cancelled: controller.signal.aborted, error: caught.message }); throw caught }
         batches.push({ command, ...checked, ...(!checked.ok && controller.signal.aborted ? { cancelled: true } : {}) })
-        round.push({ command, index, checked })
+        if (planned) {
+          const expected = batchDefinition()
+          if (!Array.isArray(checked.checks) || checked.checks.length !== expected.length || checked.checks.some((check, i) => check.id !== expected[i].id || check.command !== expected[i].command)) throw new SkillPackageError('검사 계획 영수증에 모든 항목의 정확한 ID·명령·상태가 필요합니다.')
+          for (const [i, check] of checked.checks.entries()) round.push({ command: check.command, id: check.id, index: i, checked: { ...check, failureSetComplete: checked.failureSetComplete, stale: checked.stale || check.stale, cancelled: checked.cancelled || check.cancelled, timedOut: checked.timedOut || check.timedOut } })
+        } else round.push({ command, index, checked })
         await ensureActive()
       }
-      const current = gateEvidence(batchVerify, round, head)
+      const current = gateEvidence(batchVerify, round, head, batchDefinition())
       if (current) {
+        if (planned) current.inputIdentity = candidateInputs
         const improved = improvingGate(failedGate, current)
         const gateMs = reserve.gateMs ?? (current.ms > 0 ? current.ms : timeoutMs)
         const retryFits = deadline - deps.now() > gateMs + (reserve.fixMs ?? timeoutMs) + (reserve.ciMs ?? 0)
@@ -768,7 +797,7 @@ export async function vibeLoop(options = {}, injected = {}) {
         if (closing) throw new SkillPackageError(`묶음 검증 실패: ${current.command}`, [current.log ?? ''])
         return false
       }
-      verifiedCommit = head; lastBatchPlan = JSON.stringify(batchVerify); failedGate = null; gateRetryAllowed = true; gateStopReason = null
+      verifiedCommit = head; lastBatchPlan = batchIdentity(); lastBatchInputs = candidateInputs; failedGate = null; gateRetryAllowed = true; gateStopReason = null
     }
     await recordReport(closing)
     await metadataCommit(`vibe ${options.tag}: record checks`)
@@ -776,6 +805,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     if (!publish) { pending = []; await save(); return true }
     await ensureActive()
     await metadata.assertClean()
+    await assertPlanProof()
     const pushed = await deps.push({ ...options, targetRoot: root, ...(needsGate ? { verifiedCommit: head } : {}) })
     if (pushed.ok === false) throw new SkillPackageError('묶음 push 실패')
     publication = published(pushed, publication)
@@ -794,6 +824,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       await metadataCommit(`vibe ${options.tag}: final CI result`)
       await ensureActive()
       await metadata.assertClean()
+      await assertPlanProof()
       const final = await deps.push({ ...options, targetRoot: root, verifiedCommit: head })
       if (final.ok === false) throw new SkillPackageError('마감 보고서 push 실패')
       publication = published(final, publication)
@@ -883,7 +914,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       let repairMs = null
       if (deps.now() >= deadline - reserve.ms - MIN_UNIT_MS) {
         const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
-        if (head !== base && head !== lintBlocked && !(failedGate && failedGate.plan === JSON.stringify(batchVerify) && !(await codeChanged(failedGate.head, head)))) { await flush(false, true); continue }
+        const sameFailedGate = failedGate && failedGate.plan === batchIdentity() && (batchPlan() ? failedGate.inputIdentity === await batchInputs() : !(await codeChanged(failedGate.head, head)))
+        if (head !== base && head !== lintBlocked && !sameFailedGate) { await flush(false, true); continue }
         repairMs = deadline - deps.now() - (reserve.gateMs ?? (failedGate?.ms > 0 ? failedGate.ms : 0)) - (reserve.ciMs ?? 0)
         if (!repairTask || refused.has(repairTask) || !status.runnable?.includes(repairTask) || repairMs <= 0) { reason = 'final-window'; break }
       }

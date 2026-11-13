@@ -27,6 +27,7 @@ import { agentCatalog } from './agent-catalog.mjs'
 import { routeAgent, runLabel } from './agent-route.mjs'
 import { loopHint } from './loop-control.mjs'
 import { BOOKKEEPING, bumpGate, versionBump, beyondVersion } from './version-bump.mjs'
+import { fingerprintVerificationCheck } from './verification-plan.mjs'
 
 export { vibeSession }
 const execute = promisify(execFile)
@@ -89,9 +90,29 @@ async function assertVerified(context, verifiedCommit, commit) {
   if (!verifiedCommit) return
   const { root } = context
   const verified = await sha(root, verifiedCommit)
-  let changed = (await git(root, ['diff', '--name-only', verified, commit])).trim().split('\n').filter((file) => file && !BOOKKEEPING.test(file))
+  if (verified === commit) return
+  const files = (await git(root, ['diff', '--name-only', verified, commit])).trim().split('\n').filter(Boolean)
+  let changed = files.filter((file) => !BOOKKEEPING.test(file))
   if (changed.length && context.settings.values.version === 'auto') changed = await beyondVersion(root, verified, commit, changed)
   if (changed.length) fail('최종 검증 이후 코드가 변경됐습니다. 합친 현재 결과를 다시 검증한 뒤 반영하세요.', changed)
+  if (!files.some((file) => BOOKKEEPING.test(file))) return
+  // Bookkeeping is normally exempt, but a structured check may explicitly consume it (or all
+  // inputs). Compare the same committed input boundary rather than waiving it by file category.
+  const verificationAt = async (ref) => readVerification(root, await git(root, ['show', `${ref}:spec/ssot/ARCH.md`], [128]) ?? '', {
+    readSource: (file) => git(root, ['show', `${ref}:${file}`], [128]),
+  })
+  const [before, after] = await Promise.all([verificationAt(verified), verificationAt(commit)])
+  if (!before.plan && !after.plan) return
+  const oldChecks = before.plan?.checks.filter((check) => check.tier === 'batch')
+  const checks = after.plan?.checks.filter((check) => check.tier === 'batch')
+  if (!before.plan || !after.plan || before.plan.source !== after.plan.source || JSON.stringify(oldChecks) !== JSON.stringify(checks)) fail('최종 검증 이후 검사 계획의 정의가 변경됐습니다. 현재 후보를 다시 검증하세요.')
+  for (const [index, check] of checks.entries()) {
+    const [was, now] = await Promise.all([
+      fingerprintVerificationCheck(root, before.plan, oldChecks[index], { ref: verified, scope: {}, env: {} }),
+      fingerprintVerificationCheck(root, after.plan, check, { ref: commit, scope: {}, env: {} }),
+    ])
+    if (!was.verifiable || !now.verifiable || was.inputFingerprint !== now.inputFingerprint) fail('최종 검증 이후 검사 계획의 실제 입력이 변경됐거나 이전 입력을 확인할 수 없습니다. 현재 후보를 다시 검증하세요.', [check.id])
+  }
 }
 
 // The version commit this landing owes (SETTINGS version), built on head: { commit, version }.
@@ -175,7 +196,7 @@ async function assertSpecClose(root, commit) {
       await mkdir(path.dirname(destination), { recursive: true })
       await writeFile(destination, contents[index] ?? await git(root, ['show', specs[index]]))
     }))
-    const { errors } = await lintSpec({ targetRoot: candidate })
+    const { errors } = await lintSpec({ targetRoot: candidate, readSource: (file) => git(root, ['show', `${commit}:${file}`], [128]) })
     const issues = await specCloseIssues(candidate)
     if (errors.length || issues.length) fail(`${errors.length ? 'spec lint' : 'spec close'} 실패: 문서 구조와 마감 상태를 고친 뒤 최종 반영하세요. 원격 인계는 vibe checkpoint --handoff를 사용하세요.`, [...errors, ...issues.map((issue) => `${issue.where} ${issue.id}: ${issue.reason ?? `invalid st:${issue.st ?? '(none)'}`}`)].slice(0, 10))
   } finally { await rm(candidate, { recursive: true, force: true }) }
@@ -679,7 +700,11 @@ export async function vibePreflight(options = {}, deps = {}) {
     const available = await execute('sh', ['-c', 'command -v "$1"', 'gusta-verify', command], { cwd: context.root, env: options.env ?? process.env, timeout: 5000 }).then(() => true, () => false)
     if (!available) missing.push(command)
   }
-  add('verification', missing.length === 0, missing.length ? `missing commands: ${missing.join(', ')}` : verify.declared ? `task: ${verify.task.length}, batch: ${verify.batch.length}; conditional checks remain in ARCH guidance` : 'legacy ARCH: changed tests + fast checks at task tier; select batch commands before code push', true)
+  const verificationDetail = missing.length ? `missing commands: ${missing.join(', ')}`
+    : verify.plan ? `plan: ${verify.plan.source}; task: ${verify.task.length}, batch: ${verify.batch.length}, CI: ${verify.ci.length}; successful checks reuse only matching declared inputs and execution scope`
+    : verify.declared ? `task: ${verify.task.length}, batch: ${verify.batch.length}; conditional checks remain in ARCH guidance`
+    : `declared:false, partial:${verify.partial}; legacy ARCH: changed tests + fast checks at task tier; reconcile project rules and select batch commands before code push`
+  add('verification', missing.length === 0, verificationDetail, true)
   if (options.probe && !needsInit) checks.push(await probeWorker(context, { ...options, permissionMode: await permissionMode(options, context.root), headlessMcp: await readSetting({ root: context.root }, 'headless-mcp') }, { agents, catalog: deps.catalog, blocked: deps.blocked }))
   return { schemaVersion: 1, ok: checks.every((check) => check.ok), checks, needsUser: checks.filter((check) => check.needsUser), ...(needsInit ? { reason: 'needs-init', hint: loopHint('needs-init') } : {}) }
 }

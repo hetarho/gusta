@@ -1,4 +1,5 @@
 import { verificationTiers } from './vibe-brief.mjs'
+import { readVerificationPlan } from './verification-plan.mjs'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { sections, tableRows, quoteLine, quoteFields, splitRefs, TASK_ID, TASK_ST, EXPLORE, exploreValue, EXIT_LINE, EFFORTS, RUN, runValue, SESSION_TAG, ISO_UTC, INBOX_LINE, REPORT_FILE, REPORT_SECTIONS, parseSsot, references, refId } from './spec-format.mjs'
@@ -234,7 +235,7 @@ function referenceChecks({ ssotInfo, cfg, format, errors, warnings, reviewHints 
   }
 }
 
-export async function lintSpec({ targetRoot } = {}) {
+export async function lintSpec({ targetRoot, readSource } = {}) {
   const specRoot = path.join(path.resolve(targetRoot ?? process.cwd()), 'spec')
   const errors = []
   const warnings = []
@@ -302,7 +303,13 @@ export async function lintSpec({ targetRoot } = {}) {
     }
     // A review hint, never an error: undeclared tiers are inferred (task: package.json fast scripts), and
     // whether a check moves between tiers is the project's policy (gusta-update rule comparison).
-    const tiers = id === 'ARCH' ? verificationTiers(content) : null
+    let tiers = null
+    if (id === 'ARCH') {
+      try {
+        tiers = verificationTiers(content)
+        if (tiers.planFile) await readVerificationPlan(path.dirname(specRoot), tiers.planFile, readSource ? { readSource } : {})
+      } catch (error) { errors.push(`ssot/ARCH.md: ${error.message}`) }
+    }
     if (tiers?.decision && !tiers.declared) reviewHints.push(`ssot/ARCH.md: [o] 검증 결정(${tiers.decision})에 task / batch / CI 검증 단계 선언이 ${tiers.partial ? '일부만 있습니다' : '없습니다'} — 단계를 모두 명시하고 1분 넘는 검사는 batch에 두는 개정 후보입니다(gusta-update 규칙 대조).`)
     const quote = quoteLine(content)
     const revMatch = quote?.match(/^r(\d+)\b/)
