@@ -1,11 +1,13 @@
 import test from 'node:test'
+import { vibeTask } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fixture, git, execute } from './helpers/vibe-fixture.mjs'
-import { vibeTask } from '../src/vibe-task.mjs'
+
 import { vibeBeat } from '../src/vibe.mjs'
+import { prepareSessionWorkspace } from '../src/session-workspace.mjs'
 import { closeTasks, taskRow } from '../src/state-doc.mjs'
 import { readSessions } from '../src/coord-doc.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
@@ -181,7 +183,8 @@ test('done refuses --at when the task has no result section', async (t) => {
 })
 
 test('vibe task CLI prints JSON and errors as JSON', async (t) => {
-  const { root } = await fixture(t)
+  const source = await fixture(t)
+  const { root } = await prepareSessionWorkspace({ targetRoot: source.root, tag: 'ab12' })
   const started = await execute(process.execPath, [cli, 'vibe', 'task', 'start', 'T001', '--tag', 'ab12', '--target', root])
   assert.equal(JSON.parse(started.stdout).st.startsWith('doing@'), true)
   const refused = await execute(process.execPath, [cli, 'vibe', 'task', 'done', 'T001', '--tag', 'ab12', '--target', root]).catch((error) => error)

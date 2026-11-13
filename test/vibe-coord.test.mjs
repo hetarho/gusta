@@ -4,9 +4,10 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { vibePush, vibeTask } from './helpers/unit-policy.mjs'
 import { fileURLToPath } from 'node:url'
-import { vibeStatus, vibeSync, vibePush, vibeClaim, vibeBeat, vibeCheckpoint, vibePreflight } from '../src/vibe.mjs'
-import { vibeTask } from '../src/vibe-task.mjs'
+import { vibeStatus, vibeSync, vibeClaim, vibeBeat, vibeCheckpoint, vibePreflight } from '../src/vibe.mjs'
+
 import { vibeInbox, vibeLog } from '../src/vibe-inbox.mjs'
 import { vibePrune } from '../src/prune.mjs'
 import { vibeSettings } from '../src/settings.mjs'

@@ -1,12 +1,13 @@
 import test from 'node:test'
+import { runVibeCheck, vibeLoop } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fixture, git, execute, archiveTask } from './helpers/vibe-fixture.mjs'
-import { runVibeCheck, resetVibeGate } from '../src/vibe-check.mjs'
+import { resetVibeGate } from '../src/vibe-check.mjs'
 import { readGates, recordGateRun, addRun, gateCount, GATE_IDLE_MS } from '../src/gate-ledger.mjs'
-import { vibeLoop } from '../src/vibe-loop.mjs'
+
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 
 // A failing gate that leaves evidence outside the checkout of every real run.

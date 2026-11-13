@@ -1,13 +1,14 @@
 import test from 'node:test'
+import { runVibeCheck, vibeLoop } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fixture, git, archiveTask } from './helpers/vibe-fixture.mjs'
-import { runVibeCheck } from '../src/vibe-check.mjs'
+
 import { readTimings, recordTiming, timingKey, taskCheckSummary, SLOW_TASK_CHECK_MS } from '../src/check-cache.mjs'
 import { taskCheckLine } from '../src/loop-time.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
-import { vibeLoop } from '../src/vibe-loop.mjs'
+
 import { vibeInbox } from '../src/vibe-inbox.mjs'
 import { readSessions } from '../src/coord-doc.mjs'
 

@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { vibeLoop } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -6,7 +7,7 @@ import { fixture, git, archiveTask, execute } from './helpers/vibe-fixture.mjs'
 import { upsertActive, closeTasks } from '../src/state-doc.mjs'
 import { readSessions } from '../src/coord-doc.mjs'
 import { vibeStatus, vibeClaim, vibeBeat } from '../src/vibe.mjs'
-import { vibeLoop } from '../src/vibe-loop.mjs'
+
 
 const tag = 'bbbb'
 const passed = async () => ({ ok: true, checks: [] })

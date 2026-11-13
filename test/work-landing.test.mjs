@@ -4,11 +4,12 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, realpath } from 'node:fs/promi
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { vibePush } from './helpers/unit-policy.mjs'
 import { promisify } from 'node:util'
 import { startWork, claimWork, claimNextWork, submitWork, integrateWork, finishWork, workBoard, workBrief, updateWork, syncWork } from '../src/work-groups.mjs'
 import { nextWork } from '../src/work-wait.mjs'
 import { claimReview, finishReview, resumeWork } from '../src/work-review.mjs'
-import { vibeStatus, vibeClaim, vibePush } from '../src/vibe.mjs'
+import { vibeStatus, vibeClaim } from '../src/vibe.mjs'
 import { vibeInbox } from '../src/vibe-inbox.mjs'
 import { readSessions } from '../src/coord-doc.mjs'
 

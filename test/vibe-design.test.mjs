@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { runVibeCheck } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, rm } from 'node:fs/promises'
 import path from 'node:path'
@@ -8,7 +9,7 @@ import { vibeDesign } from '../src/vibe-design.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 import { vibeBrief } from '../src/vibe-brief.mjs'
-import { runVibeCheck } from '../src/vibe-check.mjs'
+
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 
 test('디자인 중 상태는 checkout 로컬이다: STATE를 바꾸지 않고 다른 worktree에 보이지 않는다', async (t) => {

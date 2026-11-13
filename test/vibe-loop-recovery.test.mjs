@@ -1,14 +1,15 @@
 import test from 'node:test'
+import { vibeLoop, vibeTask } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, readdir, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fixture, git, archiveTask } from './helpers/vibe-fixture.mjs'
-import { vibeLoop, nextRung, timeboxMs, EXPLORE_EXIT_MS } from '../src/vibe-loop.mjs'
+import { nextRung, timeboxMs, EXPLORE_EXIT_MS } from '../src/vibe-loop.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
 import { readSessions } from '../src/coord-doc.mjs'
 import { appendInbox } from '../src/state-doc.mjs'
 import { recoveryText } from '../src/agent-adapter.mjs'
-import { vibeTask } from '../src/vibe-task.mjs'
+
 import { lintSpec } from '../src/spec-lint.mjs'
 
 // Units that end unfinished or close badly: continuation, split, park, the spec gate and its repair.

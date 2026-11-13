@@ -1,11 +1,12 @@
 import test from 'node:test'
+import { runVibeCheck } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fixture, git, execute } from './helpers/vibe-fixture.mjs'
 import { vibeBrief, vibeFormat, verificationTiers } from '../src/vibe-brief.mjs'
-import { runVibeCheck } from '../src/vibe-check.mjs'
+
 import { readTimings, measured, timingKey } from '../src/check-cache.mjs'
 import { vibeStatus } from '../src/vibe.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
