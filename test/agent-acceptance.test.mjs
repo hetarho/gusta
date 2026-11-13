@@ -34,11 +34,33 @@ test('integration proof is tied to the actual candidate and unit debt stays sepa
 })
 
 test('resuming a checklist updates the same acceptance ID without duplicating the cost or hiding evidence', () => {
-  const checks = mergeAgentAcceptance([pending()], [passed()])
+  const checks = mergeAgentAcceptance([pending()], [{ ...passed(), owner: 'computer-use-host' }])
   assert.equal(checks.length, 1); assert.equal(checks[0].status, 'pass')
+  assert.equal(checks[0].owner, 'computer-use-host')
   const text = renderAgentAcceptance([{ ...checks[0], observed: 'Visible | useful\nSecond line' }])
   assert.ok(text.includes('Visible \\| useful<br>Second line')); assert.ok(text.includes(candidate)); assert.ok(text.includes('replaces old-panel-e2e'))
   assert.ok(!text.includes('\n## ')); assert.ok(text.includes('review missing or incorrect criteria'))
+})
+
+test('an unrelated pass cannot erase required pending coverage through a shared ID', () => {
+  const original = [{ ...pending('visible'), scenario: 'Open settings', steps: ['Open settings'], expected: 'Settings shown' }]
+  const unrelated = { ...passed('visible'), scenario: 'Open search', steps: ['Open search'], expected: 'Search shown' }
+  assert.throws(() => mergeAgentAcceptance(original, [unrelated]), /태스크·세션별 고유 ID.*visible/)
+  const remaining = summarizeAgentAcceptance(original, { candidate })
+  assert.equal(remaining.verified, false); assert.equal(remaining.notRun, 1)
+  assert.equal(original[0].scenario, 'Open settings')
+})
+
+test('resumed observations cannot silently waive or reallocate the declared acceptance contract', () => {
+  for (const changed of [
+    { expected: 'A different result' }, { steps: ['A different action'] },
+    { required: false }, { stage: 'unit' }, { replaces: [] },
+    { duplicationReason: 'Authorize another automated run after the fact' },
+  ]) assert.throws(() => mergeAgentAcceptance([pending()], [{ ...passed(), ...changed }]), /같은 ID/)
+  const updatedCandidate = 'b'.repeat(40)
+  const resumed = mergeAgentAcceptance([passed()], [{ ...passed(), candidate: updatedCandidate, observed: 'Observed on the new candidate', evidence: ['artifacts/new-panel.png'] }])
+  assert.equal(summarizeAgentAcceptance(resumed, { candidate: updatedCandidate }).verified, true)
+  assert.equal(summarizeAgentAcceptance(resumed, { candidate }).verified, false)
 })
 
 test('agent replacement cannot silently keep the same selected automated scenario', () => {
