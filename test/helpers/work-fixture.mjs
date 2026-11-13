@@ -36,6 +36,10 @@ export async function fixture(t) {
   await writeFile(path.join(root, 'spec/tasks/T003.after.md'), task('T003', 'T001'))
   await writeFile(path.join(root, 'shared.txt'), 'base\n')
   const initial = await commit(root, 'spec')
+  // A known default-branch anchor is independent of the caller's current branch. These
+  // local-only fixtures have no remote service, but external child checkouts are legitimate.
+  await git(root, 'update-ref', 'refs/remotes/origin/trunk', initial)
+  await git(root, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk')
   return { root, temporary, initial, targetRoot: root }
 }
 
