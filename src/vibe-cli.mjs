@@ -104,9 +104,9 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 usage-measurement=true일 때만 Claude 네이티브 부모·하위 로그의 기준선/사용량 스냅샷.
                                                 marker는 도구 명령에 직접 쓴 임의 리터럴. --session 보고만 하면 세션 전체; adapter 합계와 더하지 않음
   vibe design [start --tag <tag> [--scope <text>] | verify [--verify <command> ...] [--timeout-ms <ms>] | end]
-                                                디자인 모드(gusta-design-mode): 이 checkout의 Git 디렉터리에 디자인 중 상태 쓰기·전체 검증·삭제.
-                                                STATE·다른 worktree는 건드리지 않음 (커밋은 호출자). verify는 ARCH task·batch 명령 전부를
-                                                미커밋 작업 트리에서 한 번씩. 디자인 중 이 checkout의 push·맡김은 거절
+                                                디자인 모드(gusta-design-mode): 이 checkout의 Git 디렉터리에 디자인 중 상태 쓰기·task 검사·삭제.
+                                                verify는 미커밋 트리의 task 검사만 실행하고 batch(--verify 포함)·CI를 보류.
+                                                end·커밋 뒤 공동 통합에 제출한다. 디자인 중 이 checkout의 push·맡김은 거절
   vibe ab start <slug> [--variants 2] [--base HEAD] [--base-port 4101] [--setup <install command>] [--reuse <dir> ...] [--copy <untracked file> ...] [--shared-file <file>] [--scaffold-prompt <file> | --scaffold <ref>] [--timeout-ms <ms>]
                                                 shared: 모든 변형 프롬프트의 공통 앞부분(목표·결정·화면·완료 기준). scaffold: 세션 하나가 ab/<slug>/base에
                                                 mock 데이터·인증 stub 커밋을 만들고 변형은 거기서 시작(--scaffold는 있는 커밋 재사용). pick은 scaffold의 줄·파일만 되돌려 합친다.

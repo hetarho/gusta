@@ -38,26 +38,22 @@ export async function vibeDesign(options = {}) {
   return { schemaVersion: 1, ok: true, resumed: false, design: entry }
 }
 
-// Every ARCH task and batch command once, on the uncommitted working tree, at the batch tier.
-// Fast checks go first: a failure there changes the tree anyway, so the slow suites wait for the fix.
+// Design edits stay uncommitted here. Only their task checks run locally; final commands
+// belong to the shared fixed candidate after the design is ended and committed.
 async function verifyDesign(options, root, design) {
   const verify = await readVerification(root)
-  const plan = []
-  for (const [tier, commands] of [['task', verify.task], ['batch', options.verify ?? verify.batch]]) {
-    for (const command of commands) if (!plan.some((step) => step.command === command)) plan.push({ tier, command })
-  }
-  if (!plan.length) return { schemaVersion: 1, ok: false, design, results: [], skipped: [], error: 'ARCH와 package.json에서 검증 명령을 찾지 못했습니다. 프로젝트의 전체 테스트 명령을 --verify로 넘기세요.' }
-  const results = [], skipped = []
-  let tree = null
-  for (const step of plan) {
-    if (step.tier === 'batch' && results.some((result) => !result.ok)) { skipped.push(step.command); continue }
-    // The person asked for this run: it is not a coordinator's gate round and never refused by the cap.
-    const result = await runVibeCheck({ targetRoot: root, tier: 'batch', uncommitted: true, gateLedger: false, timeoutMs: options.timeoutMs, signal: options.signal, env: options.env }, step.command)
-    results.push({ tier: step.tier, command: step.command, ok: result.ok, cached: result.cached, exitCode: result.exitCode, timedOut: result.timedOut ?? false, stale: result.stale ?? false,
+  const deferred = [
+    ...[...new Set(options.verify ?? verify.batch)].map((command) => ({ tier: 'batch', command, reason: 'shared-integration' })),
+    ...verify.ci.map((command) => ({ tier: 'ci', command, reason: 'ci-only' })),
+  ]
+  const base = { schemaVersion: 1, design, scope: 'local-design', finalVerified: false, tree: null, deferred }
+  if (!verify.task.length && !deferred.length) return { ...base, ok: false, results: [], skipped: [], error: 'ARCH와 package.json에서 검증 명령을 찾지 못했습니다. 변경 영향 task 검사를 정하고 전체 검수는 커밋 후 공동 통합으로 제출하세요.' }
+  const results = []
+  for (const command of verify.task) {
+    const result = await runVibeCheck({ targetRoot: root, tier: 'task', uncommitted: true, timeoutMs: options.timeoutMs, signal: options.signal, env: options.env }, command)
+    results.push({ tier: 'task', command, ok: result.ok, cached: result.cached, exitCode: result.exitCode, timedOut: result.timedOut ?? false, stale: result.stale ?? false,
       ms: result.ms ?? 0, failedTests: result.failedTests, tail: result.ok ? [] : result.tail, log: result.log })
-    tree = result.tree
   }
-  const ok = !skipped.length && results.every((result) => result.ok)
-  // tree identifies what passed: a commit of exactly this tree needs no second run before push.
-  return { schemaVersion: 1, ok, design, tree: ok ? tree : null, results, skipped, guidance: verify.guidance }
+  return { ...base, ok: results.every((result) => result.ok), results, skipped: [], guidance: verify.guidance,
+    next: '로컬 task 검사 결과다. 디자인을 끝내고 하위 브랜치에 커밋한 뒤 vibe integration finish --tag <session tag>로 제출한다. --verify로 고른 명령은 공동 통합에도 전달한다. 전체 검수와 필요한 agent acceptance·CI는 아직 완료되지 않았다.' }
 }

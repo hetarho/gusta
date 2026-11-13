@@ -76,8 +76,9 @@ test('기기 a·b: push되지 않은 작업 브랜치의 세션이 다른 기기
   const head = await commitAll(a, 'work that is not pushed')
   const beat = await vibeBeat({ targetRoot: a, tag: 'aaaa', mode: 'pair', host: 'machine-a' })
   assert.deepEqual([beat.row.branch, beat.row.commit, beat.coordination.push, beat.coordination.unpublished], ['feat/x', head.slice(0, 12), { pushed: true }, false])
-  // 원격에는 조정 브랜치만 올라갔다: 코드 브랜치도, 그 커밋도 없다.
-  assert.equal(await git(remote, 'for-each-ref', '--format=%(refname:short)', 'refs/heads'), 'gusta\nmain')
+  // 원격에는 두 조정 메타데이터 브랜치만 추가됐다: 코드 브랜치도, 그 커밋도 없다.
+  assert.equal(await git(remote, 'for-each-ref', '--format=%(refname:short)', 'refs/heads'), 'gusta\ngusta-integration\nmain')
+  await assert.rejects(git(remote, 'cat-file', '-e', head))
   const seen = (await vibeStatus({ targetRoot: b, tag: 'bbbb' })).others
   assert.deepEqual(seen.map((row) => [row.tag, row.branch, row.commit, row.pushed]), [['aaaa', 'feat/x', head.slice(0, 12), false]])
   // 브랜치를 올리면 그 커밋이 원격에 있다고 보인다.

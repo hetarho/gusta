@@ -231,7 +231,7 @@ export async function nextWork(options) {
       const integrationTarget = group?.managed === false ? { branch: group.branch, path: group.path } : null
       return { schemaVersion: 1, work, owner: options.owner, ...rest, ...(timedOut && seconds ? { reason: 'timeout', detail: result.reason } : {}),
         ...(integrationTarget ? { integrationTarget } : {}), ...(group ? { landFrom: group.path } : {}),
-        instruction: integrationTarget && result.verified?.current ? '지정한 작업 브랜치의 검증 증거가 있다. integrationTarget과 검증 커밋을 보고한다. 이후 공유 통합은 모든 세션이 준비된 고정 후보를 사용하며 SETTINGS land·push를 따른다.' : integrationTarget && result.ready ? UNATTENDED.complete : (options.autopilot ? UNATTENDED[key] : null) ?? INSTRUCTION[key] }
+        instruction: integrationTarget && result.verified?.current ? '지정한 작업 브랜치의 검증 증거가 있다. integrationTarget과 검증 커밋을 보고한다. 이후 공유 통합은 모든 세션이 준비된 고정 후보를 사용하며 SETTINGS land·push를 따른다.' : result.ready ? UNATTENDED.complete : (options.autopilot ? UNATTENDED[key] : null) ?? INSTRUCTION[key] }
     }
     await sleep(Math.min(options.pollMs ?? 5000, deadline - Date.now()))
   }
