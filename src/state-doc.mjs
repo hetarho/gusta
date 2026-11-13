@@ -49,7 +49,7 @@ export function activeRows(text) {
   const block = parseState(text).find((entry) => entry.name === 'active')
   if (!block) return []
   return splitTable(block.body).rows.map(cells).map(([tag, host, mode, since, at, doing, ...place]) =>
-    ({ tag, host, mode, since, at, doing, ...(place.length ? { branch: place[0] || '-', commit: place[1] || '-' } : {}) }))
+    ({ tag, host, mode, since, at, doing, ...(place.length ? { branch: place[0] || '-', commit: place[1] || '-' } : {}), ...(place[2] && place[2] !== '-' ? { session: place[2] } : {}) }))
 }
 
 // Append one inbox line, keeping every other byte. A new section goes after cfg and active.
@@ -87,7 +87,7 @@ export function upsertActive(text, row, { remove = false, header = ACTIVE_HEADER
     if (index !== -1) table.rows.splice(index, 1)
   } else {
     const line = `| ${[row.tag, row.host, row.mode ?? previous?.[2], previous?.[3] ?? row.since, row.at, row.doing ?? previous?.[5] ?? '-',
-      row.branch ?? previous?.[6] ?? '-', row.commit ?? previous?.[7] ?? '-'].slice(0, width).map(String).join(' | ')} |`
+      row.branch ?? previous?.[6] ?? '-', row.commit ?? previous?.[7] ?? '-', row.session ?? previous?.[8] ?? '-'].slice(0, width).map(String).join(' | ')} |`
     if (index === -1) table.rows.push(line)
     else table.rows[index] = line
   }

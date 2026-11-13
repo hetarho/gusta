@@ -9,6 +9,14 @@ import path from 'node:path'
 export const GATE_CAP = 3
 // A key nobody gated for this long belongs to finished work: the next session counts afresh.
 export const GATE_IDLE_MS = 12 * 3600000
+export function improvingGate(previous, current) {
+  if (!previous || (previous.plan ?? previous.command) !== (current.plan ?? current.command) || previous.evidence !== current.evidence || !previous.failureSetComplete || !current.failureSetComplete || previous.timedOut || current.timedOut || previous.stale || current.stale) return false
+  const was = previous.identities ?? previous.failedTests, now = current.identities ?? current.failedTests
+  if (!Array.isArray(was) || !Array.isArray(now) || [...was, ...now].some((id) => typeof id !== 'string' || !id.trim())) return false
+  const before = new Set(was), after = new Set(now)
+  if (before.size !== was.length || after.size !== now.length) return false
+  return after.size > 0 && after.size < before.size && [...after].every((id) => before.has(id))
+}
 const FILE = 'gates.json'
 const normalized = (command) => command.trim().replace(/\s+/g, ' ')
 

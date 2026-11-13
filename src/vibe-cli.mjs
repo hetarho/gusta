@@ -22,6 +22,8 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
   vibe integration status|ready|finish --tag <tag> [--token <token>]
                                                 모든 참여 세션의 준비 뒤 고정 후보에서 전체 검수 한 번. 늦은 세션은 다음 통합
   vibe integration accept --file <JSON>       computer-use 호스트의 정확한 후보별 AC 관측·증거 제출; finish는 전체 검수 없이 재개
+  vibe integration repair --token <token> --target <candidate worktree>
+                                                실패·영향 범위만 수정해 커밋한 후보. 원래 cohort·마감·재시도 상한과 성공 캐시 유지
   vibe loop --tag <tag> [--max-units 100] [--max-hours 8]
     [--deadline <ISO>] [--final-reserve-hours <measured>] [--max-gate-attempts 3] [--batch-size 3] [--permission-mode bypass|acceptEdits] [--allow-tool <rule> ...]
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
@@ -144,7 +146,7 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
 `
 
 const allowed = {
-  session: ['kind', 'tag', 'branch', 'base', 'path'], integration: ['tag', 'token', 'file', 'remote', 'timeout-ms'],
+  session: ['kind', 'tag', 'branch', 'base', 'path'], integration: ['tag', 'token', 'file', 'remote', 'timeout-ms', 'max-gate-attempts', 'verify'],
   loop: ['tag', 'provider', 'model', 'effort', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'max-gate-attempts', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref', 'section', 'offset', 'limit', 'snapshot'], format: ['section'],
   status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host', 'remote'],

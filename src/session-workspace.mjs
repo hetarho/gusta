@@ -20,11 +20,20 @@ export async function sessionWorkspacePolicy(options = {}, injected = {}) {
   const plan = branchPlan(values, { branch: workspace.git.branch, defaultBranch: fallback })
   // Without a remote HEAD, defaultBranch's fallback is the primary checkout's *current*
   // branch. An explicit land/plan policy must not turn a newly switched child into a default.
-  const defaults = (await (deps.git ?? git)(workspace.git.root, ['for-each-ref', '--format=%(symref)', 'refs/remotes/*/HEAD']).catch(() => '')).split('\n').filter(Boolean)
+  const run = deps.git ?? git
+  const defaults = (await run(workspace.git.root, ['for-each-ref', '--format=%(symref)', 'refs/remotes/*/HEAD']).catch(() => '')).split('\n').filter(Boolean)
+  const origin = (await run(workspace.git.root, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], [1, 128]))?.trim()
+  if (origin) defaults.push(origin)
   const authoritativeDefault = defaults.some((ref) => ref.endsWith(`/${fallback}`))
-  const keepFallback = authoritativeDefault || !plan.land && (values.plan === '?' || values.plan === '-')
+  const keepFallback = authoritativeDefault || !plan.land
   const protectedBranches = [...new Set([...(keepFallback ? [fallback] : []), plan.land, plan.deploy, plan.plan, plan.coord, `${plan.coord}-integration`].filter(Boolean))]
-  const reason = !workspace.git.head ? 'commit-required' : !workspace.git.branch ? 'detached' : protectedBranches.includes(workspace.git.branch) ? 'protected-branch' : null
+  const ambiguous = !authoritativeDefault && !plan.land
+  let owned = false
+  if (ambiguous && workspace.git.isLinkedWorktree) {
+    const owner = await readOwnership(workspace.git.gitDir, deps.readFile ?? readFile)
+    owned = owner?.root === workspace.git.root && owner.branch === workspace.git.branch && /^[0-9a-f]{40,64}$/.test(owner.sourceHead ?? '') && (await run(workspace.git.root, ['merge-base', '--is-ancestor', owner.sourceHead, workspace.git.head], [1, 128])) !== null
+  }
+  const reason = !workspace.git.head ? 'commit-required' : !workspace.git.branch ? 'detached' : protectedBranches.includes(workspace.git.branch) ? 'protected-branch' : ambiguous && !owned ? 'default-branch-unknown' : null
   return { workspace, plan, protectedBranches, allowed: reason === null, reason }
 }
 
