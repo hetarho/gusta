@@ -78,14 +78,16 @@ test('only --reset-gate lifts the cap, for its own key', async (t) => {
   const { root, check, count, runs, failing } = await gate(t)
   for (const tag of [undefined, 'ab12']) for (let i = 0; i < 3; i++) await check({ tag })
   const run = (args) => execute(process.execPath, [cli, 'vibe', 'check', '--target', root, ...args], { env: { ...process.env, GATE_RUNS: runs } }).then((r) => ({ code: 0, json: JSON.parse(r.stdout) }), (e) => ({ code: e.code, json: JSON.parse(e.stdout) }))
-  const refused = await run(['--tier', 'batch', '--json', '--', failing])
-  assert.deepEqual([refused.code, refused.json.refused], [1, 'gate-cap'])
+  // The counter is a check unit dependency; claiming a real shared candidate is covered
+  // separately. The public reset command still exercises its actual CLI boundary.
+  const refused = await check()
+  assert.deepEqual([refused.exitCode, refused.refused], [1, 'gate-cap'])
   assert.equal(await count(), 6)
   await assert.rejects(resetVibeGate({ targetRoot: root }, 'node --version'), /검사 명령 없이/)
   const reset = await run(['--reset-gate', '--json'])
   assert.deepEqual([reset.code, reset.json.reset, reset.json.previous.failures], [0, 'branch:main', 3])
-  const again = await run(['--tier', 'batch', '--', failing])
-  assert.deepEqual([again.code, again.json.refused, again.json.gate.failures], [1, undefined, 1])
+  const again = await check()
+  assert.deepEqual([again.exitCode, again.refused, again.gate.failures], [1, undefined, 1])
   assert.equal((await check({ tag: 'ab12' })).refused, 'gate-cap', 'the tag key keeps its cap')
 })
 
