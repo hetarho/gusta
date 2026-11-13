@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.17.2
+
+Released: 2026-11-14.
+
+- Shared integration waits for participating sessions across devices, pins one
+  candidate and owner, and resumes failed or affected checks while retaining
+  valid successes. Upgrade all participating devices together before using the
+  new coordination protocol.
+- Implementation uses child branches; gusta-start and both self-improvement
+  paths use owned linked worktrees. Group unit publishing stays on the working
+  branch, with the landing branch advanced only through shared integration.
+- Keep automated E2E minimal and declared browser compatibility in CI.
+  Candidate-scoped computer-use acceptance replaces selected E2E coverage;
+  required checks without evidence remain pending. Local design verification
+  runs task checks and defers the shared final gate and CI.
+- Recommend product stage and support boundaries before implementation, record
+  approved choices in ARCH, and freeze actual validation versions per candidate.
+  Update audits inspect real tests, commands, configuration and approved support
+  without silently shrinking existing commitments or assuming a product stage.
+- Publication reuses successful, trusted CI for the exact commit instead of
+  repeating the full suite. Provenance and publishing-tool checks remain enabled.
+
 ## 0.17.1
 
 Released: 2026-11-13.
