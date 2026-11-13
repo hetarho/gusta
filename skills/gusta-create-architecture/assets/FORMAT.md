@@ -133,6 +133,8 @@
 - gusta-self-improve-remote and gusta-self-improve run one bounded cycle per explicit request or due standing policy, after foreground work and design; sessionless recurrence needs a real scheduler (vibe loop is not one). Their review, publication, budget and experiment rules live in those skills; they reuse existing document skeletons.
 
 ## Workspace scope
+
+- Product stage/support lives in one current decided ARCH block: `product-stage` (`prototype|alpha|beta|production`), `supported-browsers`, `supported-platforms` (OS/runtime windows), `supported-app-versions` (client window), `excluded-support`, `support-review`, `validation-baseline`. Choose stage/scope before implementation, use `none` where inapplicable, freeze observed versions for a candidate; open/rejected/history is not approval. Recommendations and transition review follow the product-support reference.
 - STATE, SSOT revisions, task states and done archives describe the current checkout. They are not shared live state across worktrees; writing and re-reading a doing tag is not an atomic claim — the claim is the SESSIONS active row, one copy for every worktree of the clone.
 - `work status` discovers standalone, planning and worker contexts. Work groups are optional and require no external orchestrator. `--workspace auto` adopts a free linked worktree when appropriate and creates an isolated worktree otherwise; `current` and `new` override that choice. A branch name is never proof of ownership.
 - Each work group has one planning/target branch and checkout. Planning, SSOT edits, task numbering and STATE edits happen there with one writer. Commit the plan before assigning workers. Independent branches cannot safely allocate task IDs using their local maximum alone.

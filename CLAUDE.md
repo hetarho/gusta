@@ -11,6 +11,7 @@
   2. 적은 토큰: 필요한 블록만 읽는다(brief·발췌·요약 출력·단위마다 새 세션·검증 캐시·대기 중 모델 호출 없음). 조정자는 직접 읽거나 고치지 않는다 — 탐색·구현·리뷰는 새 세션(네이티브 하위 세션, 없으면 `work scout`·`work run`·`vibe loop`)에 맡기고 결론만 받는다. 스킬 문장도 토큰이다 — 늘리기 전에 줄일 곳을 찾는다.
   3. 빠른 구현: 태스크는 변경 영향의 작은 결정론적 검사만 한다. 여러 기기의 참여 세션이 준비되면 한 조정자가 고정 통합 후보의 전체 검수를 한 번 수행하고, 실패 뒤에는 실패·영향 범위와 유효한 성공 기록을 잇는다. 시간 예약도 전체 검수 한 번+실측 수정/영향 검사+CI 기준이다. 대상 브랜치가 밖에서 움직였다는 이유로 전체 검수를 자동 초기화하지 않는다.
 - **코드**: 낮은 결합·높은 응집으로 단위 테스트가 쉬운 구조를 만든다(바깥 세계는 경계에서 주입). 테스트가 무거워지면 테스트가 아니라 구조를 고친다. 이 패키지의 `src/`도 같다 — 새 로직은 주입 가능한 의존성(`deps`·`injected`)으로 테스트한다.
+- **지원 범위**: 제품 단계(prototype·alpha·beta·production)와 지원 환경·버전·제외·재검토 시점을 먼저 추천하고 ARCH의 승인된 제품 결정 하나에 기록한다. 초기 두 단계는 주 환경의 최신 안정 버전부터 시작하며 기존 지원 약속은 보존한다. 정본은 `skills/gusta-create-architecture/references/product-support.md`다.
 - **검증**: 정본은 `skills/gusta-start/references/verification.md`다. 구현은 항상 하위 브랜치, gusta-start·두 self-improve 경로는 전용 worktree에서 한다. 세션은 원격에도 working/ready와 제출 branch/HEAD를 알리고, 불명·미발행·오래된 관측을 완료로 세지 않는다. E2E는 필요한 최소만 남기고 지원 브라우저 호환 검사는 CI에만 둔다. computer-use agent acceptance는 선택한 E2E를 대체하며 이중 비용을 더하지 않는다. 실제 수행한 acceptance·증거·미실행을 보고하고 사람은 기준의 누락/오류를 고른다. gusta-update는 실제 테스트·스크립트·설정·실측을 감사한다.
 
 개발자를 큐레이터로 보는 스펙 주도 개발(SDD) 스킬셋 GUSTA(npm `@haeram/gusta`, 명령 `gusta`)를 배포하는 저장소. 이름의 정본: npm 패키지는 `@haeram/gusta`(범위 없는 `gusta`는 npm이 유사 이름으로 거부, `@gusta`는 다른 계정의 범위), 명령·폴더는 `gusta`, 환경변수·상수는 `GUSTA_`, 스킬은 모두 `gusta-` 접두어. **산출물은 `skills/`의 SKILL.md들**이고, `src/`·`bin/`은 Claude(.claude/skills)·Codex(.codex/skills) 설치/검증, 세션 도구(`vibe`: 진행 표시·단독 태스크 st 기록(`vibe task`, `src/task-doc.mjs`는 묶음 통합과 공유)·마감 검증과 선택적 push·체크포인트·검증 캐시·`vibe loop`·`vibe sketch`(gusta-sketch 시안 한 페이지를 `.tmp/sketch/`에서 포트 하나로, `src/vibe-sketch.mjs`)), 선택적 작업 묶음·worktree 실행 기록을 제공하는 CLI다.
@@ -59,7 +60,7 @@
 13. 프로젝트 독립성: 특정 대상 프로젝트의 이름·도메인·업무 규칙·실제 태스크/결정 ID를 이 패키지의 코드·스킬·템플릿·예시·테스트에 넣지 않는다. 사례에서 확인한 문제는 일반적인 실행·검증·배정 규칙으로만 반영한다. 문서의 외부 측정 자료도 대상 식별자와 도메인을 익명화하고 수치·측정 한계만 보존한다.
 
 ## 검증
-- `npm run check` — 테스트 + 스킬 frontmatter/구조 검증 + 패키징 검증. 스킬 수정 후 항상 실행.
+- 스킬 수정은 영향 계약·구조 검사로 확인한다. `npm run check`(전체 테스트 + 스킬 구조 + 패키징)는 공유 마감의 고정 통합 후보에서 한 번 실행하고, 실패·변경 범위만 재검사한다.
 - `node --test`는 파일끼리만 병렬이다 — 느린 테스트는 파일을 나눈다(작업 묶음은 `test/work-groups*.test.mjs`, 30태스크 scale 파일이 스위트 하한).
 - loop 종료/설정 회귀는 `test/vibe-loop-control.test.mjs`: 가짜 단위·격리 bare Git·실제 호스트 강제 종료·실제 알림 자식 명령. 모델 호출과 운영 브랜치 push 없이 전체 단위 경계를 검증한다.
 - 로컬 설치 테스트: `node ./bin/gusta.mjs install --target <경로>` 후 `check --target <경로>`.

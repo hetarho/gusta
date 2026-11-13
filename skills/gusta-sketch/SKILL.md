@@ -23,6 +23,7 @@ description: >-
 ## 1. 시작
 - `vibe status --json`을 본다. spec/이 없거나 스택·구조·검증 명령을 정해야 하면 gusta-create-architecture부터 한다 — 검증 명령이 있어야 /gusta-start가 태스크를 끝까지 검증한다.
 - 구상할 것: 사용자의 요청 그대로. 같은 주제의 open/ready ideation 문서가 있으면 이어서 쓴다. 요청이 없으면 status의 남은 기획 재료를 보여 주고 고르게 한다 — 미룬 구상(open/ready ideation), 태스크로 아직 안 쪼갠 SSOT 변경(pending), 채택된 review, 결정함(`vibe inbox list --kind decided`)의 잠정 결정. 이미 정해진 결정은 시안 없이 3절로 간다. 잠정 결정을 바꾸는 요청도 여기서 받는다(gusta-update-ssot 뒤 `vibe inbox resolve --id <id> --log '<한 줄>'`).
+- 최초 기획이나 단계 전환은 [제품 지원 정책](../gusta-create-architecture/references/product-support.md)으로 단계·실제 지원 환경/버전·제외·검토 시점의 추천안을 먼저 보여 주고 선택받는다. 기존 승인 범위는 다시 묻거나 줄이지 않고 architecture에 기록을 넘긴다.
 - slug=영문 kebab. `vibe log --text 'sketch <slug> start'`.
 
 ## 2. 시안 — 보고 고르기

@@ -20,6 +20,7 @@ description: >-
 
 ## 2. 버전과 프로젝트 규칙
 - `gusta outdated`로 installed(lock 파일), latest, `changes`(installed 이후 CHANGELOG 항목)를 본다. `error`가 있으면 레지스트리 조회 실패를 알리고 멈춘다.
+- 제품 단계·지원 범위도 [제품 지원 정책](../gusta-create-architecture/references/product-support.md)의 현재 승인 ARCH와 대조한다. 미정이면 최초 추천·선택으로 연결하고 기존 지원을 자동 축소하지 않는다.
 - 테스트 감사도 버전과 무관한 필수 단계다. `upgrade-context.testPolicy`의 후보·원시 경로/줄·미확인을 읽고 실제 스크립트 호출망, 테스트 설정과 대표 테스트, ARCH 계획, runtime timings를 대조한다. inventory complete나 후보 없음만으로 의미 검토 완료라 하지 않는다. 결과는 유지/축소/agent 대체/CI 이동/미확인으로 구분하고 중복·지원 밖 브라우저·소스/구현 추종 테스트와 대체 증거·제거될 비용을 남긴다. [감사 기준](references/project-rules.md)을 따른다.
 - 설치·이관 전에 [프로젝트 규칙 대조](references/project-rules.md)를 수행한다. `gusta upgrade-context`의 모든 페이지와 적용 지침·참조를 조사하고, 대조 범위·제외 이유·미확인 항목을 남긴다. 최신 버전이거나 알려진 설정 키가 검색되지 않아도 이 조사를 생략하지 않는다.
 - package.json 의존성에 @haeram/gusta가 있으면 그 패키지 관리자로 올린다(예: `npm i -D @haeram/gusta@latest`, lockfile 포함).

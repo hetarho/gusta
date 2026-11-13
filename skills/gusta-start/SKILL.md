@@ -30,6 +30,7 @@ CLI는 `npx @haeram/gusta` 뒤에 붙인다. 실행기의 cliCommand가 있으�
 - `settings.unset`에 `agents`가 있으면 맡김을 시작하지 않고 gusta-init으로 보낸다(쓸 AI 목록이 없으면 CLI가 단위를 배정하지 못한다 — loop·work run은 `needs-init`으로 멈춘다).
 - 기획·구현 쓰기 전에 `vibe session open --kind start --tag <tag> --json`으로 전용 linked worktree/하위 브랜치를 확보하고 이후 명령·보고서·단위의 cwd를 반환된 targetRoot로 둔다. 배정된 hostManaged/단위 세션은 자기 workspace를 검증해 그대로 잇고 중복 생성하지 않는다. 원래 checkout의 미커밋 작업을 복사·stash·커밋하지 않는다.
 - 실행 전에 한 번 보여 준다 — 질문이 아니므로 답을 기다리지 않고 바로 시작한다: 대상 태스크(ID·제목, 인자로 범위를 줬으면 그 범위), dep 순서와 병렬 여부(작업 묶음이면 lane), 마감·예약 시간, 검증 단계(태스크 단계·최종 관문 명령 요약), 반영 설정(SETTINGS land·land-via·push), 단위별 배정(`vibe loop --dry-run`의 `routing`: 태스크·추천·실제 조합), 다른 세션·기기의 진행(`others` — `pushed:false`는 "아직 push 안 됨")과 건너뛸 태스크(`held`·`unlanded` — 가로채지 않는다), 결정함 미확인 수, 완료 알림 연결 여부.
+- 최초 구현 전에 [제품 지원 정책](../gusta-create-architecture/references/product-support.md)의 승인된 단계·지원 범위·제외·검토 시점을 시작 요약에 담는다. 미정이면 최초 기획 연결을 마친 뒤 구현하며, 맡김에서도 기존 지원을 임의 축소하거나 단계를 추측하지 않는다. 이미 정한 선택은 재질문하지 않는다.
 - 검증의 `declared`·`partial`과 적용 지침의 미연결 명령·조건을 확인한다. 빠진 실행 범위가 있으면 [검증 절차](references/verification.md)대로 실제 명령과 ARCH 단계/계획을 연결하고 지원 한계를 밝힌다. 부분 성공을 잃는 외부 스크립트를 새로 만들지 않으며, 기존 단계 명령으로 충분하면 유지한다.
 - 인자로 태스크 ID(`T012 T013`)·시간 한도(`4시간`·마감 시각)·작은 수정 요청·기획 변경 요청을 받는다. 묻지 않는다. 인자가 없으면 STATE·태스크대로 실행한다. 규칙·동작을 바꾸는 요청이면 [요청 실행](references/request.md)을 읽고 SSOT·태스크부터 만든 뒤 그 범위만 실행한다.
 - preflight가 사람만 고칠 수 있는 문제(needsUser: 헤드리스 권한 규칙·인증·원격 등)로 실패하면 그 목록과 고칠 방법을 한 번 묻는다 — 사용자가 방금 불렀으니 아직 자리에 있다. 실행 중 유일한 질문이며, 고쳐지지 않으면 실행하지 않고 멈춘다.
