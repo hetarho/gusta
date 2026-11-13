@@ -755,7 +755,23 @@ export async function vibeLoop(options = {}, injected = {}) {
       await event('shared-integration', { reason: integrationState.reason ?? 'landed', candidate: integrationState.gate?.candidate ?? null })
       if (!integrationState.ok && !integrationState.waiting && !integrationState.pending) throw new SkillPackageError('공유 통합 검증에 실패했습니다.', [integrationState.reason ?? 'unknown'])
       if (integrationState.waiting || integrationState.pending) reason = 'integration-waiting'
-      if (integrationState.pushed) { codePushed = true; publication = integrationState }
+      if (integrationState.ok && integrationState.landed && !integrationState.pushed) {
+        await metadata.assertClean()
+        await git(root, ['merge', '--ff-only', '--quiet', integrationState.landed])
+      }
+      if (integrationState.pushed) {
+        codePushed = true; publication = integrationState
+        const ci = await deps.ci({ ...options, targetRoot: root, signal: controller.signal, timeoutMs: Math.max(1, deadline - deps.now()), commit: integrationState.pushed, branch: integrationState.target, diffBase: integrationState.gate?.base ?? base })
+        integrationState.ci = ci; batches.push({ ci })
+        if (!['skipped', 'cancelled', 'unchecked'].includes(ci.outcome) && Number.isFinite(ci.ms)) await recordTiming(context.runtime, timingKey('ci'), ci.ms)
+        await metadata.assertClean()
+        await git(root, ['merge', '--ff-only', '--quiet', integrationState.pushed])
+        if (!ci.ok) {
+          integrationState.ok = false
+          if (ci.outcome !== 'cancelled') await queueRepair('fix-ci', 'Fix CI failure', `Fix the failing CI checks for ${integrationState.pushed}; recheck only failed/affected coverage and preserve successful evidence.`, [`CI: ${ci.runUrl ?? '-'}`, `Jobs: ${JSON.stringify(ci.jobs ?? [])}`])
+          throw new SkillPackageError(ci.outcome === 'cancelled' ? 'CI 대기가 중지됐습니다.' : 'CI 검증에 실패했습니다.', [ci.runUrl ?? ci.reason ?? ci.outcome ?? 'CI failure'])
+        }
+      }
       pending = []; await save(); return true
     }
     if (publish && context.target) await deps.sync({ ...options, targetRoot: root })

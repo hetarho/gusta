@@ -22,6 +22,7 @@ import { processAlive, atomicJSON, readJSON } from './loop-control.mjs'
 import { permissionMode, readSettings, agentList, AGENT_TOOLS } from './settings.mjs'
 import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 import { parseFailure, LIMIT_EXIT, LIMIT_KINDS, BLOCKING, OVERLOAD_RETRY_MS, readLimits, recordLimit, activeLimits, limitBlocks, earliestReset, limitTarget } from './provider-limits.mjs'
+import { mergeAgentAcceptance } from './agent-acceptance.mjs'
 
 const { repository, groupOf, attemptOf, now, fail, requireStopped, commands, tierChecks, briefFor } = workInternals
 // A session carries its context into the next lane task, correction or answered decision,
@@ -352,9 +353,9 @@ export async function runWork(options, deps = {}) {
       ...(measurementRun ? { usageMeasurement: measurementRun } : {}),
       brief: role === 'worker' ? await briefFor(context, liveGroup, current).catch(() => null) : null, risk: role === 'reviewer' ? current.risk ?? null : null,
       instruction: role === 'worker'
-        ? 'Use gusta-implement-task. Implement only taskId (or fix review findings) in this workspace, run the checks this task adds or affects, check acceptance, fill result, and commit. Full suites run at unit integration. Return JSON {"outcome":"completed","summary":"..."}. The runner owns submit and dispatches the next lane task to this workspace; do not submit, integrate, or claim another task. For a blocker return {"outcome":"blocked","summary":"reason"}; when only a planning decision blocks you, add "decision":{"question":"...","options":["..."],"recommendation":"..."} and commit your partial work.'
+        ? 'Use gusta-implement-task. Implement only taskId (or fix review findings) in this workspace, run only affected checks, fill result, and commit. Full coverage runs once on the shared final candidate after all participating sessions are ready. Return JSON {"outcome":"completed","summary":"..."} and agentChecks for replaced E2E acceptance; without computer-use, preserve not-run with its reason for a capable host instead of adding E2E. The runner owns submit and dispatches the next lane task; do not submit, integrate, or claim another task. For a blocker return {"outcome":"blocked","summary":"reason"}; a planning decision may add decision with question/options/recommendation and committed partial work.'
         : 'Use gusta-review-task. Review the pinned commit against baseCommit, every task in tasks, and SSOT. Do not edit or commit. Return JSON {"verdict":"approved|changes_requested","summary":"...","findings":[{"priority":"P1|P2|P3","where":"file:line","message":"..."}]}. The runner owns review-finish.' }
-    if (config.kind === 'builtin' && role === 'worker') payload.instruction = 'Use gusta-implement-task to edit and verify only taskId, running the checks this task adds or affects; full suites run at unit integration. Do not commit or submit; the host runner validates scope, commits, submits and dispatches the next lane task. Return JSON with outcome completed|blocked, summary and decision (empty unless a planning decision blocks you).'
+    if (config.kind === 'builtin' && role === 'worker') payload.instruction = 'Use gusta-implement-task to edit and verify only taskId with affected checks. Shared full coverage runs once after all participating sessions are ready. Do not commit or submit; the host runner owns scope validation, commit, submit and next lane task. Return outcome completed|blocked, summary, decision and agentChecks. Agent checks replace selected E2E; without computer-use return honest not-run with reason and integration-stage host handoff, never an additional automated suite.'
     const file = createWriteStream(log, { flags: 'a', mode: 0o600 })
     // A log write failure must not end the dispatch. The record never holds log content (it reaches
     // coordinator output): only the adapter's last plain stderr line, as the failure reason.
@@ -454,6 +455,11 @@ export async function runWork(options, deps = {}) {
         if (result.outcome !== 'completed') fail(result.summary || 'worker did not complete')
         if (config.kind === 'builtin') await commitWorkerWork({ ...options, attempt: job.attempt, expectedHead: job.expectedHead, signal: abort.signal })
         await submitWork({ ...options, attempt: job.attempt, verify: taskVerify, signal: abort.signal })
+        if (result.agentChecks?.length) await transaction(context.root, (state) => {
+          const entry = attemptOf(state, job.attempt), current = groupOf(state, entry.group)
+          entry.agentChecks = mergeAgentAcceptance(entry.agentChecks ?? [], result.agentChecks)
+          current.agentChecks = mergeAgentAcceptance(current.agentChecks ?? [], result.agentChecks)
+        })
       }
     } catch (error) {
       job.resultError = error.message
@@ -608,7 +614,7 @@ export async function runWork(options, deps = {}) {
     let finalBoard = await workBoard(options).catch(() => null)
     if (groupVerify.length && !interrupted && !heartbeatError && finalBoard && !finalBoard.tasks.some((task) => !task.st?.startsWith('blocked@') && !task.mainSession) &&
         !finalBoard.attempts.some(activeAttempt)) {
-      try { finish = (await finishWork({ ...options, verify: groupVerify, runnerId: run.id, signal: abort.signal })).verified } catch (error) {
+      try { const finished = await finishWork({ ...options, verify: groupVerify, runnerId: run.id, signal: abort.signal }); finish = finished.verified ?? finished.ready } catch (error) {
         finishError = error.message
         failures.push({ role: 'finish', error: error.message, details: error.details ?? [] })
       }
