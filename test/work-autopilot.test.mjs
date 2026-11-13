@@ -14,6 +14,7 @@ import { inspectWorkspace } from '../src/workspace.mjs'
 import { runtimeRoot, readRuntime } from '../src/work-runtime.mjs'
 import { vibeInbox } from '../src/vibe-inbox.mjs'
 import { readSessions } from '../src/coord-doc.mjs'
+import { buildCatalog } from '../src/agent-catalog.mjs'
 
 const execute = promisify(execFile)
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
@@ -48,14 +49,14 @@ async function fixture(t) {
   return { temporary, root, remote, targetRoot: root }
 }
 
-// A fake provider CLI: T001 first stops on a planning question (after writing half its work),
-// then finishes when resumed with the coordinator's note. Every call is logged.
-async function fakeProvider(setup, provider = 'claude', { holdTask = null, askDecision = true } = {}) {
+// A fake provider CLI (one per name given): T001 first stops on a planning question (after writing
+// half its work), then finishes when resumed with the coordinator's note. Every call is logged.
+async function fakeProvider(setup, providers = 'claude', { holdTask = null, askDecision = true } = {}) {
   const directory = path.join(setup.temporary, 'providers')
   await mkdir(directory)
   const log = path.join(setup.temporary, 'calls.jsonl')
   const release = path.join(setup.temporary, 'release-worker')
-  await writeFile(path.join(directory, provider), `#!${process.execPath}
+  for (const provider of [providers].flat()) await writeFile(path.join(directory, provider), `#!${process.execPath}
 const fs=require('node:fs');
 const args=process.argv.slice(2);
 if(args.includes('--version')) {console.log('${provider} test');process.exit(0)}
@@ -66,7 +67,7 @@ const flag=(key)=>args.includes(key)?args[args.indexOf(key)+1]:null;
 const resume=flag('--resume')??flag('resume');
 const session=resume??flag('--session-id')??require('node:crypto').randomUUID();
 if('${provider}'==='codex')console.log(JSON.stringify({type:'thread.started',thread_id:session}));
-fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({role:job.role,taskId:job.taskId,session,resume,note:job.directive?.note??null,brief:Boolean(job.brief),mode:job.mode,bypass:args.some(arg=>arg.includes('bypass')),strict:args.includes('--strict-mcp-config'),mcpConfig:flag('--mcp-config')})+'\\n');
+fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({tool:'${provider}',role:job.role,taskId:job.taskId,session,resume,note:job.directive?.note??null,brief:Boolean(job.brief),mode:job.mode,bypass:args.some(arg=>arg.includes('bypass')),strict:args.includes('--strict-mcp-config'),mcpConfig:flag('--mcp-config'),model:flag('--model'),effort:flag('--effort')??flag('-c'),envEffort:process.env.CLAUDE_CODE_EFFORT_LEVEL??null})+'\\n');
 let result;
 if(job.role==='worker') {
   if(job.taskId===${JSON.stringify(holdTask)})while(!fs.existsSync(${JSON.stringify(release)}))await new Promise(resolve=>setTimeout(resolve,20));
@@ -364,4 +365,33 @@ console.log(JSON.stringify({type:'result',is_error:false,structured_output:resul
   assert.ok(result.pruned.cleaned.includes(attempt.id))
   assert.equal((await git(setup.root, 'show', `${group.branch}:measured.txt`)).stdout, 'round 1: 36.2%')
   assert.match((await git(setup.root, 'log', '--format=%s', group.branch)).stdout, /WIP T001: checkpoint after the time limit/)
+})
+
+// The planned run: of each task, read by the runner from the unit's workspace at every dispatch.
+test('맡김 work run: --provider 없이 dispatch마다 태스크 run:을 SETTINGS agents 안에서 배정한다 (미정이면 needs-init)', async (t) => {
+  const setup = await fixture(t)
+  const { env, log } = await fakeProvider(setup, ['claude', 'codex'], { askDecision: false })
+  const group = await startWork({ ...setup, name: 'routed', verify: ['node -e "0"'] })
+  const undecided = await runWork({ ...setup, work: group.id, env, autopilot: true }, { catalog: () => assert.fail('no catalog without agents') })
+  assert.deepEqual([undecided.ok, undecided.outcome, undecided.dispatched, undecided.hint], [false, 'needs-init', 0, '/gusta-init으로 쓸 AI 목록(SETTINGS agents)을 정한 뒤 다시 실행하세요'])
+  assert.equal((await readRuntime(runtimeRoot(await inspectWorkspace(setup)))).groups[group.id].runner, undefined)
+  // The group branch takes the planning commit (runs + agents) before the runner starts.
+  for (const [id, run] of [['T001.limits', 'codex/terra@high'], ['T002.runtime', 'claude/opus@low']]) {
+    const file = path.join(group.path, `spec/tasks/${id}.md`)
+    await writeFile(file, (await readFile(file, 'utf8')).replace('lane:-', `lane:- | run:${run}`))
+  }
+  await writeFile(path.join(group.path, 'spec/SETTINGS.md'), '# SETTINGS\n- agents: claude,codex\n')
+  await commit(group.path, 'plan runs')
+  const CLAUDE = { installed: true, loggedIn: true, models: ['haiku', 'sonnet', 'opus', 'fable'].map((model) => ({ model, efforts: ['low', 'medium', 'high', 'xhigh', 'max'], context: null })) }
+  const CODEX = { installed: true, loggedIn: true, models: ['terra', 'sol'].map((model) => ({ model, efforts: ['low', 'medium', 'high', 'xhigh'], context: 272000 })) }
+  const result = await runWork({ ...setup, targetRoot: group.path, work: group.id, env, autopilot: true, pollMs: 20 }, { catalog: () => buildCatalog({ claude: CLAUDE, codex: CODEX }, ['claude', 'codex']) })
+  assert.equal(result.outcome, 'completed', JSON.stringify(result))
+  const workers = Object.fromEntries((await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.role === 'worker').map(({ taskId, tool, model, effort, envEffort }) => [taskId, { tool, model, effort, envEffort }]))
+  // Codex gets -m and -c model_reasoning_effort; Claude gets --effort and the same level in its env.
+  assert.deepEqual(workers, { T001: { tool: 'codex', model: 'terra', effort: 'model_reasoning_effort=high', envEffort: null }, T002: { tool: 'claude', model: 'opus', effort: 'low', envEffort: 'low' } })
+  const attempts = Object.values((await readRuntime(runtimeRoot(await inspectWorkspace(setup)))).attempts).filter((entry) => entry.group === group.id)
+  assert.deepEqual(Object.fromEntries(attempts.map((entry) => [entry.taskId, entry.workerRoute])), {
+    T001: { tool: 'codex', model: 'terra', effort: 'high', source: 'task', recommended: 'codex/terra@high' },
+    T002: { tool: 'claude', model: 'opus', effort: 'low', source: 'task', recommended: 'claude/opus@low' },
+  })
 })

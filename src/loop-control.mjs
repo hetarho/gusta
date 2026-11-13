@@ -82,7 +82,8 @@ export const NOTIFY_LEVELS = { failed: 'failure', 'host-lost': 'failure', 'heart
 export const NOTIFY_CAP = 10
 // What the owner does next after a stop reason that only a person can resolve (report, notice, result).
 // needs-sketch: nothing runnable while untasked SSOT deltas, reviews or ideation remain.
-export const LOOP_HINTS = { 'needs-sketch': '/gusta-sketch로 태스크까지 만든 뒤 다시 실행하세요' }
+// needs-init: SETTINGS agents is undecided, so the CLI has no AI tool to route units to.
+export const LOOP_HINTS = { 'needs-sketch': '/gusta-sketch로 태스크까지 만든 뒤 다시 실행하세요', 'needs-init': '/gusta-init으로 쓸 AI 목록(SETTINGS agents)을 정한 뒤 다시 실행하세요' }
 export const loopHint = (reason) => LOOP_HINTS[reason] ?? null
 
 // A hook is a bridge candidate, not proof that a person (or the parent chat) received anything.

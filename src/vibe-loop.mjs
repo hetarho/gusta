@@ -17,13 +17,15 @@ import { readTimings, recordTiming, timingKey, measured, workingTree, taskCheckR
 import { inspectWork } from './work-groups.mjs'
 import { approvedTasks } from './work-policy.mjs'
 import { taskRow } from './state-doc.mjs'
-import { SESSION_TAG, TASK_ID } from './spec-format.mjs'
+import { SESSION_TAG, TASK_ID, EFFORTS } from './spec-format.mjs'
 import { sections, tableRows, quoteLine, quoteFields } from './spec-format.mjs'
 import { lintSpec } from './spec-lint.mjs'
 import { validateAgentResult, compactUsage } from './agent-adapter.mjs'
 import { adapterArgs, providerFlags } from './work-providers.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { permissionMode, readSettings, SETTINGS } from './settings.mjs'
+import { permissionMode, readSettings, SETTINGS, agentList } from './settings.mjs'
+import { agentCatalog } from './agent-catalog.mjs'
+import { routeAgent, routeRecord, routeLabel, runLabel } from './agent-route.mjs'
 import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive, notificationCapability, loopDeadline, requestedLoopConfig, loopHint } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
@@ -139,11 +141,17 @@ const positive = (value, fallback, label, integer = false) => {
 }
 
 // One adapter invocation is one new provider process. Logs and session IDs are
-// persisted before parsing a result; retries never resume a previous context.
+// persisted before parsing a result; retries never resume a previous context. The built-in adapter
+// runs the job's route (tool·model·effort the host chose for this unit); a command adapter gets
+// the route inside the job only.
 export async function executeVibeUnit(options, job, directory, limits = {}) {
   const id = randomUUID(), logPath = path.join(directory, `${id}.log`), sessionFile = path.join(directory, `${id}.session`), checkLog = path.join(directory, `${id}.checks.jsonl`)
   let config
-  if (!options.adapter) config = { command: process.execPath, args: adapterArgs(options.provider, options.model, await providerFlags(options.provider, { env: { ...process.env, ...options.env } })) }
+  const route = job.route ?? { tool: options.provider, model: options.model ?? null, effort: options.effort ?? null }
+  if (!options.adapter) {
+    if (!['claude', 'codex'].includes(route.tool)) throw new SkillPackageError('단위의 실행 도구(route.tool)가 없습니다.')
+    config = { command: process.execPath, args: adapterArgs(route.tool, route, await providerFlags(route.tool, { env: { ...process.env, ...options.env } })) }
+  }
   else {
     const file = path.resolve(options.adapter)
     config = JSON.parse(await readFile(file, 'utf8'))
@@ -214,7 +222,11 @@ export async function vibeLoop(options = {}, injected = {}) {
   const control = ['stop', 'stopAfterUnit', 'configure', 'status', 'recoverMetadata'].filter((name) => options[name])
   if (control.length > 1) throw new SkillPackageError('loop 제어 동작은 하나만 지정하세요.')
   if (control.length && (options.dryRun || options.detach)) throw new SkillPackageError('실행 중 제어에는 --dry-run 또는 --detach를 함께 쓰지 않습니다.')
-  if (!control.length && !options.adapter && !['claude', 'codex'].includes(options.provider)) throw new SkillPackageError('--provider claude|codex가 필요합니다.')
+  // Without --provider the CLI routes each unit by its task's run: within SETTINGS agents; an explicit
+  // --provider/--model/--effort pins the whole run (a person's choice, never the skill's).
+  if (options.provider !== undefined && !['claude', 'codex'].includes(options.provider)) throw new SkillPackageError('--provider는 claude 또는 codex입니다.')
+  if (options.model !== undefined && options.provider === undefined) throw new SkillPackageError('--model은 --provider와 함께 지정하세요.')
+  if (options.effort !== undefined && !EFFORTS.includes(options.effort)) throw new SkillPackageError(`--effort는 ${EFFORTS.join('|')} 중 하나입니다.`)
   if (options.permissionMode !== undefined && !SETTINGS['permission-mode'].accepts(options.permissionMode)) throw new SkillPackageError('--permission-mode는 bypass 또는 acceptEdits입니다.')
   if (options.notifyCommand !== undefined && (typeof options.notifyCommand !== 'string' || !options.notifyCommand.trim())) throw new SkillPackageError('--notify-command에는 실행 가능한 명령이 필요합니다.')
   const maxUnits = positive(options.maxUnits, 100, 'max-units', true)
@@ -229,9 +241,21 @@ export async function vibeLoop(options = {}, injected = {}) {
   const mode = control.length ? null : await permissionMode(options, root)
   const settings = control.length ? null : (await readSettings({ root })).values
   const mcp = settings?.['headless-mcp'] ?? null
+  // The AI tools units may run, in fallback order. Undecided, the CLI does not pick one: the owner
+  // decides with /gusta-init first (an explicit --provider or a command adapter runs as given).
+  const agents = settings ? agentList(settings.agents) : null
+  if (!control.length && !agents && !options.provider && !options.adapter) return { schemaVersion: 1, ok: false, tag: options.tag, ...(options.dryRun ? { dryRun: true } : {}), reason: 'needs-init', hint: loopHint('needs-init'), unset: ['agents'], modelRequests: 0 }
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'gusta-vibe-loop.lock')
-  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, beat: vibeBeat, inbox: vibeInbox, view: coordView, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {}, ...injected }
+  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, beat: vibeBeat, inbox: vibeInbox, view: coordView, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {},
+    catalog: () => agentCatalog({ targetRoot: root, env: { ...process.env, ...options.env } }, { agents: settings.agents }), ...injected }
+  // What each installed tool can run, read once per run (no model call) and only when agents is set:
+  // without it an explicit --provider or a command adapter runs the task's run: as written.
+  let catalogRead = null
+  const loadCatalog = () => catalogRead ??= agents ? Promise.resolve(deps.catalog()) : Promise.resolve(null)
+  const explicit = { tool: options.provider ?? null, model: options.model ?? null, effort: options.effort ?? null }
+  const runOf = (status, id) => (status.remaining ?? []).find((task) => task.id === id)?.run ?? null
+  const routeFor = async (status, id, recovering = false) => routeAgent({ role: 'worker', recommended: runOf(status, id), recovery: recovering, agents, catalog: await loadCatalog(), explicit })
   const previous = await readJSON(manifest)
   if (previous && previous.cwd !== root) throw new SkillPackageError('이 tag는 다른 checkout 소유입니다.', [previous.cwd])
   if (options.stop) { await bindLoopDirectory(directory, root); await writeFile(stopFile, 'stop\n'); return { schemaVersion: 1, ok: true, stopFile, action: 'cancel' } }
@@ -291,11 +315,25 @@ export async function vibeLoop(options = {}, injected = {}) {
   const estimateReserve = async () => closingReserve({ timings: await readTimings(context.runtime), commands: batchVerify, push: Boolean(context.target), hours, timeoutMs, optionHours })
   let reserve = await estimateReserve()
   if (reserve.ms >= hours * 3600000) throw new SkillPackageError(`마감 관문 실측(전체 검증 2회+수정 1회+CI)이 ${(reserve.ms / 3600000).toFixed(2)}시간이라 max-hours 안에 구현 시간이 없습니다. --max-hours를 늘리거나 --final-reserve-hours를 지정하세요.`)
-  const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? 'command', permissionMode: mode, headlessMcp: mcp,
+  const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? (options.adapter ? 'command' : 'route'), agents, ...(options.effort ? { effort: options.effort } : {}), permissionMode: mode, headlessMcp: mcp,
     cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS, maxGateAttempts }, scope: scopeIds, reserve, verify, batchVerify, requiredVerificationTiers,
     deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), notification: notificationCapability(directory, options.notifyCommand),
     directory, stopFile, manifest, freshSessionPerUnit: true, pushEachUnit: Boolean(options.pushEachUnit), notifyCommand: options.notifyCommand ?? null }
-  if (options.dryRun) return { ...plan, dryRun: true, modelRequests: 0 }
+  // routing: the tool·model·effort each remaining task would run on now, and why (dry-run only:
+  // a run re-routes every unit at its start).
+  if (options.dryRun) {
+    const routing = []
+    for (const task of (state.remaining ?? []).filter((row) => !scopeIds || scopeIds.includes(row.id))) {
+      const routed = await routeFor(state, task.id)
+      routing.push({ task: task.id, recommended: routed.recommended, run: routed.chosen ? runLabel(routed.chosen) : null, source: routed.source, ...(routed.skipped.length ? { skipped: routed.skipped.slice(0, 3) } : {}) })
+    }
+    return { ...plan, routing, dryRun: true, modelRequests: 0 }
+  }
+  // A run that could start no unit stops here, before preflight claims anything.
+  if (!options.adapter) {
+    const routed = await routeFor(state, null)
+    if (!routed.chosen) throw new SkillPackageError('SETTINGS agents의 도구 중 실행할 수 있는 것이 없습니다 — gusta agents로 설치·로그인을 확인하세요.', routed.skipped.map(({ option, reason }) => `${runLabel(option)}: ${reason}`))
+  }
   if ((await inspectWork({ targetRoot: root })).mode !== 'single') throw new SkillPackageError('vibe loop는 단독 checkout에서 실행하세요. 활성 work 공간은 work run을 사용합니다.')
   await mkdir(directory, { recursive: true })
   await bindLoopDirectory(directory, root)
@@ -469,7 +507,8 @@ export async function vibeLoop(options = {}, injected = {}) {
     let text = await readFile(reportPath, 'utf8')
     if (closing) text = text.replace(/\bto:-/, `to:${new Date(deps.now()).toISOString()}`)
     const outcome = (entry) => entry.specGate?.ok === false ? 'rejected by spec gate' : entry.result?.outcome ?? (CUT.has(entry.stopped) ? `cut (${entry.stopped})` : entry.stopped ? `cancelled (${entry.stopped})` : 'failed')
-    const lines = pending.map((entry) => `- ${entry.result?.kind ?? 'session'} ${entry.result?.id ?? entry.task ?? '-'}: ${outcome(entry)}${entry.leftover ? ` · uncommitted work → ${entry.leftover.ref}` : ''}${entry.parked ? ' · parked' : ''} (${entry.head.slice(0, 12)})`).filter((line) => !text.includes(line))
+    // Each unit names the combination that ran (recommended → actual when routing moved it).
+    const lines = pending.map((entry) => `- ${entry.result?.kind ?? 'session'} ${entry.result?.id ?? entry.task ?? '-'}: ${outcome(entry)}${entry.leftover ? ` · uncommitted work → ${entry.leftover.ref}` : ''}${entry.parked ? ' · parked' : ''}${entry.route ? ` · ${routeLabel(entry.route)}` : ''} (${entry.head.slice(0, 12)})`).filter((line) => !text.includes(line))
     if (lines.length) text = text.replace('\n## decided', `${lines.join('\n')}\n\n## decided`)
     const inbox = await inboxNow()
     for (const kind of ['decided', 'parked']) {
@@ -730,7 +769,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     if ((await git(root, ['status', '--porcelain'])).trim()) throw new SkillPackageError('loop 시작 전 미커밋 변경을 보존합니다. 먼저 정리하세요.')
     const allowTool = [...new Set(['Bash(git *)', `Bash(${process.execPath} ${cli} *)`, ...(options.allowTool ?? [])])]
     const probe = options.probe ?? `git status --porcelain${context.target ? ` && git push --dry-run ${quote(context.remote)} ${quote(`HEAD:refs/heads/${context.target}`)}` : ''}`
-    const preflight = await deps.preflight({ ...options, permissionMode: mode, targetRoot: root, signal: controller.signal, probe, allowTool, probeWorkspace: 'current', probeTimeoutMs: Math.min(Number(options.probeTimeoutMs ?? 900000), Math.max(1, deadline - deps.now())) })
+    const preflight = await deps.preflight({ ...options, permissionMode: mode, targetRoot: root, signal: controller.signal, probe, allowTool, probeWorkspace: 'current', probeTimeoutMs: Math.min(Number(options.probeTimeoutMs ?? 900000), Math.max(1, deadline - deps.now())) }, { catalog: loadCatalog })
     await writeFile(path.join(directory, 'preflight.json'), JSON.stringify(preflight, null, 2))
     if (!preflight.ok) throw new SkillPackageError('맡김 preflight 실패', preflight.checks.filter((check) => !check.ok).map((check) => `${check.name}: ${check.detail}`))
     if (state.git?.behind) await vibeSync({ ...options, targetRoot: root })
@@ -830,6 +869,11 @@ export async function vibeLoop(options = {}, injected = {}) {
       // Every unit has its task: no unit plans untasked work on its own.
       if (selected === null) { reason = untasked ? 'needs-sketch' : 'no-work'; break }
       const limitMs = repairMs !== null ? Math.min(timeoutMs, Math.max(1, repairMs)) : Math.min(unitLimit(selected), Math.max(1, workLeft))
+      // The unit's tool·model·effort: its task's run: within agents, never below it for a recovery
+      // or a gate/CI repair. A command adapter receives the route in its job and runs what it runs.
+      const routed = await routeFor(status, selected, Boolean(recovery) || selected === repairTask)
+      if (!routed.chosen && !options.adapter) throw new SkillPackageError(`${selected}: 실행할 수 있는 도구가 없습니다.`, routed.skipped.map(({ option, reason }) => `${runLabel(option)}: ${reason}`))
+      const route = routeRecord(routed)
       // Every unit takes its task on the coordination branch first: one compare-and-swap there, with
       // no push target, clean tree, commit or merge here. A recovery keeps the task whatever its row
       // says (blocked, a malformed close). Refused — another live session holds it, or its finished
@@ -856,7 +900,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       // What lint already reports is not this unit's doing: the spec gate looks only for new errors.
       const lintBefore = (await deps.lint({ targetRoot: root })).errors
       const dispatched = recovery
-      const job = { schemaVersion: 1, role: 'unit', mode: 'autopilot', workspaceMode: 'single', workspace: root, tag: options.tag, report, status: unitStatus(status, selected, recovery), brief,
+      const job = { schemaVersion: 1, role: 'unit', mode: 'autopilot', workspaceMode: 'single', workspace: root, tag: options.tag, report, status: unitStatus(status, selected, recovery), brief, route,
         cliCommand: [process.execPath, cli], allowTools: allowTool, permissionMode: mode, headlessMcp: mcp, diffBase: before.head, hostManaged: true,
         ...(measurementRun ? { usageMeasurement: measurementRun, unit: count + 1, ...(selected ? { taskId: selected } : {}) } : {}),
         timeLimit: { minutes: Math.max(1, Math.round(limitMs / 60000)), cutAt: new Date(Date.now() + limitMs).toISOString() },
@@ -864,6 +908,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       // A continuation consumes its snapshot; once the task is done the ref is dropped.
       if (dispatched?.snapshot && dispatched.reason !== 'split') for (const snapshot of snapshots) if (snapshot.ref === dispatched.snapshot.ref) snapshot.handed = true
       phase = 'unit'; await save()
+      await event('unit-route', { unit: count + 1, task: selected, route })
       const unitStart = deps.now()
       const receipt = await deps.execute({ ...options, ...appliedConfig }, job, directory, { stopFile, deadline, signal: controller.signal, timeoutMs: limitMs })
       count++
@@ -875,7 +920,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       // leaves the tree for the user; changes after a unit that reported success may be the owner's,
       // so they stay in place and stop the run (the boundary's assertClean).
       const leftover = failed && (cut || !receipt.stopped) ? await keepLeftover(taskId, receipt.stopped ?? 'failed') : null
-      const entry = { ...receipt, unit: count, task: taskId, head: after.head, at: new Date(deps.now()).toISOString(), ms: deps.now() - unitStart, ...(leftover ? { leftover: { ref: leftover.ref, files: leftover.fileCount } } : {}) }
+      const entry = { ...receipt, unit: count, task: taskId, route, head: after.head, at: new Date(deps.now()).toISOString(), ms: deps.now() - unitStart, ...(leftover ? { leftover: { ref: leftover.ref, files: leftover.fileCount } } : {}) }
       dispatches.push(entry); pending.push(entry)
       await checkpoint()
       // A real unit's duration sizes the repair buffer of the closing reserve.

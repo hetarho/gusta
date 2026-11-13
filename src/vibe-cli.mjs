@@ -15,10 +15,13 @@ import { vibeUsage } from './native-usage.mjs'
 import { SkillPackageError } from './errors.mjs'
 
 const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
-  vibe loop --tag <tag> --provider claude|codex [--model <name>] [--max-units 100] [--max-hours 8]
+  vibe loop --tag <tag> [--max-units 100] [--max-hours 8]
     [--deadline <ISO>] [--final-reserve-hours <measured>] [--max-gate-attempts 3] [--batch-size 3] [--permission-mode bypass|acceptEdits] [--allow-tool <rule> ...]
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
-    [--tasks 'T001 T002'] [--timeout-ms 3600000]
+    [--tasks 'T001 T002'] [--timeout-ms 3600000] [--provider claude|codex [--model <name>]] [--effort low|medium|high|xhigh|max|ultra]
+                                                단위마다 도구·모델·에포트를 CLI가 정한다: 태스크 run:을 SETTINGS agents 안에서(못 쓰면 score가
+                                                가장 가까운 조합, 없으면 카탈로그 중간), 회복·수정 단위는 그보다 낮추지 않음. dry-run의 routing이
+                                                태스크별 배정. --provider/--model/--effort는 사람이 실행 전체를 고정할 때만. agents 미정이면 needs-init
                                                 끝 예약(실측 전체 검증×2+수정 단위+CI)에는 새 단위 없이 마감 관문·수정. 2회 이후는 실패 집합 감소·시간·전체 시도 상한을 충족할 때만 연장
                                                 --tasks: 그 태스크(와 이번 실행이 그것을 위해 만든 태스크)만, 끝나면 마감 관문
                                                 --timeout-ms: 단위 하나의 상한(explore는 timebox+30분). 넘기면 미커밋 변경을
@@ -121,6 +124,7 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
   vibe sketch status [--json]                   기록된 스케치 서버와 alive
   vibe preflight [--probe <command> [--provider claude|codex] [--allow-tool <rule> ...]]
                                                 맡김 전 점검: push 권한·조정 브랜치(coord-push)·lint·절전 방지·CI 접근·헤드리스 워커 실측
+                                                (probe는 agents 첫 도구의 가장 싼 조합). agents 미정이면 reason needs-init, probe 없음
   vibe awake [--hours <n>] | --stop             macOS caffeinate로 절전 방지
   vibe check [--tier task|batch] [--tag <tag>] [--diff-base <task-start-sha>] [--task T###] [--timeout-ms <ms>] [--heavy] [--no-cache] [--allow-final] -- <command>
                                                 batch/group은 조정자 전용·자동 heavy 락. --allow-final은 명시적 예외만
@@ -130,7 +134,7 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
 `
 
 const allowed = {
-  loop: ['tag', 'provider', 'model', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'max-gate-attempts', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
+  loop: ['tag', 'provider', 'model', 'effort', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'max-gate-attempts', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref', 'section', 'offset', 'limit', 'snapshot'], format: ['section'],
   status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host', 'remote'],
   claim: ['tag', 'task', 'mode', 'host', 'remote'], task: ['tag', 'at'], inbox: ['tag', 'kind', 'ref', 'text', 'file', 'line', 'id', 'log', 'remote'], log: ['tag', 'text', 'file', 'remote'],

@@ -22,7 +22,7 @@ const effortRank = (effort) => EFFORTS.indexOf(effort) + 1
 export const capability = (tier, effort) => 3 * (tier - 1) + effortRank(effort)
 export const costOrder = (tier, effort) => 10 * tier + effortRank(effort)
 
-const familyTier = (tool, model) => {
+export const familyTier = (tool, model) => {
   const words = model.toLowerCase().split(/[^a-z0-9]+/)
   const family = Object.keys(TIERS[tool]).find((name) => words.includes(name))
   return family ? { tier: TIERS[tool][family], known: true } : { tier: UNKNOWN_TIER, known: false }

@@ -9,8 +9,8 @@
 ```bash
 npx @haeram/gusta work start feature --workers 4 --reviewers 1 --max-pending 8 --json
 npx @haeram/gusta work doctor --json
-npx @haeram/gusta work run --work feature --provider codex --reviewer-provider claude --task-verify 'npm run lint' --verify 'npm ci && npm run lint' --group-verify 'npm ci && npm run ci' --dry-run --json
-npx @haeram/gusta work run --work feature --provider codex --reviewer-provider claude --task-verify 'npm run lint' --verify 'npm ci && npm run lint' --group-verify 'npm ci && npm run ci' --json
+npx @haeram/gusta work run --work feature --task-verify 'npm run lint' --verify 'npm ci && npm run lint' --group-verify 'npm ci && npm run ci' --dry-run --json
+npx @haeram/gusta work run --work feature --task-verify 'npm run lint' --verify 'npm ci && npm run lint' --group-verify 'npm ci && npm run ci' --json
 ```
 
 기존 그룹은 기록된 한도를 사용하고, 한도 기록이 없는 그룹은 4/1/8을 사용한다.
@@ -31,7 +31,7 @@ npx @haeram/gusta work run --work feature --provider codex --reviewer-provider c
 ### lane
 lane 단위는 한 worker 슬롯과 한 작업 공간을 끝까지 사용한다. 실행기는 태스크 하나씩 에이전트를 실행하고, 제출이 다음 `taskId`를 돌려주면 같은 슬롯·공간에 이어서 배정한다. 다음 태스크·수정 요청·답을 받은 결정 요청은 같은 세션을 이어서(resume) 실행한다 — 연속 4회까지, 그 뒤에는 새 세션. 세션 ID는 실행이 끝나기 전에 기록되므로(Claude는 `--session-id`로 미리 정하고, Codex는 첫 이벤트의 thread ID) timeout으로 끊긴 실행도 이어 갈 수 있다. 워커에게는 `work brief --attempt <id>`와 같은 `brief`(묶음 브랜치의 고정 커밋 기준, 내용은 stdin `brief` 항목)를 넘긴다 — STATE·FORMAT·ARCH 전체를 다시 읽지 않게 한다. 기본 어댑터는 brief를 JSON 대신 마크다운으로 프롬프트에 싣는다. 세션 루프의 세션은 lane 전체를 구현한 뒤 한 번 제출한다. 리뷰와 통합은 lane 전체에 한 번이다. stdin의 `tasks`는 단위 전체, `taskId`는 이번에 구현할 태스크다. worker/review 작업 공간과 통합 후보는 필요한 환경이 설치되지 않았을 수 있다. 작업자가 환경 준비를 할 수 있도록 지시하고 검증 명령에도 필요한 준비를 포함한다.
 
-`--provider auto`가 기본이며 호환되는 Codex, Claude 순으로 선택한다. Orca 설치 여부로 실행 방식을 바꾸지 않는다. reviewer-provider를 생략하면 worker와 같은 도구를 사용한다. `--model`·`--reviewer-model`을 생략하면 각 CLI의 설정을 사용한다. 같은 도구의 리뷰어는 명시한 worker 모델을 상속하고, 다른 도구의 리뷰어는 모델을 따로 지정하지 않으면 그 CLI 기본값을 사용한다. 임의로 모델을 추정하거나 설치·로그인하지 않는다.
+`--provider auto`가 기본이다: dispatch마다 그 태스크의 `run:`(기획 때 고른 도구/모델@에포트)을 SETTINGS `agents` 안에서 배정한다. 쓸 수 없으면(목록 밖·미로그인·호환 안 되는 CLI·없는 모델/에포트) score가 가장 가까운 조합(같으면 싼 쪽, 그다음 agents 순서), `run:`이 없으면 카탈로그 중간 능력이다. 수정 요청·재시도는 그보다 낮추지 않고, 리뷰어는 워커 능력 이상에서 agents에 도구가 둘 이상이면 다른 도구를 먼저 쓴다. `agents`가 미정이면 시작하지 않고 `needs-init`으로 끝난다(`/gusta-init`). `--provider codex|claude`·`--providers`·`--reviewer-provider`는 그 도구로 고정하고 모델·에포트는 같은 규칙으로 그 도구 안에서 고른다. `--model`·`--reviewer-model`·`--effort`는 그 값을 덮어쓴다. 같은 도구로 고정한 리뷰어는 명시한 worker 모델을 상속한다. 배정은 attempt의 `dispatch.route`·`workerRoute`에 남는다. Orca 설치 여부로 실행 방식을 바꾸지 않는다. 임의로 모델을 추정하거나 설치·로그인하지 않는다.
 
 ### 단일 도구와 혼합 워커
 
@@ -56,7 +56,7 @@ providers 목록은 슬롯에 순환 배정한다. 6개 슬롯과 `codex,claude`
 }
 ```
 
-모델을 생략하면 해당 CLI 설정을 사용한다. 혼합 실행에서는 리뷰어 모델을 워커에서 상속하지 않고, reviewerProvider를 생략하면 목록의 첫 도구를 사용한다. `--provider`와 `--providers`는 함께 지정하지 않는다. 혼합 실행의 `--model`은 거부하며 adapter의 각 workers 항목에 지정한다. `--adapter`와 provider/model CLI 옵션도 함께 지정하지 않는다.
+모델을 생략하면 그 도구 안에서 태스크 `run:`대로 고른다(agents 미정이면 해당 CLI 설정). 혼합 실행에서는 리뷰어 모델을 워커에서 상속하지 않고, reviewerProvider를 생략하면 목록의 첫 도구를 사용한다. `--provider`와 `--providers`는 함께 지정하지 않는다. 혼합 실행의 `--model`은 거부하며 adapter의 각 workers 항목에 지정한다. `--adapter`와 provider/model CLI 옵션도 함께 지정하지 않는다.
 
 기본 어댑터는 새 세션에 배포된 gusta-implement-task/gusta-review-task 본문과 배정 정보를 전달하고, 이어 쓰는 세션에는 새 정보(다음 태스크, correction, 조정자 메모)만 보낸다. worker 권한은 SETTINGS `permission-mode`(기본 bypass: Claude bypassPermissions, Codex `--dangerously-bypass-approvals-and-sandbox`)를 따르고 `work run --permission-mode`가 그 실행만 덮는다. acceptEdits면 Claude acceptEdits+역할별 도구 목록, Codex workspace-write sandbox(네트워크 없음)다. reviewer는 항상 Codex read-only sandbox, Claude plan 권한 모드다. Codex는 JSON schema와 최종 결과 파일을, Claude는 `--output-format stream-json --verbose`의 마지막 result 이벤트의 structured_output을 읽는다. 기존 인증을 사용한다. acceptEdits에서 워커가 도는 새 worktree는 한 번도 신뢰한 적 없는 폴더라서 `claude -p`는 프로젝트 `.claude/settings.json`의 `permissions.allow`를 적용하지 않는다. 워커가 실행해야 할 명령은 `work start/configure --allow-tool 'Bash(pnpm run *)'`로 묶음에 저장하면 워커의 `--allowedTools`에 더해진다. `vibe preflight --probe '<명령>' --allow-tool ...`이 같은 조건의 새 worktree에서 실제 헤드리스 워커로 그 명령을 실행해 보고 권한 거부를 미리 알려 준다. 호스트의 `--verify` 명령은 별도로 실행된다. CLI 출력 형식이 맞지 않거나 종료 코드가 실패면 완료로 취급하지 않는다. 규약 근거: [Codex 비대화형 실행](https://developers.openai.com/codex/noninteractive/), [Claude headless 실행](https://code.claude.com/docs/en/headless).
 

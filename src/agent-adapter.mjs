@@ -210,16 +210,29 @@ export function claudeOptionalFlags(flags = [], { headlessMcp = 'isolate' } = {}
   return flags.filter((flag) => OPTIONAL_FLAGS.claude.includes(flag) && (flag !== STRICT_MCP || headlessMcp === 'isolate'))
 }
 
+// Claude has no ultra: its deepest level is max.
+export const claudeEffort = (effort) => effort === 'ultra' ? 'max' : effort
+// The environment one provider session starts with. CLAUDE_CODE_EFFORT_LEVEL outranks --effort, so a
+// routed Claude session sets it too: a value the user exported cannot change what the CLI chose.
+export function providerEnvironment(provider, env, effort = null) {
+  const childEnv = { ...env }
+  // The provider is an independent foreground run, not a nested interactive session.
+  delete childEnv.CLAUDECODE
+  if (provider === 'claude' && effort) childEnv.CLAUDE_CODE_EFFORT_LEVEL = claudeEffort(effort)
+  return childEnv
+}
+
 // allowTools extends what a worker runs without a prompt: new worktrees are never-trusted
 // folders, so the project's own permission allowlist does not apply to them.
 // flags: optional provider flags the installed CLI was found to support (work-providers OPTIONAL_FLAGS);
-// headlessMcp: see claudeOptionalFlags.
-export function providerArguments(provider, role, files, model, { allowTools = [], resume = null, session = null, permissionMode = 'acceptEdits', flags = [], headlessMcp = 'isolate' } = {}) {
+// headlessMcp: see claudeOptionalFlags. effort: the routed reasoning effort (null: the CLI's setting).
+export function providerArguments(provider, role, files, model, { allowTools = [], resume = null, session = null, permissionMode = 'acceptEdits', flags = [], headlessMcp = 'isolate', effort = null } = {}) {
   const writes = WRITES.includes(role)
   const sandbox = writes ? 'workspace-write' : 'read-only'
   if (!['acceptEdits', 'bypass'].includes(permissionMode) || (!writes && permissionMode === 'bypass')) fail('지원하지 않는 permission mode입니다.')
   if (provider === 'codex') {
-    const tail = ['--json', '--output-schema', files.schema, '--output-last-message', files.result, ...(model ? ['--model', model] : []), '-']
+    // exec resume takes the same overrides, so a resumed session keeps its model and effort.
+    const tail = ['--json', '--output-schema', files.schema, '--output-last-message', files.result, ...(model ? ['--model', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '-']
     // exec resume takes the bypass flag too, so a resumed bypass session keeps its session.
     if (permissionMode === 'bypass') return ['exec', ...(resume ? ['resume', resume] : []), '--dangerously-bypass-approvals-and-sandbox', ...tail]
     return resume ? ['-a', 'never', '--sandbox', sandbox, 'exec', 'resume', resume, ...tail] : ['-a', 'never', 'exec', '--sandbox', sandbox, ...tail]
@@ -229,13 +242,14 @@ export function providerArguments(provider, role, files, model, { allowTools = [
     '--permission-mode', writes ? permissionMode === 'bypass' ? 'bypassPermissions' : 'acceptEdits' : 'plan', '--permission-prompts', 'none',
     '--tools', writes ? 'Bash,Read,Edit,Write,Glob,Grep' : 'Bash,Read,Glob,Grep',
     '--allowedTools', writes ? [...WORKER_TOOLS, ...allowTools].join(',') : 'Read,Glob,Grep,Bash(git diff *),Bash(git show *),Bash(git log *),Bash(git status *),Bash(git ls-files *)',
-    ...(resume ? ['--resume', resume] : session ? ['--session-id', session] : []), ...(model ? ['--model', model] : []),
+    ...(resume ? ['--resume', resume] : session ? ['--session-id', session] : []), ...(model ? ['--model', model] : []), ...(effort ? ['--effort', claudeEffort(effort)] : []),
     ...claudeOptionalFlags(flags, { headlessMcp })]
   fail(`지원하지 않는 실행기: ${provider}`)
 }
 
 // flags: the caller's providerFlags answer; none by default (this never probes the CLI).
-export async function executeAgentAdapter({ provider, model, job, env = process.env, log = (text) => process.stderr.write(text), flags = [], measurementDeps = {} }) {
+// model·effort: the route the host chose (null: the CLI's own setting).
+export async function executeAgentAdapter({ provider, model, effort = null, job, env = process.env, log = (text) => process.stderr.write(text), flags = [], measurementDeps = {} }) {
   const { usageMeasurement, ...promptJob } = job
   const prompt = await agentPrompt(promptJob, provider)
   const collector = usageMeasurement ? usageCollector(provider, model) : null
@@ -251,11 +265,8 @@ export async function executeAgentAdapter({ provider, model, job, env = process.
     const remember = (id) => job.sessionFile && id ? writeFile(job.sessionFile, id).catch(() => {}) : null
     await remember(session)
     // job.headlessMcp is the host's SETTINGS value; a job without one is isolated.
-    const args = providerArguments(provider, job.role, files, model, { allowTools: WRITES.includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags, headlessMcp: job.headlessMcp ?? 'isolate' })
-    const childEnv = { ...env }
-    // The provider is an independent foreground run, not a nested interactive session.
-    delete childEnv.CLAUDECODE
-    const child = spawn(provider, args, { cwd: job.workspace, env: childEnv, shell: false, stdio: ['pipe', 'pipe', 'pipe'] })
+    const args = providerArguments(provider, job.role, files, model, { allowTools: WRITES.includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags, headlessMcp: job.headlessMcp ?? 'isolate', effort })
+    const child = spawn(provider, args, { cwd: job.workspace, env: providerEnvironment(provider, env, effort), shell: false, stdio: ['pipe', 'pipe', 'pipe'] })
     let partial = '', answer = '', last = '', events = '', errorOutput = '', tooLarge = false, interrupted = false, timedOut = false, forced
     // Claude keeps only the last result event (or a lone envelope line) in memory; every event
     // already went to the log as it arrived, so a long session does not grow the buffer.

@@ -12,7 +12,7 @@ SKILL.md 2절의 조건일 때만 쓴다. 아래 `work ...`·`vibe ...`는 `npx 
 - preflight에서 `vibe preflight --probe '<태스크 단계 명령>' --allow-tool '<규칙>'`으로 실제 헤드리스 워커가 그 명령을 권한 확인 없이 실행하는지 실측한다. 거부되면 사용자가 떠나기 전 그 규칙을 허용할지 묻는다.
 
 ## 2. 실행
-- `work run --work <slug> --autopilot [--provider codex|claude | --providers codex,claude] --json`을 셸 도구의 백그라운드 실행으로 띄운다. 실행기는 배정·같은 세션 resume·통합·검증 캐시/heavy 락·스냅샷·절전 방지를 모델 턴 없이 맡는다(실행기가 실패하거나 예상과 다르게 동작할 때만 [runner.md](../../gusta-manage-work/references/runner.md)를 읽는다):
+- `work run --work <slug> --autopilot --json`을 셸 도구의 백그라운드 실행으로 띄운다(dispatch마다 그 태스크의 `run:`을 SETTINGS `agents` 안에서 배정한다 — `--provider`·`--providers`는 사용자가 도구를 고정할 때만, `agents` 미정이면 `needs-init`). 실행기는 배정·같은 세션 resume·통합·검증 캐시/heavy 락·스냅샷·절전 방지를 모델 턴 없이 맡는다(실행기가 실패하거나 예상과 다르게 동작할 때만 [runner.md](../../gusta-manage-work/references/runner.md)를 읽는다):
   - 보조 실행기를 `--detach`로 띄우더라도 시작 대화가 종료 이벤트와 후속 실행을 받을 실제 연결을 확보하고 목표를 계속 조정한다. 연결이 없으면 foreground 완료 대기를 사용하고 자동 채팅 통지를 약속하지 않는다. 확인은 `work run --work <slug> --status`, 멈춤은 `kill` 대신 `work run --work <slug> --stop`.
   - 결정 요청만 남으면 모델 호출 없이 결정을 기다린다(기본 15분, `--decision-wait-ms`로 변경). 대기할 attempt와 질문을 stderr·runtime 이력에 남긴다. 통합 실패 후 새로 제출·승인된 제출물은 같은 run에서 다시 통합한다. 같은 제출물의 통합 실패로 승인된 단위가 남으면 결정 대기 없이 `needs-attention`으로 끝낸다.
 

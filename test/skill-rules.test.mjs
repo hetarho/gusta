@@ -49,8 +49,8 @@ test('spec 스킬은 gusta-sketch·gusta-self-improve·gusta-showcase를 포함�
   assert.deepEqual([...rules.keys()].sort(), ['gusta-create-architecture', 'gusta-create-narrative', 'gusta-create-ssot', 'gusta-create-task', 'gusta-design-mode', 'gusta-doc-review', 'gusta-implement-task', 'gusta-manage-work', 'gusta-review-code', 'gusta-review-task', 'gusta-self-improve', 'gusta-self-improve-remote', 'gusta-showcase', 'gusta-sketch', 'gusta-start', 'gusta-update-ssot'])
 })
 
-test('공통 규칙 1번은 미정 설정(settings.unset)을 gusta-init으로 먼저 정하게 하고 맡김은 묻지 않는다', async () => {
-  for (const [name, entry] of await commonRules()) assert.ok(entry['1'].endsWith('`settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 한다).'), `${name}: 공통 규칙 1번에 설정 확인이 없습니다.`)
+test('공통 규칙 1번은 미정 설정(settings.unset)을 gusta-init으로 먼저 정하게 하고 맡김은 묻지 않는다(agents 미정이면 시작하지 않음)', async () => {
+  for (const [name, entry] of await commonRules()) assert.ok(entry['1'].endsWith('`settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 하고, agents 미정이면 맡김을 시작하지 않는다).'), `${name}: 공통 규칙 1번에 설정 확인이 없습니다.`)
 })
 
 test('spec 스킬은 브랜치 대상을 고정하지 않는다: main 반영·cfg push/plan 대신 SETTINGS', async () => {

@@ -135,11 +135,11 @@ npx @haeram/gusta work next --work feature --owner worker-a --wait 540 --json
 
 ```bash
 npx @haeram/gusta work doctor --json
-npx @haeram/gusta work run --work feature --provider codex --reviewer-provider claude --task-verify 'npm run lint' --verify 'npm ci && npm run lint' --group-verify 'npm ci && npm run ci' --dry-run --json
-npx @haeram/gusta work run --work feature --provider codex --reviewer-provider claude --task-verify 'npm run lint' --verify 'npm ci && npm run lint' --group-verify 'npm ci && npm run ci' --json
+npx @haeram/gusta work run --work feature --task-verify 'npm run lint' --verify 'npm ci && npm run lint' --group-verify 'npm ci && npm run ci' --dry-run --json
+npx @haeram/gusta work run --work feature --task-verify 'npm run lint' --verify 'npm ci && npm run lint' --group-verify 'npm ci && npm run ci' --json
 ```
 
-doctor와 dry-run은 모델을 호출하지 않습니다. `--autopilot`이면 사람이 없다는 전제로 돕니다 — 기획 결정이 필요한 워커는 결정 요청을 남기고 다른 단위가 계속되며, 조정자 세션(`work next --coordinator --autopilot`)이 잠정 결정해 `work update --status doing --note`로 재개하면 실행기가 기획 브랜치를 합치고 **같은 세션**을 이어 실행합니다. 같은 lane의 다음 태스크와 수정도 세션을 이어 쓰고, 워커에게는 태스크·인용 결정·검증 명령을 묶은 브리핑(`work brief`)을 넘깁니다. timeout 전에는 작업 공간을 스냅샷하고 진행분을 커밋해 이어 가며, macOS에서는 실행 중 절전을 막습니다. 새 worktree에는 프로젝트의 권한 허용 목록이 적용되지 않으므로 워커가 실행할 명령은 `--allow-tool`로 묶음에 저장합니다. provider를 생략하면 호환되는 Codex, Claude 순으로 선택하며, reviewer-provider를 생략하면 같은 도구를 사용합니다. 모델은 각 CLI 기본 설정을 사용하거나 `--model`·`--reviewer-model`로 지정합니다. CLI 로그인과 모델 접근 권한은 별도 준비가 필요합니다. 기본 어댑터의 워커는 파일을 편집하고, 호스트가 계약·변경 범위를 검사한 뒤 커밋·검증·제출합니다.
+doctor와 dry-run은 모델을 호출하지 않습니다. `--autopilot`이면 사람이 없다는 전제로 돕니다 — 기획 결정이 필요한 워커는 결정 요청을 남기고 다른 단위가 계속되며, 조정자 세션(`work next --coordinator --autopilot`)이 잠정 결정해 `work update --status doing --note`로 재개하면 실행기가 기획 브랜치를 합치고 **같은 세션**을 이어 실행합니다. 같은 lane의 다음 태스크와 수정도 세션을 이어 쓰고, 워커에게는 태스크·인용 결정·검증 명령을 묶은 브리핑(`work brief`)을 넘깁니다. timeout 전에는 작업 공간을 스냅샷하고 진행분을 커밋해 이어 가며, macOS에서는 실행 중 절전을 막습니다. 새 worktree에는 프로젝트의 권한 허용 목록이 적용되지 않으므로 워커가 실행할 명령은 `--allow-tool`로 묶음에 저장합니다. provider를 생략하면 dispatch마다 그 태스크의 `run:`을 SETTINGS `agents` 안에서 배정합니다([오래 맡기기](autopilot.md#오래-맡기기--vibe-loop)와 같은 규칙 — 못 쓰면 score가 가장 가까운 조합, 없으면 카탈로그 중간). 수정 요청·재시도는 그보다 낮추지 않고, 리뷰어는 워커 능력 이상에서 다른 도구를 먼저 씁니다. `agents`가 미정이면 `needs-init`으로 시작하지 않습니다. `--provider`·`--providers`·`--reviewer-provider`는 그 도구로 고정하고(리뷰어를 생략하면 워커와 같은 도구), `--model`·`--reviewer-model`·`--effort`는 그 값을 덮어씁니다. CLI 로그인과 모델 접근 권한은 별도 준비가 필요합니다. 기본 어댑터의 워커는 파일을 편집하고, 호스트가 계약·변경 범위를 검사한 뒤 커밋·검증·제출합니다.
 
 다른 실행기는 `--adapter <json-file>`로 연결할 수 있습니다. [실행 설정과 Orca 연결 방법](../skills/gusta-manage-work/references/runner.md)에 설정 예·출력 규약·권한·복구 절차가 있습니다. Orca에서는 coordinator가 같은 선점·리뷰 CLI를 호출할 수 있습니다. doctor는 macOS Orca 앱에 포함된 CLI도 찾아 확인하지만 Orca pane/task/dispatch 자동 생성 어댑터는 아직 포함하지 않습니다.
 

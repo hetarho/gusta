@@ -107,10 +107,10 @@ npx @haeram/gusta lint                      # spec/ follows the FORMAT invariant
 npx @haeram/gusta vibe status --tag k3f9    # other devices' sessions, remaining work, suggested route
 npx @haeram/gusta vibe sketch serve tag-filter   # serve .tmp/sketch/tag-filter/ on one local port
 npx @haeram/gusta vibe brief T012           # the decision blocks a task depends on
-npx @haeram/gusta vibe loop --tag k3f9 --provider claude --json    # unattended run: a fresh session per unit
+npx @haeram/gusta vibe loop --tag k3f9 --json    # unattended run: a fresh session per unit, on its task's run: within SETTINGS agents
 npx @haeram/gusta vibe push                 # land finished work as spec/SETTINGS.md says
 npx @haeram/gusta vibe settings --set usage-measurement=true  # opt in to local token/cache reports (default false)
-npx @haeram/gusta work run --work feature --provider codex --json  # parallel workers with a reviewer
+npx @haeram/gusta work run --work feature --json  # parallel workers with a reviewer, each routed by its task's run:
 ```
 
 Usage measurement adds no model calls. Enabled adapter runs print a completion summary and save local JSON; unknown usage stays unknown. Host/native sessions require a separate scoped report. Cache hits alone do not establish savings, and reported USD is not subscription quota. See [measurement scope and accounting](docs/usage-measurement.md).

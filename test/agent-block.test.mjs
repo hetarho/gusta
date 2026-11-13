@@ -287,7 +287,10 @@ test('맡김: agent-block 미정은 status의 unset에만 나오고 preflight·�
   await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', 'settings')
   const status = await vibeStatus({ targetRoot: root })
   assert.deepEqual([status.settings.unset, status.route], [['version', 'agent-block', 'agents'], 'implementation'])
-  const preflight = await vibePreflight({ targetRoot: root })
+  // Undecided agents stops autopilot (needs-init); a run that names its tool passes.
+  const undecided = await vibePreflight({ targetRoot: root })
+  assert.deepEqual([undecided.ok, undecided.reason, undecided.needsUser.map((check) => check.name)], [false, 'needs-init', ['agents']])
+  const preflight = await vibePreflight({ targetRoot: root, provider: 'claude' })
   assert.deepEqual([preflight.ok, preflight.needsUser], [true, []])
   assert.match(preflight.checks.find((check) => check.name === 'branch-settings').detail, /^land current/)
   assert.ok(!JSON.stringify(preflight).includes('agent-block'))

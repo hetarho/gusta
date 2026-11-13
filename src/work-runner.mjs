@@ -1,9 +1,13 @@
-import { readFile, rm, mkdir, open, writeFile } from 'node:fs/promises'
+import { readFile, readdir, rm, mkdir, open, writeFile } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { builtInAdapter } from './work-providers.mjs'
+import { builtInAdapter, adapterArgs } from './work-providers.mjs'
+import { agentCatalog } from './agent-catalog.mjs'
+import { routeAgent, routeRecord, runLabel } from './agent-route.mjs'
+import { quoteLine, quoteFields, runValue, EFFORTS } from './spec-format.mjs'
+import { loopHint } from './loop-control.mjs'
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { inspectWork, claimNextWork, commitWorkerWork, submitWork, integrateWork, finishWork, workBoard, syncWork, workInternals } from './work-groups.mjs'
@@ -15,7 +19,7 @@ import { stateMergeArgs } from './git-merge.mjs'
 import { git } from './workspace.mjs'
 import { pruneWork, dispatchLogDir } from './prune.mjs'
 import { processAlive, atomicJSON, readJSON } from './loop-control.mjs'
-import { permissionMode, readSettings } from './settings.mjs'
+import { permissionMode, readSettings, agentList, AGENT_TOOLS } from './settings.mjs'
 import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 
 const { repository, groupOf, attemptOf, now, fail, requireStopped, commands, tierChecks, briefFor } = workInternals
@@ -51,6 +55,25 @@ export async function recoverRunner(options) {
   })
 }
 
+// The run: a task file plans (tool/model@effort), read from the workspace that runs it.
+async function taskRun(workspace, taskId) {
+  try {
+    const name = (await readdir(path.join(workspace, 'spec/tasks'))).find((entry) => entry.startsWith(`${taskId}.`) && entry.endsWith('.md'))
+    return name ? runValue(quoteFields(quoteLine(await readFile(path.join(workspace, 'spec/tasks', name), 'utf8')) ?? '').get('run')) : null
+  } catch { return null }
+}
+
+// A run that names no tool (no --provider/--providers/adapter) routes every dispatch within SETTINGS
+// agents; undecided, it does not start: the owner decides with /gusta-init first.
+const namesTool = (options) => Boolean(options.adapter || (options.provider && options.provider !== 'auto') || options.providers || options.workers)
+const NEEDS_INIT = (work) => ({ schemaVersion: 1, ok: false, work: work ?? null, outcome: 'needs-init', reason: 'needs-init', hint: loopHint('needs-init'), unset: ['agents'], dispatched: 0, modelRequests: 0 })
+async function needsInit(options) {
+  if (namesTool(options)) return null
+  const context = await repository(options)
+  return agentList((await readSettings({ root: context.cwd })).values.agents) ? null : NEEDS_INIT(options.work)
+}
+const routedConfig = (config) => config.kind === 'builtin' && [config.roles?.worker, config.roles?.reviewer, ...(config.workers ?? [])].some((entry) => entry?.provider === 'route')
+
 async function adapterConfig(options) {
   let config
   const providerOptions = ['provider', 'providers', 'reviewerProvider', 'model', 'reviewerModel']
@@ -76,8 +99,12 @@ async function adapterConfig(options) {
 
 // Three verification tiers: taskVerify at every task submission (optional, fast),
 // verify at every unit integration, groupVerify once after the last integration.
-export async function runWork(options) {
+// deps.catalog replaces the agentCatalog read (no model call) that routing uses when agents is set.
+export async function runWork(options, deps = {}) {
   for (const key of ['verify', 'taskVerify', 'groupVerify']) if (options[key] !== undefined) commands(options, key, true)
+  if (options.effort !== undefined && !EFFORTS.includes(options.effort)) fail(`--effort는 ${EFFORTS.join('|')} 중 하나입니다.`)
+  const undecided = await needsInit(options)
+  if (undecided) return undecided
   const config = await adapterConfig(options)
   // Autopilot: nobody answers. Planning decisions are filed for the coordinator, and the
   // runner waits for them (no model calls) instead of ending while they are open.
@@ -91,13 +118,20 @@ export async function runWork(options) {
   const mode = await permissionMode(options, context.cwd)
   const settings = (await readSettings({ root: context.cwd })).values
   const mcp = settings['headless-mcp']
+  // Every dispatch's tool·model·effort comes from agent-route: the task's run: within agents, a pinned
+  // tool (--provider, --providers, --reviewer-provider) narrowed to that tool. The catalog is read once.
+  const agents = agentList(settings.agents)
+  if (routedConfig(config) && !agents) return NEEDS_INIT(options.work)
+  let catalogRead = null
+  const loadCatalog = () => catalogRead ??= agents ? Promise.resolve((deps.catalog ?? (() => agentCatalog({ targetRoot: context.cwd, env: options.env ?? process.env }, { agents: settings.agents })))()) : Promise.resolve(null)
+  const incompatible = config.kind === 'builtin' ? AGENT_TOOLS.filter((tool) => !config.compatible.includes(tool)).map((tool) => ({ tool, reason: 'incompatible' })) : []
   const stored = groupOf(await readRuntime(context.root), options.work)
   const verify = tierChecks(options, stored, 'unit')
   const taskVerify = options.taskVerify ?? stored.verify?.task ?? []
   const groupVerify = options.groupVerify ?? stored.verify?.group ?? []
   if (options.dryRun) {
     const group = groupOf(await readRuntime(context.root), options.work)
-    return { schemaVersion: 1, dryRun: true, work: group.id, limits: workLimits(group.limits), adapter: config, verify, taskVerify, groupVerify, autopilot, decisionWaitMs, permissionMode: mode, headlessMcp: mcp, modelRequests: 0 }
+    return { schemaVersion: 1, dryRun: true, work: group.id, limits: workLimits(group.limits), adapter: config, agents, verify, taskVerify, groupVerify, autopilot, decisionWaitMs, permissionMode: mode, headlessMcp: mcp, modelRequests: 0 }
   }
   const run = { adapter: config.kind, providers: config.roles ? Object.fromEntries(Object.entries(config.roles).map(([role, entry]) => [role, { provider: entry.provider, model: entry.model, version: entry.version }])) : null,
     workers: config.workers?.map((entry) => ({ provider: entry.provider, model: entry.model, version: entry.version })) ?? null,
@@ -251,26 +285,42 @@ export async function runWork(options) {
     const log = path.join(dispatchLogDir(context.root, attempt.id), `dispatch-${id}.log`)
     await mkdir(path.dirname(log), { recursive: true })
     const adapter = role === 'worker' && config.workers?.length ? config.workers[(slot - 1) % config.workers.length] : config.roles?.[role] ?? config
-    const provider = adapter.provider ?? 'custom'
+    const key = role === 'worker' ? `worker:${attempt.id}:${attempt.taskId}` : `reviewer:${attempt.id}`
+    // The dispatch's route: its task's run:, a correction or retry never below it, a reviewer at its
+    // worker's capability or more on another tool first. A command adapter gets the route in its job.
+    const pin = config.kind === 'builtin' ? { tool: adapter.provider === 'route' ? null : adapter.provider, model: adapter.model ?? null, effort: options.effort ?? null } : { effort: options.effort ?? null }
+    const routed = routeAgent({ role, recommended: await taskRun(workspace, attempt.taskId), recovery: Boolean(attempt.correction) || (counts.get(key) ?? 0) > 0, agents, catalog: await loadCatalog(), explicit: pin, blocked: incompatible, worker: role === 'reviewer' ? current.workerRoute ?? null : null })
+    const route = routeRecord(routed)
+    if (config.kind === 'builtin' && !route) {
+      const reason = `실행할 수 있는 도구가 없습니다: ${routed.skipped.map(({ option, reason: why }) => `${runLabel(option)} ${why}`).join(', ') || 'agents'}`
+      failures.push({ attempt: attempt.id, role, error: reason })
+      if (review) await releaseReview({ ...options, review: review.id, reason })
+      else await transaction(context.root, (state) => { Object.assign(attemptOf(state, attempt.id), { status: 'blocked', reason }) })
+      return
+    }
+    const provider = config.kind === 'builtin' ? route.tool : adapter.provider ?? 'custom'
+    const command = config.kind === 'builtin' ? process.execPath : adapter.command
+    const args = config.kind === 'builtin' ? adapterArgs(route.tool, route, config.flags[route.tool] ?? []) : adapter.args
     const resume = role === 'worker' && current.session?.provider === provider && (current.resumes ?? 0) < MAX_RESUMES ? current.session.id : null
     const directive = role === 'worker' ? current.directive ?? null : null
     const job = { id, role, attempt: attempt.id, taskId: attempt.taskId, slot, review, expectedHead, provider, startedAt: Date.now(), workspace: review?.workspace ?? attempt.workspace, settled: false,
       sessionFile: role === 'worker' ? path.join(os.tmpdir(), `gusta-session-${id}`) : null }
     await transaction(context.root, (state) => {
       const entry = attemptOf(state, attempt.id)
-      entry.dispatch = { id, runner: run.id, role, slot, provider, model: adapter.model ?? null, status: 'starting', pid: null, host: os.hostname(), startedAt: now(), log }
+      entry.dispatch = { id, runner: run.id, role, slot, provider, model: route?.model ?? adapter.model ?? null, ...(route ? { route } : {}), status: 'starting', pid: null, host: os.hostname(), startedAt: now(), log }
       if (role === 'worker') {
         entry.resumes = resume ? (entry.resumes ?? 0) + 1 : 0
         delete entry.directive
+        // The reviewer of this attempt matches the capability it ran on.
+        if (route) entry.workerRoute = route
       }
     })
     jobs.set(id, job)
     dispatched += 1
     lastActivity = Date.now()
-    const key = role === 'worker' ? `worker:${attempt.id}:${attempt.taskId}` : `reviewer:${attempt.id}`
     // Resuming after an answered decision is progress, not a retry; decisions have their own limit.
     if (!(directive && directive.kind !== 'timeout')) counts.set(key, (counts.get(key) ?? 0) + 1)
-    const payload = { schemaVersion: 1, dispatchId: id, role, slot, provider: adapter.provider ?? 'custom', model: adapter.model ?? null, group: group.id, attempt: attempt.id,
+    const payload = { schemaVersion: 1, dispatchId: id, role, slot, provider, model: route?.model ?? adapter.model ?? null, route, group: group.id, attempt: attempt.id,
       taskId: attempt.taskId, tasks: attempt.tasks ?? [attempt.taskId], lane: attempt.lane ?? null, workspace: job.workspace, groupBranch: group.branch,
       cliCommand: [process.execPath, fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))],
       boardCommand: ['work', 'board', '--work', group.id, '--json'],
@@ -286,7 +336,7 @@ export async function runWork(options) {
     // A log write failure must not end the dispatch. The record never holds log content (it reaches
     // coordinator output): only the adapter's last plain stderr line, as the failure reason.
     file.on('error', () => {})
-    const child = spawn(adapter.command, adapter.args, { cwd: job.workspace, shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], env: { ...(options.env ?? process.env), GUSTA_ROLE: role, GUSTA_ATTEMPT: attempt.id, GUSTA_DISPATCH: id } })
+    const child = spawn(command, args, { cwd: job.workspace, shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], env: { ...(options.env ?? process.env), GUSTA_ROLE: role, GUSTA_ATTEMPT: attempt.id, GUSTA_DISPATCH: id } })
     job.child = child
     let output = '', overflow = false, pending = '', reason = null
     // Provider events arrive as JSON lines; the adapter's own message (its error) is plain text.
@@ -628,6 +678,6 @@ export async function workRun(options) {
   if (modes.length > 1) fail(`${modes.map((key) => key === 'dryRun' ? '--dry-run' : `--${key}`).join('·')}는 함께 지정할 수 없습니다.`)
   if (options.status) return workRunStatus(options)
   if (options.stop) return stopWorkRun(options)
-  if (options.detach) return detachWork(options)
+  if (options.detach) return await needsInit(options) ?? detachWork(options)
   return runWork(options)
 }

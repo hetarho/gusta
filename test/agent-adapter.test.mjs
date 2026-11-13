@@ -83,13 +83,15 @@ test('CLI 검사와 auto 선택은 모델을 호출하지 않고 필수 flag 지
   const info = await inspectProviders({ targetRoot: fixture.root, env: fixture.env })
   assert.equal(info.autoProvider, 'codex')
   assert.equal(info.providers.find((entry) => entry.provider === 'claude').available, false)
+  // auto pins no tool: every dispatch is routed (agent-route) among the compatible CLIs.
   const config = await builtInAdapter({ targetRoot: fixture.root, env: fixture.env, provider: 'auto', model: 'chosen', reviewerModel: 'review-model' })
-  assert.equal(config.roles.worker.provider, 'codex')
-  assert.equal(config.roles.reviewer.model, 'review-model')
+  assert.deepEqual([config.roles.worker.provider, config.roles.worker.model, config.roles.reviewer.provider, config.roles.reviewer.model], ['route', 'chosen', 'route', 'review-model'])
+  assert.deepEqual([config.compatible, config.flags], [['codex'], { codex: [] }])
   await assert.rejects(readFile(path.join(fixture.root, 'model-request')), { code: 'ENOENT' })
   await assert.rejects(builtInAdapter({ targetRoot: fixture.root, env: fixture.env, provider: 'claude' }), /사용 가능한/)
   await writeFile(path.join(fixture.root, 'codex'), `#!${process.execPath}\nconsole.log('old cli')`, { mode: 0o755 })
   assert.equal((await inspectProviders({ targetRoot: fixture.root, env: fixture.env })).autoProvider, null)
+  await assert.rejects(builtInAdapter({ targetRoot: fixture.root, env: fixture.env }), /사용 가능한 codex·claude CLI가 없습니다/)
 })
 
 test('Orca 실행 파일의 실제 경로가 주어지면 PATH 등록 없이 runtime을 감지한다', async (t) => {
@@ -396,4 +398,32 @@ test('A/B 변형 세션은 쓰기 권한·허용 명령으로 실행되고 커�
   assert.match(sent.text, /\(1\) fixtures served by the project's own dev server or a dev-only route\/middleware.*\(3\) only if unavoidable, registration from the entry point with the smallest possible insertion/)
   assert.match(sent.text, /\?mock=empty\|error\|slow/); assert.match(sent.text, /removes exactly your lines and files/)
   for (const prompt of [text, sent.text]) assert.match(prompt, /Write only inside this workspace.*git-ignored path in it or in the OS temp dir\), never in its parent folders\./)
+})
+
+test('배정된 에포트를 전달한다: Claude는 --effort와 자식 env(사용자 값을 덮어씀, ultra→max), Codex는 -c (exec·resume)', async (t) => {
+  // Claude: CLAUDE_CODE_EFFORT_LEVEL outranks --effort, so the session's env carries the routed level.
+  const fixture = await stub(t, 'claude', `const fs=require('node:fs');process.stdin.resume();process.stdin.on('end',()=>{fs.writeFileSync('received.json',JSON.stringify({args:process.argv.slice(2),effort:process.env.CLAUDE_CODE_EFFORT_LEVEL??null,nested:process.env.CLAUDECODE??null}));console.log(JSON.stringify({type:'result',is_error:false,structured_output:{verdict:'approved',summary:'reviewed',findings:[]}}))});`)
+  const env = { ...fixture.env, CLAUDE_CODE_EFFORT_LEVEL: 'low', CLAUDECODE: '1' }
+  for (const [effort, sent] of [['high', 'high'], ['ultra', 'max']]) {
+    await executeAgentAdapter({ provider: 'claude', model: 'opus', effort, job: job(fixture.root, 'reviewer'), env, log: () => {} })
+    const received = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
+    assert.deepEqual([flag(received.args, '--model'), flag(received.args, '--effort'), received.effort, received.nested], ['opus', sent, sent, null])
+  }
+  // No routed effort: no flag, and the user's own setting stays.
+  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env, log: () => {} })
+  const plain = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
+  assert.deepEqual([plain.args.includes('--effort'), plain.effort], [false, 'low'])
+  // Codex: -m (as --model) and -c model_reasoning_effort=<e>, on exec and on exec resume alike.
+  const files = { schema: 'schema', result: 'result' }
+  for (const resume of [null, 'thread-1']) {
+    const args = providerArguments('codex', 'worker', files, 'sol', { effort: 'xhigh', resume })
+    assert.equal(flag(args, '--model'), 'sol'); assert.equal(flag(args, '-c'), 'model_reasoning_effort=xhigh'); assert.equal(args.at(-1), '-')
+    if (resume) assert.deepEqual(args.slice(4, 7), ['exec', 'resume', 'thread-1'])
+  }
+  assert.ok(!providerArguments('codex', 'worker', files, null).includes('-c'))
+  // The built-in adapter command line carries the route.
+  const { adapterArgs } = await import('../src/work-providers.mjs')
+  const line = adapterArgs('claude', { model: 'sonnet', effort: 'high' }, ['--strict-mcp-config'])
+  assert.deepEqual(line.slice(1), ['--provider', 'claude', '--model', 'sonnet', '--effort', 'high', '--provider-flag', '--strict-mcp-config'])
+  assert.deepEqual(adapterArgs('codex').slice(1), ['--provider', 'codex'])
 })

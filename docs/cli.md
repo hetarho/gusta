@@ -137,6 +137,13 @@ batch/group 관문(`vibe check --tier batch|group`)은 세션마다(`--tag`, 없
 | `options[]` | 고를 수 있는 `{tool, model, effort, score, cost, allowed}`, 싼 순서. `score`=능력(계열 순위 1~4와 에포트 low~ultra를 한 척도로, 계열 한 단계≈에포트 세 단계), `cost`=비용 순서(계열 먼저, 그다음 에포트 — 가격이 아님). 대체된(`superseded`) 모델은 빠지고 같은 계열·에포트는 하나만 |
 | `minContext`·`contextUnknown` | 허용 도구가 제안하는 모델 중 가장 작은 context window, 모델 호출 없이 알 수 없는 도구(Claude) |
 
+`vibe loop`·`work run`·`vibe preflight --probe`는 이 카탈로그로 헤드리스 세션의 도구·모델·에포트를 정합니다(모델 호출 없음, 실행 중인 모델이 고르지 않음). 순서는 명시 지정(`--provider`·`--model`·`--effort`, `work run`의 `--providers`·`--reviewer-provider`) > 태스크 `run:` > 기본값입니다. 태스크 `run:`을 지금 쓸 수 없으면(agents 밖 도구·로그인 안 됨·호환 안 되는 CLI·목록에 없는 모델·지원 안 하는 에포트) score가 가장 가까운 allowed 조합(같으면 싼 쪽, 그다음 agents 순서), `run:`이 없으면 allowed score의 아래 중앙값에 가장 가까운 가장 싼 조합입니다. 회복·관문 수정 단위와 `work run`의 수정 요청·재시도는 그보다 낮추지 않고, 리뷰어는 워커 능력 이상에서 agents에 도구가 둘 이상이면 다른 도구를 먼저, probe는 agents 첫 도구의 가장 싼 조합입니다. Claude는 `--model`·`--effort`(ultra는 max)와 자식 환경 `CLAUDE_CODE_EFFORT_LEVEL`, Codex는 `--model`(-m)·`-c model_reasoning_effort=<e>`(resume도 같음)로 받고, `--adapter`로 연결한 실행기는 job의 `route`로만 받습니다. SETTINGS `agents`가 미정이고 도구를 명시하지 않으면(`--provider`·`--providers`·`--adapter` 없음) `vibe loop`·`work run`은 시작하지 않고 `{ok:false, reason:'needs-init', hint, unset:['agents']}`(exit 1)로, `vibe preflight`는 `agents` 검사 실패와 같은 `reason`·`hint`로 끝납니다(probe 없음).
+
+| 키 | 뜻 |
+|---|---|
+| `routing[]` (`vibe loop --dry-run`) | 남은 태스크(`--tasks` 범위)마다 `task`·`recommended`(태스크 `run:`)·`run`(실행할 조합)·`source`(`task`·`nearest`·`default`·`explicit`·`none`)·`skipped`(추천을 못 쓴 이유: `not-in-agents`·`not-logged-in`·`not-installed`·`model-unavailable`·`effort-unsupported`·`pinned-tool`·`blocked`) |
+| `route` | 실제 dispatch의 `{tool, model, effort, source, recommended}` — loop의 manifest `dispatches[]`·`unit-route` 이벤트·단위 job, `work run`의 attempt `dispatch.route`·`workerRoute`·어댑터 payload. 보고서 done 줄은 `추천 → 실제`(같으면 실제만) |
+
 `--force`는 로컬 수정 내용을 덮어쓸 수 있으므로 충돌 내용을 확인한 뒤 사용하세요.
 
 그 밖의 명령은 주제별 문서에 있습니다: `vibe loop`·`vibe brief`는 [오래 맡기기](autopilot.md), `vibe check`·`vibe push`·`vibe ci wait`는 [브랜치·검증](branching.md), `vibe sketch`는 [개발 흐름의 gusta-sketch](workflow.md#구상하기--gusta-sketch), `vibe ab`는 [개발 흐름의 gusta-showcase](workflow.md#여러-안을-띄워-고르기--gusta-showcase), `work`는 [병렬 작업](parallel-work.md). 전체 옵션은 `npx @haeram/gusta vibe --help`·`npx @haeram/gusta work --help`로 봅니다.
