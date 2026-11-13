@@ -66,5 +66,5 @@ test('resumed observations cannot silently waive or reallocate the declared acce
 test('agent replacement cannot silently keep the same selected automated scenario', () => {
   assert.throws(() => validateAcceptanceAllocation([pending()], ['old-panel-e2e']), /함께 실행/)
   assert.equal(validateAcceptanceAllocation([pending()], ['other-invariant']).length, 1)
-  assert.equal(validateAcceptanceAllocation([{ ...pending(), duplicationReason: 'Independent failure boundary; additional cost is 2 seconds' }], ['old-panel-e2e']).length, 1)
+  assert.throws(() => validateAcceptanceAllocation([{ ...pending(), duplicationReason: 'Independent failure boundary; additional cost is 2 seconds' }], ['old-panel-e2e']), /주 검증 방법/)
 })

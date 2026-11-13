@@ -40,7 +40,7 @@ export function mergeAgentAcceptance(previous = [], incoming = []) {
 
 export function validateAcceptanceAllocation(checks, automatedIds = []) {
   const entries = validateAgentAcceptance(checks), selected = new Set(automatedIds)
-  for (const entry of entries) if (entry.replaces.some((id) => selected.has(id)) && !entry.duplicationReason.trim()) fail(`agent로 대체한 자동 검사를 함께 실행할 수 없습니다. 범위를 줄이거나 중복 근거·비용을 기록하세요: ${entry.id}`)
+  for (const entry of entries) if (entry.replaces.some((id) => selected.has(id))) fail(`agent로 대체한 자동 검사를 함께 실행할 수 없습니다. 중복 사유로 승인하지 말고 주 검증 방법에 맞춰 자동 실행 범위를 제거·축소하세요: ${entry.id}`)
   return entries
 }
 
