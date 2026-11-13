@@ -68,15 +68,17 @@ test('vibe design: 시작·재개·status route·끝 — 커밋은 하지 않는
   await assert.rejects(vibeDesign({ targetRoot: root, step: 'publish' }), /vibe design/)
 })
 
-test('vibe design verify: 미커밋 디자인에서 task·batch 명령을 모두 돌리고, 빠른 검사가 실패하면 무거운 검사를 미룬다', async (t) => {
+test('vibe design verify: 미커밋 디자인의 task 검사만 실행하고 batch·CI는 공동 마감으로 미룬다', async (t) => {
   const { root, temporary } = await fixture(t, 1)
   const runs = path.join(temporary, 'runs.txt')
   const script = (name, fails) => `require('fs').appendFileSync(${JSON.stringify(runs)}, '${name}\\n');process.exit(${fails ? "require('fs').existsSync('broken') ? 1 : 0" : '0'})\n`
   await writeFile(path.join(root, 'fast.js'), script('fast', true))
   await writeFile(path.join(root, 'slow.js'), script('slow', false))
+  await writeFile(path.join(root, 'ci.js'), script('ci', false))
   const arch = path.join(root, 'spec/ssot/ARCH.md')
-  await writeFile(arch, (await readFile(arch, 'utf8')).replace('task, before done: `node --version`', 'task, before done: `node fast.js`').replace('batch, before code push: `node --version`', 'batch, before code push: `node slow.js`'))
+  await writeFile(arch, (await readFile(arch, 'utf8')).replace('task, before done: `node --version`', 'task, before done: `node fast.js`').replace('batch, before code push: `node --version`', 'batch, before code push: `node slow.js`').replace('  - CI, after push: GitHub Actions.', '  - CI, after push: GitHub Actions.\n    - `node ci.js`'))
   await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', 'checks')
+  const head = await git(root, 'rev-parse', 'HEAD')
   await vibeDesign({ targetRoot: root, step: 'start', tag: 'k3f9' })
   await writeFile(path.join(root, 'app.css'), 'h1 { color: tomato }\n')
   await writeFile(path.join(root, 'broken'), '')
@@ -84,23 +86,30 @@ test('vibe design verify: 미커밋 디자인에서 task·batch 명령을 모두
   const failed = await vibeDesign({ targetRoot: root, step: 'verify' })
   assert.equal(failed.ok, false)
   assert.deepEqual(failed.results.map((result) => [result.command, result.tier, result.ok]), [['node fast.js', 'task', false]])
-  assert.deepEqual(failed.skipped, ['node slow.js'])
+  assert.deepEqual(failed.skipped, [])
+  assert.deepEqual(failed.deferred, [{ tier: 'batch', command: 'node slow.js', reason: 'shared-integration' }, { tier: 'ci', command: 'node ci.js', reason: 'ci-only' }])
+  assert.equal(failed.finalVerified, false)
   assert.equal(failed.tree, null)
   await rm(path.join(root, 'broken'))
   const passed = await vibeDesign({ targetRoot: root, step: 'verify' })
   assert.equal(passed.ok, true)
-  assert.deepEqual(passed.results.map((result) => [result.command, result.ok, result.cached]), [['node fast.js', true, false], ['node slow.js', true, false]])
-  assert.match(passed.tree, /^[0-9a-f]{40}$/)
+  assert.deepEqual(passed.results.map((result) => [result.command, result.tier, result.ok, result.cached]), [['node fast.js', 'task', true, false]])
+  assert.deepEqual([passed.scope, passed.finalVerified, passed.tree], ['local-design', false, null])
   assert.equal(passed.design.tag, 'k3f9')
-  assert.deepEqual(await count(), ['fast', 'fast', 'slow'])
-  // The same tree is not checked twice.
+  assert.deepEqual(await count(), ['fast', 'fast'])
+  // Only the same local task check is cached; no final proof is produced.
   assert.ok((await vibeDesign({ targetRoot: root, step: 'verify' })).results.every((result) => result.cached))
-  assert.equal((await count()).length, 3)
+  assert.equal((await count()).length, 2)
   const override = await vibeDesign({ targetRoot: root, step: 'verify', verify: ['node --version'] })
-  assert.deepEqual(override.results.map((result) => result.command), ['node fast.js', 'node --version'])
+  assert.deepEqual(override.results.map((result) => result.command), ['node fast.js'])
+  assert.deepEqual(override.deferred.filter(({ tier }) => tier === 'batch').map(({ command }) => command), ['node --version'])
+  assert.deepEqual(await count(), ['fast', 'fast'])
+  assert.equal(await git(root, 'rev-parse', 'HEAD'), head)
+  assert.equal(await readFile(path.join(root, 'app.css'), 'utf8'), 'h1 { color: tomato }\n')
+  assert.equal((await vibeDesign({ targetRoot: root })).design.tag, 'k3f9')
 })
 
-test('partial tiers preserve the design fallback gate and task guard while briefs expose the incomplete contract', async (t) => {
+test('partial tiers keep the fallback gate deferred during design and preserve the task guard', async (t) => {
   const { root, temporary } = await fixture(t, 1)
   const file = path.join(root, 'spec/ssot/ARCH.md'), trace = path.join(temporary, 'fallback-ran')
   await writeFile(file, (await readFile(file, 'utf8')).replace(/^  - batch,.*\n/m, ''))
@@ -112,9 +121,11 @@ test('partial tiers preserve the design fallback gate and task guard while brief
   await assert.rejects(runVibeCheck({ targetRoot: root, tier: 'task' }, 'npm run verify'), /ARCH batch/)
   await vibeDesign({ targetRoot: root, step: 'start', tag: 'k3f9' })
   const result = await vibeDesign({ targetRoot: root, step: 'verify' })
-  assert.equal(result.ok, false)
-  assert.deepEqual(result.results.map(({ command, ok }) => [command, ok]), [['node --version', true], ['npm run verify', false]])
-  assert.equal(await readFile(trace, 'utf8'), 'ran', 'the required package fallback actually executes')
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.results.map(({ command, ok }) => [command, ok]), [['node --version', true]])
+  assert.deepEqual(result.deferred, [{ tier: 'batch', command: 'npm run verify', reason: 'shared-integration' }])
+  assert.deepEqual([result.finalVerified, result.tree], [false, null])
+  await assert.rejects(readFile(trace, 'utf8'), { code: 'ENOENT' }, 'the package fallback is reserved for the shared final candidate')
 })
 
 test('vibe CLI: design start·end는 JSON을, 잘못된 단계는 오류 JSON을 출력한다', async (t) => {

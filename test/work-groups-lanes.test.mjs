@@ -128,6 +128,8 @@ test('세션 루프: 구현·리뷰·빠른 통합 뒤 전체 검증 범위를 �
   assert.equal(done.verified, null)
   assert.equal(done.ready.current, true)
   assert.equal(done.ready.verified, false)
+  assert.match(done.instruction, /전체 검수는 아직 통과한 것이 아니다/)
+  assert.doesNotMatch(done.instruction, /verified\.commit/)
   assert.deepEqual(done.ready.checks, tiers.groupVerify)
   assert.equal(done.integration.reason, 'land-unset')
   assert.equal((await session('b')).action, 'complete')

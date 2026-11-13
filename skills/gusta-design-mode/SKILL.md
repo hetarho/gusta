@@ -4,7 +4,7 @@ description: >-
   실시간 디자인 모드. "/gusta-design-mode, 디자인하자, 화면 보면서 고치자, UI 다듬자, 디자인 모드" 일 때 사용.
   이 checkout만 디자인 중으로 표시하고(STATE·다른 worktree는 그대로), 사용자가 말하는 대로 코드만 바로 고쳐 화면에서 실시간으로 보게 한다 —
   그동안 테스트·e2e·커밋·push는 하지 않는다.
-  사용자가 디자인이 끝났다고 하면 그때 전체 테스트를 돌려 확인하고 커밋한다. 커밋·push 전에는 항상 디자인이 끝났는지 묻는다.
+  사용자가 디자인이 끝났다고 하면 영향 범위의 task 검사 뒤 커밋하고 전체 검수는 공동 통합에 제출한다. 커밋·push 전에는 항상 디자인이 끝났는지 묻는다.
 ---
 
 # gusta-design-mode — 디자인 진행자
@@ -39,8 +39,8 @@ CLI는 `npx @haeram/gusta` 뒤에 붙인다. 디자인 모드 규칙의 정본�
 커밋·push가 필요해지는 모든 순간 — 사용자의 "커밋해줘/푸시해줘", 다른 스킬로 넘어가기, 대화 마감 — 먼저 묻는다: **"디자인 끝났나요?"** 선택지: 끝났다(→ 4절 마감) / 아직이다(→ 커밋하지 않고 2절 계속) / 중간 저장만(→ `vibe checkpoint`, 디자인 계속). 사용자가 먼저 "디자인 끝"이라고 말했으면 그것이 답이다 — 다시 묻지 않는다. 디자인 중에는 `vibe push`가 거절된다. 우회하지 않는다.
 
 ## 4. 마감
-1. **전체 테스트**: `vibe design verify --json` 한 번(Claude는 셸 백그라운드+완료 알림, Codex는 긴 timeout의 단일 호출). ARCH의 task·batch 명령 전부를 미커밋 작업 트리에서 돌린다 — 빠른 검사가 실패하면 무거운 검사는 skipped로 남는다. 명령이 없다고 나오면 ARCH·package.json에서 전체 테스트 명령을 찾아 `--verify '<command>'`로 넘긴다. 이 실행이 이 디자인의 최종 검증이다.
+1. **영향 검사**: `vibe design verify --json`은 미커밋 트리에서 ARCH task의 영향 검사·빠른 검사만 실행한다. batch(`--verify` 포함)·CI는 `deferred`에 남기고 `finalVerified:false`를 반환한다. 로컬 검사가 없으면 ARCH에 필요한 영향 검사를 정한다. package.json의 전체 테스트 fallback도 로컬에서 돌리지 않는다. 전체 검수는 커밋 후 공동 고정 후보에서 한 번 수행한다.
 2. **실패 처리**: 확정된 디자인 때문에 바뀐 기대값(문구·스냅샷·시각 기준·선택자)은 테스트를 디자인에 맞춘다. 기능이 깨졌으면 디자인을 유지한 채 코드를 고친다. 디자인을 바꿔야만 고칠 수 있으면 사용자에게 묻는다. 고친 뒤 ok가 될 때까지 verify를 다시 돌린다(같은 트리의 통과는 캐시로 건너뛴다).
 3. **커밋**: `vibe design end` → 디자인 변경·테스트 수정을 커밋 하나로 → `vibe log --text 'design <area>: <what>'`. verify 통과 뒤 파일이 바뀌었으면 커밋 전에 verify부터 다시 돌린다.
-4. **반영**: 사용자가 요청했거나 SETTINGS land가 다른 브랜치·push가 true일 때만 `vibe push --verified-commit <디자인 커밋 SHA>`. 커밋이 검증한 트리 그대로라 다시 돌리지 않는다. 그 밖에는 커밋만 한다.
+4. **공동 마감**: 소유 세션의 작업이 모두 끝났으면 `vibe integration finish --tag <tag> --json`으로 제출한다(`--verify`로 선택한 최종 명령은 여기에도 전달). 모든 참여 세션이 준비된 고정 후보에서 전체 검수·필수 agent acceptance·CI를 수행하고 SETTINGS land·land-via·push에 따라 반영한다. 로컬 task 통과를 전체 검증 커밋으로 주장하지 않는다. 다른 작업·세션이나 도구를 기다리는 상태면 후보·보류 이유를 보고한다.
 5. **보고**: 바꾼 것·돌린 검사·커밋 SHA·push 여부, 개발 서버를 띄운 채 둔다는 것. "SSOT 반영 필요"가 있으면 gusta-update-ssot로 넘긴다(기획 커밋은 spec/만 담아 `vibe plan-push`).
