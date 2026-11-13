@@ -13,8 +13,15 @@ import { vibeTask } from './vibe-task.mjs'
 import { vibeInbox, vibeLog } from './vibe-inbox.mjs'
 import { vibeUsage } from './native-usage.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { prepareSessionWorkspace } from './session-workspace.mjs'
+import { vibeIntegration } from './integration-run.mjs'
 
 const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
+  vibe session open --kind start|self-improve|self-improve-remote --tag <tag>
+                                                전용 하위 브랜치·worktree를 준비하고 root를 반환. 계획·구현은 그 경로에서만
+  vibe integration status|ready|finish --tag <tag> [--token <token>]
+                                                모든 참여 세션의 준비 뒤 고정 후보에서 전체 검수 한 번. 늦은 세션은 다음 통합
+  vibe integration accept --file <JSON>       computer-use 호스트의 정확한 후보별 AC 관측·증거 제출; finish는 전체 검수 없이 재개
   vibe loop --tag <tag> [--max-units 100] [--max-hours 8]
     [--deadline <ISO>] [--final-reserve-hours <measured>] [--max-gate-attempts 3] [--batch-size 3] [--permission-mode bypass|acceptEdits] [--allow-tool <rule> ...]
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
@@ -24,7 +31,7 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 태스크별 배정. --provider/--model/--effort는 사람이 실행 전체를 고정할 때만. agents 미정이면 needs-init
                                                 사용량·속도 한도·과부하·로그인 실패는 단위로 세지 않고 agents 안 다음 조합으로 같은 태스크를 다시. 모두 막히면
                                                 첫 리셋이 작업 시간 안이면 모델 호출 없이 대기, 아니면 reason usage-limit(hint에 도구·리셋 시각)
-                                                끝 예약(실측 전체 검증×2+수정 단위+CI)에는 새 단위 없이 마감 관문·수정. 2회 이후는 실패 집합 감소·시간·전체 시도 상한을 충족할 때만 연장
+                                                끝 예약(실측 전체 검증+영향 범위 수정 단위+CI)에는 새 단위 없이 공유 통합 관문·수정
                                                 --tasks: 그 태스크(와 이번 실행이 그것을 위해 만든 태스크)만, 끝나면 마감 관문
                                                 --timeout-ms: 단위 하나의 상한(explore는 timebox+30분). 넘기면 미커밋 변경을
                                                 스냅샷해 새 단위가 이어받고, 다시 넘기면 쪼개고, 그래도 넘기면 주차. loop는 계속
@@ -137,6 +144,7 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
 `
 
 const allowed = {
+  session: ['kind', 'tag', 'branch', 'base', 'path'], integration: ['tag', 'token', 'file', 'remote', 'timeout-ms'],
   loop: ['tag', 'provider', 'model', 'effort', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'max-gate-attempts', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref', 'section', 'offset', 'limit', 'snapshot'], format: ['section'],
   status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host', 'remote'],
@@ -147,7 +155,7 @@ const allowed = {
   sketch: ['port', 'ttl-ms'],
 }
 const flags = { task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], inbox: ['no-fetch'], log: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final', 'reset-gate'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'], sketch: ['all'] }
-const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, inbox: vibeInbox, log: vibeLog, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, usage: vibeUsage, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
+const actions = { session: (options) => { if (options.step !== 'open') throw new SkillPackageError('vibe session open --kind <kind> --tag <tag>'); return prepareSessionWorkspace(options) }, integration: vibeIntegration, loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, inbox: vibeInbox, log: vibeLog, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, usage: vibeUsage, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
   ab: (options) => { if (!Object.hasOwn(AB_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe ab <${Object.keys(AB_STEPS).join('|')}> <slug>`); return AB_STEPS[options.step](options) },
   sketch: (options) => { if (!Object.hasOwn(SKETCH_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe sketch <${Object.keys(SKETCH_STEPS).join('|')}>`); return SKETCH_STEPS[options.step](options) } }
 
@@ -164,7 +172,7 @@ export async function runVibeCLI(args) {
   if (action === 'ci' && args.shift() !== 'wait') throw new SkillPackageError('vibe ci wait [옵션]')
   const options = {}
   if (action === 'brief') while (args[0] && !args[0].startsWith('--')) (options.roots ??= []).push(args.shift())
-  if (['design', 'usage', 'inbox'].includes(action) && args[0] && !args[0].startsWith('--')) options.step = args.shift()
+  if (['session', 'integration', 'design', 'usage', 'inbox'].includes(action) && args[0] && !args[0].startsWith('--')) options.step = args.shift()
   if (action === 'task') { options.step = args.shift(); if (args[0] && !args[0].startsWith('--')) options.task = args.shift() }
   if (action === 'ab' || action === 'sketch') { options.step = args.shift(); if (args[0] && !args[0].startsWith('--')) options.slug = args.shift() }
   let command = null

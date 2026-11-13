@@ -18,7 +18,12 @@ export async function sessionWorkspacePolicy(options = {}, injected = {}) {
   const { values } = await deps.settings({ root: workspace.git.root })
   const fallback = await deps.defaultBranch(workspace.git.root)
   const plan = branchPlan(values, { branch: workspace.git.branch, defaultBranch: fallback })
-  const protectedBranches = [...new Set([fallback, plan.land, plan.deploy, plan.plan, plan.coord, `${plan.coord}-integration`].filter(Boolean))]
+  // Without a remote HEAD, defaultBranch's fallback is the primary checkout's *current*
+  // branch. An explicit land/plan policy must not turn a newly switched child into a default.
+  const defaults = (await (deps.git ?? git)(workspace.git.root, ['for-each-ref', '--format=%(symref)', 'refs/remotes/*/HEAD']).catch(() => '')).split('\n').filter(Boolean)
+  const authoritativeDefault = defaults.some((ref) => ref.endsWith(`/${fallback}`))
+  const keepFallback = authoritativeDefault || !plan.land && (values.plan === '?' || values.plan === '-')
+  const protectedBranches = [...new Set([...(keepFallback ? [fallback] : []), plan.land, plan.deploy, plan.plan, plan.coord, `${plan.coord}-integration`].filter(Boolean))]
   const reason = !workspace.git.head ? 'commit-required' : !workspace.git.branch ? 'detached' : protectedBranches.includes(workspace.git.branch) ? 'protected-branch' : null
   return { workspace, plan, protectedBranches, allowed: reason === null, reason }
 }

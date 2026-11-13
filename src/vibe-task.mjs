@@ -15,6 +15,7 @@ import { inboxEntries, readSessions, ClaimError } from './coord-doc.mjs'
 import { vibeSession } from './vibe.mjs'
 import { claimSession, recordTaskDone, coordView, isDelegated, assertSessionTag } from './vibe-coord.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { assertImplementationWorkspace as assertTaskWorkspace } from './session-workspace.mjs'
 
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
 const STATE = 'spec/STATE.md'
@@ -25,9 +26,10 @@ const GENERATED_NEXT = /^- (gusta-implement-task T\d{3,}( T\d{3,})*|no runnable 
 // result lines still holding the template text (`at` is fine when --at replaces it).
 const UNFILLED = /^- (outcome|at|verified|limits): <[^>]*>$/
 
-export async function vibeTask(options = {}, { now = () => new Date(), coord } = {}) {
+export async function vibeTask(options = {}, { now = () => new Date(), coord, assertImplementationWorkspace = assertTaskWorkspace } = {}) {
   if (!['start', 'done'].includes(options.step) || !TASK_ID.test(options.task ?? '')) fail('vibe task start T### --tag <tag> | vibe task done T### --tag <tag> [--at <sha>] [--force-other]')
   const inspection = await inspectWorkspace({ targetRoot: options.targetRoot })
+  if (options.step === 'start') await assertImplementationWorkspace({ ...options, workspace: inspection })
   const board = await readTaskBoard({ targetRoot: options.targetRoot, inspection })
   const root = board.root
   const state = await readFile(path.join(root, STATE), 'utf8').catch((error) => {
