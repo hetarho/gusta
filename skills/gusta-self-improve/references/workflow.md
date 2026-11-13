@@ -29,7 +29,7 @@ work start <run> --workspace current --tasks '<approved task IDs>' --review all 
 ## 구현과 리뷰 실행
 
 - **네이티브 하위 세션**: 오케스트레이터가 승인 ID를 `work claim <task> --work <run> --owner <worker> --workspace new`로 배정하고 실제 workspace·attempt를 전달한다. 구현 완료 프로토콜에서 커밋·submit 소유자를 한 번 정한다. 리뷰는 다른 owner의 `work review-claim` → gusta-review-task → `work review-finish`다. 승인된 제출물만 오케스트레이터의 `work integrate`로 통합한다. 자식이 다른 묶음이나 무관한 태스크를 고르지 않도록 정확한 배정을 유지한다.
-- **기존 headless 실행기**: 탐색은 채운 [탐색 프롬프트](../assets/scout-prompt.md)를 세션 임시 폴더에 쓰고 영역마다 `work scout --prompt-file <file> --provider <available provider> --json`을 백그라운드로 실행해 제안 JSON만 받는다(읽기 전용, 기본 15분). 제안 승인은 호출 세션, 확정 태스크의 구현/리뷰는 `work run --work <run> --autopilot`이 맡는다(도구·모델·에포트는 태스크 `run:`대로 CLI가 배정하고 리뷰어는 다른 도구를 먼저 쓴다). 대상 묶음의 승인 범위·검사·review all·push 비활성 상태를 먼저 확인한다. 조정자는 기획 결정 요청을 처리하고 실행기는 배정/커밋/제출/리뷰/통합을 맡는다. 스킬의 “오케스트레이터가 승인”은 코드 리뷰 자동 승인 옵션이 아니다.
+- **기존 headless 실행기**: 탐색은 채운 [탐색 프롬프트](../assets/scout-prompt.md)를 세션 임시 폴더에 쓰고 영역마다 `work scout --prompt-file <file> --json`(도구는 CLI가 SETTINGS `agents`에서 배정)을 백그라운드로 실행해 제안 JSON만 받는다(읽기 전용, 기본 15분). 제안 승인은 호출 세션, 확정 태스크의 구현/리뷰는 `work run --work <run> --autopilot`이 맡는다(도구·모델·에포트는 태스크 `run:`대로 CLI가 배정하고 리뷰어는 다른 도구를 먼저 쓴다). 대상 묶음의 승인 범위·검사·review all·push 비활성 상태를 먼저 확인한다. 조정자는 기획 결정 요청을 처리하고 실행기는 배정/커밋/제출/리뷰/통합을 맡는다. 스킬의 “오케스트레이터가 승인”은 코드 리뷰 자동 승인 옵션이 아니다.
 
 묶음의 `--push -`는 단위별 원격 코드 반영을 끈다. 네이티브 세션에서도 push/PR은 자식에게 배정하지 않는다. 코드/범위가 변하면 새 제출·독립 리뷰를 받으며 오래된 승인을 복사하지 않는다.
 

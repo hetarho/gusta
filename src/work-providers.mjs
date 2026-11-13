@@ -4,6 +4,10 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
 import { SkillPackageError } from './errors.mjs'
+import { readSettings, agentList, AGENT_TOOLS } from './settings.mjs'
+import { agentCatalog } from './agent-catalog.mjs'
+import { routeAgent, runLabel } from './agent-route.mjs'
+import { readLimits, activeLimits, limitBlocks } from './provider-limits.mjs'
 
 const execute = promisify(execFile)
 const adapter = fileURLToPath(new URL('../bin/gusta-agent-adapter.mjs', import.meta.url))
@@ -92,6 +96,25 @@ export async function availableProvider(options = {}, inspect = inspectProviders
   const provider = requested === 'auto' ? inspection.autoProvider : requested
   if (!inspection.providers.some((entry) => entry.provider === provider && entry.compatible)) throw new SkillPackageError(`사용 가능한 ${requested} CLI가 없습니다. work doctor로 설치/호환성을 확인하세요.`)
   return provider
+}
+
+// The tool·model·effort of a one-off headless session (an A/B variant or scaffold, a scout). A tool the
+// person names (--provider) runs as given; otherwise routeAgent's default within SETTINGS agents: the
+// first tool at its own setting, past an incompatible CLI or one at a usage limit (limits.json under
+// runtime), so every variant of one comparison gets the same. agents undecided: the auto CLI, as before.
+// deps: inspect (inspectProviders), catalog (agentCatalog), now. No model call.
+export async function sessionRoute(options = {}, role, { root, runtime = null, inspect = inspectProviders, catalog = null, now = Date.now } = {}) {
+  const requested = options.provider ?? 'auto'
+  const value = (await readSettings({ root })).values.agents
+  const agents = agentList(value)
+  if (requested !== 'auto' || !agents) return { tool: await availableProvider(options, inspect), model: options.model ?? null, effort: options.effort ?? null, source: requested === 'auto' ? 'auto' : 'explicit' }
+  const inspection = await inspect(options)
+  const incompatible = AGENT_TOOLS.filter((tool) => !inspection.providers.some((entry) => entry.provider === tool && entry.compatible)).map((tool) => ({ tool, reason: 'incompatible' }))
+  const held = runtime ? activeLimits(await readLimits(runtime), now()) : []
+  const read = catalog ?? (() => agentCatalog({ targetRoot: root, env: options.env ?? process.env }, { agents: value }))
+  const routed = routeAgent({ role, agents, catalog: await read(), explicit: { model: options.model ?? null, effort: options.effort ?? null }, blocked: [...incompatible, ...limitBlocks(held)] })
+  if (!routed.chosen) throw new SkillPackageError('SETTINGS agents의 도구 중 실행할 수 있는 것이 없습니다 — gusta agents로 설치·로그인을 확인하세요(사용량 한도는 리셋 뒤).', routed.skipped.map(({ option, reason }) => `${runLabel(option)}: ${reason}`))
+  return { ...routed.chosen, source: routed.source }
 }
 
 export async function workDoctor(options = {}) {

@@ -22,9 +22,13 @@ const effortRank = (effort) => EFFORTS.indexOf(effort) + 1
 export const capability = (tier, effort) => 3 * (tier - 1) + effortRank(effort)
 export const costOrder = (tier, effort) => 10 * tier + effortRank(effort)
 
+// The family word a model name carries (opus, terra...), null when none is known.
+export const modelFamily = (tool, model) => {
+  const words = String(model ?? '').toLowerCase().split(/[^a-z0-9]+/)
+  return Object.keys(TIERS[tool] ?? {}).find((name) => words.includes(name)) ?? null
+}
 export const familyTier = (tool, model) => {
-  const words = model.toLowerCase().split(/[^a-z0-9]+/)
-  const family = Object.keys(TIERS[tool]).find((name) => words.includes(name))
+  const family = modelFamily(tool, model)
   return family ? { tier: TIERS[tool][family], known: true } : { tier: UNKNOWN_TIER, known: false }
 }
 

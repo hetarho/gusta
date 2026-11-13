@@ -8,6 +8,7 @@ import { renderBrief } from './spec-context.mjs'
 import { OPTIONAL_FLAGS, STRICT_MCP } from './work-providers.mjs'
 import { AGENT_CONFIG } from './constants.mjs'
 import { usageCollector, persistUsage } from './usage-measurement.mjs'
+import { classifyFailure } from './provider-limits.mjs'
 
 const fail = (message) => { throw new SkillPackageError(message) }
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
@@ -78,6 +79,9 @@ const resultEvent = (line) => {
   if (!line.includes('"type":"result"')) return null
   try { const event = JSON.parse(line); return event?.type === 'result' ? event : null } catch { return null }
 }
+// Events that say why a run failed: Claude's rejected rate limit and API retries, Codex's turn.failed and error.
+const FAILURE_TYPES = new Set(['rate_limit_event', 'system', 'turn.failed', 'error'])
+const FAILURE_EVENT = /"type":\s*"(?:rate_limit_event|system|turn\.failed|error)"/
 export function claudeEnvelope(text) {
   const last = String(text).split('\n').map(resultEvent).filter(Boolean).at(-1)
   if (last) return last
@@ -196,7 +200,9 @@ export async function agentPrompt(job, provider = 'claude') {
   const name = job.role === 'worker' ? 'gusta-implement-task' : 'gusta-review-task'
   const skill = await readFile(new URL(`../skills/${name}/SKILL.md`, import.meta.url), 'utf8')
   const reference = job.role === 'worker' ? await readFile(new URL('../skills/gusta-implement-task/references/work-group.md', import.meta.url), 'utf8') : ''
-  return `${override}\n${job.brief ? `${BRIEF}\n` : ''}For gusta CLI reads, use the provided cliCommand executable/arguments followed by boardCommand or other read-only arguments. This selects the current package; do not download an older CLI with npx.\n\nApply this bundled skill subject to the host-owned steps above:\n${skill}\n${reference}\n\n${assignment}`
+  // A fresh session after a usage limit or a time limit moved the work to another tool: the earlier progress.
+  const carried = job.role === 'worker' && job.directive?.note ? `Earlier progress on this assignment: ${job.directive.note}\n` : ''
+  return `${override}\n${job.brief ? `${BRIEF}\n` : ''}${carried}For gusta CLI reads, use the provided cliCommand executable/arguments followed by boardCommand or other read-only arguments. This selects the current package; do not download an older CLI with npx.\n\nApply this bundled skill subject to the host-owned steps above:\n${skill}\n${reference}\n\n${assignment}`
 }
 
 const WORKER_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep']
@@ -269,8 +275,20 @@ export async function executeAgentAdapter({ provider, model, effort = null, job,
     const child = spawn(provider, args, { cwd: job.workspace, env: providerEnvironment(provider, env, effort), shell: false, stdio: ['pipe', 'pipe', 'pipe'] })
     let partial = '', answer = '', last = '', events = '', errorOutput = '', tooLarge = false, interrupted = false, timedOut = false, forced
     // Claude keeps only the last result event (or a lone envelope line) in memory; every event
-    // already went to the log as it arrived, so a long session does not grow the buffer.
-    const keep = (line) => { if (!line.trim()) return; last = line; if (resultEvent(line)) answer = line }
+    // already went to the log as it arrived, so a long session does not grow the buffer. The few
+    // events that say why a run failed (a rejected rate limit, API retries; Codex: turn.failed and
+    // error, which come last) are kept too, for classifyFailure.
+    const failing = []
+    const watch = (line) => {
+      if (!FAILURE_EVENT.test(line)) return
+      try {
+        const event = JSON.parse(line)
+        if (!FAILURE_TYPES.has(event?.type) || (event.type === 'rate_limit_event' && event.rate_limit_info?.status !== 'rejected') || (event.type === 'system' && event.subtype !== 'api_retry')) return
+        failing.push(event)
+        if (failing.length > 8) failing.shift()
+      } catch {}
+    }
+    const keep = (line) => { if (!line.trim()) return; last = line; if (resultEvent(line)) answer = line; else watch(line) }
     // In work run, both processes share the runner-owned process group. Direct adapter
     // invocations still forward termination to the provider.
     const stop = () => {
@@ -281,29 +299,27 @@ export async function executeAgentAdapter({ provider, model, effort = null, job,
     }
     process.on('SIGTERM', stop); process.on('SIGINT', stop)
     const limit = job.timeoutMs ? setTimeout(() => { timedOut = true; stop() }, job.timeoutMs) : null
+    let exit
     try {
-      await new Promise((resolve, reject) => {
+      exit = await new Promise((resolve, reject) => {
         child.on('error', reject)
         child.stdout.setEncoding('utf8')
         child.stdout.on('data', (chunk) => {
           // Both providers stream events: the log follows the session as it runs.
           log(chunk)
           collector?.push(chunk)
-          if (provider === 'codex') {
-            // Keep only the head of the event stream: the session ID comes first.
-            if (events.length < 64 * 1024) {
-              events += chunk
-              if (!job.resume) remember(codexSession(events))
-            }
-            return
+          // Codex: the head of the event stream holds the session ID; the lines are only watched.
+          if (provider === 'codex' && events.length < 64 * 1024) {
+            events += chunk
+            if (!job.resume) remember(codexSession(events))
           }
           const lines = (partial + chunk).split('\n')
           partial = lines.pop()
-          for (const line of lines) keep(line)
+          for (const line of lines) provider === 'codex' ? watch(line) : keep(line)
           if (partial.length > 8 * 1024 * 1024) { tooLarge = true; stop(); partial = '' }
         })
         child.stderr.on('data', (chunk) => { errorOutput = (errorOutput + chunk).slice(-16000); log(chunk.toString()) })
-        child.on('close', (code, signal) => code === 0 && !interrupted ? resolve() : reject(new SkillPackageError(`${provider} 실행 실패 (${tooLarge ? 'output limit' : timedOut ? 'timeout' : interrupted ? 'interrupted' : code ?? signal})`, [errorOutput])))
+        child.on('close', (code, signal) => resolve({ code, signal }))
         child.stdin.on('error', () => {})
         child.stdin.end(prompt)
       })
@@ -311,13 +327,27 @@ export async function executeAgentAdapter({ provider, model, effort = null, job,
       clearTimeout(forced); clearTimeout(limit)
       process.off('SIGTERM', stop); process.off('SIGINT', stop)
     }
+    provider === 'codex' ? watch(partial) : keep(partial)
+    // A run the host or a limit here cut short is not classified: only what the tool itself reported.
+    const failed = (message, extra = []) => {
+      const error = new SkillPackageError(message, [errorOutput, ...extra].filter(Boolean))
+      if (!tooLarge && !timedOut && !interrupted) {
+        const failure = classifyFailure({ tool: provider, model, events: [...failing, ...(answer ? [resultEvent(answer)] : [])], text: errorOutput })
+        if (failure.kind !== 'other') error.failure = failure
+      }
+      return error
+    }
+    if (exit.code !== 0 || interrupted) throw failed(`${provider} 실행 실패 (${tooLarge ? 'output limit' : timedOut ? 'timeout' : interrupted ? 'interrupted' : exit.code ?? exit.signal})`)
     if (provider === 'claude') {
-      keep(partial)
       const output = answer || last
-      returned = { ...claudeResult(output, job.role), session, ...(['unit', 'scout', 'variant', 'scaffold'].includes(job.role) ? { usage: claudeEnvelope(output).usage ?? null } : {}) }
+      const envelope = output ? (() => { try { return claudeEnvelope(output) } catch { return null } })() : null
+      if (envelope && (envelope.is_error || envelope.subtype?.startsWith('error'))) throw failed(`Claude 실행 실패: ${envelope.subtype ?? 'error'}`)
+      returned = { ...claudeResult(output, job.role), session, ...(['unit', 'scout', 'variant', 'scaffold'].includes(job.role) ? { usage: envelope?.usage ?? null } : {}) }
     } else {
       sessionId = codexSession(events) ?? job.resume ?? null
-      returned = { ...validateAgentResult(job.role, JSON.parse(await readFile(files.result, 'utf8'))), session: sessionId }
+      let text
+      try { text = await readFile(files.result, 'utf8') } catch (error) { if (failing.length) throw failed('codex 실행 실패 (no result)'); throw error }
+      returned = { ...validateAgentResult(job.role, JSON.parse(text)), session: sessionId }
     }
     succeeded = true
     return returned

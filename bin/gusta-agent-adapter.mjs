@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { executeAgentAdapter } from '../src/agent-adapter.mjs'
+import { LIMIT_EXIT, failureLine } from '../src/provider-limits.mjs'
 
 try {
   const args = process.argv.slice(2)
@@ -20,5 +21,8 @@ try {
   process.stdout.write(`${JSON.stringify(result)}\n`)
 } catch (error) {
   process.stderr.write(`${error.message}\n`)
-  process.exitCode = 1
+  // A usage or rate limit, an overload or a sign-in failure: one {"failure":{...}} line and its own exit
+  // code, so the host moves the unit to another combination instead of counting a failed attempt.
+  if (error.failure) process.stdout.write(`${failureLine(error.failure)}\n`)
+  process.exitCode = error.failure ? LIMIT_EXIT : 1
 }

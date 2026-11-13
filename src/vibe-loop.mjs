@@ -30,6 +30,7 @@ import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive, notificationCapability, loopDeadline, requestedLoopConfig, loopHint } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine, taskCheckLine } from './loop-time.mjs'
+import { parseFailure, LIMIT_KINDS, BLOCKING, OVERLOAD_RETRY_MS, LIMIT_POLL_MS, readLimits, recordLimit, activeLimits, limitBlocks, earliestReset, limitHint, fallbackNote, limitTarget } from './provider-limits.mjs'
 
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const present = (file) => access(file).then(() => true, () => false)
@@ -203,7 +204,9 @@ export async function executeVibeUnit(options, job, directory, limits = {}) {
         // task: the unit's task-tier runs per command (cache hits ran nothing), for the slow-check line.
         const task = taskCheckRows(ran.filter((entry) => entry.tier === 'task' && !entry.cached && typeof entry.command === 'string').map((entry) => ({ command: entry.command, ms: Number(entry.ms) || 0 })))
         const checks = { runs: ran.length, cached: ran.filter((entry) => entry.cached).length, ms: ran.reduce((total, entry) => total + (Number(entry.ms) || 0), 0), ...(task.length ? { task } : {}) }
-        resolve({ dispatch: id, exitCode: code, stopped, error: error ?? null, result, usage, checks, session: session?.trim() ?? null, log: logPath })
+        // A usage or rate limit, an overload or a sign-in failure the adapter classified (its last stdout line).
+        const failure = code !== 0 && !stopped ? parseFailure(output) : null
+        resolve({ dispatch: id, exitCode: code, stopped, error: error ?? (failure ? `${failure.kind}: ${failure.message}` : null), result, usage, checks, session: session?.trim() ?? null, log: logPath, ...(failure ? { failure } : {}) })
       }
       child.stdout.on('data', (chunk) => { append(chunk); output += chunk; if (output.length > 1024 * 1024) stop('output-limit') })
       child.on('error', (error) => finish(127, error.message))
@@ -248,14 +251,21 @@ export async function vibeLoop(options = {}, injected = {}) {
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'gusta-vibe-loop.lock')
   const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, beat: vibeBeat, inbox: vibeInbox, view: coordView, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {},
+    sleep: (ms, signal) => new Promise((resolve) => { const timer = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true }) }),
     catalog: () => agentCatalog({ targetRoot: root, env: { ...process.env, ...options.env } }, { agents: settings.agents }), ...injected }
   // What each installed tool can run, read once per run (no model call) and only when agents is set:
-  // without it an explicit --provider or a command adapter runs the task's run: as written.
+  // without it an explicit --provider or a command adapter runs the task's run: as written. A wait for
+  // a usage limit reads it again (a login or an update may have changed it meanwhile).
   let catalogRead = null
   const loadCatalog = () => catalogRead ??= agents ? Promise.resolve(deps.catalog()) : Promise.resolve(null)
   const explicit = { tool: options.provider ?? null, model: options.model ?? null, effort: options.effort ?? null }
   const runOf = (status, id) => (status.remaining ?? []).find((task) => task.id === id)?.run ?? null
-  const routeFor = async (status, id, recovering = false) => routeAgent({ role: 'worker', recommended: runOf(status, id), recovery: recovering, agents, catalog: await loadCatalog(), explicit })
+  // What no unit may run on now: the clone's usage and rate limits (limits.json, every worktree and
+  // loop sees them; a passed reset frees them) and the tools that failed sign-in in this run.
+  const signedOut = []
+  const heldLimits = async () => activeLimits(await readLimits(context.runtime), deps.now())
+  const routeFor = async (status, id, recovering = false, { blocked = null, extra = [] } = {}) => routeAgent({ role: 'worker', recommended: runOf(status, id), recovery: recovering, agents, catalog: await loadCatalog(), explicit,
+    blocked: [...(blocked ?? [...limitBlocks(await heldLimits()), ...signedOut]), ...extra] })
   const previous = await readJSON(manifest)
   if (previous && previous.cwd !== root) throw new SkillPackageError('이 tag는 다른 checkout 소유입니다.', [previous.cwd])
   if (options.stop) { await bindLoopDirectory(directory, root); await writeFile(stopFile, 'stop\n'); return { schemaVersion: 1, ok: true, stopFile, action: 'cancel' } }
@@ -329,9 +339,10 @@ export async function vibeLoop(options = {}, injected = {}) {
     }
     return { ...plan, routing, dryRun: true, modelRequests: 0 }
   }
-  // A run that could start no unit stops here, before preflight claims anything.
+  // A run that could start no unit stops here, before preflight claims anything. A usage limit is not
+  // that: the first boundary waits for its reset or stops on it.
   if (!options.adapter) {
-    const routed = await routeFor(state, null)
+    const routed = await routeFor(state, null, false, { blocked: [] })
     if (!routed.chosen) throw new SkillPackageError('SETTINGS agents의 도구 중 실행할 수 있는 것이 없습니다 — gusta agents로 설치·로그인을 확인하세요.', routed.skipped.map(({ option, reason }) => `${runLabel(option)}: ${reason}`))
   }
   if ((await inspectWork({ targetRoot: root })).mode !== 'single') throw new SkillPackageError('vibe loop는 단독 checkout에서 실행하세요. 활성 work 공간은 work run을 사용합니다.')
@@ -364,6 +375,11 @@ export async function vibeLoop(options = {}, injected = {}) {
   const reportPath = path.join(root, report)
   let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false, pruned = null, publication = null
   let lastBatchPlan = JSON.stringify(batchVerify)
+  // Usage limits this run met: every hit (limit-hit event, manifest), the notes a unit's done line carries
+  // per task, a wait in progress, and the limits a usage-limit stop names in its hint.
+  const limitHits = [], limitNotes = new Map(), loginParked = new Set()
+  let limitWait = null, limitStop = null
+  const hintFor = (why) => why === 'usage-limit' && limitStop?.length ? limitHint(limitStop, deps.now()) : loopHint(why)
   // scope grows with the tasks this run creates for scoped work (a split, a prerequisite, a repair).
   const scope = scopeIds ? new Set(scopeIds) : null
   const inScope = (id) => !scope || scope.has(id)
@@ -455,12 +471,12 @@ export async function vibeLoop(options = {}, injected = {}) {
     const remainingMs = Math.max(0, deadline - deps.now()), remainingUnits = Math.max(0, maxUnits - count)
     const hardStop = remainingMs === 0 || remainingUnits === 0 || ['max-hours', 'max-units', 'stop-file', 'signal', 'stop-after-unit', 'cancelled'].includes(stopReason ?? reason)
     return { objectiveComplete: false, recoverable: !hardStop, hardStop, reason, remainingMs, remainingUnits, deadline: new Date(deadline).toISOString(),
-      pendingRepairTasks: [...new Set([repairTask, ...specRejected.keys(), recovery?.reason === 'spec-gate' ? recovery.taskId : null].filter(Boolean))], next: hardStop ? 'report stop and preserve remaining work' : reason === 'needs-sketch' ? 'report that the owner plans the untasked SSOT deltas, reviews or ideation with /gusta-sketch; do not plan them in this session' : repairTask ? 'delegate the pending repair within the existing session budget, then verify before publication' : 'reconcile the result with the user objective and continue within the existing session budget' }
+      pendingRepairTasks: [...new Set([repairTask, ...specRejected.keys(), recovery?.reason === 'spec-gate' ? recovery.taskId : null].filter(Boolean))], next: hardStop ? 'report stop and preserve remaining work' : reason === 'usage-limit' ? 'rerun after the usage limits reset (hint); do not start units meanwhile' : reason === 'needs-login' ? 'report that the owner signs in to the tools (gusta agents), then rerun' : reason === 'needs-sketch' ? 'report that the owner plans the untasked SSOT deltas, reviews or ideation with /gusta-sketch; do not plan them in this session' : repairTask ? 'delegate the pending repair within the existing session budget, then verify before publication' : 'reconcile the result with the user objective and continue within the existing session budget' }
   }
   const snapshot = () => ({ ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), refused: [...refused].map(([task, held]) => ({ task, ...held })), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, reason, ...(loopHint(reason) ? { hint: loopHint(reason) } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), refused: [...refused].map(([task, held]) => ({ task, ...held })), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, usageLimits: limitHits, ...(limitWait ? { limitWait } : {}), reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -508,7 +524,9 @@ export async function vibeLoop(options = {}, injected = {}) {
     if (closing) text = text.replace(/\bto:-/, `to:${new Date(deps.now()).toISOString()}`)
     const outcome = (entry) => entry.specGate?.ok === false ? 'rejected by spec gate' : entry.result?.outcome ?? (CUT.has(entry.stopped) ? `cut (${entry.stopped})` : entry.stopped ? `cancelled (${entry.stopped})` : 'failed')
     // Each unit names the combination that ran (recommended → actual when routing moved it).
-    const lines = pending.map((entry) => `- ${entry.result?.kind ?? 'session'} ${entry.result?.id ?? entry.task ?? '-'}: ${outcome(entry)}${entry.leftover ? ` · uncommitted work → ${entry.leftover.ref}` : ''}${entry.parked ? ' · parked' : ''}${entry.route ? ` · ${routeLabel(entry.route)}` : ''} (${entry.head.slice(0, 12)})`).filter((line) => !text.includes(line))
+    // A unit moved off a limited combination says which and until when: (← claude limit, resets 15:45).
+    const moved = (entry) => entry.fallback?.length ? ` (← ${entry.fallback.map((hit) => fallbackNote(hit, deps.now())).join('; ')})` : ''
+    const lines = pending.map((entry) => `- ${entry.result?.kind ?? 'session'} ${entry.result?.id ?? entry.task ?? '-'}: ${outcome(entry)}${entry.leftover ? ` · uncommitted work → ${entry.leftover.ref}` : ''}${entry.parked ? ' · parked' : ''}${entry.route ? ` · ${routeLabel(entry.route)}${moved(entry)}` : ''} (${entry.head.slice(0, 12)})`).filter((line) => !text.includes(line))
     if (lines.length) text = text.replace('\n## decided', `${lines.join('\n')}\n\n## decided`)
     const inbox = await inboxNow()
     for (const kind of ['decided', 'parked']) {
@@ -531,7 +549,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     const ciLater = batches.filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => `- check CI later: ${entry.ci.commit ?? '-'} ${entry.ci.checkUrl ?? ''}`.trimEnd() + '\n').join('')
     // Tasks another session holds are not this run's to finish: the owner sees who has them.
     const held = [...refused].map(([task, { owner, reason: why }]) => `- held by another session: ${task} (${owner ?? '-'}, ${why})\n`).join('')
-    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}${loopHint(reason) ? ` — ${loopHint(reason)}` : ''}\n- verification: ${gateAttempts} rounds, ${gateFailures} failed, failed-round cap ${maxGateAttempts}; pending repair: ${repairTask ?? '-'}; code pushed: ${codePushed}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${held}${ciLater}${kept}`)
+    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}${hintFor(reason) ? ` — ${hintFor(reason)}` : ''}\n- verification: ${gateAttempts} rounds, ${gateFailures} failed, failed-round cap ${maxGateAttempts}; pending repair: ${repairTask ?? '-'}; code pushed: ${codePushed}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${held}${ciLater}${kept}`)
     await metadata.writeReport(text)
   }
   const recordReport = (closing) => metadataStep('report-write', () => updateReport(closing))
@@ -578,6 +596,33 @@ export async function vibeLoop(options = {}, injected = {}) {
       await event('configuration-applied', { requestId: request.id, actual: appliedConfig, afterUnit: count })
     }
   }
+  // Every allowed combination is at a usage limit and the first reset still leaves room for a unit:
+  // wait for it with no model call, checking the stop file, configuration requests and the deadline
+  // every minute. resume: route again · stopped: a stop or a request ended the run · too-late: a
+  // configured deadline moved the closing window before the reset.
+  const limitView = (entry) => ({ tool: entry.tool, ...(entry.family ? { family: entry.family } : {}), reason: entry.reason, resetAt: entry.resetAt, source: entry.source })
+  const waitForLimits = async (held, until, latest) => {
+    limitWait = { until: new Date(until).toISOString(), limits: held.map(limitView) }
+    phase = 'limit-wait'
+    await save()
+    await event('limit-wait', limitWait)
+    try {
+      while (deps.now() < until) {
+        await deps.sleep(Math.min(LIMIT_POLL_MS, until - deps.now()), controller.signal)
+        if (stopped) return 'stopped'
+        if (await present(stopFile) && (await readFile(stopFile, 'utf8')).trim() !== 'stop-after-unit') { stop('stop-file'); return 'stopped' }
+        if (deps.now() >= deadline) { stop('max-hours'); return 'stopped' }
+        await applyRequests()
+        if (reason) return 'stopped'
+        if (until > latest()) return 'too-late'
+      }
+      return 'resume'
+    } finally {
+      limitWait = null
+      // Logins and installs may have changed while waiting: the next route reads the tools again.
+      catalogRead = null
+    }
+  }
   const codeChanged = async (from, to) => (await git(root, ['diff', '--name-only', from, to])).trim().split('\n').filter(Boolean).some((file) => !/^(spec\/|docs\/)|\.md$/i.test(file))
   // A failed gate or CI run is work for the next unit, not a request for a person: persist a
   // concrete repair task with its evidence and keep it ahead of the normal queue, even though
@@ -601,14 +646,14 @@ export async function vibeLoop(options = {}, injected = {}) {
   // An unfinished unit's uncommitted changes must block neither the next unit nor the gate. They are
   // kept as a commit on a local ref (never on the branch, never pushed; a staged-only version is its
   // second parent), the tree returns to HEAD, and the next fresh unit gets the snapshot to restore.
-  const keepLeftover = async (task, cause) => {
+  const keepLeftover = async (task, cause, suffix = '') => {
     if (!(await git(root, ['status', '--porcelain', '--untracked-files=all'])).trim()) return null
     const head = (await git(root, ['rev-parse', 'HEAD'])).trim(), tree = await workingTree(root)
     const index = (await git(root, ['write-tree']).catch(() => '')).trim()
     const parents = [head]
     if (index && index !== tree && index !== (await git(root, ['rev-parse', 'HEAD^{tree}'])).trim()) parents.push((await git(root, ['commit-tree', index, '-p', head, '-m', `vibe ${options.tag} unit ${count}: staged`])).trim())
     const commit = (await git(root, ['commit-tree', tree, ...parents.flatMap((parent) => ['-p', parent]), '-m', `vibe ${options.tag} unit ${count} ${task ?? '-'}: ${cause}`])).trim()
-    const ref = `refs/gusta/units/${options.tag}/${runId.slice(0, 8)}-${count}`
+    const ref = `refs/gusta/units/${options.tag}/${runId.slice(0, 8)}-${count}${suffix}`
     await git(root, ['update-ref', ref, commit])
     const files = (await git(root, ['diff', '--name-only', head, commit])).trim().split('\n').filter(Boolean)
     // Only the untracked paths git reports: a clean of the whole tree would also drop empty directories
@@ -769,7 +814,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     if ((await git(root, ['status', '--porcelain'])).trim()) throw new SkillPackageError('loop 시작 전 미커밋 변경을 보존합니다. 먼저 정리하세요.')
     const allowTool = [...new Set(['Bash(git *)', `Bash(${process.execPath} ${cli} *)`, ...(options.allowTool ?? [])])]
     const probe = options.probe ?? `git status --porcelain${context.target ? ` && git push --dry-run ${quote(context.remote)} ${quote(`HEAD:refs/heads/${context.target}`)}` : ''}`
-    const preflight = await deps.preflight({ ...options, permissionMode: mode, targetRoot: root, signal: controller.signal, probe, allowTool, probeWorkspace: 'current', probeTimeoutMs: Math.min(Number(options.probeTimeoutMs ?? 900000), Math.max(1, deadline - deps.now())) }, { catalog: loadCatalog })
+    const preflight = await deps.preflight({ ...options, permissionMode: mode, targetRoot: root, signal: controller.signal, probe, allowTool, probeWorkspace: 'current', probeTimeoutMs: Math.min(Number(options.probeTimeoutMs ?? 900000), Math.max(1, deadline - deps.now())) }, { catalog: loadCatalog, blocked: async () => limitBlocks(await heldLimits()) })
     await writeFile(path.join(directory, 'preflight.json'), JSON.stringify(preflight, null, 2))
     if (!preflight.ok) throw new SkillPackageError('맡김 preflight 실패', preflight.checks.filter((check) => !check.ok).map((check) => `${check.name}: ${check.detail}`))
     if (state.git?.behind) await vibeSync({ ...options, targetRoot: root })
@@ -868,12 +913,33 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (selected === null && status.route === 'repair' && !recovery) { reason = 'spec-repair-unavailable'; break }
       // Every unit has its task: no unit plans untasked work on its own.
       if (selected === null) { reason = untasked ? 'needs-sketch' : 'no-work'; break }
-      const limitMs = repairMs !== null ? Math.min(timeoutMs, Math.max(1, repairMs)) : Math.min(unitLimit(selected), Math.max(1, workLeft))
+      let limitMs = repairMs !== null ? Math.min(timeoutMs, Math.max(1, repairMs)) : Math.min(unitLimit(selected), Math.max(1, workLeft))
+      // A unit starts no later than this: a repair inside the closing window, else before the window.
+      const repairBy = repairMs !== null ? deps.now() + repairMs : null
+      const latestStart = () => repairBy ?? deadline - reserve.ms - MIN_UNIT_MS
       // The unit's tool·model·effort: its task's run: within agents, never below it for a recovery
       // or a gate/CI repair. A command adapter receives the route in its job and runs what it runs.
-      const routed = await routeFor(status, selected, Boolean(recovery) || selected === repairTask)
-      if (!routed.chosen && !options.adapter) throw new SkillPackageError(`${selected}: 실행할 수 있는 도구가 없습니다.`, routed.skipped.map(({ option, reason }) => `${runLabel(option)}: ${reason}`))
-      const route = routeRecord(routed)
+      const recovering = Boolean(recovery) || selected === repairTask
+      const routed = await routeFor(status, selected, recovering)
+      if (!routed.chosen && !options.adapter) {
+        // Every allowed combination is at a usage limit: wait for the first reset when a unit still fits
+        // after it, else stop on usage-limit (the closing gate, push and report still run).
+        const tools = explicit.tool ? [explicit.tool] : agents ?? []
+        const held = (await heldLimits()).filter((entry) => tools.includes(entry.tool))
+        if (held.length && routed.skipped.some(({ reason: why }) => BLOCKING.includes(why))) {
+          const until = earliestReset(held)
+          const waited = until <= latestStart() ? await waitForLimits(held, until, latestStart) : 'too-late'
+          if (waited === 'resume') continue
+          if (waited === 'stopped') { reason ??= stopReason; break }
+          reason = 'usage-limit'; limitStop = held
+          await event('limit-stop', { task: selected, limits: held.map(limitView) })
+          break
+        }
+        // The tools left all failed sign-in in this run: only the owner can log in.
+        if (signedOut.length && routed.skipped.some(({ reason: why }) => why === 'auth')) { reason = 'needs-login'; break }
+        throw new SkillPackageError(`${selected}: 실행할 수 있는 도구가 없습니다.`, routed.skipped.map(({ option, reason }) => `${runLabel(option)}: ${reason}`))
+      }
+      let route = routeRecord(routed)
       // Every unit takes its task on the coordination branch first: one compare-and-swap there, with
       // no push target, clean tree, commit or merge here. A recovery keeps the task whatever its row
       // says (blocked, a malformed close). Refused — another live session holds it, or its finished
@@ -899,7 +965,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       const brief = selected ? await vibeBrief({ targetRoot: root, task: selected, diffBase: before.head, coordination }).catch((caught) => { if (recovery?.reason === 'spec-gate') return null; throw caught }) : null
       // What lint already reports is not this unit's doing: the spec gate looks only for new errors.
       const lintBefore = (await deps.lint({ targetRoot: root })).errors
-      const dispatched = recovery
+      let dispatched = recovery
       const job = { schemaVersion: 1, role: 'unit', mode: 'autopilot', workspaceMode: 'single', workspace: root, tag: options.tag, report, status: unitStatus(status, selected, recovery), brief, route,
         cliCommand: [process.execPath, cli], allowTools: allowTool, permissionMode: mode, headlessMcp: mcp, diffBase: before.head, hostManaged: true,
         ...(measurementRun ? { usageMeasurement: measurementRun, unit: count + 1, ...(selected ? { taskId: selected } : {}) } : {}),
@@ -907,10 +973,69 @@ export async function vibeLoop(options = {}, injected = {}) {
         ...(recovery ? { recovery } : {}) }
       // A continuation consumes its snapshot; once the task is done the ref is dropped.
       if (dispatched?.snapshot && dispatched.reason !== 'split') for (const snapshot of snapshots) if (snapshot.ref === dispatched.snapshot.ref) snapshot.handed = true
-      phase = 'unit'; await save()
-      await event('unit-route', { unit: count + 1, task: selected, route })
-      const unitStart = deps.now()
-      const receipt = await deps.execute({ ...options, ...appliedConfig }, job, directory, { stopFile, deadline, signal: controller.signal, timeoutMs: limitMs })
+      // A usage or rate limit, an overload or a failed sign-in ends an attempt, not a unit: no unit count,
+      // rung, failure streak, no-progress or gate attempt. The same task goes straight to the next allowed
+      // combination (a new session; uncommitted work kept as a snapshot it restores). An overload is
+      // retried once on the same one first. With none left the task goes back to the boundary, which
+      // waits for the first reset or stops on usage-limit.
+      const overloaded = []
+      let receipt, unitStart, requeue = false, retried = false
+      for (;;) {
+        phase = 'unit'; await save()
+        await event('unit-route', { unit: count + 1, task: selected, route })
+        unitStart = deps.now()
+        receipt = await deps.execute({ ...options, ...appliedConfig }, job, directory, { stopFile, deadline, signal: controller.signal, timeoutMs: limitMs })
+        const failure = !options.adapter && !receipt.stopped && receipt.exitCode !== 0 && LIMIT_KINDS.includes(receipt.failure?.kind) ? { ...receipt.failure, tool: receipt.failure.tool || route.tool } : null
+        if (!failure || stopped) break
+        let next = route
+        if (failure.kind !== 'overloaded' || retried) {
+          if (failure.kind === 'overloaded') overloaded.push({ tool: route.tool, model: route.model, effort: route.effort, reason: 'overloaded' })
+          else if (failure.kind === 'auth') signedOut.push({ tool: failure.tool, reason: 'auth' })
+          else {
+            // No reset in the message: the record's guess stands in for it (marked estimated).
+            const recorded = await recordLimit(context.runtime, failure, { now: deps.now() }).catch((caught) => { event('limit-record-error', { error: caught.message }); return null })
+            if (!failure.resetAt && recorded?.resetAt) Object.assign(failure, { resetAt: recorded.resetAt, estimated: true })
+          }
+          const rerouted = await routeFor(status, selected, recovering, { extra: overloaded })
+          // An overload with nowhere else to go is an ordinary failed unit: it counts like one.
+          if (!rerouted.chosen && failure.kind === 'overloaded') break
+          next = rerouted.chosen ? routeRecord(rerouted) : null
+        }
+        const leftover = await keepLeftover(selected, failure.kind, `-${failure.kind}${limitHits.length + 1}`)
+        const hit = { unit: count + 1, task: selected, route: runLabel(route), kind: failure.kind, tool: failure.tool, ...(failure.family ? { family: failure.family } : {}), ...(failure.resetAt ? { resetAt: failure.resetAt } : {}), ...(failure.estimated ? { estimated: true } : {}), at: new Date(deps.now()).toISOString(), ...(leftover ? { snapshot: leftover.ref } : {}) }
+        limitHits.push(hit)
+        dispatches.push({ ...receipt, unit: count + 1, task: selected, route, limit: failure.kind, at: hit.at, ms: deps.now() - unitStart, ...(leftover ? { leftover: { ref: leftover.ref, files: leftover.fileCount } } : {}) })
+        await event('limit-hit', { ...hit, message: failure.message })
+        if (failure.kind === 'auth' && !loginParked.has(failure.tool)) {
+          loginParked.add(failure.tool)
+          await deps.inbox({ targetRoot: root, step: 'add', tag: options.tag, kind: 'parked', text: `${failure.tool} needs a login: a headless unit failed sign-in (${String(failure.message ?? '').replace(/[\r\n|]+/g, ' ').slice(0, 120)}). Sign in, check with gusta agents, then rerun.` })
+            .catch((caught) => event('inbox-error', { error: caught.message }))
+        }
+        if (leftover) {
+          dispatched = { ...(dispatched ?? { reason: 'interrupted', taskId: selected }), cause: failure.kind, snapshot: { ref: leftover.ref, commit: leftover.commit, base: leftover.base, files: leftover.files, fileCount: leftover.fileCount } }
+          if (dispatched.reason !== 'split') leftover.handed = true
+          job.recovery = dispatched
+        }
+        if (next !== route) limitNotes.set(selected, [...(limitNotes.get(selected) ?? []), { kind: failure.kind, tool: failure.tool, ...(failure.family ? { family: failure.family } : {}), ...(failure.resetAt ? { resetAt: failure.resetAt } : {}), ...(failure.estimated ? { estimated: true } : {}) }])
+        // Nothing left to run it on, or no room for a unit before the closing window: the boundary decides.
+        if (!next || (repairBy === null && deadline - reserve.ms - deps.now() < MIN_UNIT_MS)) {
+          priorityTask = selected
+          if (dispatched) recovery = dispatched
+          requeue = true
+          break
+        }
+        if (next === route) {
+          retried = true
+          await deps.sleep(OVERLOAD_RETRY_MS, controller.signal)
+          if (stopped) { requeue = true; break }
+        } else {
+          await event('route-fallback', { unit: count + 1, task: selected, from: runLabel(route), to: runLabel(next), reason: failure.kind, ...(failure.resetAt ? { resetAt: failure.resetAt } : {}) })
+          route = next; retried = false
+        }
+        limitMs = repairBy !== null ? Math.min(timeoutMs, Math.max(1, repairBy - deps.now())) : Math.min(unitLimit(selected), Math.max(1, deadline - reserve.ms - deps.now()))
+        Object.assign(job, { route, timeLimit: { minutes: Math.max(1, Math.round(limitMs / 60000)), cutAt: new Date(Date.now() + limitMs).toISOString() } })
+      }
+      if (requeue) { await save(); continue }
       count++
       const after = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(stateFile, 'utf8'), inbox: await inboxLines() }
       const cut = CUT.has(receipt.stopped)
@@ -920,7 +1045,9 @@ export async function vibeLoop(options = {}, injected = {}) {
       // leaves the tree for the user; changes after a unit that reported success may be the owner's,
       // so they stay in place and stop the run (the boundary's assertClean).
       const leftover = failed && (cut || !receipt.stopped) ? await keepLeftover(taskId, receipt.stopped ?? 'failed') : null
-      const entry = { ...receipt, unit: count, task: taskId, route, head: after.head, at: new Date(deps.now()).toISOString(), ms: deps.now() - unitStart, ...(leftover ? { leftover: { ref: leftover.ref, files: leftover.fileCount } } : {}) }
+      const moved = limitNotes.get(selected)
+      limitNotes.delete(selected)
+      const entry = { ...receipt, unit: count, task: taskId, route, head: after.head, at: new Date(deps.now()).toISOString(), ms: deps.now() - unitStart, ...(leftover ? { leftover: { ref: leftover.ref, files: leftover.fileCount } } : {}), ...(moved ? { fallback: moved } : {}) }
       dispatches.push(entry); pending.push(entry)
       await checkpoint()
       // A real unit's duration sizes the repair buffer of the closing reserve.
@@ -1071,6 +1198,6 @@ export async function vibeLoop(options = {}, injected = {}) {
     await notify(async () => finishedEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, finishedSummary(closed, waiting)))
   }
   const terminalEvent = await readJSON(plan.notification.terminalEvent).catch(() => null)
-  return { ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, ...(loopHint(reason) ? { hint: loopHint(reason) } : {}), stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
-    time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(taskChecks().runs ? { taskChecks: taskChecks() } : {}), ...(measurement ? { measurement } : {}) }
+  return { ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
+    time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(taskChecks().runs ? { taskChecks: taskChecks() } : {}), ...(measurement ? { measurement } : {}), ...(limitHits.length ? { usageLimits: limitHits } : {}) }
 }

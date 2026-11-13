@@ -680,7 +680,7 @@ export async function vibePreflight(options = {}, deps = {}) {
     if (!available) missing.push(command)
   }
   add('verification', missing.length === 0, missing.length ? `missing commands: ${missing.join(', ')}` : verify.declared ? `task: ${verify.task.length}, batch: ${verify.batch.length}; conditional checks remain in ARCH guidance` : 'legacy ARCH: changed tests + fast checks at task tier; select batch commands before code push', true)
-  if (options.probe && !needsInit) checks.push(await probeWorker(context, { ...options, permissionMode: await permissionMode(options, context.root), headlessMcp: await readSetting({ root: context.root }, 'headless-mcp') }, { agents, catalog: deps.catalog }))
+  if (options.probe && !needsInit) checks.push(await probeWorker(context, { ...options, permissionMode: await permissionMode(options, context.root), headlessMcp: await readSetting({ root: context.root }, 'headless-mcp') }, { agents, catalog: deps.catalog, blocked: deps.blocked }))
   return { schemaVersion: 1, ok: checks.every((check) => check.ok), checks, needsUser: checks.filter((check) => check.needsUser), ...(needsInit ? { reason: 'needs-init', hint: loopHint('needs-init') } : {}) }
 }
 
@@ -695,12 +695,13 @@ export function probeFailureKind({ denied = false, note = '', code } = {}) {
 }
 
 // The probe's tool·model·effort: an explicit --provider as given, else the first tool of SETTINGS
-// agents at its cheapest combination (routeAgent probe). null: no usable tool, with the reasons.
-async function probeRoute(context, options, { agents, catalog }) {
+// agents (not at a usage limit) at its cheapest combination (routeAgent probe). null: no usable tool, with the reasons.
+async function probeRoute(context, options, { agents, catalog, blocked }) {
   if (options.provider) return { route: { tool: options.provider, model: options.model ?? null, effort: options.effort ?? null } }
   if (!agents) return { route: null }
   const read = catalog ?? (() => agentCatalog({ targetRoot: context.root, env: options.env ?? process.env }, { agents: context.settings.values.agents }))
-  const routed = routeAgent({ role: 'probe', agents, catalog: await read() })
+  // A loop hands in the tools at a usage limit now: the probe runs on one that can answer.
+  const routed = routeAgent({ role: 'probe', agents, catalog: await read(), blocked: blocked ? await blocked() : [] })
   return routed.chosen ? { route: routed.chosen } : { route: null, unusable: routed.skipped.map(({ option, reason }) => `${runLabel(option)}: ${reason}`) }
 }
 

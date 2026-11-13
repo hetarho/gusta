@@ -20,8 +20,10 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
     [--tasks 'T001 T002'] [--timeout-ms 3600000] [--provider claude|codex [--model <name>]] [--effort low|medium|high|xhigh|max|ultra]
                                                 단위마다 도구·모델·에포트를 CLI가 정한다: 태스크 run:을 SETTINGS agents 안에서(못 쓰면 score가
-                                                가장 가까운 조합, 없으면 카탈로그 중간), 회복·수정 단위는 그보다 낮추지 않음. dry-run의 routing이
+                                                가장 가까운 조합, 없으면 agents 첫 도구의 기본 설정), 회복·수정 단위는 그보다 낮추지 않음. dry-run의 routing이
                                                 태스크별 배정. --provider/--model/--effort는 사람이 실행 전체를 고정할 때만. agents 미정이면 needs-init
+                                                사용량·속도 한도·과부하·로그인 실패는 단위로 세지 않고 agents 안 다음 조합으로 같은 태스크를 다시. 모두 막히면
+                                                첫 리셋이 작업 시간 안이면 모델 호출 없이 대기, 아니면 reason usage-limit(hint에 도구·리셋 시각)
                                                 끝 예약(실측 전체 검증×2+수정 단위+CI)에는 새 단위 없이 마감 관문·수정. 2회 이후는 실패 집합 감소·시간·전체 시도 상한을 충족할 때만 연장
                                                 --tasks: 그 태스크(와 이번 실행이 그것을 위해 만든 태스크)만, 끝나면 마감 관문
                                                 --timeout-ms: 단위 하나의 상한(explore는 timebox+30분). 넘기면 미커밋 변경을

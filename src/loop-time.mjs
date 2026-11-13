@@ -10,7 +10,8 @@ const sum = (values) => values.reduce((total, value) => total + (Number.isFinite
 export function timeBreakdown({ dispatches = [], batches = [], totalMs = 0 }) {
   const units = {}
   for (const unit of dispatches) {
-    const group = units[unit.result ? KIND[unit.result.kind] ?? unit.result.kind : 'failed'] ??= { units: 0, ms: 0, checkMs: 0, modelMs: 0 }
+    // An attempt a usage limit ended is not a unit; its time is its own line.
+    const group = units[unit.limit ? 'limit' : unit.result ? KIND[unit.result.kind] ?? unit.result.kind : 'failed'] ??= { units: 0, ms: 0, checkMs: 0, modelMs: 0 }
     group.units++
     group.ms += unit.ms ?? 0
     group.checkMs += unit.checks?.ms ?? 0

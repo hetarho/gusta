@@ -427,3 +427,38 @@ test('배정된 에포트를 전달한다: Claude는 --effort와 자식 env(사�
   assert.deepEqual(line.slice(1), ['--provider', 'claude', '--model', 'sonnet', '--effort', 'high', '--provider-flag', '--strict-mcp-config'])
   assert.deepEqual(adapterArgs('codex').slice(1), ['--provider', 'codex'])
 })
+
+// A usage limit reaches the host as a classified failure: the adapter keeps the events that say why
+// (Claude's rejected rate limit and error result; Codex's turn.failed after a long stream) and the bin
+// prints one {"failure":{...}} line with exit code 75. Anonymous fixtures, no real account data.
+test('한도 실패는 분류된 failure로 남고 bin은 failure 한 줄과 종료 코드 75로 끝난다 (Claude·Codex)', async (t) => {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const { fileURLToPath } = await import('node:url')
+  const { LIMIT_EXIT, parseFailure } = await import('../src/provider-limits.mjs')
+  const reset = Math.floor(Date.now() / 1000) + 5400
+  const claude = await stub(t, 'claude', `process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'system',subtype:'init'}));console.log(JSON.stringify({type:'rate_limit_event',rate_limit_info:{status:'allowed_warning'}}));console.log(JSON.stringify({type:'rate_limit_event',rate_limit_info:{status:'rejected',resetsAt:${reset},rateLimitType:'seven_day_opus'}}));console.log(JSON.stringify({type:'result',is_error:true,result:"You've hit your Opus limit · resets 3:45pm"}));process.exitCode=1})`)
+  const caught = await executeAgentAdapter({ provider: 'claude', model: 'opus', job: job(claude.root), env: claude.env, log: () => {} }).then(() => assert.fail('resolved'), (error) => error)
+  assert.match(caught.message, /claude 실행 실패 \(1\)/)
+  assert.deepEqual(caught.failure, { kind: 'usage-limit', scope: 'family', tool: 'claude', family: 'opus', model: 'opus', resetAt: new Date(reset * 1000).toISOString(), message: "You've hit your Opus limit · resets 3:45pm seven_day_opus" })
+  // An ordinary failure stays unclassified (exit 1, no failure line).
+  const plain = await stub(t, 'claude', `process.stdin.resume();process.stdin.on('end',()=>{console.error('boom');process.exit(3)})`)
+  assert.equal((await executeAgentAdapter({ provider: 'claude', job: job(plain.root), env: plain.env, log: () => {} }).catch((error) => error)).failure, undefined)
+  // Codex: the failure is the last event after more than the 64 KiB head the session ID is read from.
+  const noise = JSON.stringify({ type: 'item.completed', item: { text: 'x'.repeat(2000) } })
+  const codex = await stub(t, 'codex', `process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'thread.started',thread_id:'thread-1'}));for(let i=0;i<60;i++)console.log(${JSON.stringify(noise)});console.log(JSON.stringify({type:'turn.failed',error:{message:"You've hit your usage limit. Try again at Nov 14, 2099 3:45 PM."}}));process.exitCode=1})`)
+  const failed = await executeAgentAdapter({ provider: 'codex', job: job(codex.root), env: codex.env, log: () => {} }).catch((error) => error)
+  assert.deepEqual([failed.failure.kind, failed.failure.scope, failed.failure.tool, failed.failure.resetAt], ['usage-limit', 'tool', 'codex', new Date(2099, 10, 14, 15, 45).toISOString()])
+  // The bin the hosts spawn: the failure line on stdout and its own exit code.
+  const bin = fileURLToPath(new URL('../bin/gusta-agent-adapter.mjs', import.meta.url))
+  const run = promisify(execFile)
+  const child = run(process.execPath, [bin, '--provider', 'claude'], { env: claude.env, cwd: claude.root })
+  child.child.stdin.end(JSON.stringify(job(claude.root)))
+  const exited = await child.then(() => assert.fail('exit 0'), (error) => error)
+  assert.equal(exited.code, LIMIT_EXIT)
+  assert.deepEqual([parseFailure(exited.stdout).kind, parseFailure(exited.stdout).family], ['usage-limit', 'opus'])
+  const ordinary = run(process.execPath, [bin, '--provider', 'claude'], { env: plain.env, cwd: plain.root })
+  ordinary.child.stdin.end(JSON.stringify(job(plain.root)))
+  const other = await ordinary.then(() => assert.fail('exit 0'), (error) => error)
+  assert.deepEqual([other.code, parseFailure(other.stdout)], [1, null])
+})

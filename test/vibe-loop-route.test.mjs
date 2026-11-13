@@ -63,7 +63,8 @@ test('loop는 단위마다 그 태스크의 run:을 agents 안에서 배정해 �
   assert.deepEqual(dry.routing.map(({ task, recommended, run, source }) => [task, recommended, run, source]), [
     ['T001', 'codex/sol@high', 'codex/sol@high', 'task'],
     ['T002', 'codex/terra@max', 'claude/sonnet@max', 'nearest'],
-    ['T003', null, 'claude/sonnet@xhigh', 'default'],
+    // No run: the first allowed tool at its own setting (model and effort left to the person's config).
+    ['T003', null, 'claude', 'default'],
   ])
   assert.equal(dry.routing[1].skipped[0].reason, 'effort-unsupported')
   const result = await vibeLoop({ targetRoot: root, tag: 'route2', maxUnits: 3 }, deps)
@@ -72,7 +73,7 @@ test('loop는 단위마다 그 태스크의 run:을 agents 안에서 배정해 �
   assert.deepEqual(routes, {
     T001: { tool: 'codex', model: 'sol', effort: 'high', source: 'task', recommended: 'codex/sol@high' },
     T002: { tool: 'claude', model: 'sonnet', effort: 'max', source: 'nearest', recommended: 'codex/terra@max' },
-    T003: { tool: 'claude', model: 'sonnet', effort: 'xhigh', source: 'default', recommended: null },
+    T003: { tool: 'claude', model: null, effort: null, source: 'default', recommended: null },
   })
   const manifest = JSON.parse(await readFile(result.manifest, 'utf8'))
   assert.deepEqual(Object.fromEntries(manifest.dispatches.map((entry) => [entry.task, entry.route])), routes)
@@ -82,7 +83,7 @@ test('loop는 단위마다 그 태스크의 run:을 agents 안에서 배정해 �
   const report = await readFile(path.join(root, result.report), 'utf8')
   assert.match(report, /- task T001: completed · codex\/sol@high \(/)
   assert.match(report, /- task T002: completed · codex\/terra@max → claude\/sonnet@max \(/)
-  assert.match(report, /- task T003: completed · claude\/sonnet@xhigh \(/)
+  assert.match(report, /- task T003: completed · claude \(/)
 })
 
 test('agents의 도구를 하나도 쓸 수 없으면 loop는 preflight 전에 이유와 함께 멈춘다', async (t) => {

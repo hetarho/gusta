@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildCatalog } from '../src/agent-catalog.mjs'
-import { routeAgent, routeRecord, routeLabel, runLabel } from '../src/agent-route.mjs'
+import { routeAgent, routeRecord, routeLabel, runLabel, DEFAULT_SCORE } from '../src/agent-route.mjs'
 
 // Two signed-in tools: Claude's aliases at low..max, a Codex catalog of four families at low..xhigh.
 const CLAUDE = { installed: true, loggedIn: true, models: ['haiku', 'sonnet', 'opus', 'fable'].map((model) => ({ model, efforts: ['low', 'medium', 'high', 'xhigh', 'max'], context: null })) }
@@ -55,13 +55,33 @@ test('쓸 수 없는 추천은 score가 가장 가까운 allowed 조합으로 �
   assert.deepEqual([none.chosen, none.source, none.candidates], [null, 'none', []])
 })
 
-test('추천이 없으면 카탈로그 중간 능력: allowed score의 아래 중앙값에 가장 가까운 가장 싼 조합', () => {
+test('추천이 없으면 agents 첫 도구를 그 도구의 기본 설정(모델·에포트 미지정)으로; 폴백은 다른 도구의 기본 설정, 그다음 DEFAULT_SCORE에 가까운 조합', () => {
   const claude = routeAgent({ agents: ['claude'], catalog: catalog(['claude']) })
-  assert.deepEqual([label(claude), claude.source, claude.score], ['claude/sonnet@xhigh', 'default', 7])
-  assert.equal(label(routeAgent({ agents: ['codex', 'claude'], catalog: catalog(['codex', 'claude']) })), 'codex/terra@xhigh')
-  assert.equal(label(routeAgent({ agents: BOTH, catalog: catalog(BOTH), recommended: '-' })), 'claude/sonnet@xhigh')
+  assert.deepEqual([claude.chosen, claude.source, claude.score, claude.recommended], [{ tool: 'claude', model: null, effort: null }, 'default', null, null])
+  assert.deepEqual(routeRecord(claude), { tool: 'claude', model: null, effort: null, source: 'default', recommended: null })
+  assert.equal(label(routeAgent({ agents: ['codex', 'claude'], catalog: catalog(['codex', 'claude']) })), 'codex')
+  assert.equal(label(routeAgent({ agents: BOTH, catalog: catalog(BOTH), recommended: '-' })), 'claude')
+  // The mid score the fallbacks sit nearest: the balanced family at high effort.
+  assert.equal(DEFAULT_SCORE, 6)
+  assert.deepEqual(routeAgent({ agents: BOTH, catalog: catalog(BOTH) }).candidates.slice(0, 4).map(runLabel), ['claude', 'codex', 'claude/sonnet@high', 'codex/terra@high'])
+  // Claude's session limit: Codex at its own setting. Only an Opus limit: the own setting may be Opus, so
+  // a single-tool list takes the nearest non-Opus combination.
+  const session = routeAgent({ agents: BOTH, catalog: catalog(BOTH), blocked: [{ tool: 'claude', reason: 'usage-limit' }] })
+  assert.deepEqual([label(session), session.source, session.skipped.map((entry) => entry.reason)], ['codex', 'default', ['usage-limit']])
+  const opus = routeAgent({ agents: ['claude'], catalog: catalog(['claude']), blocked: [{ tool: 'claude', family: 'opus', reason: 'usage-limit' }] })
+  assert.deepEqual([label(opus), opus.skipped], ['claude/sonnet@high', [{ option: { tool: 'claude', family: 'opus' }, reason: 'usage-limit' }]])
+  assert.ok(opus.candidates.every((option) => option.model && !option.model.includes('opus')))
+  // A task's opus run: under that block, the nearest score off the family.
+  assert.equal(label(routeAgent({ agents: ['claude'], catalog: catalog(['claude']), recommended: 'claude/opus@high', blocked: [{ tool: 'claude', family: 'opus', reason: 'usage-limit' }] })), 'claude/sonnet@max')
+  // A pinned tool keeps its own setting; a pinned model runs at that tool's own effort.
+  assert.equal(label(routeAgent({ agents: BOTH, catalog: catalog(BOTH), explicit: { tool: 'codex' } })), 'codex')
+  assert.equal(label(routeAgent({ agents: BOTH, catalog: catalog(BOTH), explicit: { tool: 'claude', model: 'opus' } })), 'claude/opus')
   // A/B variants and scouts take the same default whatever they are handed, so variants compare.
-  for (const role of ['variant', 'scout']) assert.equal(label(routeAgent({ role, agents: BOTH, catalog: catalog(BOTH), recommended: 'claude/fable@max' })), 'claude/sonnet@xhigh')
+  for (const role of ['variant', 'scout']) assert.equal(label(routeAgent({ role, agents: BOTH, catalog: catalog(BOTH), recommended: 'claude/fable@max' })), 'claude')
+  // Without a catalog: the other allowed tools at their own setting follow, in agents order.
+  assert.deepEqual([label(routeAgent({ agents: BOTH, blocked: [{ tool: 'claude', reason: 'usage-limit' }] })), routeAgent({ agents: BOTH }).source], ['codex', 'default'])
+  const written = routeAgent({ agents: BOTH, recommended: 'claude/sonnet@high', blocked: [{ tool: 'claude', reason: 'usage-limit' }] })
+  assert.deepEqual([label(written), written.source, written.skipped[0].reason], ['codex', 'nearest', 'usage-limit'])
 })
 
 test('리뷰어는 워커 능력 이상이고 agents에 도구가 둘 이상이면 다른 도구를 먼저 고른다', () => {
@@ -74,6 +94,8 @@ test('리뷰어는 워커 능력 이상이고 agents에 도구가 둘 이상이�
   // The other tool cannot match the worker (codex tops out at astra@xhigh = 13): the same tool, at or above it.
   const strong = routeAgent({ role: 'reviewer', agents: BOTH, catalog: catalog(BOTH), worker: { tool: 'claude', model: 'fable', effort: 'max' } })
   assert.deepEqual([label(strong), strong.score], ['claude/fable@max', 14])
+  // A worker on its tool's own setting (capability unknown): the other tool's own setting reviews.
+  assert.equal(label(routeAgent({ role: 'reviewer', agents: BOTH, catalog: catalog(BOTH), worker: { tool: 'claude', model: null, effort: null } })), 'codex')
 })
 
 test('회복 단위는 원래 추천보다 낮아지지 않고, probe는 목록 첫 도구의 가장 싼 조합이다', () => {
@@ -83,8 +105,8 @@ test('회복 단위는 원래 추천보다 낮아지지 않고, probe는 목록 
   const ordinary = routeAgent({ agents: ['claude'], catalog: shallow, recommended: 'claude/opus@high' })
   const recovery = routeAgent({ agents: ['claude'], catalog: shallow, recommended: 'claude/opus@high', recovery: true })
   assert.deepEqual([label(ordinary), ordinary.score, label(recovery), recovery.score], ['claude/opus@medium', 8, 'claude/fable@low', 10])
-  // A recovery with no run: never below the default.
-  assert.ok(routeAgent({ agents: BOTH, catalog: catalog(BOTH), recovery: true }).score >= 7)
+  // A recovery with no run: the default, the tool's own setting.
+  assert.deepEqual([label(routeAgent({ agents: BOTH, catalog: catalog(BOTH), recovery: true })), routeAgent({ agents: BOTH, catalog: catalog(BOTH), recovery: true }).source], ['claude', 'default'])
   // probe: the first tool of agents at its cheapest combination, the next tool when it cannot run.
   assert.equal(label(routeAgent({ role: 'probe', agents: ['codex', 'claude'], catalog: catalog(['codex', 'claude']), recommended: 'claude/fable@max' })), 'codex/luna-mini@low')
   assert.equal(label(routeAgent({ role: 'probe', agents: BOTH, catalog: catalog(BOTH, { claude: { installed: false } }) })), 'codex/luna-mini@low')

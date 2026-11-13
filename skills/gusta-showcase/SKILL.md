@@ -37,7 +37,7 @@ SETTINGS `usage-measurement`가 true인 시작 대화는 [사용량 절차](../g
 
 ## 3. 병렬 구현 — 하위 세션
 변형마다 이 변형의 접근만 `<dir>/<v>.md`에 쓰고 동시에 띄운다:
-- 기본(헤드리스): `vibe ab run <slug> --all --prompt-dir <dir> --provider <claude|codex> [--allow-tool '<태스크 검사 명령 규칙>'] --json` 하나를 백그라운드로 실행한다(병렬, 끝나면 한 번 알림). 한 변형만은 `--variant <v> --prompt-file <file>`. 세션은 자기 worktree만 고치고, CLI가 shared를 앞에 붙이고 끝나면 변형 브랜치에 커밋한다. 돌아오는 것은 summary·view·path(볼 곳·URL 경로)뿐이다.
+- 기본(헤드리스): `vibe ab run <slug> --all --prompt-dir <dir> [--allow-tool '<태스크 검사 명령 규칙>'] --json` 하나를 백그라운드로 실행한다(병렬, 끝나면 한 번 알림, 도구·모델은 CLI가 SETTINGS `agents`에서 배정 — `--provider`는 사용자가 고를 때만). 한 변형만은 `--variant <v> --prompt-file <file>`. 세션은 자기 worktree만 고치고, CLI가 shared를 앞에 붙이고 끝나면 변형 브랜치에 커밋한다. 돌아오는 것은 summary·view·path(볼 곳·URL 경로)뿐이다.
 - run이 scaffoldTouched(scaffold 줄·파일 수정)를 주면 보여 주기 전에 되돌리는 follow-up을 보낸다(데이터 변경은 summary로). scaffoldResidue는 줄이 실제 scaffold를 가리킬 때만 follow-up, 아니면 사용자에게 보이고 확인받아 `pick --accept-residue`.
 - 네이티브 하위 세션 도구를 써도 된다(worktree 경로·shared+접근을 주고 커밋·서버·scaffold 수정은 하지 않게). 같은 대화에서 역할만 바꿔 변형을 직접 만들지 않는다.
 - 변형은 영향 단위 테스트와 빠른 검사만 돌린다(전체 스위트는 합친 뒤 마감 관문에서 한 번).

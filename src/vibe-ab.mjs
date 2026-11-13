@@ -10,7 +10,7 @@ import { inspectWorkspace, git } from './workspace.mjs'
 import { runtimeRoot, canonicalDestination } from './work-runtime.mjs'
 import { atomicJSON, processAlive, controlTransaction } from './loop-control.mjs'
 import { executeAgentAdapter, compactUsage, agentPrompt } from './agent-adapter.mjs'
-import { inspectProviders, availableProvider, providerFlags } from './work-providers.mjs'
+import { inspectProviders, sessionRoute, providerFlags } from './work-providers.mjs'
 import { readSetting, readSettings, permissionMode } from './settings.mjs'
 import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 import { vibeLog } from './vibe-inbox.mjs'
@@ -228,10 +228,13 @@ function depsReport(prepared) {
 async function sessionOptions(ctx, options, deps) {
   const timeoutMs = Number(options.timeoutMs ?? 3600000)
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) fail('timeout-ms는 양의 정수입니다.')
-  const provider = await availableProvider(options, deps.inspect)
+  // The CLI assigns the tool·model·effort (SETTINGS agents; --provider only when the person names one):
+  // one route for the scaffold and every variant, so the variants compare.
+  const route = await sessionRoute(options, 'variant', { root: ctx.root, runtime: ctx.runtime, inspect: deps.inspect, ...(deps.catalog ? { catalog: deps.catalog } : {}) })
+  const provider = route.tool
   // Optional flags (e.g. Claude's static system prompt) let the variants' shared prefix hit one cache across worktrees.
   const settings = (await readSettings({ root: ctx.root })).values
-  return { provider, model: options.model, timeoutMs, allowTools: options.allowTool ?? [], permissionMode: await permissionMode(options, ctx.root), headlessMcp: settings['headless-mcp'],
+  return { provider, model: route.model ?? undefined, effort: route.effort ?? null, timeoutMs, allowTools: options.allowTool ?? [], permissionMode: await permissionMode(options, ctx.root), headlessMcp: settings['headless-mcp'],
     ...(settings['usage-measurement'] ? { measurementRuntime: ctx.runtime } : {}),
     flags: await (deps.flags ?? providerFlags)(provider, { env: options.env ?? process.env }) }
 }
@@ -248,7 +251,7 @@ async function headless(execute, session, { role, cwd, prompt, log, subject }) {
   await chmod(promptPath, 0o600)
   const file = await open(log, 'w', 0o600)
   let result, measurement, failure
-  try { result = await execute({ provider: session.provider, model: session.model, job, log: (text) => { try { writeSync(file.fd, text) } catch {} }, flags: session.flags }) } catch (error) {
+  try { result = await execute({ provider: session.provider, model: session.model, effort: session.effort ?? null, job, log: (text) => { try { writeSync(file.fd, text) } catch {} }, flags: session.flags }) } catch (error) {
     failure = new SkillPackageError(error.message, [...(error.details ?? []).map((detail) => String(detail).slice(-2000)), `log: ${log}`])
   } finally {
     await file.close()

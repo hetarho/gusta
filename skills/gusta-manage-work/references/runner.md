@@ -31,7 +31,7 @@ npx @haeram/gusta work run --work feature --task-verify 'npm run lint' --verify 
 ### lane
 lane 단위는 한 worker 슬롯과 한 작업 공간을 끝까지 사용한다. 실행기는 태스크 하나씩 에이전트를 실행하고, 제출이 다음 `taskId`를 돌려주면 같은 슬롯·공간에 이어서 배정한다. 다음 태스크·수정 요청·답을 받은 결정 요청은 같은 세션을 이어서(resume) 실행한다 — 연속 4회까지, 그 뒤에는 새 세션. 세션 ID는 실행이 끝나기 전에 기록되므로(Claude는 `--session-id`로 미리 정하고, Codex는 첫 이벤트의 thread ID) timeout으로 끊긴 실행도 이어 갈 수 있다. 워커에게는 `work brief --attempt <id>`와 같은 `brief`(묶음 브랜치의 고정 커밋 기준, 내용은 stdin `brief` 항목)를 넘긴다 — STATE·FORMAT·ARCH 전체를 다시 읽지 않게 한다. 기본 어댑터는 brief를 JSON 대신 마크다운으로 프롬프트에 싣는다. 세션 루프의 세션은 lane 전체를 구현한 뒤 한 번 제출한다. 리뷰와 통합은 lane 전체에 한 번이다. stdin의 `tasks`는 단위 전체, `taskId`는 이번에 구현할 태스크다. worker/review 작업 공간과 통합 후보는 필요한 환경이 설치되지 않았을 수 있다. 작업자가 환경 준비를 할 수 있도록 지시하고 검증 명령에도 필요한 준비를 포함한다.
 
-`--provider auto`가 기본이다: dispatch마다 그 태스크의 `run:`(기획 때 고른 도구/모델@에포트)을 SETTINGS `agents` 안에서 배정한다. 쓸 수 없으면(목록 밖·미로그인·호환 안 되는 CLI·없는 모델/에포트) score가 가장 가까운 조합(같으면 싼 쪽, 그다음 agents 순서), `run:`이 없으면 카탈로그 중간 능력이다. 수정 요청·재시도는 그보다 낮추지 않고, 리뷰어는 워커 능력 이상에서 agents에 도구가 둘 이상이면 다른 도구를 먼저 쓴다. `agents`가 미정이면 시작하지 않고 `needs-init`으로 끝난다(`/gusta-init`). `--provider codex|claude`·`--providers`·`--reviewer-provider`는 그 도구로 고정하고 모델·에포트는 같은 규칙으로 그 도구 안에서 고른다. `--model`·`--reviewer-model`·`--effort`는 그 값을 덮어쓴다. 같은 도구로 고정한 리뷰어는 명시한 worker 모델을 상속한다. 배정은 attempt의 `dispatch.route`·`workerRoute`에 남는다. Orca 설치 여부로 실행 방식을 바꾸지 않는다. 임의로 모델을 추정하거나 설치·로그인하지 않는다.
+`--provider auto`가 기본이다: dispatch마다 그 태스크의 `run:`(기획 때 고른 도구/모델@에포트)을 SETTINGS `agents` 안에서 배정한다. 쓸 수 없으면(목록 밖·미로그인·호환 안 되는 CLI·없는 모델/에포트) score가 가장 가까운 조합(같으면 싼 쪽, 그다음 agents 순서), `run:`이 없으면 agents 첫 도구의 기본 설정(모델·에포트 미지정)이다. 사용량·속도 한도·과부하·로그인 실패는 `max-task-runs`에 세지 않고 진행분을 WIP 커밋한 뒤 agents 안 다음 조합으로 다시 띄운다(도구가 바뀌면 새 세션+진행 note). 모두 막히면 첫 리셋이 `--limit-wait-ms`(기본 5시간) 안이면 모델 호출 없이 기다리고, 아니면 `usage-limit`으로 끝난다(`work next`가 결정함에 남기고 마감하라고 안내). 수정 요청·재시도는 그보다 낮추지 않고, 리뷰어는 워커 능력 이상에서 agents에 도구가 둘 이상이면 다른 도구를 먼저 쓴다. `agents`가 미정이면 시작하지 않고 `needs-init`으로 끝난다(`/gusta-init`). `--provider codex|claude`·`--providers`·`--reviewer-provider`는 그 도구로 고정하고 모델·에포트는 같은 규칙으로 그 도구 안에서 고른다. `--model`·`--reviewer-model`·`--effort`는 그 값을 덮어쓴다. 같은 도구로 고정한 리뷰어는 명시한 worker 모델을 상속한다. 배정은 attempt의 `dispatch.route`·`workerRoute`에 남는다. Orca 설치 여부로 실행 방식을 바꾸지 않는다. 임의로 모델을 추정하거나 설치·로그인하지 않는다.
 
 ### 단일 도구와 혼합 워커
 
@@ -69,7 +69,7 @@ providers 목록은 슬롯에 순환 배정한다. 6개 슬롯과 `codex,claude`
 네이티브 하위 세션이 없는 오케스트레이터(맡김·헤드리스·Codex)가 탐색을 맡길 때 쓴다. 채운 탐색 프롬프트 파일로 읽기 전용 세션 하나를 띄우고(Claude plan 모드·Codex read-only, 기본 15분) 제안 JSON(`summary`·`proposals[]`)과 토큰 사용량만 돌려준다. 실행기 진행 로그는 결과에 싣지 않는다. 묶음·runtime과 무관하며 배정·승인을 만들지 않는다.
 
 ```bash
-npx @haeram/gusta work scout --prompt-file <filled scout prompt> --provider claude --json
+npx @haeram/gusta work scout --prompt-file <filled scout prompt> --json   # 도구는 SETTINGS agents에서 CLI가 배정
 ```
 
 ## 다른 실행기의 command 어댑터
