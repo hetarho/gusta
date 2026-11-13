@@ -51,7 +51,7 @@ export function runCheckCommand(command, { cwd, env, timeout = 0, signal } = {})
     child.on('close', (code) => settle(code))
   })
 }
-import { activeAttempt as active, workerBusy, pendingReview, workLimits, invalidateReview, overlaps, rankedUnits, unitTasks, touchesErrors, approvedTasks, scopedBoard } from './work-policy.mjs'
+import { activeAttempt as active, workerBusy, pendingReview, workLimits, invalidateReview, overlaps, rankedUnits, unitTasks, touchesErrors, approvedTasks, scopedBoard, isTestPath } from './work-policy.mjs'
 const now = () => new Date().toISOString()
 const date = () => yymmdd()
 const creator = () => ({ pid: process.pid, host: os.hostname() })
@@ -411,8 +411,6 @@ async function approvalHolds(root, review, target) {
   return !moved.some((file) => own.has(file) || file.startsWith('spec/ssot/'))
 }
 
-const TEST_FILE = [/(^|\/)(tests?|__tests__|e2e|spec)\//, /\.(test|spec)\.[cm]?[jt]sx?$/, /_test\.(go|py|dart|rb)$/, /(^|\/)test_[^/]+\.py$/]
-
 // Which units an independent reviewer must see. Any one reason makes a unit risky; the rest
 // are approved by policy and still fully verified at integration.
 async function assessRisk(context, group, attempt, current, targetCommit) {
@@ -434,7 +432,7 @@ async function assessRisk(context, group, attempt, current, targetCommit) {
   else if (outside.length) reasons.push(`outside touches: ${outside.slice(0, 5).join(' ')}`)
   const contract = files.filter((file) => overlaps([file], group.reviewPaths ?? []))
   if (contract.length) reasons.push(`review paths: ${contract.slice(0, 5).join(' ')}`)
-  if (files.length && !files.some((file) => TEST_FILE.some((pattern) => pattern.test(file)))) reasons.push('no test file changed')
+  if (files.length && !files.some(isTestPath)) reasons.push('no test file changed')
   if (attempt.correction || (attempt.reviewHistory ?? []).some((review) => review.verdict === 'changes_requested')) reasons.push('reworked after a review or integration failure')
   const inbox = (await groupInbox(context, group, targetCommit)).lines
   if (inbox.some((line) => { const entry = line.trim().match(INBOX_LINE); return entry?.[2] === 'decided' && entry[3].split(/\s+/).some((ref) => ids.includes(ref)) })) {

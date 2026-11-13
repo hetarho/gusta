@@ -55,6 +55,17 @@ export const EXPLORE = /^\d+[mh]$/
 export const exploreValue = (value) => value && value !== '-' ? value : null
 export const EXIT_LINE = /^- \[[ v]\] exit: \S/
 
+// The tool·model·effort a task is planned to run on (`run:claude/sonnet@high`), chosen at planning
+// from `gusta agents`. Lint checks the shape only: whether a machine has that model is not a doc fact.
+// Effort names in ascending depth, shared with the catalog's ranks (src/agent-catalog.mjs).
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+export const RUN = new RegExp(`^(claude|codex)/([A-Za-z0-9][\\w.:[\\]-]*)@(${EFFORTS.join('|')})$`)
+export const runValue = (value) => value && value !== '-' ? value : null
+export const parseRun = (value) => {
+  const match = runValue(value)?.match(RUN)
+  return match ? { tool: match[1], model: match[2], effort: match[3] } : null
+}
+
 // FORMAT date: YYMMDD in UTC.
 export const yymmdd = (date = new Date()) => date.toISOString().slice(2, 10).replaceAll('-', '')
 

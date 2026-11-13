@@ -1,5 +1,5 @@
 # T<###> <title>
-> st:todo | ssot:<ID>-<n> <ID>-<n> | base:<ID>@<rev> | dep:- | touches:- | lane:- | explore:-
+> st:todo | ssot:<ID>-<n> <ID>-<n> | base:<ID>@<rev> | dep:- | touches:- | lane:- | explore:- | run:<tool>/<model>@<effort> or ->
 
 ## goal
 <one line>

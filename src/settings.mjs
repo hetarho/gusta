@@ -11,6 +11,13 @@ const BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[A-Za-z0-9._/-]+(?<![./])$/
 const isBranch = (value) => typeof value === 'string' && BRANCH.test(value) && value !== 'HEAD' && !value.endsWith('.lock')
 const oneOf = (...values) => ({ values: values.join('|'), accepts: (value) => values.includes(value) })
 const branchOr = (...special) => ({ values: `${special.join('|')}|<branch>`, accepts: (value) => special.includes(value) || (isBranch(value) && !['true', 'false'].includes(value)) })
+// The AI tools gusta may run, in fallback order: `claude,codex`. null = undecided or invalid.
+export const AGENT_TOOLS = ['claude', 'codex']
+export function agentList(value) {
+  if (typeof value !== 'string' || value === '?') return null
+  const list = value.split(',').map((item) => item.trim())
+  return list.length && list.every((item) => AGENT_TOOLS.includes(item)) && new Set(list).size === list.length ? list : null
+}
 
 export const SETTINGS = {
   'prune-branches': { default: true, ...oneOf(true, false),
@@ -39,6 +46,8 @@ export const SETTINGS = {
     note: 'coordination branch: an orphan branch holding SESSIONS.md alone (running sessions and their claims, inbox, log, finished tasks not landed yet); the CLI reads and writes it with Git plumbing — never check it out, merge it or use it for code' },
   'coord-push': { default: true, ...oneOf(true, false),
     note: 'true = with a remote, push the coordination branch at every event (claim, release, inbox, task done, landed, checkpoint, session start and end) so other machines see work that is not pushed yet; false = this clone only, the remote is neither fetched nor pushed' },
+  agents: { default: '?', required: true, values: '?|<claude,codex in fallback order>', accepts: (value) => value === '?' || agentList(value) !== null,
+    note: 'AI tools gusta runs and recommends for tasks (gusta agents lists their models), comma-separated in fallback order; a tool at its usage limit falls back only within this list' },
 }
 export const SETTINGS_FILE = 'spec/SETTINGS.md'
 const TITLE = '# SETTINGS'

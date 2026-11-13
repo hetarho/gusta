@@ -77,6 +77,9 @@ npx @haeram/gusta context --json
 npx @haeram/gusta board
 npx @haeram/gusta board --target ../my-worktree --json
 
+# 설치된 AI 도구(claude·codex)의 로그인·모델·에포트와 조합별 능력 점수·비용 순서 — 모델 호출 없음
+npx @haeram/gusta agents --json
+
 # 충돌한 로컬 파일을 패키지 버전으로 명시적으로 교체
 npx @haeram/gusta install --force
 
@@ -123,6 +126,16 @@ batch/group 관문(`vibe check --tier batch|group`)은 세션마다(`--tag`, 없
 | `held[]` | `runnable`에서 뺀 태스크와 이유 — `claimed`(다른 세션이 진행 중)·`unlanded`·`landed`(land에는 이미 끝나 있음: 먼저 sync) |
 | `taskChecks` | 이 clone의 태스크 단계 검사(`vibe check --tier task`, 명령마다 최근 10회 실측·캐시 적중 제외) — `runs`·`ms` 합계와 `slow`(평균 60초 초과·2회 이상인 `{command, runs, avgMs}`: 최종 관문으로 옮길 후보, 정하는 것은 사람). ARCH batch에만 있는 명령은 빠지고, 기록이 없으면 키가 없다 |
 | `coordination` | `legacy`(이관 전 STATE에 남은 옛 섹션)·`lost`(다른 기기가 먼저 올려 풀린 선점)·`contested`·`push`(원격 반영 상태, 원격 실패 뒤 쉬는 중이면 `backoff`의 이유·다시 시도할 시각)·`error`(조정 브랜치를 쓸 수 없는 이유) |
+| `remaining[].run` | 태스크 인용줄의 실행 추천 `<tool>/<model>@<effort>` — 적힌 태스크에만 있다(`board --json`의 `tasks[].run`은 없으면 `null`) |
+
+`gusta agents --json`은 모델 호출 없이(`--version`·`--help`·`claude auth status`·`codex debug models --bundled`·`codex login status`) 다음을 돌려줍니다. 출력을 읽지 못한 도구는 `status: unknown`과 `error`로 남고 추측하지 않습니다.
+
+| 키 | 뜻 |
+|---|---|
+| `agents`·`unset` | SETTINGS `agents` 목록(폴백 순서), 미정이면 `null`·`true` (`/gusta-init`이 정함) |
+| `tools[]` | 도구마다 `installed`·`version`·`loggedIn`(`null`=확인 불가)·`allowed`(agents에 있음)·`status`·`models[]{model, tier, efforts, context, superseded?}` — Claude는 패키지가 아는 별칭(haiku·sonnet·opus·fable, `--help`와 교차 확인), Codex는 번들 카탈로그의 표시 모델 |
+| `options[]` | 고를 수 있는 `{tool, model, effort, score, cost, allowed}`, 싼 순서. `score`=능력(계열 순위 1~4와 에포트 low~ultra를 한 척도로, 계열 한 단계≈에포트 세 단계), `cost`=비용 순서(계열 먼저, 그다음 에포트 — 가격이 아님). 대체된(`superseded`) 모델은 빠지고 같은 계열·에포트는 하나만 |
+| `minContext`·`contextUnknown` | 허용 도구가 제안하는 모델 중 가장 작은 context window, 모델 호출 없이 알 수 없는 도구(Claude) |
 
 `--force`는 로컬 수정 내용을 덮어쓸 수 있으므로 충돌 내용을 확인한 뒤 사용하세요.
 

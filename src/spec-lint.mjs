@@ -1,8 +1,8 @@
 import { verificationTiers } from './vibe-brief.mjs'
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { sections, tableRows, quoteLine, quoteFields, splitRefs, TASK_ID, TASK_ST, EXPLORE, exploreValue, EXIT_LINE, SESSION_TAG, ISO_UTC, INBOX_LINE, REPORT_FILE, REPORT_SECTIONS, parseSsot, references, refId } from './spec-format.mjs'
-import { touchesErrors } from './work-policy.mjs'
+import { sections, tableRows, quoteLine, quoteFields, splitRefs, TASK_ID, TASK_ST, EXPLORE, exploreValue, EXIT_LINE, EFFORTS, RUN, runValue, SESSION_TAG, ISO_UTC, INBOX_LINE, REPORT_FILE, REPORT_SECTIONS, parseSsot, references, refId } from './spec-format.mjs'
+import { touchesErrors, isTestPath, TASK_BUDGET } from './work-policy.mjs'
 import { dependencyErrors, laneErrors, laneValue } from './task-graph.mjs'
 import { parseSettings } from './settings.mjs'
 
@@ -506,6 +506,11 @@ export async function lintSpec({ targetRoot } = {}) {
     if (explore && !(sections(content).get('acceptance') ?? []).some((line) => EXIT_LINE.test(line))) {
       errors.push(`tasks/${file}: explore 태스크에는 acceptance의 \`- [ ] exit: …\` 줄(시간이 다 됐을 때 무엇을 기록하고 끝내는지)이 필요합니다.`)
     }
+    // 실행 추천은 형식만 본다 — 그 모델이 있는지는 기기마다 다르다(gusta agents).
+    const run = runValue(fields.get('run'))
+    if (run && !RUN.test(run)) errors.push(`tasks/${file}: run 형식 오류: ${run} (<claude|codex>/<model>@<${EFFORTS.join('|')}>|-)`)
+    const codeTouches = splitRefs(fields.get('touches')).filter((item) => !isTestPath(item)).length
+    if (st === 'todo' && codeTouches > TASK_BUDGET.touches) reviewHints.push(`tasks/${file}: 테스트 아닌 touches ${codeTouches}개(기준 ${TASK_BUDGET.touches}) — 한 세션에 넘치면 관심사·모듈 경계로 쪼갭니다(gusta-create-task 3절).`)
     for (const ref of splitRefs(fields.get('ssot'))) {
       const parsed = ref.match(/^([A-Z]{2,6})-(\d+)$/)
       if (!parsed) {

@@ -130,6 +130,25 @@ test('gusta-start: 인자 없으면 STATE·태스크로 실행하고, 기획 변
   for (const name of ['gusta-update-ssot', 'gusta-create-ssot']) assert.match(await readFile(new URL(`${name}/SKILL.md`, skillsRoot), 'utf8'), /gusta-start 요청 실행이면 요청문이/, name)
 })
 
+test('태스크 크기·실행 추천: gusta-create-task가 크기 예산과 가장 싼 충분한 조합을 정하고, init이 쓸 도구를 정한다', async () => {
+  const read = (file) => readFile(new URL(file, skillsRoot), 'utf8')
+  const create = await read('gusta-create-task/SKILL.md')
+  assert.doesNotMatch(create, /분해 중인 모델 자신/)
+  for (const pattern of [/관심사 하나·모듈 경계 하나, 테스트를 뺀 touches 5개 이하, 단위 상한\(기본 60분\)/, /`vibe brief T### --json`의 `size\.budget\.over`[^\n]*쪼갠다/, /`minContext`/,
+    /`gusta agents --json`의 options는 싼 순서다 — `allowed` 중 이 태스크를 완주하기에 충분한 첫 조합/, /먼저 쪼갤 수 있는지/, /score 9 이상이면 impl notes에 이유 한 줄/, /`agents`가 미정이면 `run:-`으로 두고 inbox `suggest`로 gusta-init/]) assert.match(create, pattern)
+  const init = await read('gusta-init/SKILL.md')
+  for (const pattern of [/`npx @haeram\/gusta agents --json`의 `tools`/, /이 목록 안에서만 다음 도구로/, /로그인 안 된 도구는 고를 수 없다/, /`agents=claude,codex`/, /agents 미정이면 태스크 `run:`을 비워 둔다/]) assert.match(init, pattern)
+  assert.match(await read('gusta-preference/SKILL.md'), /agents\(쓸 AI 도구와 폴백 순서\)/)
+  // FORMAT task skeleton, the task template and lint name the same quote fields (CLAUDE.md principle 4).
+  const format = await read('gusta-create-architecture/assets/FORMAT.md')
+  const fields = (quote) => quote.split('|').map((part) => part.trim().split(':')[0])
+  const skeleton = format.split('\n').find((line) => line.startsWith('- task: ')).match(/`> ([^`]+)`/)[1]
+  const template = (await read('gusta-create-task/assets/task.md')).split('\n')[1].slice(2)
+  assert.deepEqual(fields(template), fields(skeleton))
+  assert.ok(fields(skeleton).includes('run'))
+  assert.match(format, /\n- Task run \(optional\): planned `<tool>\/<model>@<effort>` from `gusta agents`[^\n]*lint checks shape only\./)
+})
+
 test('검증 단계 계약: 태스크 검사는 커밋 직전 한 번, 태스크는 태스크 단계 검사만 적고, ARCH는 세 단계를 선언한다', async () => {
   const read = (file) => readFile(new URL(file, skillsRoot), 'utf8')
   assert.match(await read('gusta-implement-task/SKILL.md'), /바뀐 범위의 태스크 단계 검사[^\n]*커밋 직전에 `vibe check --tier task`로 한 번[^\n]*편집할 때마다 반복하지 않/)

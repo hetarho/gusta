@@ -45,6 +45,18 @@ export function touchesErrors(value) {
   if (!value || value === '-') return []
   return value.split(/\s+/).filter((item) => item.startsWith('/') || item.includes('\\') || /[*?\[\]:]/.test(item) || item.split('/').some((part, i, all) => part === '..' || part === '.' || (!part && i !== all.length - 1)))
 }
+// A path counts as a test by its place or name, never by what it runs (review policy, task size).
+const TEST_FILE = [/(^|\/)(tests?|__tests__|e2e|spec)\//, /\.(test|spec)\.[cm]?[jt]sx?$/, /_test\.(go|py|dart|rb)$/, /(^|\/)test_[^/]+\.py$/]
+export const isTestPath = (file) => TEST_FILE.some((pattern) => pattern.test(file))
+
+// One task should fit one fresh session with room to spare (gusta-create-task 3): its full brief
+// stays near 40k chars and it touches at most 5 non-test paths. Advisory — planning splits over it.
+export const TASK_BUDGET = { briefChars: 40000, touches: 5 }
+export function taskBudget({ briefChars, touches = [] }) {
+  const code = touches.filter((item) => !isTestPath(item)).length
+  const over = [...(briefChars > TASK_BUDGET.briefChars ? ['briefChars'] : []), ...(code > TASK_BUDGET.touches ? ['touches'] : [])]
+  return { briefChars, touches: code, limits: { ...TASK_BUDGET }, over }
+}
 export function overlaps(left = [], right = []) {
   return left.some((a) => right.some((b) => {
     a = a.replace(/\/$/, ''); b = b.replace(/\/$/, '')

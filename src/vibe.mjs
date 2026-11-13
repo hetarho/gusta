@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { inspectWorkspace, git, batchShow } from './workspace.mjs'
-import { sections, tableRows, quoteLine, quoteFields, exploreValue, SESSION_TAG, TASK_ID, TASK_ST } from './spec-format.mjs'
+import { sections, tableRows, quoteLine, quoteFields, exploreValue, runValue, SESSION_TAG, TASK_ID, TASK_ST } from './spec-format.mjs'
 import { activeRows, upsertActive, mergeState } from './state-doc.mjs'
 import { inboxEntries, STALE_MINUTES } from './coord-doc.mjs'
 import { coordView, beatSession, claimSession, recordLanded, recordCheckpoint, assertCoordinator, assertSessionTag, isDelegated, commitOnRemote, wipTime, hostName } from './vibe-coord.mjs'
@@ -594,7 +594,8 @@ export async function vibeStatus(options = {}, injected = {}) {
     concurrency: (result.others ?? []).some((row) => !row.stale) || (result.orphanDoing ?? []).length > 0 ? 'strict' : 'solo',
     next: (sections(text).get('next') ?? []).filter((line) => line.startsWith('- ')).slice(0, 3),
     counts: { inbox: inbox.length, parked: inbox.filter((entry) => entry.kind === 'parked').length, remaining: local.tasks.length },
-    remaining: local.tasks.map((task) => ({ ...task, title: task.title.slice(0, 120) })), runnable: runnable.map((task) => task.id),
+    // run: the planned tool/model@effort, only where the task file names one (format checked by lint).
+    remaining: local.tasks.map((task) => { const run = runValue(fields.get(task.id)?.get('run')); return { ...task, title: task.title.slice(0, 120), ...(run ? { run } : {}) } }), runnable: runnable.map((task) => task.id),
     // settled: nothing to execute and nothing to repair (untasked sketch input may remain).
     // parkedOnly: nothing runnable, nothing to sketch, only parked or blocked work left.
     issues, settled: !executable && !issues.length, parkedOnly: !runnable.length && !untasked && (parked.size > 0 || implementation.blocked.length > 0),

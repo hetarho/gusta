@@ -11,6 +11,7 @@ export { claimReview, finishReview, releaseReview, updateReview, resumeWork } fr
 export { nextWork, claimReviewWaiting } from './work-wait.mjs'
 export { runWork, recoverRunner } from './work-runner.mjs'
 export { inspectProviders, inspectOrca, workDoctor } from './work-providers.mjs'
+export { agentCatalog, buildCatalog } from './agent-catalog.mjs'
 export { workScout } from './work-scout.mjs'
 export { vibeStatus, vibeSync, vibePush, vibeDeploy, vibeClaim, vibeBeat, vibeCheckpoint, vibePreflight, vibeAwake, vibeCheck } from './vibe.mjs'
 export { vibeTask } from './vibe-task.mjs'

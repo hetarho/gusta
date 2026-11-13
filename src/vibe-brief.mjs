@@ -8,6 +8,7 @@ import { assembleBrief, specSource } from './spec-context.mjs'
 import { vibeSession } from './vibe-session.mjs'
 import { coordView } from './vibe-coord.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { taskBudget } from './work-policy.mjs'
 
 // The owner's inbox for a brief: the coordination branch as the clone at `targetRoot` has it now
 // (nothing is fetched, nothing is written), with the commit it was read at. null where there is no
@@ -155,7 +156,9 @@ export async function vibeBrief(options = {}) {
     freshness: base.map((entry) => { const [domain, rev] = entry.split('@'); return { domain, base: Number(rev), current: revs.get(domain) ?? null, stale: Number(rev) !== revs.get(domain) } }),
     verify: await readVerification(source.root, (await source.read('spec/ssot/ARCH.md')) ?? ''), touches: task?.touches ?? [],
     reading: 'This brief is the reading scope: whole decision blocks the task cites or needs, global rules, flow·constraints and changes since a stale base. Do not re-read STATE, FORMAT or ARCH in full. Open an original only for what issues, unfollowed or related name and the task needs.',
-    ...brief }
+    ...brief,
+    // Planning's one-session size check (gusta-create-task 3): over[] names what to split along.
+    size: { ...brief.size, budget: taskBudget({ briefChars: brief.size.chars, touches: task?.touches ?? [] }) } }
   return view ? briefView(result, options) : result
 }
 
