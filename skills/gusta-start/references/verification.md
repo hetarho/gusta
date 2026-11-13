@@ -44,7 +44,7 @@ CLI는 항목별 성공과 입력 식별자를 즉시 보존한다. 다른 항�
 
 위임된 단위 세션에서는 호스트가 선점([세션 절차](session.md))과 공동 마감을 맡는다. agent 결과의 `agentChecks`에는 id·scenario·steps·expected·observed·evidence·status·reason·replaces를 담는다. 대체한 자동 범위는 실행 대상에서 제거·축소하고 duplicationReason만으로 이중 실행을 허용하지 않는다. 기존 명시적 의무와 충돌하면 주 검증 방법을 먼저 승인된 계약에 배정한다. agent AC의 stage는 `unit|integration`(기본 integration), required는 기본 true, owner는 기본 host다. unit-stage AC는 해당 단위에서 확인하고, integration-stage not-run은 이유·담당자와 함께 태스크 result/호스트에 인계한다. 구현+명시적 인계 acceptance가 끝난 태스크를 같은 도구 없는 단위에 반복 배정하지 않으며 UI 관찰을 했다고 체크하지 않는다. 최종 완료에는 실제 candidate SHA에 고정된 필수 integration 증거가 필요하다. candidate가 바뀌면 이전 화면 관찰을 새 SHA의 pass로 복사하지 않는다.
 
-단위별 push를 사용자가 명시하면 loop는 `--push-each-unit`, 묶음은 `--push <branch>`를 사용한다. 이 경우도 실제 push 전 관문은 조정자/호스트가 실행한다. 워커·리뷰어의 batch/group 실행은 기본 거절되며, 사용자에게 별도 실행을 명시적으로 요청받았을 때만 `--allow-final`로 예외를 표시한다. 로컬 락은 같은 clone만 보호한다. 공유 통합 정본은 등록·갱신된 GUSTA 세션들의 원격 소유권을 확인하며 임의 셸·구버전·미등록 기기를 제어한다고 주장하지 않는다.
+단위별 발행을 사용자가 명시하면 loop는 `--push-each-unit`, 묶음은 `--push <branch>`를 사용하되 소유 작업 브랜치에만 발행한다. 이 발행은 전체 검수의 방아쇠가 아니며, land는 공동 고정 후보의 검수가 끝난 뒤에만 반영한다. 워커·리뷰어의 batch/group 실행은 기본 거절되며, 사용자에게 별도 실행을 명시적으로 요청받았을 때만 `--allow-final`로 예외를 표시한다. 로컬 락은 같은 clone만 보호한다. 공유 통합 정본은 등록·갱신된 GUSTA 세션들의 원격 소유권을 확인하며 임의 셸·구버전·미등록 기기를 제어한다고 주장하지 않는다.
 
 ## CI 대기
 
