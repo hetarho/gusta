@@ -35,6 +35,8 @@ import { timeBreakdown, timeLine, taskCheckLine } from './loop-time.mjs'
 import { parseFailure, LIMIT_KINDS, BLOCKING, OVERLOAD_RETRY_MS, LIMIT_POLL_MS, readLimits, recordLimit, activeLimits, limitBlocks, earliestReset, limitHint, fallbackNote, limitTarget } from './provider-limits.mjs'
 import { prepareSessionWorkspace } from './session-workspace.mjs'
 import { finalizeIntegration } from './integration-run.mjs'
+import { openIntegration } from './integration-gate.mjs'
+import { improvingGate } from './gate-ledger.mjs'
 import { mergeAgentAcceptance, renderAgentAcceptance } from './agent-acceptance.mjs'
 
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
@@ -45,14 +47,7 @@ const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
 // the gate has ever been measured does a run fall back to a share of max-hours.
 export const UNMEASURED_RESERVE_SHARE = 0.2
 // A smaller count is insufficient: retries need complete, stable identities from the same gate.
-export function improvingGate(previous, current) {
-  if (!previous || (previous.plan ?? previous.command) !== (current.plan ?? current.command) || previous.evidence !== current.evidence || !previous.failureSetComplete || !current.failureSetComplete || previous.timedOut || current.timedOut || previous.stale || current.stale) return false
-  const was = previous.identities ?? previous.failedTests, now = current.identities ?? current.failedTests
-  if (!Array.isArray(was) || !Array.isArray(now) || [...was, ...now].some((id) => typeof id !== 'string' || !id.trim())) return false
-  const before = new Set(was), after = new Set(now)
-  if (before.size !== was.length || after.size !== now.length) return false
-  return after.size > 0 && after.size < before.size && [...after].every((id) => before.has(id))
-}
+export { improvingGate }
 
 // Every command in the fixed plan must finish. Its exit receipt is authoritative even when its
 // human-readable test output is not; a single command's internal shrinking failures need a typed adapter.
@@ -750,6 +745,11 @@ export async function vibeLoop(options = {}, injected = {}) {
       // now submit only at the settled session boundary, so another session cannot invalidate
       // a long gate by landing the next unit while it is still checking.
       if (!closing) { pending = []; await save(); return true }
+      const changed = (await git(root, ['diff', '--name-only', context.workspace.git.head, 'HEAD'])).split('\n').filter((file) => file && file !== report)
+      if (!changed.length) {
+        await (await openIntegration(context)).close({ tag: options.tag, empty: true, reason: reason ?? 'no-work' })
+        pending = []; await save(); return true
+      }
       const agentChecks = dispatches.reduce((items, entry) => mergeAgentAcceptance(items, entry.result?.agentChecks ?? []), [])
       integrationState = await deps.integration({ ...options, targetRoot: root, agentChecks, signal: controller.signal, timeoutMs: Math.max(1, deadline - deps.now()) }, { check: deps.check, view: deps.view })
       await event('shared-integration', { reason: integrationState.reason ?? 'landed', candidate: integrationState.gate?.candidate ?? null })
@@ -1228,6 +1228,10 @@ export async function vibeLoop(options = {}, injected = {}) {
       rowOpen = false
       if (beating) await beating
       await metadataStep('active-end', () => metadata.beat(true)).catch(() => {})
+      if (deps.integration) {
+        const changed = (await git(root, ['diff', '--name-only', context.workspace.git.head, 'HEAD'])).split('\n').filter((file) => file && file !== report)
+        await (await openIntegration(context)).close({ tag: options.tag, empty: !changed.length, reason: reason ?? 'session-stopped' }).catch((caught) => event('integration-close-error', { error: caught.message }))
+      }
     }
     if (awake) await vibeAwake({ targetRoot: root, stop: true }).catch(async (caught) => {
       operationalErrors.push({ operation: 'awake-end', error: caught.message })

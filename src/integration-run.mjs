@@ -47,11 +47,12 @@ export async function finalizeIntegration(options = {}, injected = {}) {
   if (!status.ok) return { schemaVersion: 1, ...status }
   let gate = status.state.gate, created = false, repaired = false
   if (!gate) {
-    const ready = await store.ready({ tag: options.tag, agentChecks: validateAgentAcceptance(options.agentChecks) })
+    const ready = await store.ready({ tag: options.tag, ...(options.agentChecks === undefined ? {} : { agentChecks: validateAgentAcceptance(options.agentChecks) }), ...(options.verify === undefined ? {} : { verificationCommands: options.verify }) })
     if (!ready.ok) return { schemaVersion: 1, ...ready }
+    if (ready.value.alreadyLanded) return { schemaVersion: 1, ok: true, verified: true, alreadyLanded: true, landed: ready.value.landed, scope: ready.scope, pushed: null }
     const peers = await (injected.view ?? coordView)(context, { tag: options.tag })
     if (peers.error || peers.sync?.error || peers.push?.backoff || context.remote && (peers.push?.unpublished || peers.push?.enabled === false)) return pending('coordination-unknown', null, { coordination: peers })
-    const claimed = await store.claim({ tag: options.tag, active: peers.doc?.active ?? peers.active ?? [], deadline: options.deadline ?? new Date(Date.now() + Number(options.timeoutMs ?? 3600000)).toISOString() })
+    const claimed = await store.claim({ tag: options.tag, active: peers.doc?.active ?? peers.active ?? [], maxAttempts: options.maxGateAttempts ?? 3, deadline: options.deadline ?? new Date(Date.now() + Number(options.timeoutMs ?? 3600000)).toISOString() })
     if (!claimed.ok) return { schemaVersion: 1, ...claimed }
     gate = claimed.value.gate; created = true
   }
@@ -76,7 +77,11 @@ export async function finalizeIntegration(options = {}, injected = {}) {
     const lint = await (injected.lint ?? lintSpec)({ targetRoot: prepared.root })
     const close = await (injected.closeIssues ?? (async (root) => (await import('./vibe.mjs')).specCloseIssues(root)))(prepared.root)
     if (lint.errors.length || close.length) results.push({ ok: false, command: 'spec close', errors: [...lint.errors, ...close.map((entry) => `${entry.id}: ${entry.reason ?? entry.st}`)] })
-    const commands = verification.plan ? [{ plan: verification.plan.source }] : verification.batch.map((command) => ({ command }))
+    const commands = verification.plan ? verification.plan.checks.some((entry) => entry.tier === 'batch') ? [{ plan: verification.plan.source }] : [] : verification.batch.map((command) => ({ command }))
+    for (const command of new Set(gate.cohort.flatMap((entry) => entry.verificationCommands ?? []))) {
+      if (verification.plan?.checks.some((entry) => entry.tier === 'ci' && entry.command === command)) throw new SkillPackageError('CI 전용 검사를 로컬 통합 관문에 추가하지 않습니다.', [command])
+      if (!verification.batch.includes(command)) commands.push({ command })
+    }
     if (!commands.length && (!verification.declared || verification.partial)) results.push({ ok: false, command: 'verification policy', error: 'No declared batch coverage or explicit exclusion.' })
     const check = injected.check ?? runVibeCheck
     for (const command of commands) {
@@ -112,13 +117,16 @@ export async function finalizeIntegration(options = {}, injected = {}) {
   }
   const completed = await store.complete({ token: gate.token, candidate: gate.candidate }, { localLand: (entry) => (injected.localLand ?? localLand)(context, entry) })
   if (!completed.ok) return { schemaVersion: 1, ...completed }
-  return { schemaVersion: 1, ok: true, verified: true, gate: completed.value.gate, landed: gate.candidate, pushed: context.remote ? gate.candidate : null, target: gate.land, scope: completed.scope, acceptance }
+  return { schemaVersion: 1, ok: true, verified: true, gate: completed.value.gate, version: gate.version, landed: gate.candidate, pushed: context.remote ? gate.candidate : null, target: gate.land, scope: completed.scope, acceptance }
 }
 
 export async function vibeIntegration(options = {}, injected = {}) {
   const context = await vibeSession(options), store = await openIntegration(context, injected.store)
   if (options.step === 'status') return { schemaVersion: 1, ...await store.read() }
-  if (options.step === 'ready') return { schemaVersion: 1, ...await store.ready({ tag: options.tag, agentChecks: validateAgentAcceptance(options.agentChecks) }) }
+  if (options.step === 'ready') {
+    const value = options.file ? JSON.parse(await readFile(path.resolve(options.file), 'utf8')) : options.agentChecks
+    return { schemaVersion: 1, ...await store.ready({ tag: options.tag, ...(value === undefined ? {} : { agentChecks: validateAgentAcceptance(Array.isArray(value) ? value : value.checks) }) }) }
+  }
   if (options.step === 'accept') {
     const receipt = JSON.parse(await readFile(path.resolve(options.file ?? ''), 'utf8'))
     const checks = validateAgentAcceptance(receipt.checks)
