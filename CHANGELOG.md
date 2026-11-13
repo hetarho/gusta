@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.17.1
+
+Released: 2026-11-13.
+
+- Named verification plans (`vibe check --plan` or an ARCH `plan:` line) save
+  successful checks separately and resume failed or unfinished checks. Reuse
+  requires unchanged declared inputs, commands, environment and scope.
+- Verification rejects input or plan changes during execution and checks the
+  exact committed plan and selected inputs before carrying proof to a final
+  candidate, including bookkeeping-only changes.
+- Checker process groups are cleaned up after completion, failure, timeout and
+  cancellation so owned child processes do not remain in the background.
+- Skills reuse existing behavioral evidence, add tests only for real coverage
+  gaps and recover with failed or affected checks instead of unconditionally
+  repeating the full gate. Existing time and retry limits remain in force.
+
 ## 0.17.0
 
 Released: 2026-11-13.
