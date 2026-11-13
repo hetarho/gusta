@@ -16,6 +16,8 @@ import { delegatedCheckout } from './work-policy.mjs'
 import { activeRows, taskRow } from './state-doc.mjs'
 import { quoteLine, quoteFields, TASK_ID } from './spec-format.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { openIntegration } from './integration-gate.mjs'
+import { sessionWorkspacePolicy } from './session-workspace.mjs'
 
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
 export const hostName = () => os.hostname().replace(/\.local$/, '').replace(/[|\s]/g, '-') || 'host'
@@ -25,6 +27,13 @@ const compact = (result) => ({ pushed: result.pushed, ...(result.reason ? { reas
 const REGISTRATIONS = 50
 // A new session row with no mode given and none remembered is a person's session.
 const DEFAULT_MODE = 'pair'
+
+async function registerIntegration(context, options, injected) {
+  const policy = await sessionWorkspacePolicy({ targetRoot: context.root, workspace: context.workspace })
+  if (!policy.allowed) return { registered: false, reason: policy.reason }
+  const store = await openIntegration(context, injected.integration)
+  return store.register({ tag: options.tag, ...(options.host ? { host: options.host } : {}) })
+}
 
 // Tags no session may take: `work` names the unlanded rows a work group leaves.
 export function assertSessionTag(tag) {
@@ -151,7 +160,8 @@ export async function beatSession(context, options, injected = {}) {
       : applyEvent(text, { type: 'beat', tag, now, ...who, doing: options.doing, ...where }), text, tag, now)
   }, { tag, message: `gusta ${tag}: ${task ? `claim ${task}` : 'beat'}`, injected, coord })
   if (task) lostClaim(written.coordination, task)
-  return { schemaVersion: 1, row: rowOf((await written.store.read()).text, tag), changed: written.changed, coordination: written.coordination }
+  return { schemaVersion: 1, row: rowOf((await written.store.read()).text, tag), changed: written.changed, coordination: written.coordination,
+    integration: await registerIntegration(context, options, injected) }
 }
 
 // The task's own st — this checkout's row and file, and the land branch's row as last fetched: a
@@ -202,7 +212,8 @@ export async function claimSession(context, options, { landState = null, check =
   }, { tag, message: `gusta ${tag}: claim ${task ?? 'session'}`, publish: 'always', injected, coord })
   if (task) lostClaim(written.coordination, task)
   return { schemaVersion: 1, ok: true, tag, task: task ?? null, claimed: Boolean(task), released: written.value.released ?? [],
-    row: rowOf((await written.store.read()).text, tag), unpublished: written.coordination.unpublished, coordination: written.coordination }
+    row: rowOf((await written.store.read()).text, tag), unpublished: written.coordination.unpublished, coordination: written.coordination,
+    integration: await registerIntegration(context, options, injected) }
 }
 
 // vibe task done: the finished task waits in unlanded until the land branch holds it (so no other
