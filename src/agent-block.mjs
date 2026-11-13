@@ -18,7 +18,7 @@ const BODY = [
   '',
   'This project is built spec-first with GUSTA. `spec/` is the source of truth and code follows it.',
   '',
-  '- Plan a change with the `gusta-sketch` skill; run planned work or a one-line change request with the `gusta-start` skill.',
+  '- Implement only on a child branch; `gusta-start`, `gusta-self-improve` and `gusta-self-improve-remote` require a dedicated worktree. Plan with `gusta-sketch`.',
   '- Do not change behavior covered by a `spec/ssot/` decision without updating the spec first.',
   '- Branch, push, deploy and version behavior comes from `spec/SETTINGS.md` (the `gusta-preference` skill); never assume branch names.',
 ]
