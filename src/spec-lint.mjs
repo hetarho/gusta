@@ -251,8 +251,13 @@ export async function lintSpec({ targetRoot } = {}) {
     errors.push('spec/FORMAT.md가 없습니다.')
   }
 
+  // Session coordination (active·inbox·unlanded·log) lives in SESSIONS.md on the coordination
+  // branch, outside this tree: the CLI validates it when it writes, and lint never reads it — its
+  // refs may name tasks and decisions another worktree has not landed here. A STATE that still
+  // carries active·inbox·log (before `gusta migrate`) is checked below by the rules it always had,
+  // with no new warning: integration requires a warning-free spec, and migrate reports the move.
   const stateSections = sections(state)
-  for (const name of ['cfg', 'ssot', 'tasks', 'next', 'log']) {
+  for (const name of ['cfg', 'ssot', 'tasks', 'next']) {
     if (!stateSections.has(name)) errors.push(`STATE.md에 ## ${name} 섹션이 없습니다.`)
   }
 
@@ -645,7 +650,7 @@ export async function lintSpec({ targetRoot } = {}) {
     }
   }
 
-  // active (optional): 실행 중인 세션 한 줄씩. 원격에 push돼 다른 기기가 진행을 알아챈다.
+  // active (이관 전 STATE에만): 실행 중인 세션 한 줄씩, 여섯 칸.
   const activeRows = stateSections.has('active') ? tableRows(stateSections.get('active')) : []
   const activeTags = new Set()
   const stByTask = new Map(taskRows.map((row) => [row[0], row[4]]))
@@ -674,7 +679,7 @@ export async function lintSpec({ targetRoot } = {}) {
   // 디자인 중 상태는 checkout 로컬(vibe design)이다. 0.8.0의 STATE ## design은 기획 커밋으로 다른 worktree에 퍼진다.
   if (stateSections.has('design')) warnings.push('STATE ## design은 더 쓰지 않습니다 — 디자인 중 상태는 checkout 로컬(vibe design)에 둡니다. 섹션을 지우세요.')
 
-  // inbox (optional): 맡김 모드가 내린 잠정 결정·주차한 일. 참조는 실제로 있는 ID여야 한다.
+  // inbox (이관 전 STATE에만): 맡김 모드가 내린 잠정 결정·주차한 일. 이 트리에 있는 ID만 가리킨다.
   for (const line of stateSections.get('inbox') ?? []) {
     const trimmed = line.trim()
     if (trimmed === '') continue
@@ -732,7 +737,7 @@ export async function lintSpec({ targetRoot } = {}) {
     for (const key of parsed.unknown) warnings.push(`SETTINGS.md: 알 수 없는 설정 ${key} — vibe settings로 지원 키를 확인하세요.`)
   }
 
-  // next / log
+  // next / log (log는 이관 전 STATE에만)
   const logLines = (stateSections.get('log') ?? []).filter((line) => line.trim().startsWith('- '))
   if (logLines.length > 20) warnings.push(`STATE log가 ${logLines.length}줄입니다 — 20줄 초과분은 삭제 (FORMAT).`)
   const nextLines = (stateSections.get('next') ?? []).filter((line) => line.trim().startsWith('- '))

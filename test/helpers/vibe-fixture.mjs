@@ -47,3 +47,58 @@ export async function fixture(t, count = 3) {
   await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', 'init')
   return { root, temporary, initial: await git(root, 'rev-parse', 'HEAD'), state, arch }
 }
+
+export const MACHINES_STATE = `# STATE
+> state
+
+## cfg
+- level: expert
+- lang: ko
+- docs: en
+- push: main
+
+## ssot
+| id | rev | tasked | pending | [?] |
+|---|---|---|---|---|
+| ARCH | 1 | 1 | - | 0 |
+
+## tasks
+| id | title | ssot | dep | st |
+|---|---|---|---|---|
+| T001 | first | ARCH | - | todo |
+| T002 | second | ARCH | - | todo |
+
+## next
+- gusta-implement-task T001
+
+## log
+- 261012 gusta-create-task ARCH
+`
+const machineTask = (id, extra = '') => `# ${id} example\n> st:todo | ssot:ARCH-1 | base:ARCH@1 | dep:-${extra}\n\n## goal\nimplement ${id}\n\n## acceptance\n- [ ] works\n\n## impl notes\n- -\n\n## result\n`
+export async function configure(root, temporary) {
+  for (const [key, value] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.hooksPath', path.join(temporary, 'no-hooks')]]) await git(root, 'config', key, value)
+}
+// A bare remote and two clones: two machines working on one project (the test/vibe.test.mjs fixture).
+export async function machines(t, { state = MACHINES_STATE } = {}) {
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-vibe-')))
+  t.after(() => rm(temporary, { recursive: true, force: true }))
+  const remote = path.join(temporary, 'remote.git')
+  await execute('git', ['init', '-q', '--bare', '-b', 'main', remote])
+  const a = path.join(temporary, 'machine a')
+  await execute('git', ['init', '-q', '-b', 'main', a])
+  await configure(a, temporary)
+  await mkdir(path.join(a, 'spec/tasks'), { recursive: true })
+  await mkdir(path.join(a, 'spec/ssot'), { recursive: true })
+  await writeFile(path.join(a, 'spec/STATE.md'), state)
+  await writeFile(path.join(a, 'spec/FORMAT.md'), '# FORMAT\n')
+  await writeFile(path.join(a, 'spec/ssot/ARCH.md'), '# ARCH architecture\n> r1 | architecture\n\n## decisions\n- ARCH-1 [o] runtime: node\n\n## chg\n- r1 261012 initial\n')
+  await writeFile(path.join(a, 'spec/tasks/T001.first.md'), machineTask('T001'))
+  await writeFile(path.join(a, 'spec/tasks/T002.second.md'), machineTask('T002', ' | explore:2h').replace('- [ ] works', '- [ ] works\n- [ ] exit: record the measurement and finish'))
+  await git(a, 'add', '-A'); await git(a, 'commit', '-q', '-m', 'spec')
+  await git(a, 'remote', 'add', 'origin', remote)
+  await git(a, 'push', '-q', 'origin', 'main')
+  const b = path.join(temporary, 'machine b')
+  await execute('git', ['clone', '-q', remote, b])
+  await configure(b, temporary)
+  return { temporary, remote, a, b }
+}

@@ -8,6 +8,9 @@ import { promisify } from 'node:util'
 import { startWork, claimWork, claimNextWork, submitWork, integrateWork, finishWork, workBoard, workBrief, updateWork, syncWork } from '../src/work-groups.mjs'
 import { nextWork } from '../src/work-wait.mjs'
 import { claimReview, finishReview, resumeWork } from '../src/work-review.mjs'
+import { vibeStatus, vibeClaim, vibePush } from '../src/vibe.mjs'
+import { vibeInbox } from '../src/vibe-inbox.mjs'
+import { readSessions } from '../src/coord-doc.mjs'
 
 const execute = promisify(execFile)
 const git = (cwd, ...args) => execute('git', ['-C', cwd, ...args], { encoding: 'utf8' })
@@ -92,6 +95,9 @@ test('push 브랜치가 있으면 통합마다 반영하고, 원격이 앞서 �
   const landed = await integrateWork({ ...setup, attempt: first.id })
   assert.equal(landed.pushed.error, undefined)
   assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'trunk'], { encoding: 'utf8' })).stdout.trim(), landed.integratedCommit)
+  // The push branch is the land branch: the unit landed with its integration, so nothing waits.
+  const shared = async () => readSessions((await execute('git', ['--git-dir', remote, 'show', 'gusta:SESSIONS.md'], { encoding: 'utf8' })).stdout)
+  assert.deepEqual([landed.coordination.landed, landed.coordination.unlanded, (await shared()).unlanded], [['T001'], [], []])
   // Another machine lands a change on trunk and logs it in STATE.
   const other = path.join(setup.temporary, 'other')
   await execute('git', ['clone', '-q', remote, other])
@@ -104,6 +110,7 @@ test('push 브랜치가 있으면 통합마다 반영하고, 원격이 앞서 �
   // A checkpoint on the group branch now diverges from trunk: its push is refused and recorded.
   const saved = await syncWork({ ...setup, work: group.id })
   assert.match(saved.pushed.error, /rejected|fetch first|non-fast-forward/)
+  assert.equal(saved.coordination, undefined)
   const second = await claimWork({ ...setup, work: group.id, task: 'T002' })
   await implement(second, { 'two.txt': 'second\n' })
   await submitWork({ ...setup, attempt: second.id })
@@ -112,7 +119,10 @@ test('push 브랜치가 있으면 통합마다 반영하고, 원격이 앞서 �
   assert.equal(both.pushed.error, undefined)
   const trunk = (await execute('git', ['--git-dir', remote, 'show', 'trunk:spec/STATE.md'], { encoding: 'utf8' })).stdout
   assert.match(trunk, /- 261013 other machine: hotfix/)
-  assert.match(trunk, /T002 integrated/)
+  // Integration logs on the coordination branch (published with the event), never in STATE.
+  assert.doesNotMatch(trunk, /integrated/)
+  const after = await shared()
+  assert.deepEqual([after.log.map((line) => line.replace(/^- \d{6} /, '')), after.unlanded, both.coordination.landed], [['T002 integrated', 'T001 integrated'], [], ['T002']])
   assert.equal((await execute('git', ['--git-dir', remote, 'show', 'trunk:elsewhere.txt'], { encoding: 'utf8' })).stdout, 'from the other machine\n')
 })
 
@@ -173,4 +183,72 @@ test('work brief는 단위의 태스크, 인용한 결정 블록, 저장된 검�
   assert.equal(brief.taskId, 'T001')
   assert.deepEqual([brief.source.kind, brief.source.commit, brief.complete], ['commit', brief.commit, true])
   assert.equal(brief.domains[0].path, 'spec/ssot/ARCH.md')
+})
+
+test('통합된 단위의 태스크는 다른 checkout에서 unlanded로 잡혀 있고, 묶음이 land에 반영되면 풀린다', async (t) => {
+  const setup = await fixture(t, [{ id: 'T001', title: 'first' }, { id: 'T002', title: 'second' }])
+  // A migrated project: STATE keeps no log, SETTINGS names the land branch (nothing is pushed).
+  const stateFile = path.join(setup.root, 'spec/STATE.md')
+  await writeFile(stateFile, (await readFile(stateFile, 'utf8')).replace('- push: trunk\n', '').replace(/\n## log\n[\s\S]*$/, ''))
+  await writeFile(path.join(setup.root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: trunk\n- push: false\n')
+  await commit(setup.root, 'migrated state and settings')
+  const group = await startWork({ ...setup, name: 'feature', verify: [always] })
+  const deliver = async (id, file) => {
+    const attempt = await claimWork({ ...setup, work: group.id, task: id })
+    await implement(attempt, { [file]: `${id}\n` })
+    await submitWork({ ...setup, attempt: attempt.id })
+    await approve(setup, attempt)
+    return { attempt, integrated: await integrateWork({ ...setup, attempt: attempt.id }) }
+  }
+  const first = await deliver('T001', 'one.txt')
+  assert.deepEqual([first.integrated.coordination.error, first.integrated.coordination.unlanded, first.integrated.coordination.branch], [undefined, ['T001'], 'gusta'])
+  // The main checkout (the land branch) still lists T001 todo. A session there sees it held, cannot
+  // claim it, and is offered the task the group has not finished.
+  const held = async () => { const status = await vibeStatus({ targetRoot: setup.root, tag: 'zz99', fetch: false }); return [status.held.map((entry) => `${entry.id} ${entry.tag} ${entry.reason}`), status.runnable, status.unlanded.map((row) => `${row.id} ${row.branch}`)] }
+  assert.deepEqual(await held(), [['T001 work unlanded'], ['T002'], ['T001 work/feature']])
+  await assert.rejects(vibeClaim({ targetRoot: setup.root, tag: 'zz99', mode: 'pair', task: 'T001' }), (error) => error.name === 'ClaimError' && error.reason === 'unlanded' && error.owner === 'work')
+  // Integration left STATE without a log; the line is the coordination branch's.
+  assert.doesNotMatch(await readFile(path.join(group.path, 'spec/STATE.md'), 'utf8'), /^## (log|inbox|active)\b/m)
+  const doc = async () => readSessions((await git(setup.root, 'show', 'gusta:SESSIONS.md')).stdout)
+  assert.deepEqual((await doc()).log.map((line) => line.replace(/^- \d{6} /, '')), ['T001 integrated'])
+  // Workers and reviewers never write the coordination branch; the record came from the planning checkout.
+  const second = await claimWork({ ...setup, work: group.id, task: 'T002' })
+  await assert.rejects(vibeInbox({ targetRoot: second.workspace, step: 'add', kind: 'parked', ref: ['T002'], text: 'from a worker' }), /워커·리뷰어 checkout/)
+  // What the coordinator leaves in the inbox about a unit reaches its brief, with the branch named as the origin.
+  await vibeInbox({ targetRoot: group.path, step: 'add', kind: 'decided', ref: ['T002'], text: 'keep the old name (alt: rename)' })
+  const brief = await workBrief({ ...setup, attempt: second.id })
+  assert.deepEqual([brief.inbox.map((line) => line.replace(/^- \d{6} /, '')), brief.source.kind, brief.source.inbox.branch, brief.source.inbox.commit], [['decided T002: keep the old name (alt: rename)'], 'commit', 'gusta', (await git(setup.root, 'rev-parse', 'gusta')).stdout.trim()])
+  await implement(second, { 'two.txt': 'T002\n' })
+  await submitWork({ ...setup, attempt: second.id })
+  await approve(setup, second)
+  // The gate may run from any checkout — a worker's here: the coordination write is still the planning checkout's.
+  const both = await integrateWork({ ...setup, targetRoot: second.workspace, attempt: second.id })
+  assert.deepEqual([both.coordination.error, both.coordination.unlanded], [undefined, ['T002']])
+  assert.deepEqual(await held(), [['T001 work unlanded', 'T002 work unlanded'], [], ['T001 work/feature', 'T002 work/feature']])
+  // The coordinator lands the group from its planning checkout: both tasks leave unlanded.
+  const finished = await finishWork({ ...setup, work: group.id, verify: [always] })
+  const landed = await vibePush({ targetRoot: group.path, verifiedCommit: finished.verified.commit })
+  assert.deepEqual([landed.mode, landed.target, landed.coordination.landed], ['local', 'trunk', ['T001', 'T002']])
+  assert.deepEqual(await held(), [[], [], []])
+  assert.deepEqual((await doc()).unlanded, [])
+  assert.deepEqual((await git(setup.root, 'ls-tree', '--name-only', 'trunk:spec/tasks/done')).stdout.trim().split('\n'), ['T001.first.md', 'T002.second.md'])
+})
+
+test('조정 브랜치를 쓸 수 없어도 통합과 브리핑은 끝나고, 사유만 결과에 싣는다', async (t) => {
+  const setup = await fixture(t, [{ id: 'T001', title: 'first' }])
+  // A code branch that happens to carry the coordination branch's name: never read, written or overwritten.
+  await git(setup.root, 'branch', 'gusta')
+  const code = (await git(setup.root, 'rev-parse', 'gusta')).stdout.trim()
+  const group = await startWork({ ...setup, name: 'feature', verify: [always] })
+  const attempt = await claimWork({ ...setup, work: group.id, task: 'T001' })
+  const brief = await workBrief({ ...setup, attempt: attempt.id })
+  assert.deepEqual([brief.complete, brief.source.inbox, brief.issues.map((entry) => `${entry.level} ${entry.code}`)], [true, undefined, ['warn inbox-unavailable']])
+  await implement(attempt)
+  await submitWork({ ...setup, attempt: attempt.id })
+  await approve(setup, attempt)
+  const integrated = await integrateWork({ ...setup, attempt: attempt.id })
+  assert.equal(integrated.status, 'integrated')
+  assert.match(integrated.coordination.error, /다른 용도로 있습니다/)
+  assert.equal((await git(setup.root, 'rev-parse', 'gusta')).stdout.trim(), code)
+  assert.equal((await nextWork({ ...setup, work: group.id, owner: 'a' })).action, 'complete')
 })

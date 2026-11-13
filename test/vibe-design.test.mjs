@@ -20,9 +20,11 @@ test('디자인 중 상태는 checkout 로컬이다: STATE를 바꾸지 않고 �
   const stored = JSON.parse(await readFile(path.join(root, '.git/gusta-interactive.json'), 'utf8'))
   assert.equal(stored.design.tag, 'k3f9')
   // A planning commit in this checkout carries nothing of the design to the planning branch.
-  await writeFile(path.join(root, 'spec/STATE.md'), state.replace('## log', '## log\n- 261030 gusta-create-task ARCH'))
+  const planned = state.replace('## next', '## next\n- gusta-create-task ARCH')
+  assert.notEqual(planned, state)
+  await writeFile(path.join(root, 'spec/STATE.md'), planned)
   await git(root, 'commit', '-qam', 'plan')
-  assert.equal(await git(root, 'show', 'HEAD:spec/STATE.md'), state.replace('## log', '## log\n- 261030 gusta-create-task ARCH').trimEnd())
+  assert.equal(await git(root, 'show', 'HEAD:spec/STATE.md'), planned.trimEnd())
   const other = path.join(temporary, 'other')
   await git(root, 'worktree', 'add', '-q', '-b', 'other', other)
   const status = await vibeStatus({ targetRoot: other, fetch: false })

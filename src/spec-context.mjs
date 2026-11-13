@@ -109,7 +109,11 @@ const byId = (left, right) => {
 // draws from, and the chg lines since a stale base. Nothing is cut to fit a size: what could
 // not be found or followed is reported, never dropped quietly.
 // `always` replaces cfg always for one call (measurement, tests); callers normally omit it.
-export async function assembleBrief({ source, roots, deep = false, always: alwaysOverride, scope: scopeOverride, referrers: withReferrers = true }) {
+// `coordination` is the owner's inbox on the coordination branch as the caller read it:
+// { branch, commit, inbox: lines, error? }. It is the one part of a brief that does not come from
+// `source` — the inbox is not in any code commit — so the brief names its own origin for it
+// (source.inbox). Without it only the `## inbox` the source's STATE still carries is read.
+export async function assembleBrief({ source, roots, deep = false, always: alwaysOverride, scope: scopeOverride, referrers: withReferrers = true, coordination = null }) {
   const parsed = parseRoots(roots)
   const issues = []
   const issue = (level, code, message) => {
@@ -395,10 +399,15 @@ export async function assembleBrief({ source, roots, deep = false, always: alway
   // inbox lines about these tasks or the decisions they depend on — not the whole inbox, and not
   // lines about a global rule or a one-hop neighbour that happen to be in the brief
   const ids = new Set([...tasks.map((task) => task.id), ...[...included.values()].filter((entry) => entry.strong).map((entry) => entry.id)])
-  const inbox = (sections(state ?? '').get('inbox') ?? []).map((line) => line.trim()).filter((line) => {
-    const entry = line.match(INBOX_LINE)
-    return entry && entry[3].split(/\s+/).some((ref) => ids.has(ref))
-  })
+  const about = (line) => { const entry = line.match(INBOX_LINE); return entry && entry[3].split(/\s+/).some((ref) => ids.has(ref)) }
+  // The coordination branch's lines first, then those only the source's STATE holds (a project
+  // that has not moved its inbox yet). The rules above stay on the one source; only these lines
+  // have another origin, and it is named.
+  const shared = (coordination?.inbox ?? []).map((line) => line.trim()).filter(about)
+  const legacy = (sections(state ?? '').get('inbox') ?? []).map((line) => line.trim()).filter((line) => about(line) && !shared.includes(line))
+  const inbox = [...shared, ...legacy]
+  if (coordination?.error) issue('warn', 'inbox-unavailable', `조정 브랜치를 읽지 못해 inbox가 빠졌을 수 있습니다: ${coordination.error}`)
+  const inboxSource = coordination && !coordination.error ? { branch: coordination.branch, commit: coordination.commit ?? null, ...(legacy.length ? { state: legacy.length } : {}) } : null
 
   const domains = [...docs.values()].filter((target) => target && (decisions.some((entry) => entry.domain === target.id) || sectionList.some((entry) => entry.domain === target.id) || history.some((entry) => entry.domain === target.id)))
     .map((target) => ({ id: target.id, path: target.path, rev: target.rev, sha256: target.sha256 })).sort((a, b) => (a.id < b.id ? -1 : 1))
@@ -406,7 +415,7 @@ export async function assembleBrief({ source, roots, deep = false, always: alway
     .reduce((sum, text) => sum + text.length, 0)
   return {
     schemaVersion: 1, roots: [...roots], deep, complete: !issues.some((entry) => entry.level === 'error'),
-    source: { kind: source.kind, commit: source.commit, head: source.head, dirty: source.dirty }, scope: parsed.tasks.length ? scope : null,
+    source: { kind: source.kind, commit: source.commit, head: source.head, dirty: source.dirty, ...(inboxSource ? { inbox: inboxSource } : {}) }, scope: parsed.tasks.length ? scope : null,
     cfg: { level: cfg.get('level') ?? null, lang: cfg.get('lang') ?? null },
     always: parsed.tasks.length ? always : null,
     tasks: tasks.map(({ id, file, content, sha256: digest, archived }) => ({ id, file, content, sha256: digest, ...(archived ? { archived } : {}) })),
@@ -486,7 +495,10 @@ export function renderBrief(brief) {
     for (const kind of kinds) out.push(`- ${kind}: ${entry.decisions.filter((item) => item.kind === kind).map((item) => item.id).join(' ')}`)
     out.push(`- tasks: ${entry.tasks.map((task) => `${task.id}(${task.st})`).join(' ') || '-'}`)
   }
-  if (brief.inbox.length) out.push('', '## inbox', ...brief.inbox)
+  // The inbox is the coordination branch's as it is now, never part of the source commit: its
+  // header names where it was read (and how many lines came from the source's own STATE).
+  const from = brief.source.inbox
+  if (brief.inbox.length) out.push('', `## inbox${from ? ` · ${from.branch}@${short(from.commit)}${from.state ? ` + STATE ${from.state}` : ''}${brief.source.kind === 'commit' ? ' (current, not as of the source commit)' : ''}` : ''}`, ...brief.inbox)
   // Session fields of a single-task vibe brief or a work brief: what to run and from where.
   if (brief.verify || brief.diffBase) {
     out.push('', '## verify')

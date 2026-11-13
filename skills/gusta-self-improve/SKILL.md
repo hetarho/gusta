@@ -11,10 +11,10 @@ description: >-
 **역할: 실행한 세션이 오케스트레이터.** 탐색 세션이 근거 있는 제안을 보내고, 이 세션이 범위·비용·위험을 판단해 승인한 뒤 구현 세션을 배정한다. 구현자가 아닌 별도 세션의 리뷰와 검증을 통과한 단위를 호출한 checkout의 브랜치에 통합한다. PR은 만들지 않는다. 오케스트레이터는 배정·기획·승인·검증·통합·보고를 맡고 워커의 코드를 대신 작성하거나 자기 구현을 승인하지 않는다.
 
 ## 공통 규칙 (모든 spec 스킬)
-1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
-2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
+1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 한다).
+2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 문서 상태를 STATE에, 세션 기록(시작·상태 변화·활동)을 `vibe` 명령으로만(`beat`·`claim`·`inbox`·`log`) 남기고 SESSIONS.md를 직접 고치지 않는다. 워커는 STATE·SSOT·세션 기록 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
-4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
+4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 inbox(`vibe inbox add`)와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
 5. **읽기**: status 요약·`vibe brief <T###|ID-n|ID@rev> --summary`로 필요한 범위를 찾는다. 큰 brief는 `--section decisions|tasks --offset <n> --limit <n>`으로 원문 블록째 읽고 모든 필요 블록의 coverage를 확인한다. 전체 brief의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 보고서도 필요한 절만 읽고, 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
 ## 1. 호출과 실행 준비
@@ -35,7 +35,7 @@ SETTINGS `usage-measurement`가 true인 시작 대화는 [사용량 절차](../g
 
 ## 3. 오케스트레이터가 실행 승인
 
-제안은 처음 [?]다. 오케스트레이터가 아래 기준으로 채택 [o] / 기각 [x] / 보류 [?]를 기록한다. 승인에는 제안 artifact·기준 HEAD·허용 touches·동작 보존 조건·측정 목표·검증 명령/단계·시간 상한을 연결한다. STATE inbox decided와 보고서에는 이번 위임 또는 기존 정책 근거와 선택 이유를 남긴다. 일반 gusta-review-code의 사람 채택 규칙은 바꾸지 않는다.
+제안은 처음 [?]다. 오케스트레이터가 아래 기준으로 채택 [o] / 기각 [x] / 보류 [?]를 기록한다. 승인에는 제안 artifact·기준 HEAD·허용 touches·동작 보존 조건·측정 목표·검증 명령/단계·시간 상한을 연결한다. inbox decided와 보고서에는 이번 위임 또는 기존 정책 근거와 선택 이유를 남긴다. 일반 gusta-review-code의 사람 채택 규칙은 바꾸지 않는다.
 
 - **채택**: 관측된 문제이고 기존 계약을 보존하며 비용·영향·되돌림이 제한된다. 다른 제안과 겹치면 병합/직렬화한다. 근거가 부족하면 구현 대신 제한된 계측/탐색을 승인할 수 있다.
 - **기각/보류**: 효과가 불명확하거나 중복·소유 충돌·예산 부족인 제안. 내용과 이유를 남기고 구현 세션을 배정하지 않는다.

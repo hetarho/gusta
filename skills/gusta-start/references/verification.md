@@ -27,7 +27,7 @@ loop의 자동 회복 상한은 보조 실행기의 경계다. 시작 대화는 
 3. 실패하거나 실행 중 코드/HEAD가 바뀌면 push하지 않는다. 조정자가 수정 작업을 배정하고 변경 후 최종 후보를 다시 검증한다. 실행하지 않은 검사는 통과로 기록하지 않는다.
 4. 성공한 검증 커밋을 `vibe push --verified-commit <검증 SHA>`로 전달한다(SETTINGS land·push대로 — 할 일이 없으면 CLI가 none으로 끝낸다). sync/retry로 코드·설정·SSOT가 달라지면 CLI가 push를 거절한다. 현재 후보를 다시 검증한 뒤 새 SHA로 재시도한다. STATE·태스크·보고서·work 실행 기록만의 변경은 재검증을 요구하지 않는다. CI는 실제 코드 push 후 한 번 기다린다(아래 CI 대기).
 
-위임된 단위 세션에서는 호스트가 strict 선점([세션 절차](session.md)의 `vibe claim`)을 맡는다.
+위임된 단위 세션에서는 호스트가 선점([세션 절차](session.md))을 맡는다.
 
 단위별 push를 사용자가 명시하면 loop는 `--push-each-unit`, 묶음은 `--push <branch>`를 사용한다. 이 경우도 실제 push 전 관문은 조정자/호스트가 실행한다. 워커·리뷰어의 batch/group 실행은 기본 거절되며, 사용자에게 별도 실행을 명시적으로 요청받았을 때만 `--allow-final`로 예외를 표시한다. 락·실행 기록은 같은 clone의 worktree들이 공유하며 다른 clone의 직접 셸 실행까지 제어하지는 않는다.
 

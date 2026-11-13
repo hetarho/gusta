@@ -3,15 +3,25 @@ import { readFile, writeFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { parseSettings, effectiveSettings, applySettings, readSetting, vibeSettings, branchPlan, permissionMode } from '../src/settings.mjs'
+import { SETTINGS, parseSettings, effectiveSettings, applySettings, readSetting, vibeSettings, branchPlan, permissionMode } from '../src/settings.mjs'
 import { MIGRATIONS, migrateSpec, formatDrift, changesSince, packageVersions } from '../src/migrate.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 import { fixture, execute } from './helpers/vibe-fixture.mjs'
 
 test('설정: 파일·키가 없으면 기본값, 잘못된 값은 오류로 남고 읽는 쪽은 추측하지 않는다', async (t) => {
   assert.deepEqual(effectiveSettings(null).settings.map(({ key, value, source }) => [key, value, source]),
-    [['prune-branches', true, 'default'], ['land', '?', 'default'], ['land-via', 'merge', 'default'], ['push', false, 'default'], ['deploy', '-', 'default'], ['plan', '?', 'default'], ['permission-mode', 'bypass', 'default'], ['headless-mcp', 'isolate', 'default'], ['usage-measurement', false, 'default']])
-  assert.deepEqual(effectiveSettings(null).unset, ['land'])
+    [['prune-branches', true, 'default'], ['land', '?', 'default'], ['land-via', 'merge', 'default'], ['push', false, 'default'], ['deploy', '-', 'default'], ['plan', '?', 'default'], ['version', '?', 'default'], ['permission-mode', 'bypass', 'default'], ['headless-mcp', 'isolate', 'default'], ['usage-measurement', false, 'default'], ['agent-block', '?', 'default'], ['coord', 'gusta', 'default'], ['coord-push', true, 'default']])
+  // 조정 브랜치: 이름만 받고(끄는 값·미정 없음) gusta-init이 묻지 않는다.
+  assert.deepEqual([SETTINGS.coord.required, SETTINGS['coord-push'].required, SETTINGS.coord.values, SETTINGS['coord-push'].values], [undefined, undefined, '<branch>', 'true|false'])
+  assert.deepEqual(parseSettings('# SETTINGS\n- coord: team/sessions\n- coord-push: false\n'), { values: { coord: 'team/sessions', 'coord-push': false }, errors: [], unknown: [] })
+  for (const value of ['?', '-', 'false', 'bad..name', 'HEAD']) assert.match(parseSettings(`# SETTINGS\n- coord: ${value}\n`).errors[0], /coord: .* \(<branch>\)/, value)
+  assert.match(parseSettings('# SETTINGS\n- coord-push: off\n').errors[0], /coord-push: off \(true\|false\)/)
+  assert.deepEqual(effectiveSettings(null).unset, ['land', 'version', 'agent-block'])
+  assert.deepEqual(effectiveSettings('# SETTINGS\n- land: current\n- agent-block: false\n').unset, ['version'])
+  assert.deepEqual(effectiveSettings('# SETTINGS\n- land: current\n- version: off\n- agent-block: false\n').unset, [])
+  assert.deepEqual([SETTINGS.version.default, SETTINGS.version.required, SETTINGS.version.values], ['?', true, '?|off|auto'])
+  assert.match(parseSettings('# SETTINGS\n- version: major\n').errors[0], /version: major \(\?\|off\|auto\)/)
+  assert.match(parseSettings('# SETTINGS\n- agent-block: yes\n').errors[0], /agent-block: yes \(\?\|true\|false\)/)
   assert.match(parseSettings('# SETTINGS\n- land: bad..name\n- deploy: true\n').errors.join(), /land: bad\.\.name.*deploy: true/)
   const parsed = parseSettings('# SETTINGS\n- prune-branches: false  # keep\n- color: blue\n')
   assert.deepEqual(parsed, { values: { 'prune-branches': false }, errors: [], unknown: ['color'] })
@@ -21,6 +31,12 @@ test('설정: 파일·키가 없으면 기본값, 잘못된 값은 오류로 남
   await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- prune-branches: no\n')
   await assert.rejects(readSetting({ targetRoot: root }, 'prune-branches'), /SETTINGS.md 값이 잘못/)
   assert.ok((await lintSpec({ targetRoot: root })).errors.some((error) => /SETTINGS.md: prune-branches: no/.test(error)))
+})
+
+test('레지스트리의 모든 키는 FORMAT의 Settings 절에 정의돼 있다 (CLAUDE.md 원칙 4)', async () => {
+  const format = await readFile(new URL('../skills/gusta-create-architecture/assets/FORMAT.md', import.meta.url), 'utf8')
+  const settings = format.slice(format.indexOf('\n## Settings\n'), format.indexOf('\n## Sessions\n'))
+  for (const key of Object.keys(SETTINGS)) assert.ok(settings.includes(`\n  - \`${key}\` (`), `FORMAT Settings에 ${key}가 없습니다.`)
 })
 
 test('headless 권한: 기본은 bypass, SETTINGS가 바꾸고, 명시한 --permission-mode가 그 실행만 덮는다', async (t) => {
@@ -75,22 +91,25 @@ test('브랜치 전략: SETTINGS가 우선이고, 없는 키만 예전 STATE cfg
   const legacy = effectiveSettings(null, state)
   assert.deepEqual(legacy.settings.filter((entry) => ['land', 'push', 'plan'].includes(entry.key)).map(({ key, value, source }) => [key, value, source]),
     [['land', 'next', 'legacy-cfg'], ['push', true, 'legacy-cfg'], ['plan', 'trunk', 'legacy-cfg']])
-  assert.deepEqual(legacy.unset, []); assert.deepEqual(legacy.legacy, ['push', 'plan'])
+  assert.deepEqual(legacy.unset, ['version', 'agent-block']); assert.deepEqual(legacy.legacy, ['push', 'plan'])
   const chosen = effectiveSettings('# SETTINGS\n- land: current\n- push: false\n', state)
   assert.deepEqual(chosen.settings.filter((entry) => ['land', 'push'].includes(entry.key)).map(({ value, source }) => [value, source]), [['current', 'file'], [false, 'file']])
   const values = (text) => Object.fromEntries(effectiveSettings(text).settings.map((entry) => [entry.key, entry.value]))
   // Straight to main, pushed.
   assert.deepEqual(branchPlan(values('# SETTINGS\n- land: main\n- push: true\n'), { branch: 'feat', defaultBranch: 'main' }),
-    { land: 'main', via: 'merge', push: true, deploy: null, plan: 'main', pushTarget: 'main', landTarget: 'main', unset: false })
+    { land: 'main', via: 'merge', push: true, deploy: null, plan: 'main', pushTarget: 'main', landTarget: 'main', unset: false, coord: 'gusta', coordPush: true })
   // Staged on next, deployed to main; local only.
   assert.deepEqual(branchPlan(values('# SETTINGS\n- land: next\n- deploy: main\n'), { branch: 'next', defaultBranch: 'main' }),
-    { land: 'next', via: 'merge', push: false, deploy: 'main', plan: 'next', pushTarget: null, landTarget: null, unset: false })
+    { land: 'next', via: 'merge', push: false, deploy: 'main', plan: 'next', pushTarget: null, landTarget: null, unset: false, coord: 'gusta', coordPush: true })
   // PR into main: never a direct push target.
   assert.equal(branchPlan(values('# SETTINGS\n- land: main\n- land-via: pr\n- push: true\n'), { branch: 'feat' }).pushTarget, null)
   // Unset: commit only; planning follows the repository default branch.
   assert.deepEqual(branchPlan(values(null), { branch: 'feat', defaultBranch: 'trunk' }),
-    { land: null, via: 'merge', push: false, deploy: null, plan: 'trunk', pushTarget: null, landTarget: null, unset: true })
+    { land: null, via: 'merge', push: false, deploy: null, plan: 'trunk', pushTarget: null, landTarget: null, unset: true, coord: 'gusta', coordPush: true })
   assert.equal(branchPlan(values('# SETTINGS\n- land: current\n- push: true\n'), { branch: 'feat' }).pushTarget, 'feat')
+  // 조정 브랜치는 push 설정과 무관하다: 코드는 안 올려도 조정은 올리고, 그 반대도 된다.
+  const coordinated = branchPlan(values('# SETTINGS\n- land: main\n- push: true\n- coord: sessions\n- coord-push: false\n'), { branch: 'feat' })
+  assert.deepEqual([coordinated.coord, coordinated.coordPush, coordinated.pushTarget], ['sessions', false, 'main'])
 })
 
 test('migrate: cfg push·plan을 SETTINGS로 옮기고 다시 돌리면 바꾸지 않는다', () => {

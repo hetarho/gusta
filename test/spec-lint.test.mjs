@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -667,6 +667,72 @@ test('active의 doing 태스크 tag가 다르면 경고다', async () => {
     assert.deepEqual(result.errors, [])
     assert.ok(result.warnings.some((w) => /active k3f9: T002의 st/.test(w)), result.warnings.join('\n'))
   })
+})
+
+test('세션 섹션이 없는 STATE는 통과한다 — log는 필수가 아니고, 조정 문서(SESSIONS.md)는 트리 밖이라 검사하지 않는다', async () => {
+  const state = STATE.slice(0, STATE.indexOf('\n## log'))
+  assert.doesNotMatch(state, /^## (active|inbox|log)$/m)
+  await withFixture({ state }, async (root) => {
+    const result = await lintSpec({ targetRoot: root })
+    assert.deepEqual([result.ok, result.errors], [true, []])
+    assert.deepEqual(result.warnings.filter((w) => /log|active|inbox/.test(w)), [])
+  })
+  // 나머지 골격은 그대로 필수다.
+  for (const name of ['cfg', 'ssot', 'tasks', 'next']) {
+    const end = state.indexOf('\n## ', state.indexOf(`## ${name}\n`) + 1)
+    const without = state.slice(0, state.indexOf(`## ${name}\n`)) + (end === -1 ? '' : state.slice(end + 1))
+    await withFixture({ state: without }, async (root) => {
+      const { errors } = await lintSpec({ targetRoot: root })
+      assert.ok(errors.includes(`STATE.md에 ## ${name} 섹션이 없습니다.`), `${name}: ${errors.join('\n')}`)
+    })
+  }
+})
+
+test('이관 전 STATE에 남은 active·inbox·log는 예전 규칙 그대로 검사하고, 이관 안내로 경고·검토 후보를 늘리지 않는다', async () => {
+  await withFixture({ state: SESSION_STATE, tasks: { 'T002.api.md': DOING_T002 } }, async (root) => {
+    const result = await lintSpec({ targetRoot: root })
+    assert.deepEqual([result.ok, result.errors], [true, []])
+    for (const line of [...result.warnings, ...result.reviewHints]) assert.doesNotMatch(line, /migrate|SESSIONS|조정 브랜치|active|inbox|log/)
+  })
+  // 다른 worktree에서 온 것 같은 참조도 STATE 안에서는 여전히 이 트리 기준이다: 조정 문서에만 허용된다.
+  const foreign = SESSION_STATE.replace('- 261013 parked T001:', '- 261013 parked T404 ARCH-9:')
+  const long = SESSION_STATE.replace('## log\n', `## log\n${Array.from({ length: 20 }, (_, index) => `- 2610${String(index + 1).padStart(2, '0')} note ${index}`).join('\n')}\n`)
+  await withFixture({ state: foreign, tasks: { 'T002.api.md': DOING_T002 } }, async (root) => {
+    const { errors } = await lintSpec({ targetRoot: root })
+    assert.deepEqual(errors, ['inbox: T404가 tasks 표에도 tasks/done/에도 없습니다.', 'inbox: 존재하지 않는 결정 참조: ARCH-9'])
+  })
+  await withFixture({ state: long, tasks: { 'T002.api.md': DOING_T002 } }, async (root) => {
+    const result = await lintSpec({ targetRoot: root })
+    assert.deepEqual(result.errors, [])
+    assert.deepEqual(result.warnings.filter((w) => /log/.test(w)), ['STATE log가 22줄입니다 — 20줄 초과분은 삭제 (FORMAT).'])
+  })
+})
+
+test('STATE 골격은 FORMAT·템플릿·lint가 같이 말한다: 세션 섹션은 STATE가 아니라 SESSIONS 골격에 있다 (CLAUDE.md 원칙 4)', async () => {
+  const asset = (name) => readFile(new URL(`../skills/gusta-create-architecture/assets/${name}`, import.meta.url), 'utf8')
+  const [format, template] = [await asset('FORMAT.md'), await asset('STATE.md')]
+  const skeleton = (name) => [...format.split('\n').find((line) => line.startsWith(`- ${name}: `)).matchAll(/`## ([\w-]+)`(\(opt)?/g)].map((found) => ({ name: found[1], optional: Boolean(found[2]) }))
+  const state = skeleton('STATE')
+  assert.deepEqual(state.map((entry) => entry.name), ['cfg', 'ideation', 'ssot', 'review', 'tasks', 'work', 'next'])
+  const required = state.filter((entry) => !entry.optional).map((entry) => entry.name)
+  assert.deepEqual(required, ['cfg', 'ssot', 'tasks', 'next'])
+  // 템플릿은 필수 섹션만, 골격 순서대로 갖는다.
+  assert.deepEqual([...template.matchAll(/^## (.+)$/gm)].map((found) => found[1]), required)
+  assert.match(template, /SESSIONS\.md on the coordination branch/)
+  // lint가 요구하는 섹션도 같다.
+  const dir = await mkdtemp(path.join(tmpdir(), 'spec-lint-'))
+  try {
+    await mkdir(path.join(dir, 'spec'), { recursive: true })
+    await writeFile(path.join(dir, 'spec/STATE.md'), '# STATE\n')
+    const { errors } = await lintSpec({ targetRoot: dir })
+    assert.deepEqual(errors.filter((error) => /^STATE\.md에 ## /.test(error)), required.map((name) => `STATE.md에 ## ${name} 섹션이 없습니다.`))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+  // 세션 조정 섹션은 모두 선택이고 SESSIONS 골격에만 있다. 칸 정의는 그 아래 하위 줄이다.
+  assert.deepEqual(skeleton('sessions'), ['active', 'inbox', 'unlanded', 'log'].map((name) => ({ name, optional: true })))
+  assert.match(format, /\n  - active row `tag\|host\|mode\|since\|at\|doing\|branch\|commit`: /)
+  assert.match(format, /\n  - unlanded row `id\|tag\|branch\|commit\|at`: /)
 })
 
 test('explore 태스크는 시간 제한 형식과 exit 줄이 필수다', async () => {

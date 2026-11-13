@@ -5,7 +5,20 @@ import { inspectWorkspace, git } from './workspace.mjs'
 import { readTaskBoard } from './task-board.mjs'
 import { sections, TASK_ID } from './spec-format.mjs'
 import { assembleBrief, specSource } from './spec-context.mjs'
+import { vibeSession } from './vibe-session.mjs'
+import { coordView } from './vibe-coord.mjs'
 import { SkillPackageError } from './errors.mjs'
+
+// The owner's inbox for a brief: the coordination branch as the clone at `targetRoot` has it now
+// (nothing is fetched, nothing is written), with the commit it was read at. null where there is no
+// coordination branch to read (no Git checkout): the brief then has only its source's STATE.
+// Only SESSIONS' own lines: a `## inbox` still in STATE is read by the brief from its one source.
+export async function briefInbox(targetRoot, injected = {}) {
+  const session = await vibeSession({ targetRoot }, { unborn: true }).catch((error) => { if (error instanceof SkillPackageError) return null; throw error })
+  if (!session) return null
+  const view = await coordView(session, { fetch: false, injected })
+  return { branch: view.branch, commit: view.commit, inbox: view.sessions.inbox, ...(view.error ? { error: view.error } : {}) }
+}
 
 // Extract only explicitly labelled tiers. Conditional prose remains guidance, never
 // a shell command. Conditional browser invocations may still need specific paths.
@@ -68,7 +81,11 @@ export async function readVerification(root, archText) {
 export async function vibeBrief(options = {}) {
   const roots = options.roots ?? (options.task ? [options.task] : [])
   const source = await specSource({ targetRoot: options.targetRoot, ref: options.ref })
-  const brief = await assembleBrief({ source, roots, deep: Boolean(options.deep) })
+  // Rules and tasks come from the one source (the working tree, or --ref's commit). The inbox is
+  // the coordination branch's as it is now, with either source — it has no past to read at --ref —
+  // and the brief says so (source.inbox, the `## inbox` header).
+  // options.coordination: a caller that just read the branch (the loop host) hands its read over.
+  const brief = await assembleBrief({ source, roots, deep: Boolean(options.deep), coordination: options.coordination ?? await briefInbox(source.root) })
   const view = options.summary || options.section
   if (!view && (options.offset !== undefined || options.limit !== undefined || options.snapshot !== undefined)) throw new SkillPackageError('--offset·--limit·--snapshot은 --summary 또는 --section과 함께 사용하세요.')
   const single = roots.length === 1 && TASK_ID.test(roots[0]) ? roots[0] : null

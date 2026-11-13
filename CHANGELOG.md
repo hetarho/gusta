@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.16.0
+
+Released: 2026-11-13.
+
+- Breaking: session coordination moves off code branches. Who is doing what
+  (`active`), the decision inbox, the activity log and the new `unlanded` table
+  (tasks finished but not yet on land) live in `SESSIONS.md` on an orphan
+  coordination branch (SETTINGS `coord`, default `gusta`) that is never merged
+  into or rebased onto work branches. Only the CLI writes it, through git
+  plumbing, so the working tree, HEAD and index never change. Worktrees of one
+  clone see each other at once and claims are atomic, with or without `push`.
+- With a remote, every event (claim, release, inbox, task done, landed,
+  checkpoint, session start/end, 30-minute loop refresh) pushes the
+  coordination branch (`coord-push`, default `true`). Failures never block
+  work and back off for 10 minutes. `vibe status` shows other sessions' branch
+  and commit and whether that commit is on the remote yet, plus `held` and
+  `unlanded` tasks. An existing `gusta` branch used for something else is
+  refused — set `coord` to another name.
+- New `vibe inbox add|resolve|list` and `vibe log`. Skills record session state
+  only through `vibe beat|claim|inbox|log` (common rule 2). STATE keeps cfg,
+  ssot, tasks, ideation, review, work and next; `## log` is no longer required.
+- Upgrade every device of a project together, then run `/gusta-update`: its
+  `gusta migrate` step moves STATE's `active`, `inbox` and `log` to the
+  coordination branch and is safe to repeat from any checkout. Older CLIs claim
+  through land's STATE and do not see newer sessions.
+- `gusta-init` asks whether you run an integration branch: no — finished work
+  lands on the default branch; yes — it collects on an integration branch such
+  as `develop` and `vibe deploy` fast-forwards the default branch.
+- Opt-in automatic versioning (SETTINGS `version: auto`): when the CLI advances
+  the release branch (`deploy`, else `land`) it bumps `package.json` and its
+  lock — minor when a newly confirmed `[o]` SSOT decision landed, patch
+  otherwise, major only by hand (a manual bump is left alone). Skipped for
+  `land-via: pr` and bookkeeping-only pushes; signed when `commit.gpgsign` is on.
+- Opt-in agent instructions block (SETTINGS `agent-block`): `gusta agent-block`
+  writes a short GUSTA pointer between `<!-- gusta:begin … -->` and
+  `<!-- gusta:end -->` in the project's `CLAUDE.md`/`AGENTS.md`. Text outside
+  the markers is never touched, and `CLAUDE.md` is never created where only
+  `AGENTS.md` exists. `gusta check` reports a missing, stale or broken block.
+
 ## 0.15.2
 
 Released: 2026-11-13.

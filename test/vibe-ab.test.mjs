@@ -7,6 +7,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fixture, git } from './helpers/vibe-fixture.mjs'
+import { readSessions } from '../src/coord-doc.mjs'
 import { abStart, abAdd, abRun, abServe, abExec, abStatus, abPick, abStop, copyTree, scaffoldWarnings } from '../src/vibe-ab.mjs'
 import { renderHub, hubModel, viewPath, createHub, readFeedback, hubMain } from '../src/vibe-ab-hub.mjs'
 
@@ -92,9 +93,10 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   const before = await git(root, 'rev-parse', 'HEAD'), winner = await git(root, 'rev-parse', 'ab/hero/b')
   const adopted = await abPick({ targetRoot: root, slug: 'hero', variant: 'b' })
   assert.equal(adopted.adopted, 'b'); assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "beta"\n')
-  // The adoption is logged in STATE and left for the session to commit.
-  assert.match(adopted.logLine, /^- \d{6} ab hero: adopt b — Make it beta\.$/); assert.deepEqual(adopted.files, ['spec/STATE.md'])
-  assert.equal(await git(root, 'status', '--porcelain'), 'M spec/STATE.md')
+  // The adoption is logged on the coordination branch: no file changes, nothing for the session to commit.
+  assert.match(adopted.logLine, /^- \d{6} ab hero: adopt b — Make it beta\.$/); assert.deepEqual(adopted.files, [])
+  assert.equal(await git(root, 'status', '--porcelain'), '')
+  assert.deepEqual(readSessions(await git(root, 'show', 'gusta:SESSIONS.md')).log, [adopted.logLine])
   assert.match(await git(root, 'log', '-1', '--format=%s'), /ab hero: adopt b/)
   assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before); assert.equal(await git(root, 'rev-parse', 'HEAD^2'), winner)
   for (const entry of started.variants) assert.equal(await exists(entry.path), false)
@@ -741,28 +743,33 @@ test('records from before shared prompts keep working: plain prompt, follow-up w
   assert.equal((await abStatus({ targetRoot: root, slug: 'old' })).variants[0].commits, 2)
 })
 
-test('pick logs the adoption on top of a STATE log kept to 20 lines, and writes nothing without spec/', async (t) => {
+test('pick logs the adoption on the coordination branch — a log still in STATE is left as it is — and logs nothing without spec/', async (t) => {
   const { root, temporary } = await project(t, 'logged', 'bare')
   const state = await readFile(path.join(root, 'spec/STATE.md'), 'utf8')
+  // A project that has not moved its log yet: STATE's stays untouched, the new line goes to the branch.
   const old = Array.from({ length: 20 }, (_, index) => `- 2601${String(index + 10).padStart(2, '0')} entry ${index}`)
-  await writeFile(path.join(root, 'spec/STATE.md'), `${state.trimEnd()}\n${old.join('\n')}\n`); await git(root, 'commit', '-q', '-am', 'full log')
+  const legacy = `${state.trimEnd()}\n\n## log\n${old.join('\n')}\n`
+  await writeFile(path.join(root, 'spec/STATE.md'), legacy); await git(root, 'commit', '-q', '-am', 'full log')
   const promptFile = path.join(temporary, 'a.md'); await writeFile(promptFile, '# Cards first\n\nThree columns, price on top.')
+  const logged = async () => readSessions(await git(root, 'show', 'gusta:SESSIONS.md')).log
+  let line
   for (const slug of ['logged', 'bare']) {
     await abStart({ targetRoot: root, slug, variants: 2, basePort: 4991 })
     await abRun({ targetRoot: root, slug, variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: session(slug) })
     if (slug === 'bare') { await git(root, 'rm', '-q', '-r', 'spec'); await git(root, 'commit', '-q', '-m', 'no spec') }
     // An English --approach wins over the stored one and is cut to about 100 characters.
     const adopted = await abPick({ targetRoot: root, slug, variant: 'a', ...(slug === 'logged' ? { approach: `Cards first, ${'very '.repeat(30)}clear` } : {}) })
+    assert.deepEqual([adopted.files, await git(root, 'status', '--porcelain')], [[], ''])
     if (slug === 'bare') {
-      assert.deepEqual([adopted.logLine, adopted.files], [null, []]); assert.equal(await exists(path.join(root, 'spec/STATE.md')), false)
-      assert.equal(await git(root, 'status', '--porcelain'), '')
+      assert.equal(adopted.logLine, null); assert.equal(await exists(path.join(root, 'spec/STATE.md')), false)
+      assert.deepEqual(await logged(), [line])
       continue
     }
-    const approach = adopted.logLine.split(' — ')[1]
-    assert.match(adopted.logLine, /^- \d{6} ab logged: adopt a — Cards first, very /); assert.equal(approach.length, 100); assert.ok(approach.endsWith('…'))
-    const log = (await readFile(path.join(root, 'spec/STATE.md'), 'utf8')).split('## log\n')[1].trimEnd().split('\n')
-    assert.deepEqual(log, [adopted.logLine, ...old.slice(0, 19)])
-    await git(root, 'commit', '-q', '-am', 'log adoption')
+    line = adopted.logLine
+    const approach = line.split(' — ')[1]
+    assert.match(line, /^- \d{6} ab logged: adopt a — Cards first, very /); assert.equal(approach.length, 100); assert.ok(approach.endsWith('…'))
+    assert.deepEqual(await logged(), [line])
+    assert.equal(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), legacy)
   }
 })
 

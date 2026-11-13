@@ -19,7 +19,7 @@ SKILL.md 2절의 조건일 때만 쓴다. 아래 `work ...`·`vibe ...`는 `npx 
 ## 3. 조정자 루프
 `work next --work <slug> --owner <tag> --coordinator [--autopilot] --wait 3300 --json`을 반복하고 `action`대로 한다. 결정 요청이 생기면 바로 반환한다 — Claude는 셸 백그라운드 실행+완료 알림, Codex는 긴 timeout의 단일 블로킹 호출. 55분은 1시간 프롬프트 캐시가 식기 직전에 돌아와 맥락을 싸게 읽는 길이다: 더 짧으면 깨어날 때마다 모델 턴을 쓰고, 1시간을 넘기면 쌓인 맥락 전체를 2배 값으로 다시 캐시에 쓴다.
 - `decide`: 워커가 기획 결정을 요청했다(`attempt.decision`: question·options·recommendation).
-  - 추천안으로 gusta-update-ssot를 진행한다(잠정). inbox `decided`·보고서 decided에 질문·선택·대안을 남긴다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 inbox `parked`, 그 attempt는 `work release --attempt <id> --reason parked`로 내려놓는다.
+  - 추천안으로 gusta-update-ssot를 진행한다(잠정). inbox `decided`(`vibe inbox add`는 참조를 그 checkout에서 검사하니 기획 공간에서)·보고서 decided에 질문·선택·대안을 남긴다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 inbox `parked`, 그 attempt는 `work release --attempt <id> --reason parked`로 내려놓는다.
   - 기획은 묶음의 기획 공간(`group.path`)에서 하고 커밋한다. 결정을 요청한 태스크는 base를 새 rev로 올리고(내용은 그대로 — gusta-create-task의 todo 갱신 규칙) STATE ssot의 tasked도 rev로 맞춘다: 이 델타는 그 태스크가 소화한다. 기획 커밋 직후 `vibe plan-push`로 SETTINGS plan 브랜치에 올리고 바로 `work update --attempt <id> --status doing --note '<결정·rev·순서 조건>'`으로 재개한다. 선행 통합을 기다리겠다고 재개를 붙잡아 두지 않는다. 실행기가 기획 브랜치를 그 워커 공간에 합치고 같은 세션을 이어 실행한다.
   - 기획 공간에서는 조정자 하나만 문서를 쓴다. 활성 attempt(released·failed·integrated가 아닌 것)의 계약 불변과 영향 보고는 gusta-create-task 3절 dep 항목·gusta-update-ssot 2절 파급 확인을 따른다.
   - 통합 순서 같은 의존 관계는 태스크 deps(`dep:`)에 반영해 함께 커밋하고 메모로 넘긴다. 실제 순서를 맞추는 일은 실행기와 runtime이 맡는다.

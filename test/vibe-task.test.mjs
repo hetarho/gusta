@@ -1,11 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, writeFile, readdir } from 'node:fs/promises'
+import { readFile, writeFile, readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fixture, git, execute } from './helpers/vibe-fixture.mjs'
 import { vibeTask } from '../src/vibe-task.mjs'
+import { vibeBeat } from '../src/vibe.mjs'
 import { closeTasks, taskRow } from '../src/state-doc.mjs'
+import { readSessions } from '../src/coord-doc.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 
@@ -14,21 +16,40 @@ const run = (root, step, task, extra = {}) => vibeTask({ targetRoot: root, step,
 const read = (root, file) => readFile(path.join(root, file), 'utf8')
 async function edit(root, file, change) { await writeFile(path.join(root, file), change(await read(root, file))) }
 const rejects = (promise, pattern) => assert.rejects(promise, (error) => pattern.test(`${error.message} ${JSON.stringify(error.details)}`))
+const sessions = async (root) => readSessions(await git(root, 'show', 'gusta:SESSIONS.md'))
 const finish = (content) => content.replace('- [ ] Works', '- [v] Works').replace(/## result\n$/, '## result\n- outcome: works\n- at: -\n- verified: `node --version`\n- limits: -\n')
 
-test('start writes doing@date.tag in the task file, STATE row and own active row, and is idempotent', async (t) => {
+test('start writes doing@date.tag in the task file and STATE row, takes the task on the coordination branch, and is idempotent', async (t) => {
   const { root } = await fixture(t)
-  await edit(root, 'spec/STATE.md', (text) => text.replace('## ssot', '## active\n| tag | host | mode | since | at | doing |\n|---|---|---|---|---|---|\n| ab12 | mbp | pair | 2026-10-20T08:00Z | 2026-10-20T08:00Z | - |\n\n## ssot'))
+  // A session that never registered is registered (pair) and claims: a start is never left unclaimed.
+  const unregistered = await run(root, 'start', 'T003', { tag: 'cd34' })
+  const { coordination: claimed, ...written } = unregistered
+  assert.deepEqual(written, { schemaVersion: 1, task: 'T003', st: 'doing@261020.cd34', changed: true, files: ['spec/tasks/T003.example.md', 'spec/STATE.md'] })
+  assert.deepEqual([claimed.skipped, claimed.changed], [undefined, true])
+  assert.deepEqual((await sessions(root)).active.map((row) => `${row.tag} ${row.mode} ${row.doing}`), ['cd34 pair T003'])
+  await vibeBeat({ targetRoot: root, tag: 'cd34', end: true })
+  await vibeBeat({ targetRoot: root, tag: 'ab12', mode: 'pair', host: 'mbp' })
+  const head = await git(root, 'rev-parse', '--short=12', 'HEAD')
   const started = await run(root, 'start', 'T001', { tag: 'ab12' })
-  assert.deepEqual(started, { schemaVersion: 1, task: 'T001', st: 'doing@261020.ab12', changed: true, files: ['spec/tasks/T001.example.md', 'spec/STATE.md'] })
+  const { coordination, ...files } = started
+  assert.deepEqual(files, { schemaVersion: 1, task: 'T001', st: 'doing@261020.ab12', changed: true, files: ['spec/tasks/T001.example.md', 'spec/STATE.md'] })
+  assert.deepEqual(coordination, { branch: 'gusta', changed: true, push: { pushed: false, reason: 'no-remote' }, lost: [], unpublished: false })
   assert.match(await read(root, 'spec/tasks/T001.example.md'), /^> st:doing@261020\.ab12 \| ssot:ARCH-1/m)
   const state = await read(root, 'spec/STATE.md')
   assert.equal(taskRow(state, 'T001').st, 'doing@261020.ab12')
-  assert.match(state, /\| ab12 \| mbp \| pair \| 2026-10-20T08:00Z \| 2026-10-20T08:00Z \| T001 \|/)
+  // The session's row is the coordination branch's: STATE gets no active table.
+  assert.doesNotMatch(state, /## active/)
+  assert.deepEqual((await sessions(root)).active.map((row) => [row.tag, row.host, row.mode, row.doing, row.branch, row.commit]), [['ab12', 'mbp', 'pair', 'T001', 'main', head]])
   assert.deepEqual((await lintSpec({ targetRoot: root })).errors, [])
   const again = await run(root, 'start', 'T001', { tag: 'ab12' })
-  assert.equal(again.changed, false)
+  assert.deepEqual([again.changed, again.coordination.changed], [false, false])
   await rejects(run(root, 'start', 'T001', { tag: 'zz99' }), /다른 세션/)
+  // Another registered session holds T002 on the coordination branch: start is refused before any file is written.
+  await vibeBeat({ targetRoot: root, tag: 'zz99', mode: 'autopilot', doing: 'T002' })
+  const before = await read(root, 'spec/tasks/T002.example.md')
+  await assert.rejects(run(root, 'start', 'T002', { tag: 'ab12' }), (error) => error.name === 'ClaimError' && error.owner === 'zz99' && error.reason === 'claimed')
+  assert.equal(await read(root, 'spec/tasks/T002.example.md'), before)
+  assert.equal(taskRow(await read(root, 'spec/STATE.md'), 'T002').st, 'todo')
 })
 
 test('start keeps a remote claim on the STATE row and only completes the task file', async (t) => {
@@ -55,8 +76,8 @@ test('start refuses unfinished deps and tasks that are not todo', async (t) => {
 test('done refuses unchecked acceptance or an empty result, then archives with next and log', async (t) => {
   const { root } = await fixture(t)
   await edit(root, 'spec/tasks/T002.example.md', (text) => text.replace('dep:-', 'dep:T001'))
-  await edit(root, 'spec/STATE.md', (text) => text.replace('| T002 | example | ARCH | - | todo |', '| T002 | example | ARCH | T001 | todo |')
-    .replace('## ssot', '## active\n| tag | host | mode | since | at | doing |\n|---|---|---|---|---|---|\n| ab12 | mbp | pair | 2026-10-20T08:00Z | 2026-10-20T08:00Z | - |\n\n## ssot'))
+  await edit(root, 'spec/STATE.md', (text) => text.replace('| T002 | example | ARCH | - | todo |', '| T002 | example | ARCH | T001 | todo |'))
+  await vibeBeat({ targetRoot: root, tag: 'ab12', mode: 'pair', host: 'mbp' })
   await rejects(run(root, 'done', 'T001', { tag: 'ab12' }), /doing 태스크만/)
   await run(root, 'start', 'T001', { tag: 'ab12' })
   await rejects(run(root, 'done', 'T001', { tag: 'ab12' }), /acceptance - \[ \] Works.*result: empty/)
@@ -81,8 +102,13 @@ test('done refuses unchecked acceptance or an empty result, then archives with n
   assert.deepEqual(await readdir(path.join(root, 'spec/tasks')).then((names) => names.filter((name) => name.startsWith('T001'))), [])
   const state = await read(root, 'spec/STATE.md')
   assert.equal(taskRow(state, 'T001'), null)
-  assert.match(state, /## log\n- 261020 T001 done\n/)
-  assert.match(state, /\| ab12 \| mbp \| pair \| [^|]+ \| [^|]+ \| - \|/)
+  // The log line, the released claim and the finished task waiting to land are the coordination branch's.
+  assert.doesNotMatch(state, /## (log|active|inbox)/)
+  assert.deepEqual([closed.coordination.branch, closed.coordination.changed], ['gusta', true])
+  const doc = await sessions(root)
+  assert.deepEqual(doc.log, ['- 261020 T001 done'])
+  assert.deepEqual(doc.active.map((row) => [row.tag, row.doing]), [['ab12', '-']])
+  assert.deepEqual(doc.unlanded, [{ id: 'T001', tag: 'ab12', branch: 'main', commit: head.slice(0, 12), at: '2026-10-20T09:00Z' }])
   const lint = await lintSpec({ targetRoot: root })
   assert.deepEqual(lint.errors, [])
   assert.deepEqual(lint.warnings.filter((warning) => /T001|next|log|active/.test(warning)), [])
@@ -100,8 +126,26 @@ test('done of the last task leaves a gusta-sketch next, an explore exit closes i
   await edit(root, 'spec/tasks/T001.example.md', (text) => text.replace(/## result\n$/, '## result\n- outcome: measured\n- at: -\n- verified: -\n- limits: target unmet\n'))
   const closed = await run(root, 'done', 'T001', { forceOther: true })
   assert.deepEqual(closed.next, ['- no runnable task: plan next with gusta-sketch'])
+  // No --tag: the closing tag is the one that held the task.
+  const doc = await sessions(root)
+  assert.deepEqual(doc.log, ['- 261020 T001 done'])
+  assert.deepEqual(doc.unlanded.map((row) => [row.id, row.tag]), [['T001', 'ab12']])
+  assert.doesNotMatch(await read(root, 'spec/STATE.md'), /## log/)
+})
+
+test('a target without Git keeps the session row and the log in STATE', async (t) => {
+  const { root } = await fixture(t, 1)
+  await rm(path.join(root, '.git'), { recursive: true, force: true })
+  await vibeBeat({ targetRoot: root, tag: 'ab12', mode: 'pair', host: 'mbp' })
+  const started = await run(root, 'start', 'T001', { tag: 'ab12' })
+  assert.deepEqual(started, { schemaVersion: 1, task: 'T001', st: 'doing@261020.ab12', changed: true, files: ['spec/tasks/T001.example.md', 'spec/STATE.md'] })
+  assert.match(await read(root, 'spec/STATE.md'), /\| ab12 \| mbp \| pair \| [^|]+ \| [^|]+ \| T001 \|/)
+  await edit(root, 'spec/tasks/T001.example.md', finish)
+  const closed = await run(root, 'done', 'T001', { tag: 'ab12' })
+  assert.equal(closed.coordination, undefined)
   const state = await read(root, 'spec/STATE.md')
   assert.match(state, /## log\n- 261020 T001 done\n$/)
+  assert.match(state, /\| ab12 \| mbp \| pair \| [^|]+ \| [^|]+ \| - \|/)
 })
 
 test('closeTasks keeps 20 log lines, replaces generated next lines and reports missing rows', () => {

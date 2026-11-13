@@ -12,7 +12,8 @@ import { withHeavyLock } from '../src/check-cache.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 import { vibeDesign } from '../src/vibe-design.mjs'
 import { vibePrune } from '../src/prune.mjs'
-import { archiveTask } from './helpers/vibe-fixture.mjs'
+import { readSessions } from '../src/coord-doc.mjs'
+import { archiveTask, machines, MACHINES_STATE as STATE } from './helpers/vibe-fixture.mjs'
 
 const execute = promisify(execFile)
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
@@ -24,62 +25,12 @@ const commitAll = async (cwd, message) => {
 }
 const minutesAgo = (minutes) => `${new Date(Date.now() - minutes * 60000).toISOString().slice(0, 16)}Z`
 
-const STATE = `# STATE
-> state
-
-## cfg
-- level: expert
-- lang: ko
-- docs: en
-- push: main
-
-## ssot
-| id | rev | tasked | pending | [?] |
-|---|---|---|---|---|
-| ARCH | 1 | 1 | - | 0 |
-
-## tasks
-| id | title | ssot | dep | st |
-|---|---|---|---|---|
-| T001 | first | ARCH | - | todo |
-| T002 | second | ARCH | - | todo |
-
-## next
-- gusta-implement-task T001
-
-## log
-- 261012 gusta-create-task ARCH
-`
 const task = (id, extra = '') => `# ${id} example\n> st:todo | ssot:ARCH-1 | base:ARCH@1 | dep:-${extra}\n\n## goal\nimplement ${id}\n\n## acceptance\n- [ ] works\n\n## impl notes\n- -\n\n## result\n`
 
-async function configure(root, temporary) {
-  for (const [key, value] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.hooksPath', path.join(temporary, 'no-hooks')]]) await git(root, 'config', key, value)
-}
-
-// A bare remote and two clones: two machines working on one project.
-async function machines(t, { state = STATE } = {}) {
-  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'gusta-vibe-')))
-  t.after(() => rm(temporary, { recursive: true, force: true }))
-  const remote = path.join(temporary, 'remote.git')
-  await execute('git', ['init', '-q', '--bare', '-b', 'main', remote])
-  const a = path.join(temporary, 'machine a')
-  await execute('git', ['init', '-q', '-b', 'main', a])
-  await configure(a, temporary)
-  await mkdir(path.join(a, 'spec/tasks'), { recursive: true })
-  await mkdir(path.join(a, 'spec/ssot'), { recursive: true })
-  await writeFile(path.join(a, 'spec/STATE.md'), state)
-  await writeFile(path.join(a, 'spec/FORMAT.md'), '# FORMAT\n')
-  await writeFile(path.join(a, 'spec/ssot/ARCH.md'), '# ARCH architecture\n> r1 | architecture\n\n## decisions\n- ARCH-1 [o] runtime: node\n\n## chg\n- r1 261012 initial\n')
-  await writeFile(path.join(a, 'spec/tasks/T001.first.md'), task('T001'))
-  await writeFile(path.join(a, 'spec/tasks/T002.second.md'), task('T002', ' | explore:2h').replace('- [ ] works', '- [ ] works\n- [ ] exit: record the measurement and finish'))
-  await commitAll(a, 'spec')
-  await git(a, 'remote', 'add', 'origin', remote)
-  await git(a, 'push', '-q', 'origin', 'main')
-  const b = path.join(temporary, 'machine b')
-  await execute('git', ['clone', '-q', remote, b])
-  await configure(b, temporary)
-  return { temporary, remote, a, b }
-}
+const remoteGit = async (remote, ...args) => (await execute('git', ['--git-dir', remote, ...args], { encoding: 'utf8' })).stdout
+const sessionsAt = async (show) => readSessions(await show('gusta:SESSIONS.md'))
+// A clock for the coordination branch: `minutes` from now.
+const clock = (minutes) => ({ coord: { now: () => new Date(Date.now() + minutes * 60000) } })
 
 test('STATE 병합: log·inbox는 합치고, 행은 ID별로, active는 최신 at이 이긴다', () => {
   const base = STATE
@@ -119,36 +70,42 @@ test('active 행: cfg 뒤에 만들고, 갱신해도 since를 지키고, 마지�
   assert.equal(upsertActive(moved, { tag: 'k3f9' }, { remove: true }), STATE)
 })
 
-test('다른 기기의 진행을 원격에서 감지하고, wip 스냅샷이 오래된 행을 살려 둔다 (시나리오 c)', async (t) => {
-  const { a, b } = await machines(t)
-  // Machine A claims T001 in autopilot and pushes the claim before working.
-  await vibeBeat({ targetRoot: a, tag: 'aaaa', mode: 'autopilot', doing: 'T001', host: 'machine-a' })
-  const statePath = path.join(a, 'spec/STATE.md')
-  await writeFile(statePath, (await readFile(statePath, 'utf8')).replace('| T001 | first | ARCH | - | todo |', '| T001 | first | ARCH | - | doing@261013.aaaa |'))
-  await commitAll(a, 'T001 doing')
-  const pushed = await vibePush({ targetRoot: a })
-  assert.equal(pushed.target, 'main')
-  // Machine B starts: it sees A's live session and its claimed task, and routes to the remaining work.
+test('다른 기기의 진행을 조정 브랜치에서 감지하고, checkpoint가 오래된 행을 살려 둔다 (시나리오 c)', async (t) => {
+  const { a, b, remote } = await machines(t)
+  // Machine A registers three hours ago, takes T001 and works on a branch it has not pushed.
+  await git(a, 'checkout', '-q', '-b', 'feat/first')
+  await writeFile(path.join(a, 'first.txt'), 'half way\n')
+  await commitAll(a, 'T001 work in progress')
+  const claimed = await vibeBeat({ targetRoot: a, tag: 'aaaa', mode: 'autopilot', doing: 'T001', host: 'machine-a' }, clock(-180))
+  assert.deepEqual([claimed.row.doing, claimed.row.branch, claimed.coordination.push.pushed], ['T001', 'feat/first', true])
+  // Nothing of A's code or STATE reached the remote: only the coordination branch did.
+  assert.equal((await remoteGit(remote, 'for-each-ref', '--format=%(refname:short)', 'refs/heads')).trim(), 'gusta\nmain')
+  assert.doesNotMatch(await remoteGit(remote, 'show', 'main:spec/STATE.md'), /doing@|## active/)
+  // Machine B starts: it sees A, where it works, that its commit is not pushed, and routes to the rest.
   const status = await vibeStatus({ targetRoot: b, tag: 'bbbb' })
-  assert.equal(status.git.behind, 1)
+  assert.equal(status.git.behind, 0)
   assert.equal(status.others.length, 1)
-  assert.equal(status.others[0].tag, 'aaaa')
-  assert.equal(status.others[0].doing, 'T001')
-  assert.equal(status.others[0].stale, false)
+  assert.deepEqual([status.others[0].tag, status.others[0].doing, status.others[0].branch, status.others[0].pushed, status.others[0].stale], ['aaaa', 'T001', 'feat/first', false, true])
+  assert.equal(status.others[0].commit, (await git(a, 'rev-parse', '--short=12', 'HEAD')).stdout.trim())
   assert.deepEqual(status.orphanDoing, [])
   assert.equal(status.route, 'implementation')
   assert.deepEqual(status.implementation.explore, [{ id: 'T002', timebox: '2h' }])
-  // A's row goes quiet for three hours: stale — until a wip snapshot shows A is still working.
-  await writeFile(statePath, (await readFile(statePath, 'utf8')).replace(/\| aaaa \| machine-a \| autopilot \| ([^|]+) \| [^|]+ \|/, `| aaaa | machine-a | autopilot | $1 | ${minutesAgo(180)} |`))
-  await commitAll(a, 'old heartbeat')
-  await vibePush({ targetRoot: a })
-  assert.equal((await vibeStatus({ targetRoot: b, tag: 'bbbb' })).others[0].stale, true)
+  // Stale: a session that has not been heard of for three hours holds nothing back.
+  assert.deepEqual([status.concurrency, status.runnable, status.held], ['solo', ['T001', 'T002'], []])
+  // A checkpoint is A's sign of life: the row's `at` moves and the snapshot reaches the remote.
   await writeFile(path.join(a, 'experiment.txt'), 'half way\n')
   const snapshot = await vibeCheckpoint({ targetRoot: a, tag: 'aaaa', message: 'iteration 3' })
   assert.equal(snapshot.pushed, true)
+  assert.deepEqual([snapshot.coordination.changed, snapshot.coordination.push.pushed], [true, true])
   const fresh = await vibeStatus({ targetRoot: b, tag: 'bbbb' })
   assert.equal(fresh.others[0].stale, false)
   assert.ok(fresh.others[0].wipAt)
+  // The snapshot branch holds A's commit now, so it reads as pushed.
+  assert.equal(fresh.others[0].pushed, true)
+  assert.deepEqual([fresh.concurrency, fresh.runnable, fresh.held], ['strict', ['T002'], [{ id: 'T001', tag: 'aaaa', reason: 'claimed' }]])
+  // The session ends: its row goes, on the remote too.
+  assert.equal((await vibeBeat({ targetRoot: a, tag: 'aaaa', end: true })).removed, true)
+  assert.deepEqual((await vibeStatus({ targetRoot: b, tag: 'bbbb' })).others, [])
 })
 
 test('세션이 끝나지 않고 사라진 doing 태스크는 orphanDoing으로 보고한다', async (t) => {
@@ -172,7 +129,8 @@ test('push가 거부되면 원격을 가져와 STATE를 섹션 단위로 합치�
   await writeFile(path.join(a, 'a.txt'), 'a\n')
   await commitAll(a, 'A unit')
   await vibePush({ targetRoot: a })
-  await vibeBeat({ targetRoot: b, tag: 'bbbb', mode: 'pair', host: 'machine-b' })
+  // A project that has not moved its active table off STATE yet still merges it by section.
+  await writeFile(path.join(b, 'spec/STATE.md'), upsertActive(await readFile(path.join(b, 'spec/STATE.md'), 'utf8'), { tag: 'bbbb', host: 'machine-b', mode: 'pair', since: minutesAgo(1), at: minutesAgo(1), doing: '-' }))
   await edit(b, '- 261012 gusta-create-task ARCH', '- 261013 b: started\n- 261012 gusta-create-task ARCH')
   await writeFile(path.join(b, 'b.txt'), 'b\n')
   await commitAll(b, 'B unit')
@@ -186,77 +144,105 @@ test('push가 거부되면 원격을 가져와 STATE를 섹션 단위로 합치�
   assert.deepEqual((await lintSpec({ targetRoot: b })).errors.filter((error) => !/tasks\/T001/.test(error)), [])
 })
 
-test('claims share task ownership without publishing pending code, including subsequent claims', async (t) => {
+test('claims share task ownership on the coordination branch without publishing code or touching the working tree', async (t) => {
   const { a, b, remote } = await machines(t)
-  await vibeBeat({ targetRoot: a, tag: 'aaaa', mode: 'autopilot' })
   await writeFile(path.join(a, 'pending.txt'), 'unverified\n')
   await commitAll(a, 'pending local candidate')
-  const first = await vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T001' })
-  assert.equal(first.progressOnly, true)
-  assert.match((await execute('git', ['--git-dir', remote, 'show', 'main:spec/STATE.md'])).stdout, /T001.*doing@\d{6}\.aaaa/)
-  await assert.rejects(execute('git', ['--git-dir', remote, 'show', 'main:pending.txt']))
-  const state = path.join(a, 'spec/STATE.md')
-  await writeFile(state, (await readFile(state, 'utf8')).split('\n').filter((line) => !line.startsWith('| T001 |')).join('\n'))
-  await commitAll(a, 'local first task complete')
-  await vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T002' })
-  assert.doesNotMatch(await readFile(state, 'utf8'), /\| T001 \|/)
-  assert.equal(await readFile(path.join(a, 'pending.txt'), 'utf8'), 'unverified\n')
-  await assert.rejects(execute('git', ['--git-dir', remote, 'show', 'main:pending.txt']))
-  await vibeBeat({ targetRoot: b, tag: 'bbbb', mode: 'autopilot' })
-  await commitAll(b, 'other session')
-  await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T002' }), /다른 세션이 선점/)
+  await writeFile(path.join(a, 'dirty.txt'), 'not committed\n')
+  const before = [(await git(a, 'status', '--porcelain')).stdout, (await git(a, 'rev-parse', 'HEAD')).stdout]
+  // One call registers the session and takes the task; a dirty tree is no obstacle.
+  const first = await vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T001', mode: 'autopilot' })
+  assert.deepEqual([first.ok, first.claimed, first.task, first.unpublished, first.coordination.push.pushed], [true, true, 'T001', false, true])
+  assert.deepEqual([first.row.doing, first.row.branch, first.row.mode], ['T001', 'main', 'autopilot'])
+  assert.deepEqual((await sessionsAt((spec) => remoteGit(remote, 'show', spec))).active.map((row) => `${row.tag}:${row.doing}`), ['aaaa:T001'])
+  // The land branch got nothing: no claim in its STATE, no pending code.
+  assert.doesNotMatch(await remoteGit(remote, 'show', 'main:spec/STATE.md'), /doing@|## active/)
+  await assert.rejects(remoteGit(remote, 'show', 'main:pending.txt'))
+  assert.deepEqual([(await git(a, 'status', '--porcelain')).stdout, (await git(a, 'rev-parse', 'HEAD')).stdout], before)
+  // The next claim moves the same row.
+  const second = await vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T002' })
+  assert.equal(second.row.doing, 'T002')
+  // B has not looked yet: its claim is made locally, and the remote — who had it first — takes it back.
+  await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T002', mode: 'autopilot' }),
+    (error) => error.name === 'ClaimError' && error.lost === true && error.owner === 'aaaa' && /원격에 먼저/.test(error.message))
+  assert.deepEqual((await sessionsAt(async (spec) => (await git(b, 'show', spec)).stdout)).active.map((row) => `${row.tag}:${row.doing}`).sort(), ['aaaa:T002', 'bbbb:-'])
+  // Now B knows: the same claim is refused before anything is written.
+  await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T002' }), (error) => error.name === 'ClaimError' && error.lost === false && error.reason === 'claimed' && /aaaa 세션이 선점/.test(error.message))
+  // T001 is free again, and B takes it.
+  assert.equal((await vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001' })).row.doing, 'T001')
+  assert.equal((await git(b, 'status', '--porcelain')).stdout, '')
+})
+
+test('claims work with push false and without any remote, and register a session that has no row (pair)', async (t) => {
+  const { a, remote } = await machines(t, { state: STATE.replace('- push: main', '- push: -') })
+  const main = await remoteGit(remote, 'rev-parse', 'main')
+  const claimed = await vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T001' })
+  assert.deepEqual([claimed.row.mode, claimed.row.doing], ['pair', 'T001'])
+  // Code is never pushed here (push false); coordination is its own setting.
+  assert.deepEqual([claimed.claimed, claimed.coordination.push.pushed, claimed.unpublished], [true, true, false])
+  assert.equal(await remoteGit(remote, 'rev-parse', 'main'), main)
+  await git(a, 'remote', 'remove', 'origin')
+  const alone = await vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T002' })
+  assert.deepEqual([alone.row.doing, alone.coordination.push, alone.unpublished], ['T002', { pushed: false, reason: 'no-remote' }, false])
+  await assert.rejects(vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T009' }), /선점할 태스크가 없습니다/)
+  await assert.rejects(vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'bad' }), /--tag와 선택적 --task/)
 })
 
 test('repair claims preserve malformed task state and reserve it against ordinary and repair claimants', async (t) => {
-  const { a, b, remote } = await machines(t)
+  const { a, b } = await machines(t)
   const state = path.join(a, 'spec/STATE.md')
   await writeFile(state, (await readFile(state, 'utf8')).replace('| T001 | first | ARCH | - | todo |', '| T001 | first | ARCH | - | done |'))
   await commitAll(a, 'malformed task close')
   await git(a, 'push', '-q', 'origin', 'main')
   await git(b, 'pull', '--ff-only', '-q')
   await vibeBeat({ targetRoot: a, tag: 'aaaa', mode: 'autopilot' })
-  await writeFile(path.join(a, 'pending.txt'), 'unverified\n')
-  await commitAll(a, 'pending local repair')
+  // An ordinary claim does not take a task whose row is not todo; a repair claim reserves it as it is.
+  await assert.rejects(vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T001' }), /실행할 수 없는 태스크/)
   const reserved = await vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T001', repairTask: true })
-  assert.equal(reserved.progressOnly, true)
-  const shared = (await execute('git', ['--git-dir', remote, 'show', 'main:spec/STATE.md'])).stdout
-  assert.match(shared, /\| T001 \| first \| ARCH \| - \| done \|/)
-  assert.equal(activeRows(shared).find(({ tag }) => tag === 'aaaa').doing, 'T001')
+  assert.deepEqual([reserved.claimed, reserved.row.doing], [true, 'T001'])
   assert.match(await readFile(state, 'utf8'), /\| T001 \| first \| ARCH \| - \| done \|/)
-  await assert.rejects(execute('git', ['--git-dir', remote, 'show', 'main:pending.txt']))
+  assert.equal((await git(a, 'status', '--porcelain')).stdout, '')
+  await vibeStatus({ targetRoot: b, tag: 'bbbb' })
   await vibeBeat({ targetRoot: b, tag: 'bbbb', mode: 'autopilot' })
-  await commitAll(b, 'competing session')
-  for (const repairTask of [false, true]) await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001', repairTask }), /다른 세션이 선점/)
+  await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001' }), /실행할 수 없는 태스크/)
+  await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001', repairTask: true }), /aaaa 세션이 선점/)
 })
 
-test('repair claims respect remote task-file ownership even when the STATE row is malformed', async (t) => {
-  const { a } = await machines(t)
+test('claims respect the task\'s own doing tag, in the file and on the land branch, whatever the coordination branch says', async (t) => {
+  const { a, b } = await machines(t)
   const state = path.join(a, 'spec/STATE.md'), file = path.join(a, 'spec/tasks/T001.first.md')
   await writeFile(state, (await readFile(state, 'utf8')).replace('| T001 | first | ARCH | - | todo |', '| T001 | first | ARCH | - | done |'))
   await writeFile(file, (await readFile(file, 'utf8')).replace('st:todo', 'st:doing@261112.zzzz'))
   await commitAll(a, 'malformed STATE retains a file owner')
-  await git(a, 'push', '-q', 'origin', 'main')
   await vibeBeat({ targetRoot: a, tag: 'aaaa', mode: 'autopilot' })
-  await commitAll(a, 'repair session')
-  await assert.rejects(vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T001', repairTask: true }), /다른 세션이 선점/)
+  await assert.rejects(vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T001', repairTask: true }), (error) => error.name === 'ClaimError' && error.owner === 'zzzz' && /다른 세션이 선점/.test(error.message))
+  // The land branch as last fetched says another session is doing T002: B, still on the old row, is refused too.
+  await writeFile(state, (await readFile(state, 'utf8')).replace('| T002 | second | ARCH | - | todo |', '| T002 | second | ARCH | - | doing@261112.zzzz |'))
+  await commitAll(a, 'T002 doing')
+  await git(a, 'push', '-q', 'origin', 'main')
+  await git(b, 'fetch', '-q', 'origin')
+  await vibeBeat({ targetRoot: b, tag: 'bbbb', mode: 'autopilot' })
+  await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T002' }), /다른 세션이 선점했거나 소유자를 확인/)
 })
 
-test('stale active reservations allow reclaim only without a foreign task owner or a recent WIP heartbeat', async (t) => {
+test('a stale session\'s hold is taken over; one still checkpointing keeps it', async (t) => {
   const { a, b } = await machines(t)
-  const state = path.join(a, 'spec/STATE.md')
-  await vibeBeat({ targetRoot: a, tag: 'aaaa', mode: 'autopilot', doing: 'T001' })
-  await writeFile(state, (await readFile(state, 'utf8')).replace(/\| aaaa \| ([^|]+) \| autopilot \| ([^|]+) \| [^|]+ \|/, `| aaaa | $1 | autopilot | $2 | ${minutesAgo(180)} |`))
-  await commitAll(a, 'stale reservation')
-  await git(a, 'push', '-q', 'origin', 'main')
-  await vibeCheckpoint({ targetRoot: a, tag: 'aaaa' })
+  await vibeClaim({ targetRoot: a, tag: 'aaaa', task: 'T001', mode: 'autopilot' })
+  await vibeStatus({ targetRoot: b, tag: 'bbbb' })
   await vibeBeat({ targetRoot: b, tag: 'bbbb', mode: 'autopilot' })
-  await commitAll(b, 'new session')
-  await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001', repairTask: true }), /다른 세션이 선점/)
-  // Explicitly remove the WIP heartbeat; the stale presence alone carries no tagged claim.
-  await git(a, 'push', '-q', 'origin', ':refs/heads/wip/aaaa')
-  const claimed = await vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001' })
-  assert.equal(claimed.ok, true)
-  assert.match(await readFile(path.join(b, 'spec/STATE.md'), 'utf8'), /T001.*doing@\d{6}\.bbbb/)
+  // Thirty minutes on, A is alive. Three hours on it is not — unless its wip snapshot is newer.
+  await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001' }, clock(30)), /aaaa 세션이 선점/)
+  await git(b, 'update-ref', 'refs/remotes/origin/wip/aaaa', 'HEAD')
+  const tree = (await git(b, 'rev-parse', 'HEAD^{tree}')).stdout.trim()
+  const later = new Date(Date.now() + 150 * 60000).toISOString()
+  const snapshot = (await execute('git', ['-C', b, 'commit-tree', tree, '-p', 'HEAD', '-m', 'checkpoint aaaa'], { encoding: 'utf8', env: { ...process.env, GIT_COMMITTER_DATE: later, GIT_AUTHOR_DATE: later } })).stdout.trim()
+  await git(b, 'update-ref', 'refs/remotes/origin/wip/aaaa', snapshot)
+  await assert.rejects(vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001' }, clock(180)), /aaaa 세션이 선점/)
+  await git(b, 'update-ref', '-d', 'refs/remotes/origin/wip/aaaa')
+  const claimed = await vibeClaim({ targetRoot: b, tag: 'bbbb', task: 'T001' }, clock(180))
+  assert.deepEqual([claimed.ok, claimed.released, claimed.row.doing], [true, ['aaaa'], 'T001'])
+  // The working tree's STATE row is the task lifecycle's (vibe task start), not the claim's.
+  assert.match(await readFile(path.join(b, 'spec/STATE.md'), 'utf8'), /\| T001 \| first \| ARCH \| - \| todo \|/)
 })
 
 test('verified push rejects code introduced by sync and accepts progress-only commits', async (t) => {
@@ -298,6 +284,8 @@ test('prune: 이 세션의 wip/<tag>는 미커밋 변경 동안 보존하고, �
   const remoteWip = () => execute('git', ['--git-dir', remote, 'rev-parse', '--verify', '--quiet', 'refs/heads/wip/aaaa']).then(() => true, () => false)
   await writeFile(path.join(a, 'untracked.txt'), 'one\n')
   await vibeCheckpoint({ targetRoot: a, tag: 'aaaa' })
+  // A checkpoint registers the session (a sign of life); prune runs after it ends.
+  await vibeBeat({ targetRoot: a, tag: 'aaaa', end: true })
   let result = await vibePrune({ targetRoot: a, tag: 'aaaa' })
   assert.deepEqual(result.pruned, [])
   assert.match(result.kept[0].reason, /미커밋/)

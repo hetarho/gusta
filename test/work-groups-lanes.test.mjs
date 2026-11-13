@@ -5,6 +5,7 @@ import test from 'node:test'
 import { startWork, claimNextWork, submitWork, finishWork, workBoard, workHistory } from '../src/work-groups.mjs'
 import { nextWork } from '../src/work-wait.mjs'
 import { finishReview } from '../src/work-review.mjs'
+import { readSessions } from '../src/coord-doc.mjs'
 import { git, checkFile, laneFixture, complete, deliver } from './helpers/work-fixture.mjs'
 
 test('lane은 한 공간에서 순서대로 구현하고 lane 단위로 리뷰·통합한다', async (t) => {
@@ -42,7 +43,13 @@ test('lane은 한 공간에서 순서대로 구현하고 lane 단위로 리뷰·
   assert.match(await readFile(path.join(group.path, 'spec/tasks/done/T003.lane.md'), 'utf8'), new RegExp(`at: ${last}\\n- verified: "node -e .*T003.txt.*; integration`))
   const state = await readFile(path.join(group.path, 'spec/STATE.md'), 'utf8')
   assert.ok(!/\| T00[23] \|/.test(state))
-  assert.match(state, /- \d{6} T002 T003 integrated/)
+  // The log line and the finished tasks are the coordination branch's: STATE (here one that still
+  // keeps its old log) gets no line, and the whole lane waits in unlanded under the group's tag and branch.
+  assert.doesNotMatch(state, /integrated/)
+  const shared = readSessions((await git(setup.root, 'show', 'gusta:SESSIONS.md')).stdout)
+  assert.match(shared.log[0], /^- \d{6} T002 T003 integrated$/)
+  assert.deepEqual(shared.unlanded.map((row) => `${row.id} ${row.tag} ${row.branch}`), ['T001 work work/lanes', 'T002 work work/lanes', 'T003 work work/lanes'])
+  assert.deepEqual(integrated.coordination.unlanded, ['T002', 'T003'])
   assert.equal(integrated.status, 'integrated')
 
   await complete(laneB.workspace, 'T004')
@@ -129,4 +136,10 @@ test('세션 루프: 기반 → 리뷰 → 백그라운드 통합 → 줄기 분
   assert.equal(lines.filter(([tier]) => tier === 'task').length, 4)
   assert.equal(lines.filter(([tier]) => tier === 'unit').length, 4)
   assert.deepEqual(lines.filter(([tier]) => tier === 'group').map(([, , base]) => base), [board.group.baseCommit])
+  // The background gate left what other sessions need on the coordination branch before `complete`
+  // was reported: every integrated task waits in unlanded under the group's tag (nothing has landed),
+  // and each of the four units has its log line.
+  const shared = readSessions((await git(setup.root, 'show', 'gusta:SESSIONS.md')).stdout)
+  assert.deepEqual(shared.unlanded.map((row) => `${row.id} ${row.tag}`).sort(), ['T001', 'T002', 'T003', 'T004', 'T005'].map((id) => `${id} work`))
+  assert.equal(shared.log.filter((line) => / integrated$/.test(line)).length, 4)
 })

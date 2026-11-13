@@ -12,6 +12,8 @@ import { runWork } from '../src/work-runner.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 import { inspectWorkspace } from '../src/workspace.mjs'
 import { runtimeRoot, readRuntime } from '../src/work-runtime.mjs'
+import { vibeInbox } from '../src/vibe-inbox.mjs'
+import { readSessions } from '../src/coord-doc.mjs'
 
 const execute = promisify(execFile)
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
@@ -89,8 +91,10 @@ else console.log(JSON.stringify({type:'result',is_error:false,structured_output:
 }
 
 // What a coordinator does with a filed decision: provisional gusta-update-ssot in the planning
-// checkout (rev+1, chg, refreshed task base, inbox line), then resume with a note.
-async function answer(setup, group, decided) {
+// checkout (rev+1, chg, refreshed task base), the decision in the owner's inbox — one `vibe inbox
+// add` from the planning checkout, on the coordination branch — then resume with a note.
+// legacy: a project that has not moved its inbox yet keeps the line in STATE's own section.
+async function answer(setup, group, decided, { legacy = false } = {}) {
   const plan = group.path
   const edit = async (file, from, to) => {
     const target = path.join(plan, file)
@@ -101,7 +105,9 @@ async function answer(setup, group, decided) {
   await edit('spec/ssot/ITEM.md', '## chg\n', '## chg\n- r2 261013 ITEM-2+\n')
   await edit('spec/tasks/T001.limits.md', 'ssot:ITEM-1 | base:ITEM@1', 'ssot:ITEM-1 ITEM-2 | base:ITEM@2')
   await edit('spec/STATE.md', '| ITEM | 1 | 1 | - | 0 |', '| ITEM | 2 | 2 | - | 0 |')
-  await edit('spec/STATE.md', '## ssot\n', `## inbox\n- 261013 decided ITEM-2 T001: ${decided.attempt.decision.question} → 10 (alt: unlimited)\n\n## ssot\n`)
+  const text = `${decided.attempt.decision.question} → 10 (alt: unlimited)`
+  if (legacy) await edit('spec/STATE.md', '## ssot\n', `## inbox\n- 261013 decided ITEM-2 T001: ${text}\n\n## ssot\n`)
+  else await vibeInbox({ targetRoot: plan, step: 'add', tag: 'coord', kind: 'decided', ref: ['ITEM-2', 'T001'], text })
   assert.deepEqual((await lintSpec({ targetRoot: plan })).errors, [])
   await commit(plan, 'gusta-update-ssot ITEM r2 (provisional)')
   return updateWork({ ...setup, attempt: decided.attempt.id, status: 'doing', note: 'ITEM-2 r2: a user keeps at most 10 items' })
@@ -124,7 +130,11 @@ for (const provider of ['claude', 'codex']) test(`맡김 ${provider}: 기획 공
   assert.equal(decided.attempt.taskId, 'T001')
   assert.equal(decided.attempt.decision.recommendation, '10')
   assert.match(decided.instruction, /recommendation으로 gusta-update-ssot/)
-  await answer(setup, group, decided)
+  // The unattended instruction records the decision with one CLI call: no STATE edit, no compound command.
+  assert.match(decided.instruction, /vibe inbox add --kind decided --ref <T###\|ID-n> --text <한 줄> 한 번 호출/)
+  assert.doesNotMatch(decided.instruction, /STATE|&&|;/)
+  const legacy = provider === 'codex'
+  await answer(setup, group, decided, { legacy })
   const result = await running
   assert.equal(result.outcome, 'completed', JSON.stringify(result))
   assert.deepEqual(result.failures, [])
@@ -143,11 +153,19 @@ for (const provider of ['claude', 'codex']) test(`맡김 ${provider}: 기획 공
   // SETTINGS headless-mcp (default isolate): Claude workers and reviewers load no MCP server and get
   // no --mcp-config; Codex has no such flag.
   assert.ok(all.every((call) => call.strict === (provider === 'claude') && call.mcpConfig === null))
-  // Every landed unit is on the remote push branch, inbox line included; T001 was reviewed
-  // (an autopilot decision makes it risky), and the half done before the question survived.
+  // Every landed unit is on the remote push branch; T001 was reviewed (an autopilot decision
+  // makes it risky), and the half done before the question survived.
   const trunk = (await execute('git', ['--git-dir', setup.remote, 'show', 'trunk:spec/STATE.md'], { encoding: 'utf8' })).stdout
-  assert.match(trunk, /- 261013 decided ITEM-2 T001/)
   assert.doesNotMatch(trunk, /\| T00[12] \|/)
+  // The decision waits in the owner's inbox: on the coordination branch (pushed with every event),
+  // or in STATE's own section where a project has not moved it yet. Integration writes its log
+  // line and the finished tasks to the coordination branch — from the background gate too — and
+  // the group's push to the land branch took them out of unlanded again.
+  const shared = readSessions((await execute('git', ['--git-dir', setup.remote, 'show', 'gusta:SESSIONS.md'], { encoding: 'utf8' })).stdout)
+  if (legacy) { assert.match(trunk, /## inbox\n- 261013 decided ITEM-2 T001/); assert.deepEqual(shared.inbox, []) }
+  else { assert.doesNotMatch(trunk, /## inbox/); assert.deepEqual(shared.inbox.map((line) => line.replace(/^- \d{6} /, '')), ['decided ITEM-2 T001: How many items may a user keep? → 10 (alt: unlimited)']) }
+  assert.deepEqual([shared.log.map((line) => line.replace(/^- \d{6} /, '')).sort(), shared.unlanded, shared.active], [['T001 integrated', 'T002 integrated'], [], []])
+  assert.doesNotMatch(trunk, /integrated/)
   assert.equal((await execute('git', ['--git-dir', setup.remote, 'show', 'trunk:half.txt'], { encoding: 'utf8' })).stdout, 'first half')
   const board = await workBoard({ ...setup, work: group.id })
   const t001 = board.attempts.find((entry) => entry.taskId === 'T001')

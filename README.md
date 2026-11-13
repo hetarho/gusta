@@ -49,7 +49,7 @@ Otherwise install with `npx -y @haeram/gusta@latest install`, then verify with `
 
 `/gusta-sketch` draws the idea as one self-contained HTML page under `.tmp/sketch/<slug>/` (untracked) and serves it on one local port. You pick and refine; the decided parts become spec documents (ARCH, SSOT) and tasks, and what you put off ("fine, but let's think about it later") is kept in `spec/ideation/`. It changes no product code, and on a new project it sets up `spec/` and the architecture first.
 
-`/gusta-start` asks nothing. It shows the run — target tasks, order and parallelism, deadline, verification gates, land/push settings, tasks held by other devices (skipped) and the inbox count — and starts. It commits per task and lands finished work once at the end, as `spec/SETTINGS.md` says (no push by default). Give it a change request instead and it updates the SSOT and makes the tasks first (what your request states is your decision; gaps get the recommendation and an inbox line), then implements, verifies and lands them the same way. With no request and no runnable tasks it stops and points you to `/gusta-sketch`.
+`/gusta-start` asks nothing. It shows the run — target tasks, order and parallelism, deadline, verification gates, land/push settings, tasks held by other sessions and devices (skipped — work they have not pushed yet shows too) and the inbox count — and starts. It commits per task and lands finished work once at the end, as `spec/SETTINGS.md` says (no push by default). Give it a change request instead and it updates the SSOT and makes the tasks first (what your request states is your decision; gaps get the recommendation and an inbox line), then implements, verifies and lands them the same way. With no request and no runnable tasks it stops and points you to `/gusta-sketch`.
 
 ## Core Concepts
 
@@ -67,7 +67,7 @@ A run never waits for you. It parks only billing, data deletion, privacy and sec
 
 | Path | Holds |
 | --- | --- |
-| `STATE.md` | The control tower: settings, active sessions, decision inbox, SSOT revisions, task board, next, log |
+| `STATE.md` | The control tower: settings, SSOT revisions, task board, next |
 | `FORMAT.md` | Compact notation rules for every spec document |
 | `SETTINGS.md` | Optional package settings (branch strategy and more); missing keys use defaults |
 | `ideation/` | Ideas you deferred during a sketch; `done/` keeps those later converted to SSOT |
@@ -75,6 +75,8 @@ A run never waits for you. It parks only billing, data deletion, privacy and sec
 | `tasks/` | Remaining tasks; `done/` archives finished ones as history |
 | `review/` | Optional code and self-improvement findings |
 | `reports/` | Optional `/gusta-start` run reports |
+
+Running sessions and their claims, the decision inbox, finished tasks not landed yet and the log are not in `spec/`: they live in `SESSIONS.md` on a coordination branch of its own (named `gusta` by default). It shares no history with the code, is never merged into a working branch, and only the `vibe` commands read and write it. Worktrees of one clone see each other at once; with a remote the CLI pushes that branch alone, so another machine sees work whose code is not pushed yet ([coordination branch](docs/branching.md#조정-브랜치)).
 
 Spec documents are written in compact English; interviews, questions and reports use your language.
 
@@ -88,7 +90,7 @@ Spec documents are written in compact English; interviews, questions and reports
 | `/gusta-showcase` | Builds 2–6 variants in real code in parallel, one port per variant (or benchmarks them), merges only the one you pick and updates the docs too |
 | `/gusta-self-improve` | Your session approves improvement proposals from sub-sessions and integrates them into the current branch — no PR |
 | `/gusta-self-improve-remote` | Within a scope and budget you delegate once, finds problems, measures, implements, gets an independent review and opens a PR |
-| `/gusta-init` | Asks only the unset branch-strategy settings and saves them to `spec/SETTINGS.md` |
+| `/gusta-init` | Asks only the unset settings (branch strategy, automatic version bumps, the managed gusta block in CLAUDE.md/AGENTS.md) and saves them to `spec/SETTINGS.md` |
 | `/gusta-preference` | Shows `spec/SETTINGS.md` as a table and changes only the values you name |
 | `/gusta-update` | Checks for a new version, reinstalls the skills, migrates `spec/`, reconciles project rules, lints and commits |
 | `/gusta-send-issue` | At the end of a session, reviews how GUSTA's skills and CLI behaved, shows the anonymized findings and, once you confirm, files them as an issue on [hetarho/gusta](https://github.com/hetarho/gusta/issues) |
@@ -100,6 +102,7 @@ The other ten — `gusta-create-architecture`, `gusta-create-ssot`, `gusta-updat
 ```bash
 npx @haeram/gusta@latest install            # install or update the skills
 npx @haeram/gusta check                     # installed skills match the package
+npx @haeram/gusta agent-block               # refresh the gusta block in CLAUDE.md/AGENTS.md (only when agent-block is true)
 npx @haeram/gusta lint                      # spec/ follows the FORMAT invariants
 npx @haeram/gusta vibe status --tag k3f9    # other devices' sessions, remaining work, suggested route
 npx @haeram/gusta vibe sketch serve tag-filter   # serve .tmp/sketch/tag-filter/ on one local port
@@ -119,7 +122,7 @@ The detailed guides are written in Korean.
 | Guide | Covers |
 | --- | --- |
 | [Workflow](docs/workflow.md) | Philosophy, core principles, every skill, the `spec/` layout, sketch, start, design mode, showcase, settings |
-| [Branching & verification](docs/branching.md) | `land` · `land-via` · `push` · `deploy` · `plan`, verification tiers and the final gate |
+| [Branching & verification](docs/branching.md) | `land` · `land-via` · `push` · `deploy` · `plan` · `version`, the coordination branch (`coord`), verification tiers and the final gate |
 | [Autopilot](docs/autopilot.md) | Long unattended runs with `vibe loop`, decision briefs with `vibe brief` |
 | [Parallel work](docs/parallel-work.md) | Work groups, lanes, multiple sessions, workers and reviewers |
 | [Self-improvement](docs/self-improve.md) | `gusta-self-improve` and `gusta-self-improve-remote` |

@@ -30,9 +30,9 @@ GUSTA는 아이디어를 구현 가능한 스펙으로 발전시키고, **요구
 
 1. **역할 분리** — SSOT(기획)는 **기획자** 역할의 에이전트가 기획 관점 질문(목적·타겟·범위·플로우·정책)으로 만들고, 태스크(구현 계획)는 **엔지니어** 역할의 에이전트가 개발 관점 질문(데이터 모델·API·엣지·마이그레이션)으로 만듭니다. 기획 문서에 기술 결정이, 구현 단계에 기획 재논의가 섞이지 않습니다. 기획 쪽에 시안을 그려 선택지를 내미는 `gusta-sketch`가 있듯, 개발 쪽에는 코드 품질을 대변해 리팩토링을 주장하는 **리뷰어**(`gusta-review-code`)가, 문서 쪽에는 의미를 보존하며 문장을 다듬는 **편집자**(`gusta-doc-review`)가 있습니다. 지속 개선을 명시적으로 위임하면 gusta-self-improve-remote가 그 범위 안의 동작 보존 개선을 스스로 채택하고 독립 검토를 거쳐 PR로 만듭니다.
 2. **사용자 수준 적응** — 최초 1회 캘리브레이션으로 `expert / mid / novice`를 정하면 모든 질문과 보고가 그 수준에 맞춰집니다. expert에게는 선택지를 용어로만 나열하고 세부·엣지까지 직접 묻고, mid에게는 선택지에 장단점을 한 줄씩 붙이고, novice에게는 기술명 대신 "무엇이 어떻게 되는지"를 물은 뒤 기술 결정은 에이전트가 내리고 한 줄로 보고합니다.
-3. **문서 먼저** — 단독 작업과 기획 공간은 진행 문서(`spec/STATE.md`)에 시작과 상태 변화를 기록합니다. 작업 묶음의 워커는 공유 실행 기록에 상태를 남깁니다. 세션을 이어 받아도 "다음 태스크 구현해줘", "SSOT 변경분 태스크로 쪼개줘"가 통하도록 현재 checkout의 맥락을 보존합니다. STATE 수정은 원자적 선점이 아니며, 다른 worktree의 변경은 자동으로 공유되지 않습니다.
+3. **문서 먼저** — 단독 작업과 기획 공간은 문서 상태(SSOT rev·태스크 보드·next)를 진행 문서(`spec/STATE.md`)에, 세션 기록(시작·선점·결정함·log)을 `vibe` 명령으로 조정 브랜치의 `SESSIONS.md`에 남깁니다. 작업 묶음의 워커는 공유 실행 기록에 상태를 남깁니다. 세션을 이어 받아도 "다음 태스크 구현해줘", "SSOT 변경분 태스크로 쪼개줘"가 통하도록 현재 checkout의 맥락을 보존합니다. STATE 수정은 원자적 선점이 아니며 다른 worktree에 자동으로 공유되지 않습니다 — 선점과 세션 기록은 [조정 브랜치](branching.md#조정-브랜치)가 맡아 같은 clone의 worktree에는 즉시, 다른 기기에는 CLI의 push로 보입니다.
 4. **정책 단위 문서** — SSOT의 한 결정은 **독립적으로 이해하고 검증할 수 있는 정책 하나**입니다. 조건이 많으면 줄을 합치지 않고 하위 항목이나 표로 폅니다(줄바꿈을 없애는 것은 간결화가 아닙니다). 대신 누가 언제 요청했는지, 과거 논의와 폐기된 방식의 상세, 미사여구는 남기지 않습니다 — 호환성·실패 조건·보안·과금·수치와 단위·부정 표현·필요한 근거는 반대로 반드시 남깁니다. 구조는 `lint`가 강제하고, 의미 품질은 `lint`가 **검토 후보**로만 표시한 뒤 `gusta-doc-review`가 사람과 함께 판단합니다.
-5. **구상은 사람과, 실행은 혼자** — 묻는 일은 `/gusta-sketch`에서 끝냅니다(요청 한 줄로 충분하면 `/gusta-start <요청>` — 요청문이 곧 사람의 결정입니다). `/gusta-start`는 한 번도 묻지 않습니다 — 기획·기술 모두 추천안으로 진행하고, 받았어야 할 질문과 고른 답을 **결정함**(STATE `## inbox`)과 **보고서**(`spec/reports/`)에 남깁니다. 태스크마다 커밋하고, 검증·push는 [검증과 push](branching.md#검증과-push)를 따릅니다. SETTINGS push가 켜져 있으면 다른 세션이 보일 때 선점 정보부터 원격에 공유해 다른 기기에서도 보입니다.
+5. **구상은 사람과, 실행은 혼자** — 묻는 일은 `/gusta-sketch`에서 끝냅니다(요청 한 줄로 충분하면 `/gusta-start <요청>` — 요청문이 곧 사람의 결정입니다). `/gusta-start`는 한 번도 묻지 않습니다 — 기획·기술 모두 추천안으로 진행하고, 받았어야 할 질문과 고른 답을 **결정함**(조정 브랜치의 inbox — `vibe inbox`)과 **보고서**(`spec/reports/`)에 남깁니다. 태스크마다 커밋하고, 검증·push는 [검증과 push](branching.md#검증과-push)를 따릅니다. 선점과 진행은 SETTINGS push와 무관하게 조정 브랜치로 공유돼 다른 worktree·다른 기기에서도 보입니다.
 
 ## 스킬과 흐름
 
@@ -41,12 +41,12 @@ GUSTA는 아이디어를 구현 가능한 스펙으로 발전시키고, **요구
 | 스킬 | 역할 | 하는 일 | 산출물 |
 | --- | --- | --- | --- |
 | `gusta-sketch` | 기획 진행자 | 만들 것을 HTML 시안 한 페이지로 그려 로컬 포트 하나에 띄움(갈리는 선택이 있으면 시안을 나란히) → 사용자가 고르고 다듬음 → 내부 스킬로 ARCH·SSOT·태스크까지. 미룬 구상은 ideation 문서로. 제품 코드는 고치지 않음 | `.tmp/sketch/<slug>/`(커밋 안 함), `spec/ssot/`·`spec/tasks/`·`spec/ideation/` |
-| `gusta-start` | 실행자 | 원격의 다른 기기 진행 확인 → (변경 요청이 있으면 SSOT·태스크부터) → 실행 정보를 보여 주고 묻지 않고 실행 → 태스크별 커밋 → 마감 관문(전체 검증 뒤 SETTINGS land로 반영 한 번). 실행 중 판단은 결정함·보고서. 태스크가 없으면 `/gusta-sketch` 안내 | STATE `## active`·`## inbox`, `spec/reports/` |
+| `gusta-start` | 실행자 | 다른 세션·기기 진행 확인 → (변경 요청이 있으면 SSOT·태스크부터) → 실행 정보를 보여 주고 묻지 않고 실행 → 태스크별 커밋 → 마감 관문(전체 검증 뒤 SETTINGS land로 반영 한 번). 실행 중 판단은 결정함·보고서. 태스크가 없으면 `/gusta-sketch` 안내 | 조정 브랜치의 세션 행·결정함, `spec/reports/` |
 | `gusta-design-mode` | 디자인 진행자 | 이 checkout만 디자인 중으로 표시하고 말하는 대로 코드만 즉시 수정(테스트·커밋·push 없음) → 디자인 끝이면 전체 테스트 후 커밋 하나. 커밋·push 전엔 항상 디자인이 끝났는지 묻는다 | checkout 로컬 디자인 상태, 디자인 커밋 |
-| `gusta-showcase` | 비교 진행자 | 문제 하나를 변형 2~6개로 실제 코드까지 병렬 구현(하위 세션·변형별 worktree, UI는 공용 mock scaffold 위) → 변형마다 포트 하나씩 띄워 비교 페이지(hub)에 나란히, 또는 같은 측정을 번갈아 → 고른 변형만(scaffold 제외) 현재 브랜치에 merge하고 문서도 맞춤 | `ab/<slug>/<v>` 브랜치, 채택 merge·STATE log |
+| `gusta-showcase` | 비교 진행자 | 문제 하나를 변형 2~6개로 실제 코드까지 병렬 구현(하위 세션·변형별 worktree, UI는 공용 mock scaffold 위) → 변형마다 포트 하나씩 띄워 비교 페이지(hub)에 나란히, 또는 같은 측정을 번갈아 → 고른 변형만(scaffold 제외) 현재 브랜치에 merge하고 문서도 맞춤 | `ab/<slug>/<v>` 브랜치, 채택 merge·log 한 줄 |
 | `gusta-self-improve-remote` | 개선 조정자 | 실행 기록·코드·업무 흐름에서 문제 발견 → 제한된 측정·구현 → 별도 세션 검토 → PR. 큰 변화는 사람 판단 | 기존 review/task/report + 개선 PR |
 | `gusta-self-improve` | 호출 세션이 오케스트레이터 | 하위 탐색의 제안 → 오케스트레이터 승인 → 승인 범위 구현·독립 리뷰 → 현재 브랜치 통합 | 승인 기록 + 로컬 커밋·검증·보고서 |
-| `gusta-init` | 설정 인터뷰 | 브랜치 전략(land·병합 방식·push·배포 브랜치·기획 브랜치) 중 미정인 것만 묻고 저장. 다른 스킬도 미정이면 먼저 이리로 보냄 | `spec/SETTINGS.md` |
+| `gusta-init` | 설정 인터뷰 | 브랜치 전략(개발 브랜치를 운영하는지 — land·병합 방식·push·배포 브랜치·기획 브랜치), 자동 버전 관리, CLAUDE.md·AGENTS.md의 gusta 안내 블록 중 미정인 것만 묻고 저장. 다른 스킬도 미정이면 먼저 이리로 보냄 | `spec/SETTINGS.md` |
 | `gusta-preference` | 설정 안내 | 이 프로젝트의 패키지 동작 설정(`spec/SETTINGS.md`)을 표로 보여 주고, 말한 값만 바꿈 | `spec/SETTINGS.md` |
 | `gusta-update` | 업데이트 담당 | npm 새 버전 확인 → 스킬 재설치 → spec/ 구조 이관(`migrate`)·FORMAT 병합 → lint → 커밋 | 설치·이관 커밋 |
 | `gusta-send-issue` | 회고자 | 이 세션에서 GUSTA 스킬·CLI가 어떻게 동작했는지 돌아보고 개선 사항을 근거와 함께 익명화해 보여 준 뒤, 확인받으면 이슈로 올림 | hetarho/gusta 이슈 1건 |
@@ -72,7 +72,7 @@ GUSTA는 아이디어를 구현 가능한 스펙으로 발전시키고, **요구
 
 ```text
 spec/
-├── STATE.md      # 관제탑: cfg(사용자 수준·push 브랜치) · 실행 중 세션(active) · 결정함(inbox) · SSOT rev 현황 · 태스크 보드 · next · log
+├── STATE.md      # 관제탑: cfg(사용자 수준) · SSOT rev 현황 · 태스크 보드 · next (실행 중 세션·결정함·log는 조정 브랜치의 SESSIONS.md)
 ├── FORMAT.md     # 모든 spec 문서의 압축 표기 규칙 (ID, 기호, 골격, 상태 규칙)
 ├── SETTINGS.md   # (선택) 패키지 동작 설정 — 없는 키는 기본값. /gusta-preference로 보기·바꾸기
 ├── ideation/     # (선택) gusta-sketch가 미룬 구상 — open(미정), ready(일부 SSOT 반영·진행 중)
@@ -122,12 +122,12 @@ SSOT의 `rev`(현재 개정)와 STATE의 `tasked`(태스크로 소화된 개정)
 
 규칙·동작을 바꾸는 요청과 함께 부르면 **요청 실행**입니다: 요청 해석(바꿀 도메인·결정, 추천안으로 채울 공백)을 실행 정보와 함께 보여 주고, gusta-update-ssot(새 도메인이면 gusta-create-ssot)와 gusta-create-task로 SSOT·태스크를 만들어 기획 브랜치에 올린 뒤, 그 태스크(와 그것이 기다리는 미완료 선행 태스크)만 아래 절차로 구현합니다. 요청에 적은 것은 사용자 결정으로 그대로 반영하고, 요청이 정하지 않은 공백만 추천안으로 정해 결정함에 남깁니다. 과금·데이터 삭제·개인정보·보안 정책은 요청에 적은 것만 반영하고 나머지는 주차합니다. 화면을 보고 골라야 할 만큼 갈리는 기획은 `/gusta-sketch`가 낫습니다.
 
-1. 원격을 가져와 다른 기기에서 진행 중인 세션(STATE `## active`, `wip/<tag>` 스냅샷)을 확인합니다. 다른 기기가 잡은 태스크는 건너뜁니다 — 가로채지 않습니다.
-2. **실행 정보를 한 번 보여 주고 바로 시작합니다**: 대상 태스크(인자로 준 범위), dep 순서와 병렬 여부(작업 묶음이면 lane), 마감·예약 시간, 검증 단계(태스크 단계·최종 관문 명령), 반영 설정(SETTINGS land·land-via·push), 다른 기기가 잡은 태스크, 결정함 미확인 수, 완료 알림 연결 여부. 질문이 아니므로 답을 기다리지 않습니다. 반영 대상도 묻지 않습니다(land 미정이면 현재 브랜치에 커밋만 하고 결정함에 남깁니다 — 정하는 것은 `/gusta-init`).
+1. `vibe status`로 다른 worktree·다른 기기에서 진행 중인 세션(조정 브랜치의 세션 행 — 브랜치·커밋과 그 커밋이 아직 push 안 됐는지, `wip/<tag>` 스냅샷)을 확인합니다. 남이 잡았거나 끝내고 아직 land에 들어가지 않은 태스크는 건너뜁니다 — 가로채지 않습니다.
+2. **실행 정보를 한 번 보여 주고 바로 시작합니다**: 대상 태스크(인자로 준 범위), dep 순서와 병렬 여부(작업 묶음이면 lane), 마감·예약 시간, 검증 단계(태스크 단계·최종 관문 명령), 반영 설정(SETTINGS land·land-via·push), 다른 세션·기기의 진행과 건너뛸 태스크, 결정함 미확인 수, 완료 알림 연결 여부. 질문이 아니므로 답을 기다리지 않습니다. 반영 대상도 묻지 않습니다(land 미정이면 현재 브랜치에 커밋만 하고 결정함에 남깁니다 — 정하는 것은 `/gusta-init`).
 3. 요청도 실행할 태스크도 없으면 멈추고 `/gusta-sketch`로 먼저 구상하라고 안내합니다(미룬 구상·태스크로 안 쪼갠 SSOT 변경·채택된 review가 있으면 그 목록도). 여기서 기획·태스크를 만들지 않습니다. 이 checkout이 디자인 중이면 `/gusta-design-mode`로 마감한 뒤 다시 실행하라고 하고 끝냅니다.
 4. 태스크를 dep 순서로 gusta-implement-task가 구현합니다. 시작한 대화가 오케스트레이터로 목표·마감·검증을 끝까지 책임지고, [`vibe loop`](autopilot.md#오래-맡기기--vibe-loop)는 단위마다 새 세션을 띄우는 보조 실행기입니다. 실행 전 점검(`vibe preflight`: 디자인 중 여부·작업 트리·lint·검증 명령·절전 방지, push가 켜져 있으면 push 권한·CI 접근, 작업 묶음이면 헤드리스 워커의 명령 실행 권한 실측)은 loop가 준비합니다. 독립 줄기가 충분히 클 때만 [작업 묶음](parallel-work.md)으로 병렬 처리합니다.
 5. 실행 중 판단은 묻지 않고 추천안으로 정해 결정함·보고서에 남깁니다. 구현이 기획·기술 판단으로 막히면 그 태스크를 풀기 위한 기획 한 조각(gusta-update-ssot + gusta-create-task)으로 해소해 재개합니다 — 요청 실행이 아니면 새 기능의 기획은 하지 않습니다. 권한 확인 창도 질문이라 창이 뜰 만한 명령은 실행하지 않고 주차합니다.
-6. 태스크마다 커밋합니다. 보고서는 태스크 3개(기본)·기획 조각 소진·세션 끝에 갱신하고, 전체 검증과 반영은 세션 끝에 한 번입니다([검증과 push](branching.md#검증과-push)). SETTINGS push가 켜져 있고 다른 세션이 보이면 선점 정보 공유와 원격 판정을 먼저 합니다. 1시간 넘는 작업은 `wip/<tag>`로 스냅샷합니다(원격에는 SETTINGS push가 켜져 있을 때만 올라갑니다).
+6. 태스크마다 커밋합니다. 보고서는 태스크 3개(기본)·기획 조각 소진·세션 끝에 갱신하고, 전체 검증과 반영은 세션 끝에 한 번입니다([검증과 push](branching.md#검증과-push)). 선점은 SETTINGS push와 무관하게 조정 브랜치에서 합니다(`vibe task start` — 다른 세션이 잡았으면 거절되고 다른 태스크로 갑니다). 1시간 넘는 작업은 `wip/<tag>`로 스냅샷합니다(원격에는 SETTINGS push가 켜져 있을 때만 올라갑니다).
 
 | 결정 지점 | 실행 중 처리 |
 | --- | --- |
@@ -135,11 +135,11 @@ SSOT의 `rev`(현재 개정)와 STATE의 `tasked`(태스크로 소화된 개정)
 | 과금·데이터 삭제·개인정보·보안 정책 | 정하지 않고 `[?]`로 두고 주차합니다 |
 | 되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일(force push, 브랜치 삭제, 배포·게시 등), 실제 권한·인증 부재 | 그 작업만 주차(`parked`)하고 다른 태스크를 계속합니다 |
 
-돌아오면 결정함부터 봅니다. 승인한 항목은 `/gusta-start inbox 정리`로 그 줄을 지우고(log에 남김), 결정을 바꾸려면 `/gusta-sketch`로 갑니다(gusta-update-ssot로 확정한 뒤 그 줄을 지웁니다). SSOT에는 잠정 결정도 일반 결정으로만 들어가며, 잠정이라는 사실은 결정함이 결정 ID로 가리킵니다. 끝난 뒤에는 새 대화에서 `/gusta-start`로 이어갈 수 있습니다 — 상태는 보고서·결정함·`loop.json`에 남습니다.
+돌아오면 결정함부터 봅니다. 승인한 항목은 `/gusta-start inbox 정리`로 그 줄을 지우고(`vibe inbox resolve`, log에 남김), 결정을 바꾸려면 `/gusta-sketch`로 갑니다(gusta-update-ssot로 확정한 뒤 그 줄을 지웁니다). SSOT에는 잠정 결정도 일반 결정으로만 들어가며, 잠정이라는 사실은 결정함이 결정 ID로 가리킵니다. 끝난 뒤에는 새 대화에서 `/gusta-start`로 이어갈 수 있습니다 — 상태는 보고서·결정함·`loop.json`에 남습니다.
 
 보정·튜닝·밸런스처럼 돌려 보고 정하는 일은 **explore 태스크**(`explore:2h` + `exit:` 완료 조건)로 만들어 메인 세션에서 시간 제한 안에 끝냅니다 — 기준을 못 맞추면 측정값을 기록하고 마감합니다.
 
-SSOT·계약·저장 형식·결정이 바뀌지 않는 작은 버그/문구/스타일(3파일·추가+삭제 100줄 이하)은 태스크 파일 없이 영향 검사·커밋 하나·STATE fix log로 처리합니다. 조건이 깨지면 기획 한 조각으로 태스크를 만들어 올립니다.
+SSOT·계약·저장 형식·결정이 바뀌지 않는 작은 버그/문구/스타일(3파일·추가+삭제 100줄 이하)은 태스크 파일 없이 영향 검사·커밋 하나·fix log 한 줄(`vibe log`)로 처리합니다. 조건이 깨지면 기획 한 조각으로 태스크를 만들어 올립니다.
 
 ## 디자인 — `/gusta-design-mode`
 
@@ -152,7 +152,7 @@ SSOT·계약·저장 형식·결정이 바뀌지 않는 작은 버그/문구/스
 1. `vibe design start`로 이 checkout이 디자인 중임을 표시합니다. 이 상태는 checkout의 Git 디렉터리에만 저장되고 STATE에는 쓰지 않으므로, 기획 커밋·plan-push를 타고 다른 worktree로 퍼지지 않습니다. 개발 서버(hot reload)를 띄워 두고 결과를 실시간으로 봅니다.
 2. 디자인하는 동안에는 테스트·e2e·typecheck·커밋·push를 하지 않습니다. 그 checkout에서는 `vibe push`가 거절되고, `/gusta-start`의 preflight는 실패하며 `vibe loop`는 멈춥니다. 다른 worktree의 작업은 영향을 받지 않습니다. 중간 저장이 필요하면 `vibe checkpoint`로 `wip/<tag>`에만 스냅샷합니다.
 3. 커밋·push가 필요해지면(직접 요청, 다른 스킬로 전환, 마감) 어떤 스킬이든 먼저 **"디자인 끝났나요?"** 를 묻습니다.
-4. 디자인이 끝나면 `vibe design verify`로 ARCH의 task·batch 명령 전부를 미커밋 작업 트리에서 한 번씩 돌립니다(빠른 검사가 실패하면 무거운 검사는 미룸, 같은 트리는 캐시). 디자인 때문에 바뀐 기대값은 테스트를 고치고, 깨진 기능은 코드를 고칩니다. 통과하면 `vibe design end` 후 디자인·테스트 수정·STATE log(`- YYMMDD design <area>: <what>`)를 커밋 하나로 남깁니다. 반영(`vibe push`)은 요청했거나 SETTINGS land·push가 반영을 정해 둔 경우에만 합니다.
+4. 디자인이 끝나면 `vibe design verify`로 ARCH의 task·batch 명령 전부를 미커밋 작업 트리에서 한 번씩 돌립니다(빠른 검사가 실패하면 무거운 검사는 미룸, 같은 트리는 캐시). 디자인 때문에 바뀐 기대값은 테스트를 고치고, 깨진 기능은 코드를 고칩니다. 통과하면 `vibe design end` 후 디자인·테스트 수정을 커밋 하나로 남기고 `vibe log`에 `design <area>: <what>` 한 줄을 씁니다. 반영(`vibe push`)은 요청했거나 SETTINGS land·push가 반영을 정해 둔 경우에만 합니다.
 
 ## 여러 안을 띄워 고르기 — `/gusta-showcase`
 
@@ -176,7 +176,7 @@ SSOT·계약·저장 형식·결정이 바뀌지 않는 작은 버그/문구/스
    - 한 변형을 고쳐 달라고 하면(말이나 hub 메모) `vibe ab run --variant b --follow-up-file <요청>`이 접근·지난 요약·메모를 붙여 같은 변형을 이어 고치고, `vibe ab serve --variant b`가 떠 있는 서버로 다시 확인합니다.
    - "A의 레이아웃에 B의 색"처럼 섞고 싶으면 `vibe ab add --from a`가 A에서 이어지는 새 변형을 만들고 그것만 run합니다.
 4. choose는 의사 표시일 뿐입니다 — 진행자가 `vibe ab status`로 읽고 사용자에게 확인한 뒤 `vibe ab pick`이 서버·hub를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리합니다(브랜치는 `prune-branches` 설정대로, 기본은 삭제). scaffold는 줄·파일 단위로 빼고 합칩니다. 변형 코드에 scaffold의 mock 줄·경로가 옮겨져 남으면(`scaffoldResidue`) pick이 거절하니 지우는 후속 수정 뒤 다시 고르고, 사용자가 그 줄을 보고 받아들이면 `--accept-residue`입니다. 실제 데이터 연결은 gusta-create-task로 이어집니다.
-5. 채택은 결정이라 pick이 STATE log에 `- YYMMDD ab <slug>: adopt <v> — <approach>` 한 줄을 쓰고(접근 문구는 `--approach`, 커밋은 진행자), SSOT 규칙이 바뀌었으면 gusta-update-ssot로 이어집니다. 전체 테스트는 합친 뒤 평소 마감 관문에서 한 번입니다.
+5. 채택은 결정이라 pick이 log에 `- YYMMDD ab <slug>: adopt <v> — <approach>` 한 줄을 남기고(접근 문구는 `--approach`), SSOT 규칙이 바뀌었으면 gusta-update-ssot로 이어집니다. 전체 테스트는 합친 뒤 평소 마감 관문에서 한 번입니다.
 
 변형마다 구현 세션 하나만큼 토큰·시간이 들고, 고를 사람이 있어야 하므로 사용자가 직접 부를 때만 씁니다(`/gusta-start` 실행 중에는 비교 요청을 결정함에 주차합니다). 변형은 spec/을 고치지 않으며 미커밋 변경이 있으면 시작하지 않습니다.
 
@@ -200,7 +200,9 @@ THEME SSOT가 너무 길어. 의미 바꾸지 말고 정리해줘.       → gus
 
 ### 설정 — `/gusta-preference`
 
-설정은 `spec/SETTINGS.md`에 한 줄씩 남고, 파일이나 키가 없으면 기본값을 씁니다. [브랜치 전략](branching.md#브랜치-전략) 말고는 `permission-mode`·`headless-mcp`·`prune-branches`가 있습니다.
+설정은 `spec/SETTINGS.md`에 한 줄씩 남고, 파일이나 키가 없으면 기본값을 씁니다. [브랜치 전략](branching.md#브랜치-전략)과 [자동 버전](branching.md#자동-버전)(`version`), [조정 브랜치](branching.md#조정-브랜치)(`coord`·`coord-push` — 묻지 않고 기본값을 씁니다) 말고는 `permission-mode`·`headless-mcp`·`prune-branches`·`agent-block`이 있습니다.
+
+`agent-block`(기본 `?` — `/gusta-init`이 한 번 묻습니다)은 이 프로젝트의 에이전트 지침 파일에 gusta 안내 블록을 둘지입니다. `true`면 `gusta agent-block`이 `<!-- gusta:begin … -->`와 `<!-- gusta:end -->` 사이에 짧은 안내(spec 우선, `gusta-sketch`·`gusta-start`, 설정은 `spec/SETTINGS.md`)를 쓰고, 마커 밖은 한 글자도 바꾸지 않습니다. 대상은 Claude 설치면 루트 `CLAUDE.md`(없으면 `.claude/CLAUDE.md`), Codex 설치면 `AGENTS.md`입니다. `AGENTS.md`만 있는 프로젝트에는 `CLAUDE.md`를 새로 만들지 않고 `AGENTS.md`에만 씁니다 — Claude Code는 `CLAUDE.md`가 없을 때만 `AGENTS.md`를 읽기 때문입니다. `CLAUDE.md`가 `AGENTS.md`의 링크이거나 `@AGENTS.md`를 import해도 `AGENTS.md`에만 씁니다. `/gusta-update`가 새 버전 문구로 갱신하고, `gusta check`는 블록이 없거나 낡았거나 마커가 훼손됐으면 실패합니다. 훼손된 마커는 추측해서 고치지 않습니다. `false`면 그 파일들을 쓰지 않으며, 이미 넣은 블록은 `gusta agent-block --remove`로 지웁니다. 맡김 실행은 미정이면 묻지도 쓰지도 않습니다.
 
 `permission-mode`(기본 `bypass`)는 CLI가 띄우는 헤드리스 작성 세션 — `vibe loop` 단위, `work run` 워커, gusta-showcase 변형·scaffold, `vibe preflight --probe` — 의 권한입니다. 이 세션들에는 권한 창에 답할 사람이 없으므로 기본은 권한 확인과 sandbox를 건너뜁니다(Claude bypassPermissions, Codex `--dangerously-bypass-approvals-and-sandbox`, 네트워크 허용). `acceptEdits`로 바꾸면 Claude는 편집+`--allow-tool` 목록만, Codex는 workspace-write sandbox(네트워크 없음)에서 돕니다. 리뷰어는 어느 쪽이든 읽기 전용이고, 명령의 `--permission-mode`는 그 실행에만 적용됩니다.
 

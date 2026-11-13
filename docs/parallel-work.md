@@ -83,7 +83,7 @@ npx @haeram/gusta work --help
 
 `context --json`은 Git/worktree와 현재 작업 모드를 보여 줍니다. 일반 `board`는 현재 checkout의 파일만 읽는 조회 명령이고, `work board`가 작업 묶음의 기준 커밋과 공유 실행 기록을 함께 보여 줍니다. 보드의 claimable은 조회 시점의 후보이며 선점 자체는 claim이 수행합니다. JSON의 `schemaVersion`은 1입니다.
 
-작업 묶음의 원자적 선점은 같은 로컬 clone 안에서 동작합니다. 다른 기기(clone)와의 중복은 SETTINGS push가 켜져 있으면 `/gusta-start`가 막습니다 — 세션은 STATE `## active` 행과 doing tag를 먼저 push해 선점하고, 다른 기기는 시작할 때 그 행과 `wip/<tag>` 스냅샷으로 진행 중인 일을 알아채고 그 태스크를 건너뜁니다. fan-out 경쟁 구현은 포함하지 않습니다. 자동 실행은 아래의 기본 실행기 또는 command 어댑터로 연결합니다. 기획 공간의 수동 Git 작업은 CLI 예약을 따르지 않으므로 통합 중 같은 checkout에서 다른 변경을 실행하지 않아야 합니다. 기존 프로젝트의 `spec/FORMAT.md`·`STATE.md`는 install로 자동 이관되지 않으며, 작업 묶음은 기존 task 골격을 이용하는 선택 기능입니다. 다른 clone에도 Git에 저장된 태스크·실행 이력 체크포인트가 남지만 현재 프로세스·선점 소유권과 명령 출력 로그는 전파되지 않습니다.
+작업 묶음의 원자적 선점은 같은 로컬 clone 안에서 동작합니다. 다른 worktree·다른 기기(clone)와의 중복은 [조정 브랜치](branching.md#조정-브랜치)가 막습니다 — 세션은 SETTINGS push와 무관하게 조정 브랜치의 세션 행으로 선점하고(같은 clone은 즉시, 다른 기기는 CLI가 그 브랜치를 올려서), 다른 세션은 시작할 때 그 행과 `wip/<tag>` 스냅샷으로 진행 중인 일을 알아채고 그 태스크를 건너뜁니다. 작업 묶음의 워커·리뷰어는 조정 브랜치에 쓰지 않습니다(조정자만). fan-out 경쟁 구현은 포함하지 않습니다. 자동 실행은 아래의 기본 실행기 또는 command 어댑터로 연결합니다. 기획 공간의 수동 Git 작업은 CLI 예약을 따르지 않으므로 통합 중 같은 checkout에서 다른 변경을 실행하지 않아야 합니다. 기존 프로젝트의 `spec/FORMAT.md`·`STATE.md`는 install로 자동 이관되지 않으며, 작업 묶음은 기존 task 골격을 이용하는 선택 기능입니다. 다른 clone에도 Git에 저장된 태스크·실행 이력 체크포인트가 남지만 현재 프로세스·선점 소유권과 명령 출력 로그는 전파되지 않습니다.
 
 ### 줄기(lane)로 나누고 단계별로 검증하기
 

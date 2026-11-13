@@ -6,7 +6,7 @@
 - `mode:reviewer`이면 구현하지 않고 gusta-review-task/gusta-manage-work로 인계한다.
 - 배정이 없거나 끝난 워커 세션은 바로 종료하지 않고 아래 **세션 루프**로 다음 일을 받는다.
 - `mode:group`이면 `gusta-manage-work`의 board→claim으로 작업자를 배정한다. `mode:single`이며 작은 단독 요청이면 SKILL.md 1절 단독 흐름을 사용한다. 사용자가 병렬 작업을 요청했다면 `gusta-manage-work`로 묶음을 만든다. Orca 등 특정 실행기를 요구하거나 매번 모드를 묻지 않는다.
-- **작업 묶음 워커**: doing/blocked/heartbeat는 `work update --attempt <id>`로 기록한다(명령 앞에 `npx @haeram/gusta`를 붙인다). 태스크 st·base·goal·acceptance 문구·impl notes·STATE·SSOT는 수정하지 않는다. 자신의 acceptance 체크와 result, 구현 코드만 바꾼다.
+- **작업 묶음 워커**: doing/blocked/heartbeat는 `work update --attempt <id>`로 기록한다(명령 앞에 `npx @haeram/gusta`를 붙인다). 태스크 st·base·goal·acceptance 문구·impl notes·STATE·SSOT는 수정하지 않고, 세션 기록(`vibe beat|claim|inbox|log`)도 쓰지 않는다 — 워커 공간에서는 CLI가 거절한다. 자신의 acceptance 체크와 result, 구현 코드만 바꾼다.
 
 ### 세션 루프 (여러 세션·오케스트레이터)
 "남은 태스크 구현해줘"처럼 남은 일을 맡기는 요청이고, `work status`에 활성 작업 묶음이 있거나 todo 태스크에 `lane:`이 있으면 이 루프로 진행한다. ARCH가 단독 checkout 진행을 강제하면 따르지 않는다. 세션은 구현에 집중하고, 통합·묶음 검증은 CLI가 백그라운드에서 실행한다. 다른 세션이 있으면 같은 루프로 기반 → 줄기를 나눠 맡는다.
@@ -17,5 +17,5 @@
   - `review`: gusta-review-task로 `review.workspace`를 읽기 전용 검토하고 `work review-finish`를 실행한다.
   - `blocked`: 직접 고칠 수 있으면 고치고 `work update --attempt <id> --status doing` 후 다시 submit. 기획 판단이 필요하면 직접 호출은 보고하고 멈추고, 맡김은 결정 요청(질문·선택지·추천)을 `work update --attempt <id> --status blocked --reason <요약> --decision-file <세션 임시 폴더의 JSON>`으로 남기고 루프를 계속한다 — 조정자가 결정한 뒤 재개된다.
   - `wait`: 그대로 다시 호출한다(`reason:needs-reviewer`면 응답의 `instruction`대로).
-  - `complete`: 응답 instruction대로 `landFrom`에서 `vibe push`로 SETTINGS land에 반영하고 묶음 브랜치·검증 커밋·반영 결과를 보고한다(묶음에 `--push`가 있으면 통합마다 이미 올라가 있다). land가 미정이면 직접 호출은 gusta-init으로 정하고, 맡김은 inbox `parked`. `stalled`: 막힌 원인을 보고하고 멈춘다(맡김이면 inbox `parked` 후 다른 일). `main-session`: 남은 일이 explore 태스크와 그 후속뿐이다 — 묶음을 마치고 메인 세션에서 단독으로 진행한다.
+  - `complete`: 응답 instruction대로 `landFrom`에서 `vibe push`로 SETTINGS land에 반영하고 묶음 브랜치·검증 커밋·반영 결과를 보고한다(묶음에 `--push`가 있으면 통합마다 이미 올라가 있다). land가 미정이면 직접 호출은 gusta-init으로 정하고, 맡김은 inbox `parked`. `stalled`: 막힌 원인을 보고하고 멈춘다(맡김이면 inbox `parked` 후 다른 일). inbox는 워커 공간이 아니라 세션을 시작한 checkout에서 쓴다. `main-session`: 남은 일이 explore 태스크와 그 후속뿐이다 — 묶음을 마치고 메인 세션에서 단독으로 진행한다.
 - 루프에서는 `work integrate`·`work finish`를 직접 실행하지 않고, 다른 세션의 작업 공간에 쓰지 않는다.

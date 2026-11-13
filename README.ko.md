@@ -49,7 +49,7 @@ npx @haeram/gusta@latest install    # 이후 업데이트도 같은 명령
 
 `/gusta-sketch`는 아이디어를 외부 리소스 없는 HTML 한 페이지(`.tmp/sketch/<slug>/`, git이 추적하지 않음)로 그려 로컬 포트 하나에 띄웁니다. 고르고 다듬어 정한 것은 spec 문서(ARCH·SSOT)와 태스크가 되고, "이 부분은 괜찮은데 나중에 다시 고민하자"처럼 미룬 것은 `spec/ideation/`에 남습니다. 제품 코드는 고치지 않으며, 새 프로젝트면 `spec/`과 아키텍처부터 잡습니다.
 
-`/gusta-start`는 묻지 않습니다. 대상 태스크, 순서와 병렬 여부, 마감, 검증 단계, land/push 설정, 다른 기기가 잡은 태스크(건너뜀), 결정함 수를 보여 주고 바로 시작합니다. 태스크마다 커밋하고, 끝난 작업은 마지막에 `spec/SETTINGS.md`대로 한 번 반영합니다(기본은 push하지 않음). 변경 요청과 함께 부르면 SSOT를 고치고 태스크를 만든 뒤(요청에 적은 것은 사용자 결정, 빈 곳은 추천안으로 정해 결정함에 남김) 같은 방식으로 구현·검증·반영까지 합니다. 요청도 실행할 태스크도 없으면 멈추고 `/gusta-sketch`부터 하라고 안내합니다.
+`/gusta-start`는 묻지 않습니다. 대상 태스크, 순서와 병렬 여부, 마감, 검증 단계, land/push 설정, 다른 세션·기기가 잡은 태스크(건너뜀 — 아직 push 안 된 진행도 보입니다), 결정함 수를 보여 주고 바로 시작합니다. 태스크마다 커밋하고, 끝난 작업은 마지막에 `spec/SETTINGS.md`대로 한 번 반영합니다(기본은 push하지 않음). 변경 요청과 함께 부르면 SSOT를 고치고 태스크를 만든 뒤(요청에 적은 것은 사용자 결정, 빈 곳은 추천안으로 정해 결정함에 남김) 같은 방식으로 구현·검증·반영까지 합니다. 요청도 실행할 태스크도 없으면 멈추고 `/gusta-sketch`부터 하라고 안내합니다.
 
 ## 핵심 개념
 
@@ -67,7 +67,7 @@ npx @haeram/gusta@latest install    # 이후 업데이트도 같은 명령
 
 | 경로 | 담는 것 |
 | --- | --- |
-| `STATE.md` | 관제탑: 설정·실행 중 세션·결정함·SSOT rev 현황·태스크 보드·next·log |
+| `STATE.md` | 관제탑: 설정·SSOT rev 현황·태스크 보드·next |
 | `FORMAT.md` | 모든 spec 문서의 압축 표기 규칙 |
 | `SETTINGS.md` | (선택) 패키지 동작 설정(브랜치 전략 등) — 없는 키는 기본값 |
 | `ideation/` | sketch에서 미룬 구상 — `done/`은 나중에 SSOT 반영을 마친 문서 보존 |
@@ -75,6 +75,8 @@ npx @haeram/gusta@latest install    # 이후 업데이트도 같은 명령
 | `tasks/` | 남은 태스크 — `done/`은 완료 태스크를 역사 기록으로 보관 |
 | `review/` | (선택) 코드·자율 개선 finding |
 | `reports/` | (선택) `/gusta-start` 실행 보고서 |
+
+실행 중 세션과 선점·결정함·아직 반영 안 된 완료 태스크·log는 `spec/`이 아니라 조정 전용 브랜치(기본 이름 `gusta`)의 `SESSIONS.md`에 있습니다. 코드와 히스토리를 공유하지 않고 작업 브랜치에 병합되지 않으며, `vibe` 명령만 읽고 씁니다. 같은 clone의 worktree끼리는 즉시 보이고, 원격이 있으면 CLI가 그 브랜치만 올려서 다른 기기의 아직 push 안 된 진행까지 보입니다([조정 브랜치](docs/branching.md#조정-브랜치)).
 
 spec 문서는 영어 압축 표기로, 인터뷰·질문·보고는 사용자 언어로 씁니다.
 
@@ -88,7 +90,7 @@ spec 문서는 영어 압축 표기로, 인터뷰·질문·보고는 사용자 �
 | `/gusta-showcase` | 변형 2~6개를 실제 코드로 병렬 구현해 변형마다 포트 하나씩 띄우거나(또는 같은 측정으로 비교) 고른 것만 합치고 문서도 맞춤 |
 | `/gusta-self-improve` | 호출한 세션이 하위 세션의 개선 제안을 승인해 현재 브랜치에 통합 — PR 없음 |
 | `/gusta-self-improve-remote` | 한 번 위임한 범위·예산 안에서 문제를 찾아 측정·구현·독립 검토 후 PR |
-| `/gusta-init` | 브랜치 전략 중 미정인 설정만 묻고 `spec/SETTINGS.md`에 저장 |
+| `/gusta-init` | 미정인 설정(브랜치 전략, 자동 버전 관리, CLAUDE.md·AGENTS.md의 gusta 안내 블록)만 묻고 `spec/SETTINGS.md`에 저장 |
 | `/gusta-preference` | `spec/SETTINGS.md`를 표로 보여 주고, 말한 값만 바꿈 |
 | `/gusta-update` | 새 버전 확인 → 스킬 재설치 → `spec/` 이관 → 프로젝트 규칙 대조 → lint → 커밋 |
 | `/gusta-send-issue` | 세션 끝에 GUSTA 스킬·CLI가 어떻게 동작했는지 돌아보고, 익명화한 개선 사항을 보여 준 뒤 확인하면 [hetarho/gusta](https://github.com/hetarho/gusta/issues)에 이슈로 올림 |
@@ -100,6 +102,7 @@ spec 문서는 영어 압축 표기로, 인터뷰·질문·보고는 사용자 �
 ```bash
 npx @haeram/gusta@latest install            # 스킬 설치·업데이트
 npx @haeram/gusta check                     # 설치본이 패키지와 같은지 확인
+npx @haeram/gusta agent-block               # CLAUDE.md·AGENTS.md의 gusta 블록 갱신 (agent-block이 true일 때만)
 npx @haeram/gusta lint                      # spec/이 FORMAT 불변식을 지키는지 검사
 npx @haeram/gusta vibe status --tag k3f9    # 다른 기기의 세션·남은 일·추천 경로
 npx @haeram/gusta vibe sketch serve tag-filter   # .tmp/sketch/tag-filter/의 시안을 로컬 포트 하나로
@@ -117,7 +120,7 @@ npx @haeram/gusta work run --work feature --provider codex --json  # 병렬 워�
 | 문서 | 내용 |
 | --- | --- |
 | [개발 흐름](docs/workflow.md) | 철학, 핵심 원칙, 전체 스킬, `spec/` 구조, sketch, start, 디자인 모드, showcase, 설정 |
-| [브랜치·검증](docs/branching.md) | `land` · `land-via` · `push` · `deploy` · `plan`, 단계별 검증과 마감 관문 |
+| [브랜치·검증](docs/branching.md) | `land` · `land-via` · `push` · `deploy` · `plan` · `version`, 조정 브랜치(`coord`), 단계별 검증과 마감 관문 |
 | [오래 맡기기](docs/autopilot.md) | `vibe loop`로 오래 맡기기, `vibe brief` 결정 브리핑 |
 | [병렬 작업](docs/parallel-work.md) | 작업 묶음, 줄기(lane), 세션 여러 개, 워커·리뷰어 |
 | [자가 개선](docs/self-improve.md) | `gusta-self-improve`, `gusta-self-improve-remote` |

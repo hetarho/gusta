@@ -25,12 +25,20 @@ export const SETTINGS = {
     note: "branch the deploy command (vibe deploy, '배포해줘') fast-forwards to land; - = land is the release branch" },
   plan: { default: '?', ...branchOr('?', '-'),
     note: 'planning branch where task IDs and SSOT revs are numbered (vibe plan-sync/plan-push); ? = land when it names a branch, else the repository default branch; - = this checkout only' },
+  version: { default: '?', required: true, ...oneOf('?', 'off', 'auto'),
+    note: 'auto = when vibe push or vibe deploy moves the release branch (deploy, else land) it adds a commit raising the root package.json version: minor when a SSOT decision is new, else patch; a version a person changed stands (the only way to a major); never with land-via pr; off = the CLI never touches the version' },
   'permission-mode': { default: 'bypass', ...oneOf('bypass', 'acceptEdits'),
     note: 'headless sessions the CLI starts to write code (vibe loop units, work run workers, gusta-showcase variants, preflight probe): bypass = no permission prompts or sandbox, network allowed; acceptEdits = edits plus the allow-tool list only, Codex in its workspace-write sandbox (no network)' },
   'headless-mcp': { default: 'isolate', ...oneOf('isolate', 'inherit'),
     note: "MCP servers of the headless Claude sessions the CLI starts: isolate = none (no user, account or project .mcp.json servers); inherit = whatever the user's Claude setup loads, for projects whose headless sessions need MCP" },
   'usage-measurement': { default: false, ...oneOf(true, false),
     note: 'true = collect provider-reported CLI adapter usage and enable scoped native Claude start/report hooks; false = no measurement collection (preflight probes and unsupported hosts remain outside scope)' },
+  'agent-block': { default: '?', required: true, ...oneOf('?', true, false),
+    note: "true = gusta keeps its managed block (between the gusta:begin/gusta:end comments) in this project's CLAUDE.md/AGENTS.md — run gusta agent-block after setting it; false = it never writes those files (gusta agent-block --remove deletes an existing block)" },
+  coord: { default: 'gusta', values: '<branch>', accepts: (value) => isBranch(value),
+    note: 'coordination branch: an orphan branch holding SESSIONS.md alone (running sessions and their claims, inbox, log, finished tasks not landed yet); the CLI reads and writes it with Git plumbing — never check it out, merge it or use it for code' },
+  'coord-push': { default: true, ...oneOf(true, false),
+    note: 'true = with a remote, push the coordination branch at every event (claim, release, inbox, task done, landed, checkpoint, session start and end) so other machines see work that is not pushed yet; false = this clone only, the remote is neither fetched nor pushed' },
 }
 export const SETTINGS_FILE = 'spec/SETTINGS.md'
 const TITLE = '# SETTINGS'
@@ -84,7 +92,8 @@ export function effectiveSettings(text, stateText = null) {
 }
 
 // What the session tools act on. land/plan are branch names or null; pushTarget is the branch
-// `vibe push` publishes (land, or the current branch when land is current).
+// `vibe push` publishes (land, or the current branch when land is current); coord is the
+// coordination branch, never one of the code branches.
 export function branchPlan(values, { branch = null, defaultBranch = null } = {}) {
   const land = isBranch(values.land) && values.land !== 'current' ? values.land : null
   const plan = values.plan === '-' ? null : isBranch(values.plan) ? values.plan : land ?? defaultBranch
@@ -94,6 +103,8 @@ export function branchPlan(values, { branch = null, defaultBranch = null } = {})
     pushTarget: values.push === true && via !== 'pr' ? land ?? branch : null,
     landTarget: land && land !== branch ? land : null,
     unset: values.land === '?',
+    // Session coordination (src/coord-branch.mjs): its own branch, pushed at every event unless coord-push is false.
+    coord: isBranch(values.coord) ? values.coord : SETTINGS.coord.default, coordPush: values['coord-push'] !== false,
   }
 }
 

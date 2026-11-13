@@ -68,3 +68,8 @@ export function rankedUnits(units, tasks) {
   return units.map((unit) => ({ ...unit, unlocks: unlocks(unit.ids) }))
     .sort((a, b) => b.unlocks - a.unlocks || a.ids[0].localeCompare(b.ids[0], 'en', { numeric: true }))
 }
+
+// A work-group worker's or reviewer's checkout, by the runtime record: an attempt still open
+// there, or a review that ran there. `state` is readRuntime's.
+export const delegatedCheckout = (state, root) => Object.values(state.attempts).some((entry) =>
+  (entry.workspace === root && !entry.cleanedAt) || [entry.review, ...(entry.reviewHistory ?? [])].some((review) => review?.workspace === root))

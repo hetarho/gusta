@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 import { assembleBrief, commitSource, renderBrief, specBrief } from '../src/spec-context.mjs'
 import { decisionBlocks, parseSsot, references } from '../src/spec-format.mjs'
 import { vibeBrief } from '../src/vibe-brief.mjs'
+import { vibeInbox } from '../src/vibe-inbox.mjs'
 import { lintSpec } from '../src/spec-lint.mjs'
 
 const execute = promisify(execFile)
@@ -328,6 +329,39 @@ test('provenance and order are deterministic: path, rev, hashes, line ranges', a
   assert.deepEqual(ids(first).slice(0, 2), ['AUTH-1', 'AUTH-2'])
   assert.equal(new Set(ids(first)).size, ids(first).length)
   assert.deepEqual(first.inbox, ['- 261011 decided AUTH-4 T001: limit per account → per account (alt: per IP)'])
+})
+
+test('inbox: the coordination branch as it is now, named as its own origin; a line still in STATE follows; --ref keeps the rules at that commit', async (t) => {
+  const root = await project(t)
+  const head = await git(root, 'rev-parse', 'HEAD')
+  const inState = '- 261011 decided AUTH-4 T001: limit per account → per account (alt: per IP)'
+  // The assembler alone reads one source: the `## inbox` its STATE still carries, with no other origin.
+  assert.deepEqual([(await brief(root, ['T001', 'T002'])).inbox, (await brief(root, ['T001', 'T002'])).source.inbox], [[inState], undefined])
+  // vibe brief adds the coordination branch. Before anything was written there it has no commit.
+  const empty = await vibeBrief({ targetRoot: root, roots: ['T001', 'T002'] })
+  assert.deepEqual([empty.inbox, empty.source.inbox], [[inState], { branch: 'gusta', commit: null, state: 1 }])
+  await vibeInbox({ targetRoot: root, step: 'add', kind: 'parked', ref: ['T001'], text: 'needs the owner' })
+  await vibeInbox({ targetRoot: root, step: 'add', kind: 'decided', ref: ['PAY-6'], text: 'not about these tasks' })
+  const tip = await git(root, 'rev-parse', 'gusta')
+  const now = await vibeBrief({ targetRoot: root, roots: ['T001', 'T002'] })
+  // Lines about this brief only, the branch's first; the rules stay on the one source (the working tree).
+  assert.deepEqual(now.inbox.map((line) => line.replace(/^- \d{6} /, '')), ['parked T001: needs the owner', inState.slice(9)])
+  assert.deepEqual(now.source, { kind: 'worktree', commit: null, head, dirty: [], inbox: { branch: 'gusta', commit: tip, state: 1 } })
+  assert.match(renderBrief(now), new RegExp(`\\n## inbox · gusta@${tip.slice(0, 12)} \\+ STATE 1\\n- \\d{6} parked T001: needs the owner\\n${inState.slice(0, 30)}`))
+  assert.equal(await git(root, 'status', '--porcelain'), '')
+  // --ref: tasks and rules as of that commit, whatever the tree says now — and the inbox still the
+  // coordination branch's of now (it has no past at a code commit), which the header says.
+  await writeFile(path.join(root, 'spec/ssot/SEC.md'), SEC.replace('in seconds', 'in milliseconds'))
+  const past = await vibeBrief({ targetRoot: root, roots: ['T001', 'T002'], ref: head })
+  assert.deepEqual([past.source.kind, past.source.commit, past.source.inbox], ['commit', head, { branch: 'gusta', commit: tip, state: 1 }])
+  assert.match(past.decisions.find((entry) => entry.id === 'SEC-2').text, /in seconds/)
+  assert.deepEqual(past.inbox, now.inbox)
+  assert.match(renderBrief(past), new RegExp(`\\n## inbox · gusta@${tip.slice(0, 12)} \\+ STATE 1 \\(current, not as of the source commit\\)\\n`))
+  // A coordination branch this checkout cannot use is said, not hidden: the brief keeps what STATE has.
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- coord: main\n')
+  const blind = await vibeBrief({ targetRoot: root, roots: ['T001', 'T002'] })
+  assert.deepEqual([blind.inbox, blind.source.inbox, blind.complete], [[inState], undefined, true])
+  assert.ok(blind.issues.some((entry) => entry.level === 'warn' && entry.code === 'inbox-unavailable'), JSON.stringify(blind.issues))
 })
 
 test('a top-level bullet that is not a decision stays with the decision above it and is reported', async (t) => {
