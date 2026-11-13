@@ -8,7 +8,7 @@ import { vibeTask as task } from '../../src/vibe-task.mjs'
 // covered by session-workspace and integration-gate tests without these adapters.
 export const unitWorkspace = async ({ targetRoot }) => ({ root: targetRoot })
 const acceptedIntegration = async () => ({ ok: true })
-export const vibeLoop = (options, injected = {}) => runLoop(options, { prepareWorkspace: unitWorkspace, integration: null, ...injected })
+export const vibeLoop = (options, injected = {}) => runLoop(options, { prepareWorkspace: unitWorkspace, integration: null, check: runVibeCheck, push: vibePush, ...injected })
 export const runVibeCheck = (options, command, injected = {}) => runCheck(options, command, { integration: acceptedIntegration, ...injected })
 export const vibePush = (options, injected = {}) => push(options, { integration: null, ...injected })
 export const vibeTask = (options, injected = {}) => task(options, { assertImplementationWorkspace: async () => ({ ok: true }), ...injected })
