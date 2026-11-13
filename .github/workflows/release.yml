@@ -40,6 +40,10 @@ jobs:
           VERIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$VERIFIED_SHA" ] || [ "$GITHUB_SHA" != "$VERIFIED_SHA" ]; then
+            echo "Checkout/provenance metadata does not identify the successful CI commit."
+            exit 1
+          fi
           CURRENT_SHA="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
           test -n "$CURRENT_SHA"
           if [ "$CURRENT_SHA" != "$VERIFIED_SHA" ]; then
