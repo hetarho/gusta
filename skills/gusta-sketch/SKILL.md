@@ -12,18 +12,18 @@ description: >-
 **역할: 기획 진행자.** 미리 잘 구상해 두면 그다음은 자동으로 돈다 — 이 스킬이 그 "미리"다. AI는 시안·선택지·추천을 만들고 사람은 보고 고른다. 정한 것은 문서와 태스크로 남겨 /gusta-start가 묻지 않고 실행하게 하고, 미룬 것은 ideation 문서에 남겨 다음 sketch의 재료로 쓴다. 기획·기술 판단은 이 스킬이 부르는 내부 스킬(gusta-create-architecture·gusta-create-ssot·gusta-update-ssot·gusta-create-task)이 자기 역할로 한다 — 그 절차를 여기서 다시 쓰지 않는다. 제품 코드·테스트는 고치지 않는다.
 
 ## 공통 규칙 (모든 spec 스킬)
-1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
-2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
+1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 한다).
+2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 문서 상태를 STATE에, 세션 기록(시작·상태 변화·활동)을 `vibe` 명령으로만(`beat`·`claim`·`inbox`·`log`) 남기고 SESSIONS.md를 직접 고치지 않는다. 워커는 STATE·SSOT·세션 기록 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
-4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
+4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 inbox(`vibe inbox add`)와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
 5. **읽기**: status 요약·`vibe brief <T###|ID-n|ID@rev> --summary`로 필요한 범위를 찾는다. 큰 brief는 `--section decisions|tasks --offset <n> --limit <n>`으로 원문 블록째 읽고 모든 필요 블록의 coverage를 확인한다. 전체 brief의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 보고서도 필요한 절만 읽고, 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
 어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 `vibe format --section settings`의 `plan`). CLI는 `npx @haeram/gusta` 뒤에 붙인다.
 
 ## 1. 시작
 - `vibe status --json`을 본다. spec/이 없거나 스택·구조·검증 명령을 정해야 하면 gusta-create-architecture부터 한다 — 검증 명령이 있어야 /gusta-start가 태스크를 끝까지 검증한다.
-- 구상할 것: 사용자의 요청 그대로. 같은 주제의 open/ready ideation 문서가 있으면 이어서 쓴다. 요청이 없으면 status의 남은 기획 재료를 보여 주고 고르게 한다 — 미룬 구상(open/ready ideation), 태스크로 아직 안 쪼갠 SSOT 변경(pending), 채택된 review, 결정함(inbox decided)의 잠정 결정. 이미 정해진 결정은 시안 없이 3절로 간다. 잠정 결정을 바꾸는 요청도 여기서 받는다(gusta-update-ssot 뒤 그 inbox 항목 삭제·log).
-- slug=영문 kebab. STATE log `- YYMMDD sketch <slug> start`.
+- 구상할 것: 사용자의 요청 그대로. 같은 주제의 open/ready ideation 문서가 있으면 이어서 쓴다. 요청이 없으면 status의 남은 기획 재료를 보여 주고 고르게 한다 — 미룬 구상(open/ready ideation), 태스크로 아직 안 쪼갠 SSOT 변경(pending), 채택된 review, 결정함(`vibe inbox list --kind decided`)의 잠정 결정. 이미 정해진 결정은 시안 없이 3절로 간다. 잠정 결정을 바꾸는 요청도 여기서 받는다(gusta-update-ssot 뒤 `vibe inbox resolve --id <id> --log '<한 줄>'`).
+- slug=영문 kebab. `vibe log --text 'sketch <slug> start'`.
 
 ## 2. 시안 — 보고 고르기
 - 화면·흐름·데이터처럼 눈으로 보면 빨리 정해지는 것은 HTML 한 페이지로 그린다: `.tmp/sketch/<slug>/index.html`. `.tmp/`는 git이 추적하지 않는 작업 폴더라 커밋하지 않는다. 외부 리소스 없는 한 파일(인라인 CSS·SVG)로, 아티팩트처럼 보기 좋게 만든다. 동작하는 코드가 아니라 보이는 기획이다 — 실제 화면 같은 정적 목업, 사용자 흐름, 상태별 화면(빈·오류·많음), 필요하면 다이어그램.
@@ -49,5 +49,5 @@ description: >-
 
 ## 5. 마감
 - `vibe sketch stop <slug>`로 서버를 내린다. 시안 파일은 `.tmp`에 남는다 — 다시 부르면 이어서 고친다.
-- STATE log 1줄. next는 CLI가 태스크로 갱신한다.
+- `vibe log` 1줄. next는 CLI가 태스크로 갱신한다.
 - cfg.lang으로 요약: 고른 것 / 버린 것(이유) / 미뤄 ideation에 남긴 것 / 바뀐 SSOT rev·만든 태스크 / "이제 /gusta-start로 실행하면 묻지 않고 진행합니다".

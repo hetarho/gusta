@@ -8,11 +8,12 @@ import { mainSessionTasks } from './task-graph.mjs'
 import { activeAttempt, scopedBoard } from './work-policy.mjs'
 import { cleanupWork, pruneCleanedAttempt, workInternals } from './work-groups.mjs'
 import { vibeSession, fetchBranch } from './vibe.mjs'
-import { activeRows } from './state-doc.mjs'
+import { coordView } from './vibe-coord.mjs'
 
 // prune-branches (spec/SETTINGS.md): once work ends, the CLI deletes what it created and nothing
 // still needs — worktrees, branches, checkpoint refs and wip/* snapshots. Anything holding commits
 // the target lacks, uncommitted changes, or a live claim stays and is reported with the reason.
+// The coordination branch (SETTINGS coord) is never one of them: it outlives every session.
 const { repository, requireClean, now } = workInternals
 const commitOf = async (root, name) => (await git(root, ['rev-parse', '--verify', '--quiet', `${name}^{commit}`], [1]))?.trim() || null
 const contains = async (root, older, newer) => (await git(root, ['merge-base', '--is-ancestor', older, newer], [1])) !== null
@@ -38,6 +39,7 @@ async function pruneGroup(context, id) {
   const state = await readRuntime(context.root)
   const group = state.groups[id]
   if (!group.managed) return { kept: '현재 checkout을 채택한 묶음이라 브랜치·공간을 그대로 둡니다.' }
+  if (group.branch === context.coord) return { kept: `${group.branch}는 조정 브랜치라 정리하지 않습니다.` }
   if (group.runner || group.operation) return { kept: '실행기 또는 통합 명령이 실행 중입니다.' }
   const attempts = Object.values(state.attempts).filter((entry) => entry.group === id)
   if (attempts.some((entry) => activeAttempt(entry) || entry.operation || (!entry.cleanedAt && entry.status !== 'failed'))) return { kept: '정리되지 않은 실행이 남아 있습니다.' }
@@ -70,6 +72,7 @@ async function pruneGroup(context, id) {
 export async function pruneWork(options = {}) {
   const context = await repository(options)
   if (!(await readSetting({ root: context.cwd }, 'prune-branches'))) return { skipped: 'prune-branches: false' }
+  context.coord = await readSetting({ root: context.cwd }, 'coord')
   const state = await readRuntime(context.root)
   const result = { cleaned: [], pruned: [], kept: [] }
   for (const group of Object.values(state.groups)) {
@@ -119,7 +122,10 @@ export async function pruneWork(options = {}) {
 async function pruneWip(context, tag) {
   const { root, remote, target } = context
   const pruned = [], kept = []
-  if (context.state && activeRows(context.state).some((row) => row.tag === tag)) return { pruned, kept: [{ ref: `wip/${tag}`, reason: '이 tag의 active 행이 남아 있습니다(beat --end 전).' }] }
+  if (`wip/${tag}` === context.branches.coord) return { pruned, kept: [{ ref: `wip/${tag}`, reason: '조정 브랜치라 정리하지 않습니다.' }] }
+  // The session's row: on the coordination branch, or in STATE's old active table while a project still has it.
+  const sessions = (await coordView(context, { fetch: false })).doc.active
+  if (sessions.some((row) => row.tag === tag)) return { pruned, kept: [{ ref: `wip/${tag}`, reason: '이 tag의 active 행이 남아 있습니다(beat --end 전).' }] }
   if ((await git(root, ['status', '--porcelain', '--untracked-files=all'])).trim()) return { pruned, kept: [{ ref: `wip/${tag}`, reason: '미커밋 변경이 있어 스냅샷을 보존합니다.' }] }
   if (await commitOf(root, `refs/heads/wip/${tag}`)) {
     await git(root, ['branch', '-D', `wip/${tag}`])

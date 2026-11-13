@@ -10,6 +10,7 @@ import { renderBrief } from './spec-context.mjs'
 import { vibeSettings } from './settings.mjs'
 import { vibePrune } from './prune.mjs'
 import { vibeTask } from './vibe-task.mjs'
+import { vibeInbox, vibeLog } from './vibe-inbox.mjs'
 import { vibeUsage } from './native-usage.mjs'
 import { SkillPackageError } from './errors.mjs'
 
@@ -35,25 +36,52 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 결정 원문 블록·필수 의존·전역 규칙·flow·constraints·stale base 이후 chg.
                                                 기본은 작업 트리(미커밋 포함), --ref는 그 커밋만. 마크다운이 기본이고 끝에 end 줄
   vibe format --section task|state|ssot|report|ideation|reading|settings  FORMAT 발췌만
-  vibe status [--tag <tag>] [--no-fetch]        원격의 다른 세션·남은 일·추천 경로(route)
+  vibe status [--tag <tag>] [--no-fetch] [--section inbox]
+                                                다른 세션(브랜치·커밋·pushed: 그 커밋이 원격에 있는지)·남은 일·추천 경로(route).
+                                                조정 브랜치(SETTINGS coord, 기본 gusta)를 원격과 맞춘 뒤 읽고, STATE에 남은 옛
+                                                active·inbox·log도 합쳐 보여 준다(coordination.legacy). runnable은 다른 생존 세션이
+                                                잡은 태스크와 아직 land에 안 들어간 완료 태스크(unlanded)를 뺀다 — 뺀 것은 held
   vibe sync                                     원격 push 브랜치를 HEAD에 반영 (STATE는 섹션 단위 병합)
   vibe plan-sync                                기획 브랜치(SETTINGS plan, 미정이면 land)의 최신을 HEAD에 합침 — 기획·채번 전
   vibe plan-push [--commit <sha> ...]           spec/만 바꾼 기획 커밋(기본 HEAD)을 기획 브랜치에 올리고 다시 합침.
                                                 원격에 그 브랜치가 있으면 push, 없으면 로컬 브랜치만. ID 충돌이면 거절
-  vibe claim --tag <tag> [--task T###]            선점 정보만 원격 트리에 push; 미검증 로컬 코드는 보존
+  vibe claim --tag <tag> [--task T###] [--mode pair|autopilot] [--host <name>]
+                                                조정 브랜치에서 태스크 선점(같은 clone의 worktree는 하나만 성공). push 대상·깨끗한
+                                                트리·커밋이 필요 없고 작업 트리는 그대로다. 원격이 있고 coord-push가 켜져 있으면
+                                                바로 올린다 — 다른 기기가 먼저 올렸으면 실패(lost), 원격에 닿지 못하면 로컬 선점은
+                                                유지하고 unpublished:true. --task 없으면 세션 등록만
   vibe push [--wait-ci] [--diff-base <sha>] [--verified-commit <sha>]
                                                 끝난 작업을 spec/SETTINGS.md land로 반영: push true면 sync 후 원격 push,
                                                 false면 로컬 land 브랜치 병합, land-via pr이면 이 브랜치 push+PR. 할 일 없으면 none.
                                                 verified-commit 이후 코드가 바뀌면 재검증 필요
   vibe deploy [--wait-ci]                       '배포해줘': deploy 브랜치를 land로 fast-forward (push true면 원격). 갈라졌으면 거절
-  vibe beat --tag <tag> [--mode pair|autopilot] [--doing <T###|->] [--end]
-                                                STATE ## active의 이 세션 행 쓰기·갱신·삭제 (커밋은 호출자)
-  vibe task start T### --tag <tag>              단독 선점: 태스크·STATE 행·이 세션 active를 doing@날짜.tag로. todo·dep 완료만
+                                                SETTINGS version auto면 운영 브랜치(deploy, 없으면 land)가 전진할 때 push·deploy가
+                                                버전 커밋을 얹고 결과 version에 {from,to,level} 또는 {skipped}를 싣는다
+  vibe beat --tag <tag> [--mode pair|autopilot] [--doing <T###|->] [--host <name>] [--end]
+                                                조정 브랜치의 이 세션 행(브랜치·현재 커밋 포함) 쓰기·갱신·삭제 — 커밋할 것 없음.
+                                                세션 시작·끝과 doing·커밋이 바뀐 갱신은 올리고, at만 바뀐 갱신은 커밋하지 않는다(행이 30분 넘게
+                                                묵었을 때만 생존 신호로 남긴다).
+                                                --doing T###는 선점과 같다(다른 생존 세션이 잡았으면 거절). beat·claim·inbox·log는 커밋이 아직
+                                                없는 git 저장소에서도 조정 브랜치에 쓴다(행의 커밋은 -). git 저장소가 아닌 대상만 STATE에 쓴다
+  vibe task start T### --tag <tag>              단독 선점: 태스크·STATE 행을 doing@날짜.tag로(커밋은 호출자). 등록된 세션이면
+                                                조정 브랜치에서 먼저 선점하고 거절되면 쓰지 않는다. todo·dep 완료만
   vibe task done T### --tag <tag> [--at <sha|ref>] [--force-other]
-                                                done@날짜·tasks/done/ 이동·STATE 행 삭제·next·log (커밋은 호출자).
+                                                done@날짜·tasks/done/ 이동·STATE 행 삭제·next (커밋은 호출자). 조정 브랜치에는
+                                                unlanded 행(land에 들어갈 때까지 다른 세션이 다시 집지 않게)과 log 한 줄.
                                                 acceptance 미체크·빈 result·다른 tag(--force-other는 사용자 지시 때만)면 거절
+  vibe inbox add --kind decided|parked|suggest [--ref <T###|ID-n|review/<slug>|ideation/<slug>> ...] (--text <text> | --file <path>) [--tag <tag>]
+                                                결정함에 한 줄(- YYMMDD kind refs: text, 날짜는 CLI가). 따옴표·|가 섞인 본문은 --file,
+                                                이미 완성된 한 줄은 --line '<줄>'(--kind·--ref 없이).
+                                                형식과, 참조한 태스크·결정·문서가 이 checkout에 있는지를 쓰는 시점에 검사한다
+  vibe inbox resolve (--id <id> ... | --line <line> | --file <lines>) [--log <text>] [--tag <tag>]
+                                                owner가 확인한 줄 삭제(+ --log 한 줄). id는 list·add·status가 준다
+  vibe inbox list [--kind <kind>] [--ref <ref>] [--no-fetch]
+  vibe log [--text <text> | --file <path>] [--tag <tag>] [--no-fetch]
+                                                활동 기록 한 줄(최신이 위, 20줄 유지; 다음 사건과 함께 올라간다). 본문 없으면 목록.
+                                                inbox·log·beat·claim은 작업 묶음의 워커·리뷰어 checkout에서 거절한다
   vibe checkpoint --tag <tag> [--message <text>] [--handoff] [--next <text>]
-                                                작업 트리 스냅샷을 wip/<tag>로 보존. --handoff는 최종 검증 없이 명시한 원격 인계(push false여도 WIP만 push)
+                                                작업 트리 스냅샷을 wip/<tag>로 보존. --handoff는 최종 검증 없이 명시한 원격 인계(push false여도 WIP만 push).
+                                                이 세션 행의 커밋·at도 갱신해 올린다(오래 걸리는 작업이 죽은 세션으로 보이지 않게)
   vibe prune [--tag <tag>] [--work <name>]      마감 정리: 합쳐진 작업 묶음·단위의 worktree·브랜치, 이 세션의 wip/<tag>.
                                                 spec/SETTINGS.md prune-branches가 false면 건너뜀. 안 합쳐진 커밋·미커밋 변경은 보존
   vibe settings [--set <key>=<value> ...]       spec/SETTINGS.md의 유효 설정(없으면 기본값) 보기·바꾸기 (커밋은 호출자)
@@ -85,14 +113,14 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
   vibe ab status <slug> | pick <slug> --variant <v> [--approach <English line>] [--accept-residue] [--prune-branches] | stop <slug> [--remove] [--prune-branches]
                                                 A/B 비교(gusta-showcase): 변형마다 브랜치·형제 worktree·포트. 변형 세션은 그 worktree만 고치고
                                                 커밋·서버·측정·정리는 CLI가 한다. status는 hub URL·메모·choose, pick은 그 변형만 현재 브랜치에 merge하고
-                                                STATE log에 채택 줄(접근은 --approach 또는 저장된 접근 첫 줄, 약 100자)을 쓴다(커밋은 호출자)
+                                                조정 브랜치 log에 채택 줄(접근은 --approach 또는 저장된 접근 첫 줄, 약 100자)을 쓴다(커밋할 것 없음)
   vibe sketch serve <slug> [--port 0] [--ttl-ms 28800000] [--json]
                                                 스케치(gusta-sketch): <checkout>/.tmp/sketch/<slug>/의 정적 파일을 127.0.0.1 포트 하나로(no-store).
                                                 같은 slug의 살아 있는 서버는 재사용(reused). .tmp/는 info/exclude로 무시(.gitignore 안 고침). ttl 뒤 스스로 종료
   vibe sketch stop <slug> | --all [--json]      기록된 스케치 서버 정지·기록 삭제
   vibe sketch status [--json]                   기록된 스케치 서버와 alive
   vibe preflight [--probe <command> [--provider claude|codex] [--allow-tool <rule> ...]]
-                                                맡김 전 점검: push 권한·lint·절전 방지·CI 접근·헤드리스 워커 실측
+                                                맡김 전 점검: push 권한·조정 브랜치(coord-push)·lint·절전 방지·CI 접근·헤드리스 워커 실측
   vibe awake [--hours <n>] | --stop             macOS caffeinate로 절전 방지
   vibe check [--tier task|batch] [--diff-base <task-start-sha>] [--task T###] [--timeout-ms <ms>] [--heavy] [--no-cache] [--allow-final] -- <command>
                                                 batch/group은 조정자 전용·자동 heavy 락. --allow-final은 명시적 예외만
@@ -102,15 +130,15 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
 const allowed = {
   loop: ['tag', 'provider', 'model', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'max-gate-attempts', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref', 'section', 'offset', 'limit', 'snapshot'], format: ['section'],
-  status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host'],
-  claim: ['tag', 'task', 'remote'], task: ['tag', 'at'],
+  status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host', 'remote'],
+  claim: ['tag', 'task', 'mode', 'host', 'remote'], task: ['tag', 'at'], inbox: ['tag', 'kind', 'ref', 'text', 'file', 'line', 'id', 'log', 'remote'], log: ['tag', 'text', 'file', 'remote'],
   checkpoint: ['tag', 'message', 'remote', 'next'], prune: ['tag', 'work', 'remote'], settings: ['set'], usage: ['tag', 'session', 'marker', 'project-dir'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
   awake: ['hours', 'remote'], check: ['tier', 'diff-base', 'task', 'timeout-ms'], design: ['tag', 'scope', 'verify', 'timeout-ms'],
   ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'reuse', 'from', 'shared-file', 'scaffold-prompt', 'scaffold', 'variant', 'approach', 'prompt-file', 'prompt-dir', 'follow-up-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
   sketch: ['port', 'ttl-ms'],
 }
-const flags = { task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'], sketch: ['all'] }
-const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, usage: vibeUsage, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
+const flags = { task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], inbox: ['no-fetch'], log: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'], sketch: ['all'] }
+const actions = { loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, inbox: vibeInbox, log: vibeLog, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, usage: vibeUsage, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
   ab: (options) => { if (!Object.hasOwn(AB_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe ab <${Object.keys(AB_STEPS).join('|')}> <slug>`); return AB_STEPS[options.step](options) },
   sketch: (options) => { if (!Object.hasOwn(SKETCH_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe sketch <${Object.keys(SKETCH_STEPS).join('|')}>`); return SKETCH_STEPS[options.step](options) } }
 
@@ -127,7 +155,7 @@ export async function runVibeCLI(args) {
   if (action === 'ci' && args.shift() !== 'wait') throw new SkillPackageError('vibe ci wait [옵션]')
   const options = {}
   if (action === 'brief') while (args[0] && !args[0].startsWith('--')) (options.roots ??= []).push(args.shift())
-  if ((action === 'design' || action === 'usage') && args[0] && !args[0].startsWith('--')) options.step = args.shift()
+  if (['design', 'usage', 'inbox'].includes(action) && args[0] && !args[0].startsWith('--')) options.step = args.shift()
   if (action === 'task') { options.step = args.shift(); if (args[0] && !args[0].startsWith('--')) options.task = args.shift() }
   if (action === 'ab' || action === 'sketch') { options.step = args.shift(); if (args[0] && !args[0].startsWith('--')) options.slug = args.shift() }
   let command = null
@@ -147,7 +175,7 @@ export async function runVibeCLI(args) {
     const value = equals === -1 ? args.shift() : argument.slice(equals + 1)
     if (value === undefined || (value.startsWith('--') && name !== 'probe')) throw new SkillPackageError(`${argument} 값이 필요합니다.`)
     const field = name === 'target' ? 'targetRoot' : name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())
-    if (['allow-tool', 'verify', 'copy', 'reuse', 'set'].includes(name) || (action === 'plan-push' && name === 'commit')) (options[field] ??= []).push(value)
+    if (['allow-tool', 'verify', 'copy', 'reuse', 'set'].includes(name) || (action === 'plan-push' && name === 'commit') || (action === 'inbox' && ['ref', 'id'].includes(name))) (options[field] ??= []).push(value)
     else options[field] = value
   }
   if (action === 'check') {
@@ -162,7 +190,9 @@ export async function runVibeCLI(args) {
     if (result.ok === false || (action === 'brief' && (result.view ? result.sourceComplete === false : result.complete === false))) process.exitCode = 1
   } catch (error) {
     if (!(error instanceof SkillPackageError)) throw error
-    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, ok: false, error: error.message, details: error.details ?? [] }, null, 2)}\n`)
+    // A refused claim says who holds the task and how (claimed|unlanded; lost: the remote had it first).
+    const claim = error.name === 'ClaimError' ? { claim: { task: error.task, owner: error.owner, reason: error.reason, lost: error.lost } } : {}
+    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, ok: false, error: error.message, details: error.details ?? [], ...claim }, null, 2)}\n`)
     process.exitCode = 1
   }
 }

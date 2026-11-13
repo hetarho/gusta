@@ -7,8 +7,10 @@ import path from 'node:path'
 import { fixture, git, execute, archiveTask } from './helpers/vibe-fixture.mjs'
 import { vibeLoop } from '../src/vibe-loop.mjs'
 import { atomicJSON, readJSON, watchLoop, acquireLoop, releaseLoop, loopEvent, judgmentItems, finishedSummary, finishedEvent } from '../src/loop-control.mjs'
-import { activeRows, appendInbox } from '../src/state-doc.mjs'
+import { appendInbox } from '../src/state-doc.mjs'
+import { readSessions } from '../src/coord-doc.mjs'
 import { vibePush } from '../src/vibe.mjs'
+import { vibeInbox } from '../src/vibe-inbox.mjs'
 
 const options = (root) => ({ targetRoot: root, tag: 'ctrl01', provider: 'codex', maxUnits: 3 })
 const passed = async () => ({ ok: true, checks: [] })
@@ -155,16 +157,18 @@ test('graceful stop finishes the current unit and final validation without abort
   assert.equal(stopped.reason, 'stop-file')
 })
 
-for (const point of ['report-write', 'metadata-commit', 'state-write']) test(`transient ${point} retries only metadata and starts each unit once`, async (t) => {
+for (const point of ['report-write', 'metadata-commit', 'session-beat']) test(`transient ${point} retries only metadata and starts each unit once`, async (t) => {
   const { root } = await fixture(t)
   let injected = false, calls = 0
   const result = await vibeLoop({ ...options(root), maxUnits: 2 }, { preflight: passed,
-    fault: async (name) => { if (calls === (point === 'state-write' ? 2 : 1) && name === point && !injected) { injected = true; throw new Error(`injected ${point}`) } },
+    // session-beat: the release of the session row on the coordination branch, when the run closes.
+    fault: async (name) => { if (calls === (point === 'session-beat' ? 2 : 1) && name === point && !injected) { injected = true; throw new Error(`injected ${point}`) } },
     execute: async () => code(root, ++calls), check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: null }),
   })
   assert.equal(result.ok, true, result.error); assert.equal(calls, 2)
   assert.equal(injected, true)
   assert.equal(await git(root, 'status', '--porcelain'), '')
+  assert.deepEqual(readSessions(await git(root, 'show', 'gusta:SESSIONS.md')).active, [])
 })
 
 for (const point of ['config-before-apply', 'config-after-apply']) test(`failure at ${point} leaves accurate configuration/receipt, releases ownership and never launches a duplicate`, async (t) => {
@@ -203,7 +207,9 @@ test('exhausted metadata retries record a distinct operational error; explicit r
   const recovered = await vibeLoop({ targetRoot: root, tag: 'ctrl01', recoverMetadata: true })
   assert.equal(recovered.implementationRestarted, false)
   assert.equal(await git(root, 'status', '--porcelain'), '?? owner-notes.txt')
-  assert.deepEqual(activeRows(await readFile(path.join(root, 'spec/STATE.md'), 'utf8')), [])
+  // The host's session row is gone from the coordination branch; STATE never held one.
+  assert.deepEqual(readSessions(await git(root, 'show', 'gusta:SESSIONS.md')).active, [])
+  assert.doesNotMatch(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), /^## active\b/m)
 })
 
 test('cancellation while validation runs records cancelled separately from failed validation', async (t) => {
@@ -268,10 +274,14 @@ test('independent supervisor observes an actually killed isolated host and emits
   assert.equal(finished.status, 'failed'); assert.equal(finished.reason, 'host-lost'); assert.equal(finished.units, 0)
   assert.deepEqual(finished.push, { pushed: false, reason: 'failed' }); assert.equal(finished.report, state.report)
   assert.equal((await readdir(path.join(directory, 'notifications'))).filter((name) => name.endsWith('.json')).length, 2)
+  // The killed host could not release its session row: it is still on the coordination branch
+  // (holding the task its unit was on) until the explicit recovery lets go.
+  assert.deepEqual(readSessions(await git(root, 'show', 'gusta:SESSIONS.md')).active.map((row) => `${row.tag} ${row.mode} ${row.doing}`), ['ctrl01 autopilot T001'])
   const result = await vibeLoop({ targetRoot: root, tag: 'ctrl01', recoverMetadata: true })
   assert.equal(result.implementationRestarted, false)
   assert.equal(await git(root, 'status', '--porcelain'), '')
   assert.equal((await readJSON(manifest)).units, 0)
+  assert.deepEqual(readSessions(await git(root, 'show', 'gusta:SESSIONS.md')).active, [])
 })
 
 test('stale heartbeat is reported without stealing a live host or restarting after a user stop', async (t) => {
@@ -520,9 +530,10 @@ test('a clean committed report with the generated name is preserved unless a pre
 })
 
 test('judgment items are only what a unit added for the owner: decided/parked lines, new open decisions, a parked result', () => {
-  const before = '# STATE\n\n## inbox\n- 261110 decided ARCH-1: old → a (alt: b)\n- 261110 suggest -: optional\n\n## ssot\n| id | rev | tasked | pending | [?] |\n|---|---|---|---|---|\n| ARCH | 1 | 1 | - | 1 |\n| AUTH | 2 | 2 | - | 0 |\n'
-  const after = before.replace('- 261110 suggest -: optional', '- 261110 suggest -: optional\n- 261111 decided AUTH-3: Session length → 30 days (alt: 7 days | 1 day)\n- 261111 parked T004 AUTH-4: billing needs the owner\n- 261111 suggest -: next idea')
-    .replace('| AUTH | 2 | 2 | - | 0 |', '| AUTH | 3 | 2 | AUTH-4+ | 2 |')
+  const ssot = (auth) => `# STATE\n\n## ssot\n| id | rev | tasked | pending | [?] |\n|---|---|---|---|---|\n| ARCH | 1 | 1 | - | 1 |\n${auth}\n`
+  // inbox: the owner's inbox lines as the coordination branch has them; state: STATE for the [?] counts.
+  const before = { inbox: ['- 261110 decided ARCH-1: old → a (alt: b)', '- 261110 suggest -: optional'], state: ssot('| AUTH | 2 | 2 | - | 0 |') }
+  const after = { inbox: [...before.inbox, '- 261111 decided AUTH-3: Session length → 30 days (alt: 7 days | 1 day)', '- 261111 parked T004 AUTH-4: billing needs the owner', '- 261111 suggest -: next idea'], state: ssot('| AUTH | 3 | 2 | AUTH-4+ | 2 |') }
   assert.deepEqual(judgmentItems(before, after), [
     { kind: 'decided', refs: ['AUTH-3'], text: 'Session length → 30 days (alt: 7 days | 1 day)' },
     { kind: 'parked', refs: ['T004', 'AUTH-4'], text: 'billing needs the owner' },
@@ -533,19 +544,21 @@ test('judgment items are only what a unit added for the owner: decided/parked li
   assert.deepEqual(judgmentItems(after, before, { kind: 'task', id: 'T009', outcome: 'parked' }), [{ kind: 'parked', refs: ['T009'] }])
   assert.equal(judgmentItems(before, after, { kind: 'task', id: 'T004', outcome: 'parked' }).filter((item) => item.kind === 'parked').length, 1)
   assert.deepEqual(judgmentItems(before, before, { kind: 'none', id: '', outcome: 'no_work' }), [])
-  assert.equal(judgmentItems('', `## inbox\n- 261111 decided X-1: ${'long '.repeat(40)}`)[0].text.length, 80)
+  assert.equal(judgmentItems({}, { inbox: [`- 261111 decided X-1: ${'long '.repeat(40)}`] })[0].text.length, 80)
+  // The inbox is read from the lines it is given, never from a `## inbox` in the STATE text.
+  assert.deepEqual(judgmentItems({}, { state: '## inbox\n- 261111 parked T001: in STATE only\n' }), [])
 })
 
 test('finished summary: level, waiting judgment capped with IDs, parked count and publication', () => {
-  const text = `## inbox\n${Array.from({ length: 12 }, (_, n) => `- 261111 ${n % 3 ? 'decided' : 'parked'} T${100 + n}: item ${n}`).join('\n')}\n`
-  const summary = finishedSummary({ status: 'stopped', reason: 'no-work', units: 4, report: 'spec/reports/261111-k3f9.md', publication: { pushed: 'abc123', target: 'main' } }, text)
+  const waiting = { inbox: Array.from({ length: 12 }, (_, n) => `- 261111 ${n % 3 ? 'decided' : 'parked'} T${100 + n}: item ${n}`) }
+  const summary = finishedSummary({ status: 'stopped', reason: 'no-work', units: 4, report: 'spec/reports/261111-k3f9.md', publication: { pushed: 'abc123', target: 'main' } }, waiting)
   assert.equal(summary.level, 'attention'); assert.equal(summary.parked, 4)
   assert.deepEqual([summary.judgment.count, summary.judgment.items.length, summary.judgment.more], [12, 10, 2])
   assert.deepEqual(summary.judgment.items[0], { kind: 'parked', refs: ['T100'], text: 'item 0' })
   assert.deepEqual(summary.push, { pushed: true, commit: 'abc123', target: 'main' }); assert.equal(summary.report, 'spec/reports/261111-k3f9.md')
   assert.deepEqual(finishedSummary({ status: 'stopped', reason: 'max-units', units: 1, publication: { pushed: null, target: null, reason: 'land-unset' } }),
     { level: 'info', status: 'stopped', reason: 'max-units', units: 1, judgment: { count: 0, items: [], more: 0 }, parked: 0, push: { pushed: false, reason: 'land-unset' }, report: null })
-  const failed = finishedSummary({ status: 'failed', reason: 'host-lost', error: 'loop host exited without finalization', units: 2 }, text)
+  const failed = finishedSummary({ status: 'failed', reason: 'host-lost', error: 'loop host exited without finalization', units: 2 }, waiting)
   assert.equal(failed.level, 'failure'); assert.equal(failed.error, 'loop host exited without finalization'); assert.deepEqual(failed.push, { pushed: false, reason: 'failed' })
   assert.deepEqual(finishedSummary({ status: 'cancelled', reason: 'stop-file', units: 0, publication: { pushed: null, landed: 'def456', target: 'develop' } }).push, { pushed: false, reason: 'local', landed: 'def456', target: 'develop' })
   assert.deepEqual(finishedSummary({ status: 'stopped', reason: 'final-window', units: 3 }).push, { pushed: false, reason: 'not-attempted' })
@@ -588,13 +601,15 @@ test('the hook gets one needs-judgment per unit that left judgment, none for oth
   const notify = await hook(temporary), file = path.join(root, 'spec/STATE.md')
   let calls = 0
   const result = await vibeLoop({ ...options(root), maxUnits: 3, notifyCommand: notify.command }, { preflight: passed,
-    execute: async () => {
+    execute: async (config) => {
       const n = ++calls
       let text = await readFile(file, 'utf8')
-      if (n === 1) text = appendInbox(text, '- 261111 decided ARCH-3: Retry policy → exponential (alt: fixed)').replace('| ARCH | 1 | 1 | - | 0 |', '| ARCH | 1 | 1 | - | 1 |')
-      if (n === 2) text = appendInbox(text, '- 261111 parked T002: needs production credentials')
-      // The decision the inbox cites and the open question STATE counts exist, so spec lint stays clean.
+      // The decision the inbox cites and the open question STATE counts exist, so spec lint stays clean
+      // (and the inbox call, which checks its references against this checkout, accepts the line).
       if (n === 1) { const arch = path.join(root, 'spec/ssot/ARCH.md'); await writeFile(arch, (await readFile(arch, 'utf8')).replace('\n\n## chg', '\n- ARCH-3 [o] Retry policy: exponential.\n- ARCH-4 [?] Retry cap.\n\n## chg')) }
+      // What the owner must judge goes to the inbox on the coordination branch, one call a line.
+      if (n === 1) { await vibeInbox({ targetRoot: root, step: 'add', tag: config.tag, kind: 'decided', ref: ['ARCH-3'], text: 'Retry policy → exponential (alt: fixed)' }); text = text.replace('| ARCH | 1 | 1 | - | 0 |', '| ARCH | 1 | 1 | - | 1 |') }
+      if (n === 2) await vibeInbox({ targetRoot: root, step: 'add', tag: config.tag, kind: 'parked', ref: ['T002'], text: 'needs production credentials' })
       await writeFile(file, text); await writeFile(path.join(root, 'app.js'), `// unit ${n}\n`)
       if (n !== 2) await archiveTask(root, `T00${n}`)
       await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', `unit ${n}`)
@@ -619,6 +634,7 @@ test('a failing or missing notification hook never fails the run', async (t) => 
   const { root, temporary } = await fixture(t)
   const result = await vibeLoop({ ...options(root), maxUnits: 1, notifyCommand: shellQuote(path.join(temporary, 'missing-hook')) }, { preflight: passed,
     execute: async () => {
+      // An inbox line still in STATE (a project that has not moved the section) is judged too.
       const file = path.join(root, 'spec/STATE.md')
       await writeFile(file, appendInbox(await readFile(file, 'utf8'), '- 261111 parked T001: owner decides'))
       await git(root, 'add', file)

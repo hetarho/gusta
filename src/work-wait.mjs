@@ -137,14 +137,17 @@ async function outlook(context, id, owner) {
   return { state: 'waiting', reason: group.operation || group.gate ? 'integration-in-progress' : null, inFlight }
 }
 
-// Autopilot: nobody answers, so no instruction ends in a question to the user.
+// Autopilot: nobody answers, so no instruction ends in a question to the user. What the owner must
+// see goes to the inbox on the coordination branch in one CLI call (no STATE edit, nothing to
+// commit, no compound command: a permission prompt would stall the session).
+const INBOX = (kind) => `vibe inbox add --kind ${kind} --ref <T###|ID-n> --text <한 줄> 한 번 호출(따옴표·|가 섞이면 세션 임시 폴더 파일을 --file로, 커밋할 것 없음)`
 const UNATTENDED = {
   blocked: 'attempt.reason을 확인한다. 직접 고칠 수 있으면 고친 뒤 work update --attempt <id> --status doing으로 재개해 다시 submit한다. 기획 결정이 필요하면 결정 요청(question·options·recommendation)을 세션 임시 폴더의 JSON에 써서 work update --attempt <id> --status blocked --reason <요약> --decision-file <path>로 남기고 work next를 다시 호출한다 — 기다리지 않는다.',
-  decide: 'attempt.decision에 답한다(조정자). 기획 공간에서 recommendation으로 gusta-update-ssot를 진행하고(잠정) inbox decided·보고서에 질문·선택·대안을 남겨 커밋한 뒤, work update --attempt <id> --status doing --note <적용한 결정과 SSOT rev>로 재개한다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 inbox parked 후 work release --attempt <id> --reason parked. 그리고 work next를 다시 호출한다.',
-  complete: '남은 일이 없다. landFrom에서 vibe push --target <landFrom> --verified-commit <verified.commit>으로 SETTINGS land에 반영하고, 반영 결과와 검증 커밋을 보고서에 남긴 뒤 마감한다. 결과 reason이 land-unset이면 inbox parked로 남긴다.',
-  stalled: '사람만 풀 수 있는 원인이다. 원인을 inbox parked와 보고서에 남기고 묶음 밖의 다른 일로 간다 — 기다리지 않는다.',
+  decide: `attempt.decision에 답한다(조정자). 기획 공간에서 recommendation으로 gusta-update-ssot를 진행해 커밋하고(잠정), 질문·선택·대안을 보고서와 결정함에 남긴다 — 결정함은 기획 공간에서 ${INBOX('decided')}. 그 뒤 work update --attempt <id> --status doing --note <적용한 결정과 SSOT rev>로 재개한다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 ${INBOX('parked')}로 남긴 뒤 work release --attempt <id> --reason parked. 그리고 work next를 다시 호출한다.`,
+  complete: `남은 일이 없다. landFrom에서 vibe push --target <landFrom> --verified-commit <verified.commit>으로 SETTINGS land에 반영하고, 반영 결과와 검증 커밋을 보고서에 남긴 뒤 마감한다. 결과 reason이 land-unset이면 ${INBOX('parked')}로 남긴다.`,
+  stalled: `사람만 풀 수 있는 원인이다. 원인을 보고서와 결정함에 남기고(${INBOX('parked')}) 묶음 밖의 다른 일로 간다 — 기다리지 않는다.`,
   // No subagent here: its permission prompt would stall an unattended session (gusta-start §3).
-  'needs-reviewer': '이 세션의 제출물만 남아 있어 독립 리뷰어가 필요하다. 맡김에서는 부하 에이전트를 띄우지 않는다 — 리뷰어 슬롯이 있는 헤드리스 실행기(work run)가 맡게 하고, 없으면 inbox parked로 남기고 다른 일로 간다.',
+  'needs-reviewer': `이 세션의 제출물만 남아 있어 독립 리뷰어가 필요하다. 맡김에서는 부하 에이전트를 띄우지 않는다 — 리뷰어 슬롯이 있는 헤드리스 실행기(work run)가 맡게 하고, 없으면 ${INBOX('parked')}로 남기고 다른 일로 간다.`,
 }
 
 const INSTRUCTION = {

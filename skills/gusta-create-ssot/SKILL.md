@@ -14,16 +14,16 @@ description: >-
 엔지니어가 결정할 것"으로 넘긴다. 반대로 기획 공백을 기술 디폴트로 얼버무리지도 않는다.
 
 ## 공통 규칙 (모든 spec 스킬)
-1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않고 현재 브랜치에 커밋만 한다).
-2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 STATE에 시작·상태 변화를 기록한다. 워커는 STATE·SSOT 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
+1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 한다).
+2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 문서 상태를 STATE에, 세션 기록(시작·상태 변화·활동)을 `vibe` 명령으로만(`beat`·`claim`·`inbox`·`log`) 남기고 SESSIONS.md를 직접 고치지 않는다. 워커는 STATE·SSOT·세션 기록 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
-4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 STATE inbox와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
+4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 inbox(`vibe inbox add`)와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
 5. **읽기**: status 요약·`vibe brief <T###|ID-n|ID@rev> --summary`로 필요한 범위를 찾는다. 큰 brief는 `--section decisions|tasks --offset <n> --limit <n>`으로 원문 블록째 읽고 모든 필요 블록의 coverage를 확인한다. 전체 brief의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 보고서도 필요한 절만 읽고, 출력은 요약·tail, 전체 로그는 파일로 남긴다.
 
 어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 `vibe format --section settings`의 `plan`).
 
 ## 1. 시작
-STATE 읽기 → log에 `- YYMMDD gusta-create-ssot <topic> start` → STATE ssot 표(도메인 목록)와 `rg <키워드> spec/ssot`로 중복·연관 확인(ssot/ 전체를 읽지 않는다).
+STATE 읽기 → `vibe log --text 'gusta-create-ssot <topic> start'` → STATE ssot 표(도메인 목록)와 `rg <키워드> spec/ssot`로 중복·연관 확인(ssot/ 전체를 읽지 않는다).
 같은 도메인이 이미 있으면 gusta-update-ssot로 전환을 제안한다.
 gusta-sketch에서 고른 시안의 결정(채택·안 할 것·v1 경계)이 재료다 — 2단계 인터뷰는 시안에서 정하지 못한 공백과 [?]만 채운다. sketch가 미뤄 둔 spec/ideation/ 문서(open·ready)를 재료로 쓰면 domains의 다음 미반영 채택 줄과 vision·shape·explored를 읽고 문서·STATE st를 ready로 바꾼다. ideation/done/은 기본 입력이 아니다. 같은 도메인이 이미 있으면 원본 경로·반영할 범위를 gusta-update-ssot로 함께 넘긴다.
 gusta-start 요청 실행이면 요청문이 재료다 — 요청문이 정한 것은 사용자 결정으로 그대로 쓰고, 정하지 않은 공백만 맡김 규칙으로 채운다.
@@ -62,5 +62,5 @@ level별 질문법:
 초안을 사용자에게 확인받는다 — novice: 풀어서 설명 + 원문 / mid: 원문 + 핵심 결정 요약 / expert: 원문만.
 
 ## 4. 마감
-STATE: ssot 행 추가 `<ID> | 1 | 0 | all | <[?] 수>` / next에 `gusta-create-task <ID>` / log 1줄.
+STATE: ssot 행 추가 `<ID> | 1 | 0 | all | <[?] 수>` / next에 `gusta-create-task <ID>`. `vibe log` 1줄.
 ideation 문서에서 시작했다면 [전환 마감 절차](references/ideation.md)를 수행한다.

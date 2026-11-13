@@ -2,6 +2,8 @@
 // Sessions on different clones push the same STATE, so it merges by section instead of by line.
 
 export const ACTIVE_HEADER = ['| tag | host | mode | since | at | doing |', '|---|---|---|---|---|---|']
+// SESSIONS.md (the coordination branch) also says where a session works: its branch and last commit.
+export const SESSION_ACTIVE_HEADER = ['| tag | host | mode | since | at | doing | branch | commit |', '|---|---|---|---|---|---|---|---|']
 const LOG_LIMIT = 20
 
 export function parseState(text) {
@@ -42,10 +44,12 @@ function splitTable(body) {
 
 const rowKey = (line) => cells(line)[0]
 
+// A six-cell row (STATE) keeps its six fields; a wider row (SESSIONS) adds branch and commit.
 export function activeRows(text) {
   const block = parseState(text).find((entry) => entry.name === 'active')
   if (!block) return []
-  return splitTable(block.body).rows.map(cells).map(([tag, host, mode, since, at, doing]) => ({ tag, host, mode, since, at, doing }))
+  return splitTable(block.body).rows.map(cells).map(([tag, host, mode, since, at, doing, ...place]) =>
+    ({ tag, host, mode, since, at, doing, ...(place.length ? { branch: place[0] || '-', commit: place[1] || '-' } : {}) }))
 }
 
 // Append one inbox line, keeping every other byte. A new section goes after cfg and active.
@@ -59,28 +63,36 @@ export function appendInbox(text, line) {
   return index < 0 ? `${text.trimEnd()}\n\n## inbox\n${line}\n` : `${text.slice(0, index)}## inbox\n${line}\n\n${text.slice(index)}`
 }
 
-// Write, update or remove this session's row. A new section goes right after cfg.
-export function upsertActive(text, row, { remove = false } = {}) {
+// Write, update or remove this session's row. A new section goes right after cfg. The table is
+// as wide as its header: `header` is the one a new section gets, and a table narrower than it
+// (six-cell STATE rows carried into SESSIONS) is widened with `-` in the missing cells.
+export function upsertActive(text, row, { remove = false, header = ACTIVE_HEADER } = {}) {
   const blocks = parseState(text)
   let block = blocks.find((entry) => entry.name === 'active')
   if (!block) {
     if (remove) return text
-    block = { name: 'active', body: [...ACTIVE_HEADER] }
+    block = { name: 'active', body: [...header] }
     const cfg = blocks.findIndex((entry) => entry.name === 'cfg')
     blocks.splice(cfg === -1 ? 1 : cfg + 1, 0, block)
   }
   const table = splitTable(block.body)
+  const current = table.header.length === 2 ? table.header : header
+  const wanted = cells(header[0]).length
+  const head = wanted > 6 && cells(current[0]).length < wanted ? header : current
+  const width = Math.max(cells(head[0]).length, 6)
+  if (width > 6) table.rows = table.rows.map((line) => cells(line).length >= width ? line : `| ${[...cells(line), ...Array(width).fill('-')].slice(0, width).join(' | ')} |`)
   const index = table.rows.findIndex((line) => rowKey(line) === row.tag)
   const previous = index === -1 ? null : cells(table.rows[index])
   if (remove) {
     if (index !== -1) table.rows.splice(index, 1)
   } else {
-    const line = `| ${row.tag} | ${row.host} | ${row.mode ?? previous?.[2]} | ${previous?.[3] ?? row.since} | ${row.at} | ${row.doing ?? previous?.[5] ?? '-'} |`
+    const line = `| ${[row.tag, row.host, row.mode ?? previous?.[2], previous?.[3] ?? row.since, row.at, row.doing ?? previous?.[5] ?? '-',
+      row.branch ?? previous?.[6] ?? '-', row.commit ?? previous?.[7] ?? '-'].slice(0, width).map(String).join(' | ')} |`
     if (index === -1) table.rows.push(line)
     else table.rows[index] = line
   }
   if (!table.rows.length) blocks.splice(blocks.indexOf(block), 1)
-  else block.body = [...(table.header.length === 2 ? table.header : ACTIVE_HEADER), ...table.rows, ...table.rest]
+  else block.body = [...head, ...table.rows, ...table.rest]
   return renderState(blocks)
 }
 
@@ -126,7 +138,7 @@ export function closeTasks(text, ids, { log, next } = {}) {
   if (active) {
     active.body = active.body.map((line) => {
       const row = isRow(line) ? cells(line) : []
-      if (row.length !== 6 || !ids.includes(row[5])) return line
+      if (row.length < 6 || !ids.includes(row[5])) return line
       row[5] = '-'
       return `| ${row.join(' | ')} |`
     })
@@ -170,13 +182,14 @@ function mergeLog(base, ours, theirs) {
 }
 
 // Rows merge by ID. Two different edits of one row are a conflict, except presence rows
-// (active, work) where the most recent timestamp wins.
-function mergeTable(name, base = [], ours = [], theirs = []) {
+// (active, unlanded, work) where the most recent timestamp wins. With `prefer` nothing is left
+// as a conflict: an edit beats a deletion, and two edits no rule settles go to the preferred side.
+function mergeTable(name, base = [], ours = [], theirs = [], prefer) {
   const [b, o, t] = [base, ours, theirs].map(splitTable)
   const map = (rows) => new Map(rows.map((line) => [rowKey(line), line]))
   const [mb, mo, mt] = [b.rows, o.rows, t.rows].map(map)
   const keys = [...new Set([...o.rows.map(rowKey), ...t.rows.map(rowKey)])]
-  const latest = { active: 4, work: 8 }[name]
+  const latest = { active: 4, unlanded: 4, work: 8 }[name]
   const rows = []
   for (const key of keys) {
     const [rb, ro, rt] = [mb.get(key), mo.get(key), mt.get(key)]
@@ -187,9 +200,12 @@ function mergeTable(name, base = [], ours = [], theirs = []) {
       rows.push((cells(rt)[latest] ?? '') > (cells(ro)[latest] ?? '') ? rt : ro)
       continue
     }
-    return null
+    if (!prefer) return null
+    rows.push(ro && rt ? (prefer === 'theirs' ? rt : ro) : ro ?? rt)
   }
-  const header = o.header.length ? o.header : t.header
+  // One side may still carry the six-cell active table: the wider header stays.
+  const wider = name === 'active' && cells(t.header[0] ?? '').length > cells(o.header[0] ?? '').length
+  const header = wider ? t.header : o.header.length ? o.header : t.header
   return [...header, ...rows, ...unionLines(b.rest, o.rest, t.rest)]
 }
 
@@ -209,24 +225,26 @@ function mergeCfg(base = [], ours = [], theirs = []) {
   return result
 }
 
-const TABLES = new Set(['active', 'ideation', 'ssot', 'review', 'tasks', 'work'])
+const TABLES = new Set(['active', 'ideation', 'ssot', 'review', 'tasks', 'work', 'unlanded'])
 
-function mergeSection(name, base, ours, theirs) {
+function mergeSection(name, base, ours, theirs, prefer) {
   if (name === 'log') return mergeLog(base, ours, theirs)
   if (name === 'inbox' || name === 'next') return unionLines(base, ours, theirs)
   if (name === 'cfg') return mergeCfg(base, ours, theirs)
-  if (TABLES.has(name)) return mergeTable(name, base, ours, theirs)
+  if (TABLES.has(name)) return mergeTable(name, base, ours, theirs, prefer)
   return null
 }
 
 // Three-way merge of STATE.md. Returns the merged text and the sections that conflicted;
-// a conflicted section keeps both versions between Git-style markers.
-export function mergeState(baseText, oursText, theirsText) {
+// a conflicted section keeps both versions between Git-style markers. `prefer` ('ours' or
+// 'theirs') is for a document nobody resolves by hand (SESSIONS.md): what the rules cannot
+// settle goes to that side, a repeated section keeps its first copy, and nothing conflicts.
+export function mergeState(baseText, oursText, theirsText, { prefer } = {}) {
   const index = (blocks) => {
     const map = new Map()
     for (const block of blocks) {
-      if (map.has(block.name)) return null
-      map.set(block.name, block.body)
+      if (!map.has(block.name)) map.set(block.name, block.body)
+      else if (!prefer) return null
     }
     return map
   }
@@ -251,8 +269,9 @@ export function mergeState(baseText, oursText, theirsText) {
     else if (same(b, o)) body = t
     else if (same(b, t)) body = o
     else {
-      body = mergeSection(name, b ?? [], o ?? [], t ?? [])
-      if (!body) {
+      body = mergeSection(name, b ?? [], o ?? [], t ?? [], prefer)
+      if (!body && prefer) body = prefer === 'theirs' ? t ?? o : o ?? t
+      else if (!body) {
         conflicts.push(name ?? '(preamble)')
         body = ['<<<<<<< ours', ...(o ?? []), '=======', ...(t ?? []), '>>>>>>> theirs']
       }

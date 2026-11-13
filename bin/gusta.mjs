@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { checkSkills, discoverSkills, installSkills, lintSpec, inspectWorkspace, readTaskBoard, SkillPackageError } from '../src/index.mjs'
+import { agentBlock, checkSkills, discoverSkills, installSkills, lintSpec, inspectWorkspace, readSetting, readTaskBoard, SkillPackageError } from '../src/index.mjs'
 import { getPackageInfo } from '../src/package-info.mjs'
 import { runWorkCLI } from '../src/work-cli.mjs'
 import { runVibeCLI } from '../src/vibe-cli.mjs'
@@ -16,17 +16,20 @@ A Spec-Driven Development (SDD) framework for code curators.
   gusta validate [--allow-empty]
   gusta install [--target <path>] [--agent both|claude|codex] [--dry-run] [--force]
   gusta check [--target <path>] [--agent both|claude|codex]
+  gusta agent-block [--target <path>] [--check] [--remove] [--json]
+                                 CLAUDE.md/AGENTS.md의 gusta 관리 블록을 마커 사이에만 적용 (SETTINGS agent-block이 true일 때만 씀)
   gusta lint [--target <path>] [--hints]
   gusta outdated [--target <path>]   설치 버전(lock)·실행 버전·npm 최신 버전 (JSON)
   gusta upgrade-context [--target <path>] [--offset <n>] [--limit <n>] [--snapshot <sha256>]
                                  업데이트 전 전체 문서·지침·설정 inventory (읽기 전용 JSON, 의미 판단은 별도)
   gusta migrate [--target <path>] [--dry-run]
-                                 spec/ 구조 변경 이관(예: STATE cfg push/plan → SETTINGS.md) 뒤 FORMAT 차이·미정 설정·lint 보고 (JSON)
+                                 spec/ 구조 변경 이관(STATE cfg push/plan → SETTINGS.md, STATE active·inbox·log → 조정 브랜치 SESSIONS.md)
+                                 뒤 FORMAT 차이·미정 설정·lint 보고 (JSON)
   gusta context [--target <path>] [--json]
   gusta board [--target <path>] [--json]
   gusta work <start|claim|status|board|update|submit|integrate|release|cleanup|recover|unlock> ...
   gusta work --help
-  gusta vibe <status|sync|plan-sync|plan-push|push|beat|checkpoint|design|preflight|awake|check> ...  (gusta-start·gusta-design-mode 세션 도구, vibe --help)
+  gusta vibe <status|sync|plan-sync|plan-push|push|beat|claim|inbox|log|checkpoint|design|preflight|awake|check> ...  (gusta-start·gusta-design-mode 세션 도구, vibe --help)
 
 옵션:
   --target <path>  설치·검사·조회할 프로젝트 (기본값: 현재 폴더)
@@ -35,7 +38,9 @@ A Spec-Driven Development (SDD) framework for code curators.
   --force          충돌한 로컬 파일을 패키지 버전으로 교체
   --allow-empty    validate에서 빈 skills/ 폴더 허용
   --hints          lint의 검토 후보를 전부 출력 (기본: 앞 10건)
-  --json           context/board의 기계 판독용 JSON 출력 (upgrade-context는 항상 JSON)
+  --check          agent-block: 쓰지 않고 상태만 보고 (true인데 missing·stale·broken이면 종료 코드 1)
+  --remove         agent-block: 블록 제거 (설정과 무관, 블록만 있던 파일은 삭제)
+  --json           context/board/agent-block의 기계 판독용 JSON 출력 (upgrade-context는 항상 JSON)
   -h, --help       도움말
   -v, --version    버전
 `
@@ -62,6 +67,7 @@ function parseOptions(args, command) {
     else if (argument === '--allow-empty') options.allowEmpty = true
     else if (argument === '--hints') options.hints = true
     else if (argument === '--json') options.json = true
+    else if (command === 'agent-block' && ['--check', '--remove'].includes(argument)) options[argument.slice(2)] = true
     else if (command === 'upgrade-context' && /^(--offset|--limit|--snapshot)(=|$)/.test(argument)) {
       const option = argument.split('=')[0]
       const { value, consumed } = takeValue(args, index, option)
@@ -85,6 +91,22 @@ function parseOptions(args, command) {
   }
 
   return options
+}
+
+// The managed block of CLAUDE.md/AGENTS.md is checked like an installed file: anything but current fails.
+function assertBlock(result) {
+  if (result.ok) return
+  const broken = result.files.filter((file) => file.status === 'broken')
+  if (broken.length) {
+    throw new SkillPackageError(
+      'gusta 블록을 추측해서 고치지 않습니다. 아무 파일도 바꾸지 않았으니 아래를 직접 정리한 뒤 다시 실행하세요.',
+      broken.map((file) => `broken: ${file.path} (${file.reason}${file.lines.length ? `, line ${file.lines.join(', ')}` : ''})`),
+    )
+  }
+  throw new SkillPackageError(
+    '에이전트 지침 파일의 gusta 블록이 패키지와 일치하지 않습니다. gusta agent-block으로 갱신하세요.',
+    result.files.filter((file) => file.status !== 'current').map((file) => `${file.status}: ${file.path}`),
+  )
 }
 
 function printCounts(result) {
@@ -125,8 +147,8 @@ async function main() {
     if (!result.ok) process.exitCode = 1
     return
   }
-  if (options.json && !['context', 'board'].includes(command)) {
-    throw new SkillPackageError('--json은 context/board에서만 지원합니다.')
+  if (options.json && !['context', 'board', 'agent-block'].includes(command)) {
+    throw new SkillPackageError('--json은 context/board/agent-block에서만 지원합니다.')
   }
 
   if (command === 'context') {
@@ -196,9 +218,26 @@ async function main() {
         result.mismatches.map(({ type, relativePath }) => `${type}: ${relativePath}`),
       )
     }
+    if (await readSetting(options, 'agent-block') === true) assertBlock(await agentBlock({ ...options, check: true }))
     process.stdout.write(
       `스킬 동기화 상태 정상: ${result.skillNames.length}개 (${result.agents.join(', ')})\n`,
     )
+    return
+  }
+
+  if (command === 'agent-block') {
+    const result = await agentBlock(options)
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+      if (!result.ok) process.exitCode = 1
+      return
+    }
+    assertBlock(result)
+    if (result.skipped) process.stdout.write(`건너뜀: SETTINGS ${result.skipped} — true일 때만 씁니다 (/gusta-init, vibe settings --set agent-block=true)\n`)
+    for (const file of result.files) {
+      const label = result.mode === 'check' ? file.status : file.deleted ? '파일 삭제' : !file.changed ? '동일' : result.mode === 'remove' ? '제거' : file.created ? '생성' : file.before === 'stale' ? '갱신' : '추가'
+      process.stdout.write(`gusta 블록 ${label}: ${file.path}\n`)
+    }
     return
   }
 

@@ -13,8 +13,7 @@ import { executeAgentAdapter, compactUsage, agentPrompt } from './agent-adapter.
 import { inspectProviders, availableProvider, providerFlags } from './work-providers.mjs'
 import { readSetting, readSettings, permissionMode } from './settings.mjs'
 import { usageRun, finishUsageRun } from './usage-measurement.mjs'
-import { closeTasks } from './state-doc.mjs'
-import { yymmdd } from './spec-format.mjs'
+import { vibeLog } from './vibe-inbox.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { urlOf, readFeedback, approachLine } from './vibe-ab-hub.mjs'
 
@@ -801,8 +800,10 @@ async function withoutScaffold(ctx, record, commit, files) {
 
 const STATE = 'spec/STATE.md'
 
-// Adoption merges exactly one variant into the checkout that started the comparison and logs it in
-// STATE, uncommitted like vibe beat. gusta-update-ssot, when the choice changed a rule, stays with the skill.
+// Adoption merges exactly one variant into the checkout that started the comparison and logs it on
+// the coordination branch (vibe log: no file changes, nothing to commit). The merge stands whatever
+// the log says: a log that could not be written is reported (logError). gusta-update-ssot, when the
+// choice changed a rule, stays with the skill.
 export async function abPick(options = {}) {
   const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
   if (!options.variant) fail('--variant가 필요합니다.')
@@ -832,11 +833,11 @@ export async function abPick(options = {}) {
   const prune = await pruning(ctx, options)
   if (prune) await pruneBranches(ctx, trees)
   await rm(recordFile(ctx, slug), { force: true })
-  const state = await readFile(path.join(ctx.root, STATE), 'utf8').catch(() => null), approach = approachLine(options.approach ?? winner.approach ?? winner.runs.at(-1)?.summary)
-  const logLine = state === null ? null : `- ${yymmdd()} ab ${slug}: adopt ${name}${approach ? ` — ${approach}` : ''}`
-  if (logLine) await writeFile(path.join(ctx.root, STATE), closeTasks(state, [], { log: logLine }).text)
+  const tracked = await exists(path.join(ctx.root, STATE)), approach = approachLine(options.approach ?? winner.approach ?? winner.runs.at(-1)?.summary)
+  const logged = !tracked ? null : await vibeLog({ targetRoot: ctx.root, text: `ab ${slug}: adopt ${name}${approach ? ` — ${approach}` : ''}`.replace(/\s+/g, ' ') }).catch((error) => ({ error: error.message }))
+  const logLine = logged?.line ?? null
   await tidy(ctx, slug, trees, prune)
-  return { schemaVersion: 1, ok: true, slug, adopted: name, merged, logLine, files: logLine ? [STATE] : [], summary: winner.runs.at(-1)?.summary ?? null, branches: prune ? [] : trees.map(([, tree]) => tree.branch),
+  return { schemaVersion: 1, ok: true, slug, adopted: name, merged, logLine, ...(logged?.error ? { logError: logged.error } : {}), files: [], summary: winner.runs.at(-1)?.summary ?? null, branches: prune ? [] : trees.map(([, tree]) => tree.branch),
     ...(adopted?.residue.length ? { scaffoldResidue: adopted.residue } : {}),
     ...(record.scaffold ? { scaffold: record.scaffold, scaffoldFiles: { added: files.added, modified: files.modified }, todo: '채택한 UI는 mock 데이터 위에서 만들어졌습니다(scaffold는 빠짐). 실제 데이터 연결이 남았습니다.' } : {}) }
 }

@@ -1,34 +1,20 @@
 import { readFile, writeFile, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
-import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { git } from './workspace.mjs'
-import { ACTIVE_HEADER } from './state-doc.mjs'
 import { atomicJSON, readJSON } from './loop-control.mjs'
+import { vibeBeat } from './vibe.mjs'
 
 const contents = async (file) => readFile(file, 'utf8').catch((error) => { if (error.code === 'ENOENT') return null; throw error })
 const headText = async (root, file) => git(root, ['show', `HEAD:${file}`], [128])
-// Preserve every byte outside this row/its generated empty section.
-function presence(text, tag, row = null) {
-  const section = text.match(/^## active[^\n]*\n[\s\S]*?(?=^## |(?![\s\S]))/m)
-  if (!section) {
-    if (!row) return text
-    const block = `## active\n${ACTIVE_HEADER.join('\n')}\n${row}\n\n`
-    const index = text.search(/^## (?!cfg\b)/m)
-    return index < 0 ? `${text}\n${block}` : text.slice(0, index) + block + text.slice(index)
-  }
-  let body = section[0].replace(new RegExp(`^\\|\\s*${tag}\\s*\\|[^\\n]*(?:\\n|$)`, 'm'), '')
-  if (row) body = body.replace(`${ACTIVE_HEADER[1]}\n`, `${ACTIVE_HEADER[1]}\n${row}\n`)
-  else if (body.split('\n').every((line) => !line.trim() || line === '## active' || ACTIVE_HEADER.includes(line))) body = ''
-  return text.slice(0, section.index) + body + text.slice(section.index + section[0].length)
-}
-const withoutSelf = (text, tag) => presence(text, tag)
 
-// Ownership is exact content plus one active row, never a directory/glob exemption.
-// The journal is written before each mutation and survives a failed write/commit.
+// The host owns one file in the tree: its report, by exact content, never by a directory or glob
+// exemption. The journal is written before each mutation and survives a failed write/commit.
+// The session's presence is not in the tree at all: its row lives on the coordination branch
+// (`beat`, vibe beat), so nothing the host does about it can dirty the checkout.
 export class LoopMetadata {
-  constructor(root, directory, report, tag, runId, { fault = async () => {} } = {}) {
-    Object.assign(this, { root, directory, report, tag, runId, fault })
+  constructor(root, directory, report, tag, runId, { fault = async () => {}, beat = vibeBeat } = {}) {
+    Object.assign(this, { root, directory, report, tag, runId, fault, beatSession: beat })
     this.file = path.join(directory, 'metadata.json')
     this.journal = { schemaVersion: 1, root, report, tag, runId, expectedReport: null, operation: null }
   }
@@ -52,46 +38,38 @@ export class LoopMetadata {
   async applyOperation() {
     const op = this.journal.operation
     if (!op) return
-    if (op.path !== this.report && op.path !== 'spec/STATE.md') throw new Error('metadata journal path is not owned')
-    if (op.path === 'spec/STATE.md' && withoutSelf(op.before, this.tag) !== withoutSelf(op.after, this.tag)) throw new Error('metadata journal contains changes outside the owned active row')
+    // A host from before the coordination branch journaled its STATE active row here. That row is
+    // nobody's to write now: the pending write is dropped, STATE stays as it is (gusta migrate moves it).
+    if (op.path === 'spec/STATE.md') {
+      this.journal.operation = null
+      await atomicJSON(this.file, this.journal)
+      return
+    }
+    if (op.path !== this.report) throw new Error('metadata journal path is not owned')
     const file = path.join(this.root, op.path), current = await contents(file)
     if (current !== op.before && current !== op.after) throw new Error(`metadata recovery conflict: ${op.path}`)
     if (current !== op.after) {
       const temporary = `${file}.${randomUUID()}.tmp`
       try { await writeFile(temporary, op.after); await rename(temporary, file) } finally { await rm(temporary, { force: true }) }
     }
-    if (op.path === this.report) this.journal.expectedReport = op.after
+    this.journal.expectedReport = op.after
     this.journal.operation = null
     await atomicJSON(this.file, this.journal)
   }
+  // This session's row on the coordination branch: registered (autopilot) or, at the end, released.
+  // One compare-and-swap there — no journal, no file, no commit here. A repeat is harmless.
   async beat(end = false) {
-    const file = path.join(this.root, 'spec/STATE.md'), before = await readFile(file, 'utf8')
-    const now = `${new Date().toISOString().slice(0, 16)}Z`
-    const host = os.hostname().replace(/\.local$/, '').replace(/[|\s]/g, '-') || 'host'
-    const after = presence(before, this.tag, end ? null : `| ${this.tag} | ${host} | autopilot | ${now} | ${now} | - |`)
-    this.journal.operation = { path: 'spec/STATE.md', before, after }
-    await atomicJSON(this.file, this.journal)
-    await this.fault('state-write')
-    await this.applyOperation()
+    await this.fault('session-beat')
+    return this.beatSession({ targetRoot: this.root, tag: this.tag, ...(end ? { end: true } : { mode: 'autopilot' }) })
   }
   async commit(message) {
     if (await contents(path.join(this.root, this.report)) !== this.journal.expectedReport) throw new Error('host report ownership lost; preserving it')
-    const files = []
-    const reportChanged = (await git(this.root, ['status', '--porcelain', '--', this.report])).trim()
-    if (reportChanged) files.push(this.report)
-    const state = await readFile(path.join(this.root, 'spec/STATE.md'), 'utf8'), committed = await headText(this.root, 'spec/STATE.md')
-    // A task can commit STATE. Only a difference confined to our active row is ours.
-    if (state !== committed && withoutSelf(state, this.tag) === withoutSelf(committed, this.tag)) files.push('spec/STATE.md')
-    if (!files.length) return
-    for (const file of files) {
-      const staged = await git(this.root, ['show', `:${file}`], [128])
-      const committed = await headText(this.root, file)
-      const current = await contents(path.join(this.root, file))
-      if (staged !== committed && staged !== current) throw new Error(`unknown staged metadata preserved: ${file}`)
-    }
+    if (!(await git(this.root, ['status', '--porcelain', '--', this.report])).trim()) return
+    const staged = await git(this.root, ['show', `:${this.report}`], [128])
+    if (staged !== await headText(this.root, this.report) && staged !== this.journal.expectedReport) throw new Error(`unknown staged metadata preserved: ${this.report}`)
     await this.fault('metadata-commit')
-    await git(this.root, ['add', '--', ...files])
-    await git(this.root, ['commit', '--quiet', '--only', '-m', message, '--', ...files])
+    await git(this.root, ['add', '--', this.report])
+    await git(this.root, ['commit', '--quiet', '--only', '-m', message, '--', this.report])
     this.journal.lastCommit = (await git(this.root, ['rev-parse', 'HEAD'])).trim()
     await atomicJSON(this.file, this.journal)
   }
@@ -101,13 +79,13 @@ export class LoopMetadata {
   }
 }
 
-export async function recoverLoopMetadata(root, directory, state) {
+export async function recoverLoopMetadata(root, directory, state, { beat } = {}) {
   const journal = await readJSON(path.join(directory, 'metadata.json'))
   if (!journal || journal.root !== root || journal.runId !== state.runId || journal.tag !== state.tag || journal.report !== state.report || !/^spec\/reports\/[\w-]+\.md$/.test(journal.report)) throw new Error('metadata journal ownership mismatch')
-  const metadata = new LoopMetadata(root, directory, state.report, state.tag, state.runId)
+  const metadata = new LoopMetadata(root, directory, state.report, state.tag, state.runId, { beat })
   metadata.journal = journal
   await metadata.applyOperation()
-  // Do not start units, publish, alter task rows, or clear STOP. Just remove our presence.
+  // Do not start units, publish code, alter task rows, or clear STOP. Just release our session row.
   await metadata.beat(true)
   let text = await contents(path.join(root, state.report))
   if (text !== metadata.journal.expectedReport) throw new Error('report recovery conflict')

@@ -111,15 +111,17 @@ export function requestedLoopConfig(options) {
   return requested
 }
 
-// What a unit left for the owner to judge, from STATE before/after: inbox decided/parked lines it
-// added, open decisions ([?] count per SSOT row) it added, and a task it reported parked without an
-// inbox line. With before='' it is everything awaiting judgment now.
-export function judgmentItems(before = '', after = '', result = null) {
-  const inbox = (text) => (sections(text).get('inbox') ?? []).map((line) => line.trim().match(INBOX_LINE)).filter((entry) => entry && entry[2] !== 'suggest')
+// What a unit left for the owner to judge, from before/after views `{ inbox, state }`: inbox is the
+// owner's inbox lines (the coordination branch's, merged with the section a STATE that has not
+// moved it still carries), state the STATE text. Items are the decided/parked lines it added, the
+// open decisions ([?] count per SSOT row of STATE) it added, and a task it reported parked without
+// an inbox line. With an empty `before` it is everything awaiting judgment now.
+export function judgmentItems(before = {}, after = {}, result = null) {
+  const inbox = (view) => (view?.inbox ?? []).map((line) => line.trim().match(INBOX_LINE)).filter((entry) => entry && entry[2] !== 'suggest')
   const seen = new Set(inbox(before).map(([line]) => line))
   const items = inbox(after).filter(([line]) => !seen.has(line))
     .map(([, , kind, refs, text]) => ({ kind, refs: refs.split(/\s+/), text: text.length > 80 ? `${text.slice(0, 79)}…` : text }))
-  const open = (text) => new Map(tableRows(sections(text).get('ssot')).map(([id, , , , count]) => [id, Number(count) || 0]))
+  const open = (view) => new Map(tableRows(sections(view?.state ?? '').get('ssot')).map(([id, , , , count]) => [id, Number(count) || 0]))
   const was = open(before)
   for (const [id, count] of open(after)) if (count > (was.get(id) ?? 0)) items.push({ kind: 'open', refs: [id], count: count - (was.get(id) ?? 0) })
   const id = result?.outcome === 'parked' && result.id && result.id !== '-' ? result.id : null
@@ -130,8 +132,9 @@ const capped = (items) => ({ count: items.length, items: items.slice(0, NOTIFY_C
 
 // The one end-of-run notice: outcome, what waits for the owner, and whether the work went out.
 // state: the closing manifest (status, reason, error, units, publication) with report=null when absent.
-export function finishedSummary(state, stateText = '') {
-  const waiting = judgmentItems('', stateText), status = state.status ?? 'failed', last = state.publication
+// now: what waits for the owner at the end, `{ inbox, state }` as judgmentItems reads it.
+export function finishedSummary(state, now = {}) {
+  const waiting = judgmentItems({}, now), status = state.status ?? 'failed', last = state.publication
   const push = last?.pushed ? { pushed: true, commit: last.pushed, target: last.target ?? null }
     : { pushed: false, reason: last?.reason ?? (last?.landed ? 'local' : status === 'stopped' ? 'not-attempted' : status), ...(last?.landed ? { landed: last.landed, target: last.target ?? null } : {}) }
   const ciUnchecked = (state.batches ?? []).filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => ({ commit: entry.ci.commit ?? null, url: entry.ci.checkUrl ?? null }))
@@ -252,8 +255,20 @@ export async function requestControl(directory, root, options) {
   return { schemaVersion: 1, ok: !['cancelled', 'failed'].includes(receipt.status), runId: request.runId, request: receipt, applied: receipt.status === 'applied', effectiveAt: 'unit-boundary', receipt: requestPath(directory, request) }
 }
 
+// The owner's inbox of a checkout as its clone has it now (nothing is fetched): the coordination
+// branch's lines plus a STATE section not moved yet. Loaded on demand — the vibe commands import
+// this module. A checkout that cannot be read has no lines to report.
+async function checkoutInbox(root) {
+  if (!root) return []
+  try {
+    const { vibeStatus } = await import('./vibe.mjs')
+    return ((await vibeStatus({ targetRoot: root, section: 'inbox', fetch: false })).inbox ?? []).map((entry) => entry.line)
+  } catch { return [] }
+}
+
 // Independent process: observes a host, never restarts a worker or clears a stop request.
-export async function watchLoop(directory, runId, { intervalMs = 1000 } = {}) {
+// inbox(root) → inbox lines, for the finished notice of a lost host.
+export async function watchLoop(directory, runId, { intervalMs = 1000, inbox = checkoutInbox } = {}) {
   await atomicJSON(path.join(directory, `supervisor-${runId}.json`), { runId, pid: process.pid, ready: true })
   let warned = false
   for (;;) {
@@ -275,7 +290,7 @@ export async function watchLoop(directory, runId, { intervalMs = 1000 } = {}) {
         // The lost host cannot close its run: the supervisor sends the one finished notice.
         const read = (file) => stopped.cwd && file ? readFile(path.join(stopped.cwd, file), 'utf8').catch(() => null) : null
         const report = await read(stopped.report) === null ? null : stopped.report
-        await finishedEvent(directory, stopped, finishedSummary({ ...stopped, report }, await read('spec/STATE.md') ?? ''))
+        await finishedEvent(directory, stopped, finishedSummary({ ...stopped, report }, { inbox: await inbox(stopped.cwd), state: await read('spec/STATE.md') ?? '' }))
       }
       return
     }

@@ -3,8 +3,9 @@ import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fixture, git, archiveTask, execute } from './helpers/vibe-fixture.mjs'
-import { upsertActive, closeTasks, activeRows } from '../src/state-doc.mjs'
-import { vibeStatus, vibeClaim } from '../src/vibe.mjs'
+import { upsertActive, closeTasks } from '../src/state-doc.mjs'
+import { readSessions } from '../src/coord-doc.mjs'
+import { vibeStatus, vibeClaim, vibeBeat } from '../src/vibe.mjs'
 import { vibeLoop } from '../src/vibe-loop.mjs'
 
 const tag = 'bbbb'
@@ -77,30 +78,31 @@ test('an unavailable spec repair leaves another task runnable without an unscope
   assert.match(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), /T001.*doing@261112\.aaaa/)
 })
 
-test('spec repair rechecks ownership after a strict repair claim merges a newer owner', async (t) => {
+test('a spec repair whose claim is refused stays with the newer owner: no unit, no parked line, the repair is not spent', async (t) => {
   const { root } = await fixture(t, 1)
   await setOwner(root, { row: 'done' })
-  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- push: true\n')
-  await git(root, 'add', 'spec'); await git(root, 'commit', '-qm', 'publication enabled')
-  let claims = 0, units = 0
-  const result = await vibeLoop(options(root), { ...deps, sync: passed,
-    status: async (config) => ({ ...await vibeStatus(config), concurrency: 'strict' }),
+  let claims = 0
+  const result = await vibeLoop(options(root), { ...deps,
     claim: async (config) => {
       claims++
       assert.equal(config.task, 'T001'); assert.equal(config.repairTask, true)
-      const stateFile = path.join(root, 'spec/STATE.md')
-      let state = (await readFile(stateFile, 'utf8')).replace('| T001 | example | ARCH | - | done |', '| T001 | example | ARCH | - | doing@261112.aaaa |')
-      const at = new Date().toISOString()
-      state = upsertActive(state, { tag: 'aaaa', host: 'other-host', mode: 'autopilot', since: at, at, doing: 'T001' })
-      await writeFile(stateFile, state)
-      await git(root, 'add', 'spec'); await git(root, 'commit', '-qm', 'merge newer task owner')
-      return { ok: true }
+      // Another session reserves the same repair on the coordination branch just before this one.
+      await vibeBeat({ targetRoot: root, tag: 'aaaa', mode: 'autopilot' })
+      await vibeClaim({ targetRoot: root, tag: 'aaaa', task: 'T001', repairTask: true })
+      return vibeClaim(config)
     },
-    execute: async () => { units++; assert.fail('the newer owner retains the repair') },
+    execute: async () => assert.fail('the newer owner retains the repair'),
   })
-  assert.equal(claims, 1); assert.equal(units, 0)
+  assert.equal(claims, 1)
   assert.equal(result.ok, false)
-  assert.match(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), /T001.*doing@261112\.aaaa/)
+  assert.match(result.error, /spec (lint|close) 실패/)
+  const saved = JSON.parse(await readFile(result.manifest, 'utf8'))
+  assert.deepEqual([saved.specRepairs, saved.refused], [{}, [{ task: 'T001', owner: 'aaaa', reason: 'claimed' }]])
+  const doc = readSessions(await git(root, 'show', 'gusta:SESSIONS.md'))
+  assert.deepEqual([doc.active.map((row) => `${row.tag} ${row.doing}`), doc.inbox], [['aaaa T001'], []])
+  // The claim touched nothing in the tree: the malformed row is as the other session will find it.
+  assert.match(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), /^\| T001 \| example \| ARCH \| - \| done \|$/m)
+  assert.doesNotMatch(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), /^## (active|inbox|log)\b/m)
 })
 
 test('a resumed rejected close cannot repair a task now claimed by another session', async (t) => {
@@ -163,11 +165,13 @@ for (const remoteSt of ['todo', 'done']) test(`a spec repair reserves a remote $
     claim: async (config) => { claims.push(config.task); return vibeClaim(config) },
     execute: async () => {
       units++
+      // The reservation is the coordination branch's (published): the land branch's STATE is left as it was.
       const remoteState = await git(root, 'show', 'origin/main:spec/STATE.md')
       assert.match(remoteState, new RegExp(`T001.*${remoteSt}`))
-      assert.equal(activeRows(remoteState).find((row) => row.tag === tag)?.doing, 'T001')
+      assert.doesNotMatch(remoteState, new RegExp(`\\| ${tag} \\|`))
+      for (const ref of ['gusta', 'origin/gusta']) assert.equal(readSessions(await git(root, 'show', `${ref}:SESSIONS.md`)).active.find((row) => row.tag === tag)?.doing, 'T001')
       await assert.rejects(vibeClaim({ targetRoot: root, tag: 'aaaa', task: 'T001' }), /다른 세션이 선점/)
-      await assert.rejects(vibeClaim({ targetRoot: root, tag: 'aaaa', task: 'T001', repairTask: true }), /다른 세션이 선점/)
+      await assert.rejects(vibeClaim({ targetRoot: root, tag: 'aaaa', task: 'T001', repairTask: true }), new RegExp(`${tag} 세션이 선점`))
       await archiveWithActive(root, 'T001')
       await git(root, 'add', 'spec'); await git(root, 'commit', '-qm', 'repair task close')
       return { exitCode: 0, result: { kind: 'task', id: 'T001', outcome: 'completed', pushed: false, next: 'implementation' } }

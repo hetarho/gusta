@@ -18,6 +18,8 @@ description: >-
 ## 2. 바꾸기
 - 변경 전에 적용 지침과 그 설정에 겹치는 활성 문서·실행 근거를 [프로젝트 규칙 대조](../gusta-update/references/project-rules.md)대로 확인한다(보기만 할 때는 생략). 정책 차이는 프레임워크 기본 절차에 맞추는 안과 영향을 보여 주고 괜찮은지 묻는다. 이미 구체적으로 승인한 변경은 다시 묻지 않는다.
 - 승인한 키·값만 `vibe settings --set <key>=<value> --json`으로 쓴다. 파일 생성과 해당 줄 수정은 CLI가 하며 SETTINGS.md를 직접 편집하지 않는다. 승인된 운영 문서도 일치시키며 SSOT 정책 변경은 gusta-update-ssot로 처리한다. CLI가 지원하지 않는 키·절차를 만들어 해결하지 않는다.
+- `agent-block`을 바꿨으면 `npx @haeram/gusta agent-block`(false로 바꿨으면 `--remove`)을 실행해 지침 파일의 블록을 맞춘다.
+- `coord`(조정 브랜치 이름)는 모든 브랜치·기기의 SETTINGS에서 같아야 세션이 서로 보인다 — 바꾸기 전에 그 점을 알린다.
 - `vibe status --json`에 `design`이 있으면 커밋 전에 디자인이 끝났는지 묻는다.
 - 변경을 확인해 `settings: <key>=<value>`로 커밋한다. 승인된 spec 변경과 외부 운영 문서는 분리하며, 기획 발행은 프로젝트 규칙과 SETTINGS plan이 합치할 때 spec/만 `vibe plan-push`한다. 코드의 PR 전략이 기획 직접 push까지 허용한다는 뜻은 아니다.
 - 바뀐 값과 그 결과로 달라지는 동작을 한 줄로 알린다.

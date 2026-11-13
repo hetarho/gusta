@@ -17,6 +17,9 @@ import { progressSnapshot, progressState, workSummary, progressChecks } from './
 import { planUnits, mainSessionTasks } from './task-graph.mjs'
 import { checkKey, commitTree, cachedPass, recordPass, withHeavyLock, recordTiming, timingKey } from './check-cache.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
+import { vibeSession } from './vibe-session.mjs'
+import { coordWrite, coordView, recordLanded, assertCoordinator } from './vibe-coord.mjs'
+import { readSessions, applyEvent, GROUP_TAG } from './coord-doc.mjs'
 
 // A check runs as its own process group, so a stop or timeout ends everything it started
 // (`npm test` → node workers), not only the shell: exec signals /bin/sh alone, and a shell that
@@ -336,6 +339,67 @@ async function pushLanded(context, group, commit) {
   return result
 }
 
+// The tag of the unlanded rows a group leaves (coord-doc GROUP_TAG, reserved): no session's own
+// tag, so the finished tasks are held against every session — the coordinator's other checkouts
+// included — until they land. The row's branch names the group.
+export { GROUP_TAG }
+
+// Coordination for a group is written and read from its planning checkout — the coordinator's,
+// whichever checkout started this command (the background gate may have been started from a
+// worker's): workers and reviewers never write the coordination branch. It is a report beside the
+// runtime, never a gate: whatever goes wrong comes back as { error } and the operation goes on.
+async function coordinated(group, run) {
+  try {
+    const session = await vibeSession({ targetRoot: group.path })
+    await assertCoordinator(session, 'work')
+    return await run(session)
+  } catch (error) {
+    return { error: [error.message, ...(error.details ?? [])].join(' ').slice(-1000) }
+  }
+}
+
+// Land is the group branch itself and nothing is pushed: what it integrates has landed.
+const landsHere = (session, group) => !session.branches.unset && (session.branches.land ?? group.branch) === group.branch && !session.branches.push
+
+// The group branch holds these tasks now. Until the land branch does, another checkout still shows
+// them todo: they wait in unlanded so no other session takes them, and the log gets its line.
+// Written here only, in this clone (publish: false) — the caller is still inside the integration.
+function recordIntegrated(group, ids, commit) {
+  return coordinated(group, async (session) => {
+    const landed = landsHere(session, group)
+    const written = await coordWrite(session, (text, { now }) => {
+      let next = text
+      if (!landed) for (const task of ids) next = applyEvent(next, { type: 'task-done', tag: GROUP_TAG, task, branch: group.branch, commit: commit.slice(0, 12), now }).text
+      const line = `- ${yymmdd(new Date(now))} ${ids.join(' ')} integrated`
+      if (!readSessions(next).log.includes(line)) next = applyEvent(next, { type: 'log', line }).text
+      return { text: next, changed: next !== text }
+    }, { message: `gusta work ${group.id}: integrated ${ids.join(' ')}`, publish: false })
+    return { ...written.coordination, unlanded: landed ? [] : ids }
+  })
+}
+
+// After the integration let go: tell other clones, and — when the group's push put `pushed` on the
+// land branch — take the tasks that commit holds out of unlanded. (`vibe push` from the planning
+// checkout does the same for a group that lands at its end.)
+function settleIntegrated(group, pushed) {
+  return coordinated(group, async (session) => {
+    const land = session.branches.unset ? null : session.branches.land ?? group.branch
+    const landed = pushed && !pushed.error && pushed.branch === land ? await recordLanded(session, pushed.commit) : null
+    if (landed?.landed?.length) return landed
+    const published = await coordWrite(session, (text) => ({ text, changed: false }), { publish: 'always' })
+    return { ...published.coordination, ...(landed ? { landed: landed.landed, waiting: landed.waiting } : {}) }
+  })
+}
+
+// The owner's inbox lines a group reads: the coordination branch as this clone has it (nothing is
+// fetched), plus the `## inbox` the group branch's STATE still carries at `commit` (not moved yet).
+async function groupInbox(context, group, commit) {
+  const view = await coordinated(group, (session) => coordView(session, { fetch: false }))
+  const shared = view.sessions?.inbox ?? []
+  const legacy = readSessions((await blob(context.cwd, commit, 'spec/STATE.md')) ?? '').inbox
+  return { branch: view.branch ?? null, commit: view.commit ?? null, lines: [...shared, ...legacy.filter((line) => !shared.includes(line))], shared, error: view.error ?? null }
+}
+
 // An approval survives a moved target when nothing that moved touches the submission's
 // files or SSOT. The merged result is still fully verified at integration.
 async function approvalHolds(root, review, target) {
@@ -372,7 +436,7 @@ async function assessRisk(context, group, attempt, current, targetCommit) {
   if (contract.length) reasons.push(`review paths: ${contract.slice(0, 5).join(' ')}`)
   if (files.length && !files.some((file) => TEST_FILE.some((pattern) => pattern.test(file)))) reasons.push('no test file changed')
   if (attempt.correction || (attempt.reviewHistory ?? []).some((review) => review.verdict === 'changes_requested')) reasons.push('reworked after a review or integration failure')
-  const inbox = sections((await blob(context.cwd, targetCommit, 'spec/STATE.md')) ?? '').get('inbox') ?? []
+  const inbox = (await groupInbox(context, group, targetCommit)).lines
   if (inbox.some((line) => { const entry = line.trim().match(INBOX_LINE); return entry?.[2] === 'decided' && entry[3].split(/\s+/).some((ref) => ids.includes(ref)) })) {
     reasons.push('autopilot decisions awaiting the owner')
   }
@@ -393,7 +457,11 @@ export async function workBrief(options) {
 
 async function briefFor(context, group, attempt) {
   const commit = await head(context.cwd, `refs/heads/${group.branch}`)
-  const { schemaVersion, tasks, decisions, ...rest } = await assembleBrief({ source: commitSource(context.cwd, commit), roots: unitTasks(attempt) })
+  // Rules and tasks at the fixed group-branch commit; the inbox from the coordination branch as it
+  // is now (the brief names that origin; STATE's own `## inbox` at the commit is read by the assembler).
+  const inbox = await groupInbox(context, group, commit)
+  const { schemaVersion, tasks, decisions, ...rest } = await assembleBrief({ source: commitSource(context.cwd, commit), roots: unitTasks(attempt),
+    coordination: { branch: inbox.branch, commit: inbox.commit, inbox: inbox.shared, ...(inbox.error ? { error: inbox.error } : {}) } })
   return { schemaVersion, attempt: attempt.id, group: group.id, commit, taskId: attempt.taskId,
     tasks: tasks.map(({ id, file, content, sha256 }) => ({ id, current: id === attempt.taskId, file, content, sha256 })), decisions,
     verify: { task: group.verify?.task ?? [], unit: group.verify?.unit ?? [] }, correction: attempt.correction ?? null, directive: attempt.directive ?? null, ...rest }
@@ -775,7 +843,8 @@ async function archiveTasks(root, tasks, attempt, integration) {
   }
   const ids = tasks.map((task) => task.id)
   const statePath = path.join(root, 'spec', 'STATE.md')
-  const closed = closeTasks(await readFile(statePath, 'utf8'), ids, { log: `- ${date()} ${ids.join(' ')} integrated`, next: ['- inspect work board for remaining tasks'] })
+  // The log line is the coordination branch's (recordIntegrated): STATE gets no `## log`.
+  const closed = closeTasks(await readFile(statePath, 'utf8'), ids, { next: ['- inspect work board for remaining tasks'] })
   if (closed.missing.length) fail('STATE에서 완료 처리할 태스크 행을 찾지 못했습니다.', closed.missing)
   await writeFile(statePath, closed.text)
 }
@@ -839,11 +908,16 @@ export async function integrateWork(options) {
     options.signal?.throwIfAborted()
     await git(group.path, ['merge', '--ff-only', candidateCommit])
     applied = true
+    // Before the operation lets go: `complete` is not reported, and nothing lands, until the
+    // finished tasks are held against other sessions.
+    const recorded = await recordIntegrated(group, tasks.map((task) => task.id), candidateCommit)
     const integrated = await finishOperation(context, reservation, (entry) => Object.assign(entry, {
       status: 'integrated', integratedCommit: candidateCommit, integratedAt: now(), reason: null,
     }))
     const pushed = await pushLanded(context, group, candidateCommit)
-    return pushed ? { ...integrated, pushed } : integrated
+    const settled = recorded.error ? {} : await settleIntegrated(group, pushed)
+    const coordination = { ...recorded, ...settled, ...(recorded.unlanded ? { unlanded: recorded.unlanded.filter((id) => !(settled.landed ?? []).includes(id)) } : {}) }
+    return { ...integrated, ...(pushed ? { pushed } : {}), coordination }
   } catch (error) {
     if (!applied) {
       const latest = (await readRuntime(context.root)).attempts[attempt.id]
@@ -912,6 +986,8 @@ export async function recoverWork(options) {
     })
   }
   const integrated = Boolean(attempt.candidateCommit && attempt.integrationVerification && await ancestor(context.cwd, attempt.candidateCommit, await head(context.cwd, `refs/heads/${group.branch}`)))
+  // The interrupted integration had moved the branch: its tasks are held like any integrated unit's.
+  if (integrated) await recordIntegrated(group, unitTasks(attempt), attempt.candidateCommit)
   return finishOperation(context, { attempt, group, token: operation.token }, (entry) => Object.assign(entry, integrated
     ? { status: 'integrated', integratedCommit: entry.candidateCommit, integratedAt: now(), reason: null }
     : { status: 'blocked', reason: 'interrupted operation; inspect preserved workspace before resubmitting' }))
@@ -1171,7 +1247,9 @@ export async function syncWork(options) {
     // The saved commit now lives on the group branch; only a failed sync keeps its candidate.
     const removed = await git(context.cwd, ['worktree', 'remove', candidate]).then(() => true, () => false)
     const pushed = await pushLanded(context, group, savedCommit)
-    return { schemaVersion: 1, work: group.id, commit: savedCommit, file, candidate: removed ? null : candidate, ...(pushed ? { pushed } : {}) }
+    // A push that reached land now (an earlier one may have been refused) lands what was waiting.
+    const coordination = pushed && !pushed.error ? await settleIntegrated(group, pushed) : null
+    return { schemaVersion: 1, work: group.id, commit: savedCommit, file, candidate: removed ? null : candidate, ...(pushed ? { pushed } : {}), ...(coordination ? { coordination } : {}) }
   } catch (error) {
     throw new SkillPackageError('진행 기록을 저장하지 못했습니다. 원본과 후보를 보존했습니다.', [candidate ?? '(후보 생성 전)', error.message, ...(error.details ?? [])])
   } finally {

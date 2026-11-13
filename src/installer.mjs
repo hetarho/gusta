@@ -295,6 +295,12 @@ export async function installSkills({
   }
 }
 
+// The agents this project has skills installed for, as the lock file records them.
+export async function installedAgents(targetRoot = process.cwd()) {
+  const files = Object.keys((await readLock(path.resolve(targetRoot))).files)
+  return Object.keys(AGENT_CONFIG).filter((agent) => files.some((file) => file.startsWith(`${AGENT_CONFIG[agent].root}/`)))
+}
+
 export async function checkSkills({
   targetRoot = process.cwd(),
   skillsRoot = bundledSkillsRoot,

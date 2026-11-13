@@ -73,7 +73,7 @@ export function openChecks(content) {
   return lines.filter((line) => line.startsWith('- [ ]') && !EXIT_LINE.test(line))
 }
 
-// Session presence and the owner's inbox (STATE ## active · ## inbox).
+// Session presence and the owner's inbox (SESSIONS ## active · ## inbox, and a STATE that has not moved them).
 export const SESSION_TAG = /^[A-Za-z0-9]{2,8}$/
 export const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z$/
 export const INBOX_LINE = /^- (\d{6}) (decided|parked|suggest) ([^:]+?): (\S.*)$/

@@ -4,7 +4,10 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import path from 'node:path'
-import { vibeStatus, vibeSession, vibePreflight, vibePush, vibeAwake, vibeCheckpoint, vibeSync, vibeClaim, specCloseIssues } from './vibe.mjs'
+import { vibeStatus, vibeSession, vibePreflight, vibePush, vibeAwake, vibeCheckpoint, vibeSync, vibeClaim, vibeBeat, specCloseIssues } from './vibe.mjs'
+import { vibeInbox } from './vibe-inbox.mjs'
+import { coordView } from './vibe-coord.mjs'
+import { inboxEntries, ClaimError, REFRESH_MINUTES } from './coord-doc.mjs'
 import { vibePrune } from './prune.mjs'
 import { readVerification, vibeBrief } from './vibe-brief.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
@@ -13,7 +16,7 @@ import { git } from './workspace.mjs'
 import { readTimings, recordTiming, timingKey, measured, workingTree } from './check-cache.mjs'
 import { inspectWork } from './work-groups.mjs'
 import { approvedTasks } from './work-policy.mjs'
-import { appendInbox, taskRow } from './state-doc.mjs'
+import { taskRow } from './state-doc.mjs'
 import { SESSION_TAG, TASK_ID } from './spec-format.mjs'
 import { sections, tableRows, quoteLine, quoteFields } from './spec-format.mjs'
 import { lintSpec } from './spec-lint.mjs'
@@ -225,7 +228,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const mcp = settings?.['headless-mcp'] ?? null
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'gusta-vibe-loop.lock')
-  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {}, ...injected }
+  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, beat: vibeBeat, inbox: vibeInbox, view: coordView, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {}, ...injected }
   const previous = await readJSON(manifest)
   if (previous && previous.cwd !== root) throw new SkillPackageError('이 tag는 다른 checkout 소유입니다.', [previous.cwd])
   if (options.stop) { await bindLoopDirectory(directory, root); await writeFile(stopFile, 'stop\n'); return { schemaVersion: 1, ok: true, stopFile, action: 'cancel' } }
@@ -237,7 +240,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       const state = await inspectLoop(directory, root)
       if (state.running) throw new SkillPackageError('실행 중인 loop의 메타데이터는 복구하지 않습니다.')
       try {
-        const result = await recoverLoopMetadata(root, directory, state)
+        const result = await recoverLoopMetadata(root, directory, state, { beat: deps.beat })
         await controlTransaction(path.join(directory, 'state'), () => atomicJSON(manifest, { ...state, running: false, ...(state.health === 'host-lost' ? { status: 'failed', reason: 'host-lost', error: state.error ?? 'loop host exited without finalization' } : {}), metadataRecoveredAt: new Date().toISOString(), recoveredErrors: state.operationalErrors, operationalErrors: [] }))
         const terminal = path.join(directory, 'terminal.json')
         if ((await readJSON(terminal))?.runId === state.runId) await rm(terminal, { force: true })
@@ -350,9 +353,20 @@ export async function vibeLoop(options = {}, injected = {}) {
   const operationalErrors = [], configHistory = []
   const appliedConfig = { pushEachUnit: Boolean(options.pushEachUnit), ...(options.deadline === undefined ? {} : { deadline: new Date(deadline).toISOString() }), ...(optionHours === undefined ? {} : { finalReserveHours: optionHours }) }
   let requestedConfig = { ...appliedConfig }, phase = 'preflight', heartbeatAt = new Date().toISOString(), supervisor = null, closing = false
-  const metadata = new LoopMetadata(root, directory, report, options.tag, runId, { fault: deps.fault })
+  const metadata = new LoopMetadata(root, directory, report, options.tag, runId, { fault: deps.fault, beat: deps.beat })
   const controller = new AbortController()
   let stopReason = null, watching = null, checkpointAt = start
+  // The session's row between its start and end beats. A unit can stay quiet past STALE_MINUTES
+  // (a long build, a long explore), and another machine would then take its task: the host beats
+  // every REFRESH_MINUTES on its own. That beat is committed and published (it is what other
+  // machines judge liveness by, once per half hour); a failure is an event, never a stop.
+  let rowOpen = false, beatAt = null, beating = null
+  const refreshRow = () => {
+    if (!rowOpen || beating || deps.now() - beatAt < REFRESH_MINUTES * 60000) return
+    beatAt = deps.now()
+    beating = Promise.resolve().then(() => deps.beat({ targetRoot: root, tag: options.tag }))
+      .catch((caught) => event('coord-beat-error', { error: caught.message })).finally(() => { beating = null })
+  }
   const event = async (type, detail = {}) => {
     try { await loopEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, type, detail) }
     catch (caught) { operationalErrors.push({ operation: 'event-write', error: caught.message }); process.stderr.write(`loop event-write failed: ${caught.message}\n`) }
@@ -366,6 +380,13 @@ export async function vibeLoop(options = {}, injected = {}) {
     return sent
   }
   const stateFile = path.join(root, 'spec/STATE.md')
+  // The owner's inbox as this clone has it now (nothing is fetched): the coordination branch's
+  // lines, plus the section a STATE that has not moved it still carries. Nothing here is in the tree.
+  const coordNow = async () => deps.view({ ...context, state: await readFile(stateFile, 'utf8').catch(() => null) }, { fetch: false })
+  const inboxNow = async () => inboxEntries((await coordNow()).doc.inbox)
+  // Tasks the coordination branch refused this run (another session holds them, or their finished
+  // copy waits to land): skipped until the run ends, never parked or repaired from here.
+  const refused = new Map()
   const metadataStep = async (operation, run) => {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try { await metadata.applyOperation(); return await run() }
@@ -398,7 +419,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const snapshot = () => ({ ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, reason, ...(loopHint(reason) ? { hint: loopHint(reason) } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), refused: [...refused].map(([task, held]) => ({ task, ...held })), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, reason, ...(loopHint(reason) ? { hint: loopHint(reason) } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -415,6 +436,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     return saving
   }
   const watcher = setInterval(() => {
+    refreshRow()
     if (watching) return
     watching = (async () => {
       if (await present(stopFile) && (await readFile(stopFile, 'utf8')).trim() !== 'stop-after-unit') stop('stop-file')
@@ -431,9 +453,9 @@ export async function vibeLoop(options = {}, injected = {}) {
     const outcome = (entry) => entry.specGate?.ok === false ? 'rejected by spec gate' : entry.result?.outcome ?? (CUT.has(entry.stopped) ? `cut (${entry.stopped})` : entry.stopped ? `cancelled (${entry.stopped})` : 'failed')
     const lines = pending.map((entry) => `- ${entry.result?.kind ?? 'session'} ${entry.result?.id ?? entry.task ?? '-'}: ${outcome(entry)}${entry.leftover ? ` · uncommitted work → ${entry.leftover.ref}` : ''}${entry.parked ? ' · parked' : ''} (${entry.head.slice(0, 12)})`).filter((line) => !text.includes(line))
     if (lines.length) text = text.replace('\n## decided', `${lines.join('\n')}\n\n## decided`)
-    const current = await deps.status({ ...options, targetRoot: root, section: 'inbox', fetch: false })
+    const inbox = await inboxNow()
     for (const kind of ['decided', 'parked']) {
-      const entries = current.inbox?.filter((entry) => entry.kind === kind).map((entry) => entry.line) ?? []
+      const entries = inbox.filter((entry) => entry.kind === kind).map((entry) => entry.line)
       const next = kind === 'decided' ? 'parked' : 'checks'
       const fresh = entries.filter((line) => !text.includes(line))
       if (fresh.length) text = text.replace(`\n## ${next}`, `${fresh.join('\n')}\n\n## ${next}`)
@@ -448,7 +470,9 @@ export async function vibeLoop(options = {}, injected = {}) {
     const kept = snapshots.filter((snapshot) => !snapshot.dropped).map((snapshot) => `- uncommitted work kept: ${snapshot.ref} (${snapshot.task ?? '-'}, ${snapshot.fileCount} files)\n`).join('')
     // CI the run could not read waits for the owner, not for the run.
     const ciLater = batches.filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => `- check CI later: ${entry.ci.commit ?? '-'} ${entry.ci.checkUrl ?? ''}`.trimEnd() + '\n').join('')
-    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}${loopHint(reason) ? ` — ${loopHint(reason)}` : ''}\n- verification: ${gateAttempts} rounds, ${gateFailures} failed, failed-round cap ${maxGateAttempts}; pending repair: ${repairTask ?? '-'}; code pushed: ${codePushed}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${ciLater}${kept}`)
+    // Tasks another session holds are not this run's to finish: the owner sees who has them.
+    const held = [...refused].map(([task, { owner, reason: why }]) => `- held by another session: ${task} (${owner ?? '-'}, ${why})\n`).join('')
+    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}${loopHint(reason) ? ` — ${loopHint(reason)}` : ''}\n- verification: ${gateAttempts} rounds, ${gateFailures} failed, failed-round cap ${maxGateAttempts}; pending repair: ${repairTask ?? '-'}; code pushed: ${codePushed}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${held}${ciLater}${kept}`)
     await metadata.writeReport(text)
   }
   const recordReport = (closing) => metadataStep('report-write', () => updateReport(closing))
@@ -541,12 +565,9 @@ export async function vibeLoop(options = {}, injected = {}) {
   // The last rung: a task still unfinished after a continuation and a split waits for the owner.
   // why replaces that reason for other repeated failures (a spec close that failed its repair).
   const parkTask = async (id, snapshot, why = null) => {
-    const file = path.join(root, 'spec/STATE.md')
-    const date = new Date(deps.now()).toISOString().slice(2, 10).replaceAll('-', '')
-    const line = `- ${date} parked ${id}: ${why ?? `units kept ending before finishing it, after a continuation and a split${snapshot ? `; last attempt kept at ${snapshot.ref}` : ''}. Needs a smaller split or a longer --timeout-ms.`}`
-    await writeFile(file, appendInbox(await readFile(file, 'utf8'), line))
-    await git(root, ['add', '--', file])
-    await git(root, ['commit', '--quiet', '--only', '-m', `vibe ${options.tag}: park ${id}`, '--', file])
+    const text = (why ?? `units kept ending before finishing it, after a continuation and a split${snapshot ? `; last attempt kept at ${snapshot.ref}` : ''}. Needs a smaller split or a longer --timeout-ms.`).replace(/\s+/g, ' ').trim()
+    // One line in the owner's inbox on the coordination branch: no file changes, nothing to commit.
+    await deps.inbox({ targetRoot: root, step: 'add', tag: options.tag, kind: 'parked', ref: [id], text })
     await event('task-parked', { task: id, snapshot: snapshot?.ref ?? null, ...(why ? { why } : {}) })
   }
   // A spec close the gate rejected gets one repair unit; a second rejection parks the task.
@@ -695,12 +716,16 @@ export async function vibeLoop(options = {}, injected = {}) {
     await mkdir(path.dirname(reportPath), { recursive: true })
     await metadata.initialize()
     initialized = true
+    // The session's row (autopilot) goes on the coordination branch, not into the tree: every unit's
+    // claim and the unit's own `vibe task start` then find this tag registered.
     await metadataStep('active-start', () => metadata.beat())
+    rowOpen = true
+    beatAt = deps.now()
     if (await present(reportPath)) {
       const previous = await readFile(reportPath, 'utf8')
       await metadataStep('report-open', () => metadata.writeReport(previous.replace(/\bto:[^|\n]+/, 'to:- ')))
     } else await metadataStep('report-open', () => metadata.writeReport(`# REPORT ${path.basename(report, '.md')}\n> mode:autopilot | host:${os.hostname()} | from:${new Date(start).toISOString()} | to:- | push:${context.push}\n\n## done\n\n## decided\n\n## parked\n\n## checks\n\n## next\n- continue remaining work\n`))
-    await metadataCommit(`vibe ${options.tag}: session presence`)
+    await metadataCommit(`vibe ${options.tag}: open report`)
     if (process.platform === 'darwin') { const receipt = await vibeAwake({ targetRoot: root, hours: Math.min(hours, 72) }); awake = receipt.ok && !receipt.reused }
     for (;;) {
       if (stopped) { reason = stopReason; break }
@@ -713,7 +738,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       await refreshVerification()
       await applyRequests()
       if (reason) break
-      let status = await deps.status({ ...options, targetRoot: root, tag: options.tag })
+      const status = await deps.status({ ...options, targetRoot: root, tag: options.tag })
       if (status.git?.fetchError) throw new SkillPackageError('원격 판정 실패', [status.git.fetchError])
       // A design opened in this checkout meanwhile: its edits wait for the user, not for units.
       if (status.route === 'design') { reason = 'design'; break }
@@ -730,10 +755,9 @@ export async function vibeLoop(options = {}, injected = {}) {
       // An st outside FORMAT (a hand close from before this run) is repaired like a rejected close:
       // one repair unit, then parked. The closing lint still reports what stays broken.
       if (!recovery && status.issues?.length) {
-        const inbox = await deps.status({ ...options, targetRoot: root, section: 'inbox', fetch: false })
-        const parked = new Set((inbox.inbox ?? []).filter((entry) => entry.kind === 'parked').flatMap((entry) => entry.refs))
+        const parked = new Set((await inboxNow()).filter((entry) => entry.kind === 'parked').flatMap((entry) => entry.refs))
         let issue
-        for (const id of new Set(status.issues.filter((entry) => !parked.has(entry.id) && inScope(entry.id)).map((entry) => entry.id))) {
+        for (const id of new Set(status.issues.filter((entry) => !parked.has(entry.id) && !refused.has(entry.id) && inScope(entry.id)).map((entry) => entry.id))) {
           if (!await specRepairOwner(root, id, options.tag, status)) { issue = status.issues.find((entry) => entry.id === id); break }
         }
         if (issue) {
@@ -742,9 +766,8 @@ export async function vibeLoop(options = {}, injected = {}) {
         }
       }
       if (!recovery && status.implementation?.blocked?.length) {
-        const inbox = await deps.status({ ...options, targetRoot: root, section: 'inbox', fetch: false })
-        const parked = new Set((inbox.inbox ?? []).filter((entry) => entry.kind === 'parked').flatMap((entry) => entry.refs))
-        const taskId = status.implementation.blocked.find((id) => !parked.has(id) && inScope(id))
+        const parked = new Set((await inboxNow()).filter((entry) => entry.kind === 'parked').flatMap((entry) => entry.refs))
+        const taskId = status.implementation.blocked.find((id) => !parked.has(id) && !refused.has(id) && inScope(id))
         if (taskId) { recovery = { reason: 'blocked-task', taskId }; priorityTask = taskId }
       }
       // The closing window, re-measured at every boundary. Not a cancellation: nothing new starts,
@@ -756,9 +779,9 @@ export async function vibeLoop(options = {}, injected = {}) {
         const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
         if (head !== base && head !== lintBlocked && !(failedGate && failedGate.plan === JSON.stringify(batchVerify) && !(await codeChanged(failedGate.head, head)))) { await flush(false, true); continue }
         repairMs = deadline - deps.now() - (reserve.gateMs ?? (failedGate?.ms > 0 ? failedGate.ms : 0)) - (reserve.ciMs ?? 0)
-        if (!repairTask || !status.runnable?.includes(repairTask) || repairMs <= 0) { reason = 'final-window'; break }
+        if (!repairTask || refused.has(repairTask) || !status.runnable?.includes(repairTask) || repairMs <= 0) { reason = 'final-window'; break }
       }
-      const runnable = (status.runnable ?? []).filter(inScope)
+      const runnable = (status.runnable ?? []).filter((id) => inScope(id) && !refused.has(id))
       const scoped = scope && !runnable.length ? ((status.remaining ?? []).some((task) => scope.has(task.id)) ? 'scope-blocked' : 'scope-done') : null
       // A unit only executes an existing task: with nothing runnable (and no repair to try below)
       // the run ends. Untasked SSOT deltas, reviews and ideation are the owner's /gusta-sketch.
@@ -785,23 +808,29 @@ export async function vibeLoop(options = {}, injected = {}) {
       // Every unit has its task: no unit plans untasked work on its own.
       if (selected === null) { reason = untasked ? 'needs-sketch' : 'no-work'; break }
       const limitMs = repairMs !== null ? Math.min(timeoutMs, Math.max(1, repairMs)) : Math.min(unitLimit(selected), Math.max(1, workLeft))
-      if (status.concurrency === 'strict' && context.target) {
-        await metadataCommit(`vibe ${options.tag}: session presence`)
-        // Repair reserves active.doing atomically while preserving the malformed task row.
-        // This also keeps ordinary workers and other repair sessions from claiming the same task.
-        await deps.claim({ ...options, targetRoot: root, task: selected, ...(recovery?.reason === 'spec-gate' ? { repairTask: true } : {}) })
-        // The claim fetched and pushed the target just now: re-read locally.
-        status = await deps.status({ ...options, targetRoot: root, tag: options.tag, fetch: false })
-      }
-      if (recovery?.reason === 'spec-gate' && await specRepairOwner(root, selected, options.tag, status)) {
+      // Every unit takes its task on the coordination branch first: one compare-and-swap there, with
+      // no push target, clean tree, commit or merge here. A recovery keeps the task whatever its row
+      // says (blocked, a malformed close). Refused — another live session holds it, or its finished
+      // copy waits to land — the task is skipped for this run and the next one is chosen.
+      try { await deps.claim({ ...options, targetRoot: root, task: selected, mode: 'autopilot', ...(recovery?.taskId === selected ? { repairTask: true } : {}) }) }
+      catch (caught) {
+        if (!(caught instanceof ClaimError)) throw caught
+        refused.set(selected, { owner: caught.owner ?? null, reason: caught.reason ?? 'claimed' })
+        await event('claim-refused', { task: selected, owner: caught.owner ?? null, reason: caught.reason ?? 'claimed', lost: Boolean(caught.lost) })
+        // A repair that never ran is not spent; the task leaves this run's queue either way.
+        if (recovery?.taskId === selected) { if (recovery.reason === 'spec-gate') specRepairs.delete(selected); recovery = null }
         if (priorityTask === selected) priorityTask = null
-        recovery = null
+        await save()
         continue
       }
-      const before = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
+      const inboxLines = async () => (await inboxNow()).map((entry) => entry.line)
+      // One read of the coordination branch serves the unit's "before" and its brief's inbox.
+      const seen = await coordNow()
+      const before = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(stateFile, 'utf8'), inbox: inboxEntries(seen.doc.inbox).map((entry) => entry.line) }
       await metadata.assertClean()
+      const coordination = { branch: seen.branch, commit: seen.commit, inbox: seen.sessions.inbox, ...(seen.error ? { error: seen.error } : {}) }
       // A hand-closed task may have no file left to brief; its repair works from the violations.
-      const brief = selected ? await vibeBrief({ targetRoot: root, task: selected, diffBase: before.head }).catch((caught) => { if (recovery?.reason === 'spec-gate') return null; throw caught }) : null
+      const brief = selected ? await vibeBrief({ targetRoot: root, task: selected, diffBase: before.head, coordination }).catch((caught) => { if (recovery?.reason === 'spec-gate') return null; throw caught }) : null
       // What lint already reports is not this unit's doing: the spec gate looks only for new errors.
       const lintBefore = (await deps.lint({ targetRoot: root })).errors
       const dispatched = recovery
@@ -816,7 +845,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       const unitStart = deps.now()
       const receipt = await deps.execute({ ...options, ...appliedConfig }, job, directory, { stopFile, deadline, signal: controller.signal, timeoutMs: limitMs })
       count++
-      const after = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(path.join(root, 'spec/STATE.md'), 'utf8') }
+      const after = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(stateFile, 'utf8'), inbox: await inboxLines() }
       const cut = CUT.has(receipt.stopped)
       const failed = receipt.exitCode !== 0 || !receipt.result
       const taskId = selected || receipt.result?.id || null
@@ -876,12 +905,13 @@ export async function vibeLoop(options = {}, injected = {}) {
         }
       }
       // A unit cut while it was changing things was working, not failing: only an idle cut counts.
-      const progressed = before.head !== after.head || before.state !== after.state || Boolean(leftover)
+      // An inbox line counts too: a unit that only parked or decided something wrote nothing to the tree.
+      const progressed = before.head !== after.head || before.state !== after.state || before.inbox.join('\n') !== after.inbox.join('\n') || Boolean(leftover)
       failureStreak = failed && !(cut && progressed) ? failureStreak + 1 : 0
       noProgress = progressed ? 0 : noProgress + 1
       await save()
       // At most one notice per unit, only when it left the owner something to judge (after any park).
-      const judged = judgmentItems(before.state, await readFile(stateFile, 'utf8').catch(() => before.state), receipt.result)
+      const judged = judgmentItems(before, { state: after.state, inbox: entry.parked ? await inboxLines() : after.inbox }, receipt.result)
       if (judged.length) notify(() => loopEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, 'needs-judgment', judgmentNotice(count, taskId, judged)))
       if (cut) await event('unit-cut', { unit: count, task: taskId, cause: receipt.stopped, ms: entry.ms, snapshot: leftover?.ref ?? null, next: recovery?.taskId === taskId ? recovery.reason : entry.parked ? 'parked' : null })
       else if (receipt.stopped) {
@@ -917,7 +947,6 @@ export async function vibeLoop(options = {}, injected = {}) {
     if (initialized) {
       try {
         phase = 'finalizing'
-        await metadataStep('active-end', () => metadata.beat(true))
         // Failed units left nothing behind (keepLeftover), so the work earlier units committed
         // still goes through the gate and out. Only a host error or a cancellation skips it.
         if (!error && !controller.signal.aborted && deps.now() < deadline) await flush(true)
@@ -932,6 +961,13 @@ export async function vibeLoop(options = {}, injected = {}) {
       // Always persist the final reason and commit the owned report, including failures.
       try { await recordReport(true); await metadataCommit(`vibe ${options.tag}: stopped (${reason})`) }
       catch { /* metadataStep recorded a separate operational error and durable journal */ }
+      // The session ends here: its row leaves the coordination branch after the last gate, push and
+      // report (it was working until now) and before prune, which keeps the wip/<tag> of a tag that
+      // still has a row. Nothing in the tree changes; a failure is an operational error, not a lost push.
+      // No refresh may follow it: one would register the session again.
+      rowOpen = false
+      if (beating) await beating
+      await metadataStep('active-end', () => metadata.beat(true)).catch(() => {})
     }
     if (awake) await vibeAwake({ targetRoot: root, stop: true }).catch(async (caught) => {
       operationalErrors.push({ operation: 'awake-end', error: caught.message })
@@ -963,7 +999,8 @@ export async function vibeLoop(options = {}, injected = {}) {
     // Every terminal state ends with one summary for the owner, after the lock is free.
     await Promise.all(deliveries)
     const closed = { ...snapshot(), report: await present(reportPath) ? report : null }
-    await notify(async () => finishedEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, finishedSummary(closed, await readFile(stateFile, 'utf8').catch(() => ''))))
+    const waiting = { state: await readFile(stateFile, 'utf8').catch(() => ''), inbox: await inboxNow().then((entries) => entries.map((entry) => entry.line), () => []) }
+    await notify(async () => finishedEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, finishedSummary(closed, waiting)))
   }
   const terminalEvent = await readJSON(plan.notification.terminalEvent).catch(() => null)
   return { ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, ...(loopHint(reason) ? { hint: loopHint(reason) } : {}), stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,

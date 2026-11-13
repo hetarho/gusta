@@ -5,27 +5,29 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { inspectWorkspace, git, batchShow } from './workspace.mjs'
-import { runtimeRoot } from './work-runtime.mjs'
-import { sections, tableRows, quoteLine, quoteFields, exploreValue, yymmdd, INBOX_LINE, SESSION_TAG, TASK_ID, TASK_ST } from './spec-format.mjs'
-import { activeRows, upsertActive, mergeState, taskRow, setTaskSt } from './state-doc.mjs'
+import { sections, tableRows, quoteLine, quoteFields, exploreValue, SESSION_TAG, TASK_ID, TASK_ST } from './spec-format.mjs'
+import { activeRows, upsertActive, mergeState } from './state-doc.mjs'
+import { inboxEntries, STALE_MINUTES } from './coord-doc.mjs'
+import { coordView, beatSession, claimSession, recordLanded, recordCheckpoint, assertCoordinator, assertSessionTag, isDelegated, commitOnRemote, wipTime, hostName } from './vibe-coord.mjs'
 import { designOf } from './interactive-state.mjs'
 import { workingTree, checkKey, cachedPass, recordPass, withHeavyLock } from './check-cache.mjs'
 import { lintSpec } from './spec-lint.mjs'
 import { workInternals } from './work-groups.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { readSettings, readSetting, branchPlan, defaultBranch, permissionMode } from './settings.mjs'
+import { readSettings, readSetting, permissionMode } from './settings.mjs'
+import { vibeSession } from './vibe-session.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { vibeCIWait, githubRepository } from './vibe-ci.mjs'
 import { providerFlags } from './work-providers.mjs'
 import { claudeOptionalFlags } from './agent-adapter.mjs'
+import { BOOKKEEPING, bumpGate, versionBump, beyondVersion } from './version-bump.mjs'
 
+export { vibeSession }
 const execute = promisify(execFile)
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
-const STALE_MINUTES = 90
 export const minuteNow = () => `${new Date().toISOString().slice(0, 16)}Z`
-const hostName = () => os.hostname().replace(/\.local$/, '').replace(/[|\s]/g, '-') || 'host'
 
 export function cfgOf(text) {
   const map = new Map()
@@ -77,29 +79,33 @@ export async function advanceBranch(context, branch, commit) {
   } catch { return 'moved' }
 }
 
-// Code that changed after the final gate is not what was verified (spec bookkeeping aside).
-async function assertVerified(root, verifiedCommit, commit) {
+// Code that changed after the final gate is not what was verified (spec bookkeeping aside, and
+// with SETTINGS version auto the version value the CLI itself raised on top of the verified commit).
+async function assertVerified(context, verifiedCommit, commit) {
   if (!verifiedCommit) return
+  const { root } = context
   const verified = await sha(root, verifiedCommit)
-  const changed = (await git(root, ['diff', '--name-only', verified, commit])).trim().split('\n').filter((file) => file && !/^spec\/(?:STATE\.md$|reports\/|tasks\/|work\/)/.test(file))
+  let changed = (await git(root, ['diff', '--name-only', verified, commit])).trim().split('\n').filter((file) => file && !BOOKKEEPING.test(file))
+  if (changed.length && context.settings.values.version === 'auto') changed = await beyondVersion(root, verified, commit, changed)
   if (changed.length) fail('최종 검증 이후 코드가 변경됐습니다. 합친 현재 결과를 다시 검증한 뒤 반영하세요.', changed)
 }
 
-// Where finished work goes, from spec/SETTINGS.md (legacy STATE cfg push/plan as fallback):
-// target is the branch `vibe push` publishes (push: true), land the branch work lands on.
-// Unset or push: false commits only.
-export async function vibeSession(options = {}) {
-  const workspace = await inspectWorkspace(options)
-  if (!workspace.git?.head) fail('커밋이 있는 Git checkout이 필요합니다.')
-  const root = workspace.git.root
-  const state = await readOptional(path.join(root, 'spec/STATE.md'))
-  const settings = await readSettings({ root })
-  const remotes = (await git(root, ['remote'])).split('\n').map((line) => line.trim()).filter(Boolean)
-  const remote = options.remote ?? (remotes.includes('origin') ? 'origin' : remotes[0] ?? null)
-  if (options.remote && !remotes.includes(options.remote)) fail(`원격이 없습니다: ${options.remote}`)
-  const branches = branchPlan(settings.values, { branch: workspace.git.branch, defaultBranch: await defaultBranch(root) })
-  const target = branches.pushTarget
-  return { workspace, root, state, settings, branches, push: target ?? '-', remote, target, branch: workspace.git.branch, runtime: runtimeRoot(workspace) }
+// The version commit this landing owes (SETTINGS version), built on head: { commit, version }.
+// Nothing points at the commit until the caller lands it, so a failed landing leaves no trace.
+async function bumpFor(context, command, base, head) {
+  const skipped = bumpGate(context.settings.values, context.branches, command)
+  return skipped ? { commit: null, version: { skipped } } : versionBump(context.root, { base, head })
+}
+
+// Bring this checkout onto the bump it just landed. One that cannot take it (uncommitted manifest
+// edits) stays behind and receives it with the next sync.
+const adoptBump = (root, bump) => !bump.commit ? bump.version
+  : git(root, ['merge', '--ff-only', '--quiet', bump.commit]).then(() => bump.version, () => ({ ...bump.version, checkout: 'behind' }))
+
+// advanceBranch, also where this checkout holds the branch (a fast-forward merge here).
+async function forwardBranch(context, branch, commit) {
+  const moved = await advanceBranch(context, branch, commit)
+  return moved !== 'self' ? moved : git(context.root, ['merge', '--ff-only', '--quiet', commit]).then(() => 'ff', () => 'dirty')
 }
 
 async function unmerged(root) {
@@ -171,13 +177,28 @@ async function assertSpecClose(root, commit) {
   } finally { await rm(candidate, { recursive: true, force: true }) }
 }
 
+// The land branch holds `commit` now: the finished tasks in its tree leave the coordination
+// branch's unlanded table (result.coordination, only when some were waiting). The landing itself
+// already succeeded, so a coordination failure is reported and never thrown.
+async function settleLanded(context, result, commit) {
+  const coordination = await recordLanded(context, commit).catch((error) => ({ error: error.message }))
+  return coordination ? { ...result, coordination } : result
+}
+
 // Land HEAD the way SETTINGS says: land-via pr opens a PR into land; push: true publishes to the
 // push branch (a rejection means someone pushed first — sync and retry); otherwise a land branch
 // other than this one takes the work as a local merge. Nothing to do is not an error.
+// version auto adds the bump on top of the verified HEAD when land is the release branch; every
+// retry syncs and decides again from the new remote tip, so a version never rises twice.
 export async function vibePush(options = {}) {
   const context = await vibeSession(options)
   const { branches } = context
-  if (!context.target && !branches.landTarget) return { schemaVersion: 1, ok: true, pushed: null, reason: branches.unset ? 'land-unset' : 'push-disabled' }
+  if (!context.target && !branches.landTarget) {
+    // Land is this branch and nothing is pushed: what is committed here has landed. An undecided
+    // land commits on the current branch too (gusta-start), so it lands the same way — or its
+    // finished tasks would wait in unlanded for good.
+    return settleLanded(context, { schemaVersion: 1, ok: true, pushed: null, reason: branches.unset ? 'land-unset' : 'push-disabled' }, 'HEAD')
+  }
   if (await designOf(context.workspace)) fail('이 checkout은 디자인 중입니다(vibe design). 사용자에게 디자인이 끝났는지 확인하고 gusta-design-mode 마감(vibe design verify → end → 커밋) 뒤 push하세요.')
   if (branches.via === 'pr' && branches.landTarget) return landByPR(context, options)
   if (!context.target) return landLocal(context, options)
@@ -185,14 +206,17 @@ export async function vibePush(options = {}) {
   let last
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const synced = await vibeSync(options)
-    const pushed = await sha(context.root, 'HEAD')
-    await assertVerified(context.root, options.verifiedCommit, pushed)
-    await assertSpecClose(context.root, pushed)
+    const head = await sha(context.root, 'HEAD')
+    await assertVerified(context, options.verifiedCommit, head)
+    await assertSpecClose(context.root, head)
+    const tracking = `refs/remotes/${context.remote}/${context.target}`
+    const tip = await exists(context.root, tracking) ? await sha(context.root, tracking) : undefined
+    const bump = await bumpFor(context, 'push', synced.reason === 'remote-branch-missing' ? null : tip, head)
+    const pushed = bump.commit ?? head
     try {
-      const tracking = `refs/remotes/${context.remote}/${context.target}`
-      const diffBase = options.diffBase ?? (await exists(context.root, tracking) ? await sha(context.root, tracking) : undefined)
+      const diffBase = options.diffBase ?? tip
       await git(context.root, ['push', '--quiet', context.remote, `${pushed}:refs/heads/${context.target}`])
-      const result = { schemaVersion: 1, ok: true, pushed, diffBase, target: context.target, remote: context.remote, attempts: attempt, sync: synced.action }
+      const result = await settleLanded(context, { schemaVersion: 1, ok: true, pushed, diffBase, target: context.target, remote: context.remote, attempts: attempt, sync: synced.action, version: await adoptBump(context.root, bump) }, pushed)
       if (options.waitCi) {
         try { result.ci = await vibeCIWait({ ...options, diffBase, commit: pushed, branch: context.target }); result.ok = result.ci.ok }
         catch (error) { result.ok = false; result.ci = { ok: false, outcome: 'error', error: error.message } }
@@ -223,11 +247,13 @@ async function landLocal(context, options) {
     }
   }
   const head = await sha(root, 'HEAD')
-  await assertVerified(root, options.verifiedCommit, head)
+  await assertVerified(context, options.verifiedCommit, head)
   await assertSpecClose(root, head)
-  const moved = await advanceBranch(context, land, head)
-  if (['dirty', 'diverged', 'moved'].includes(moved)) fail(`${land}에 반영하지 못했습니다(${moved === 'dirty' ? '그 브랜치 checkout에 커밋하지 않은 변경' : '그 사이 브랜치가 움직임'}). 다시 실행하세요.`, [head])
-  return { schemaVersion: 1, ok: true, pushed: null, landed: head, target: land, mode: 'local', merged, local: moved }
+  const bump = await bumpFor(context, 'push', await sha(root, ref), head)
+  const landed = bump.commit ?? head
+  const moved = await advanceBranch(context, land, landed)
+  if (['dirty', 'diverged', 'moved'].includes(moved)) fail(`${land}에 반영하지 못했습니다(${moved === 'dirty' ? '그 브랜치 checkout에 커밋하지 않은 변경' : '그 사이 브랜치가 움직임'}). 다시 실행하세요.`, [landed])
+  return settleLanded(context, { schemaVersion: 1, ok: true, pushed: null, landed, target: land, mode: 'local', merged, local: moved, version: await adoptBump(root, bump) }, landed)
 }
 
 // land-via pr: publish this branch and open a PR into land (gh when available; otherwise the
@@ -239,7 +265,7 @@ async function landByPR(context, options) {
   if (!branch) fail('detached HEAD는 PR로 올릴 수 없습니다. 브랜치를 만든 뒤 다시 실행하세요.')
   if ((await git(root, ['status', '--porcelain', '--untracked-files=no'])).trim()) fail('커밋하지 않은 변경이 있습니다. 먼저 커밋하세요.')
   const head = await sha(root, 'HEAD')
-  await assertVerified(root, options.verifiedCommit, head)
+  await assertVerified(context, options.verifiedCommit, head)
   await assertSpecClose(root, head)
   await git(root, ['push', '--quiet', remote, `${head}:refs/heads/${branch}`])
   const gh = (args) => execute('gh', args, { cwd: root, encoding: 'utf8', timeout: 60000, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }).then((result) => result.stdout.trim())
@@ -248,11 +274,16 @@ async function landByPR(context, options) {
     pr = await gh(['pr', 'view', branch, '--json', 'url', '--jq', '.url']).catch(() => null)
     if (!pr) prError = (error.stderr || error.message || '').trim().slice(-500)
   }
-  return { schemaVersion: 1, ok: true, pushed: head, target: branch, mode: 'pr', base: land, pr, prError }
+  const result = { schemaVersion: 1, ok: true, pushed: head, target: branch, mode: 'pr', base: land, pr, prError, version: { skipped: bumpGate(context.settings.values, context.branches, 'push') } }
+  // The PR has not merged: only what land already holds (as last fetched) has landed.
+  const tracking = `refs/remotes/${remote}/${land}`
+  return await exists(root, tracking) ? settleLanded(context, result, tracking) : result
 }
 
 // vibe deploy: fast-forward the deploy branch to land — the commit the final gate verified when
 // it landed. A deploy branch with commits land lacks is refused: merge it into land and verify first.
+// version auto puts the bump on land first (pushed before deploy moves): a deploy branch holding a
+// commit land lacks would be refused by every other clone.
 export async function vibeDeploy(options = {}) {
   const context = await vibeSession(options)
   const { root, remote, branches } = context
@@ -264,105 +295,84 @@ export async function vibeDeploy(options = {}) {
   const onRemote = branches.push
   if (onRemote && !remote) fail('배포할 원격이 없습니다.')
   const ref = (branch) => onRemote ? `refs/remotes/${remote}/${branch}` : `refs/heads/${branch}`
-  if (onRemote && !(await fetchBranch(root, remote, `refs/heads/${source}`, ref(source)))) fail(`원격에 land 브랜치 ${source}가 없습니다. 먼저 vibe push로 반영하세요.`)
-  if (!onRemote && !(await exists(root, ref(source)))) fail(`land 브랜치 ${source}가 없습니다.`)
-  const from = await sha(root, ref(source))
-  const present = onRemote ? await fetchBranch(root, remote, `refs/heads/${branches.deploy}`, ref(branches.deploy)) : await exists(root, ref(branches.deploy))
-  const previous = present ? await sha(root, ref(branches.deploy)) : null
-  if (previous === from) return { schemaVersion: 1, ok: true, deployed: null, reason: 'up-to-date', from: source, to: branches.deploy, commit: from }
-  if (previous && !(await ancestor(root, previous, from))) {
-    const extra = (await git(root, ['log', '--format=%h %s', `${from}..${previous}`])).trim().split('\n').slice(0, 10)
-    fail(`${branches.deploy}에 ${source}에 없는 커밋이 있습니다. ${source}에 ${branches.deploy}를 먼저 합치고 검증한 뒤 다시 배포하세요.`, extra)
-  }
-  if (onRemote) {
-    await git(root, ['push', '--quiet', remote, `${from}:refs/heads/${branches.deploy}`])
-    await git(root, ['update-ref', ref(branches.deploy), from])
-  } else if (!previous) await git(root, ['branch', branches.deploy, from])
-  const local = previous || onRemote ? await advanceBranch(context, branches.deploy, from) : 'created'
-  if (!onRemote && ['dirty', 'diverged', 'moved', 'self'].includes(local)) fail(`${branches.deploy}에 반영하지 못했습니다(${local}).`, [from])
-  const result = { schemaVersion: 1, ok: true, deployed: from, previous, from: source, to: branches.deploy, remote: onRemote ? remote : null, local }
-  if (onRemote && options.waitCi) {
-    try { result.ci = await vibeCIWait({ ...options, diffBase: previous ?? undefined, commit: from, branch: branches.deploy }); result.ok = result.ci.ok }
-    catch (error) { result.ok = false; result.ci = { ok: false, outcome: 'error', error: error.message } }
-  }
-  return result
-}
-
-// Publish only this session's claim on the remote's tree, never pending local code.
-// Merging the receipt back makes later task-row removal a normal three-way merge.
-export async function vibeClaim(options = {}) {
-  if (!SESSION_TAG.test(options.tag ?? '') || (options.task && !TASK_ID.test(options.task))) fail('claim에는 --tag와 선택적 --task T###가 필요합니다.')
-  if (options.repairTask !== undefined && (typeof options.repairTask !== 'boolean' || options.repairTask && !options.task)) fail('repairTask에는 task와 boolean 값이 필요합니다.')
-  const context = await vibeSession(options)
-  if (!context.target) return { schemaVersion: 1, ok: true, pushed: null, reason: 'push-disabled' }
-  if (!context.remote) fail('선점을 push할 원격이 없습니다.')
-  if ((await git(context.root, ['status', '--porcelain'])).trim()) fail('선점 전에 로컬 변경을 커밋하세요.')
-  const row = activeRows(context.state ?? '').find((entry) => entry.tag === options.tag)
-  if (!row) fail('선점 전에 vibe beat로 세션을 등록하세요.')
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'gusta-claim-'))
-  const tracking = `refs/remotes/${context.remote}/${context.target}`
-  const env = { ...process.env, GIT_INDEX_FILE: path.join(temporary, 'index') }
-  const indexGit = async (args) => (await execute('git', ['-C', context.root, ...args], { env, encoding: 'utf8' })).stdout.trim()
-  try {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (!await fetchBranch(context.root, context.remote, `refs/heads/${context.target}`, tracking)) fail('원격 대상 브랜치가 없습니다. 먼저 기획 기준을 공유하세요.')
-      const parent = await sha(context.root, tracking)
-      let remoteState = await git(context.root, ['show', `${parent}:spec/STATE.md`])
-      if (options.task) {
-        const claimed = taskRow(remoteState, options.task)
-        await assertRemoteTaskAvailable(context, parent, remoteState, options.task, options.tag)
-        if (!options.repairTask) {
-          if (!claimed) fail('원격에 선점할 태스크가 없습니다. 기획 기준을 먼저 공유하세요.', [options.task])
-          if (claimed.st !== 'todo' && !claimed.st?.endsWith(`.${options.tag}`)) fail('다른 세션이 선점했거나 실행할 수 없는 태스크입니다.', [options.task, claimed.st])
-          remoteState = setTaskSt(remoteState, options.task, `doing@${yymmdd()}.${options.tag}`)
+  for (let attempt = 1; ; attempt += 1) {
+    if (onRemote && !(await fetchBranch(root, remote, `refs/heads/${source}`, ref(source)))) fail(`원격에 land 브랜치 ${source}가 없습니다. 먼저 vibe push로 반영하세요.`)
+    if (!onRemote && !(await exists(root, ref(source)))) fail(`land 브랜치 ${source}가 없습니다.`)
+    const from = await sha(root, ref(source))
+    const present = onRemote ? await fetchBranch(root, remote, `refs/heads/${branches.deploy}`, ref(branches.deploy)) : await exists(root, ref(branches.deploy))
+    const previous = present ? await sha(root, ref(branches.deploy)) : null
+    if (previous === from) return { schemaVersion: 1, ok: true, deployed: null, reason: 'up-to-date', from: source, to: branches.deploy, commit: from }
+    if (previous && !(await ancestor(root, previous, from))) {
+      const extra = (await git(root, ['log', '--format=%h %s', `${from}..${previous}`])).trim().split('\n').slice(0, 10)
+      fail(`${branches.deploy}에 ${source}에 없는 커밋이 있습니다. ${source}에 ${branches.deploy}를 먼저 합치고 검증한 뒤 다시 배포하세요.`, extra)
+    }
+    const bump = await bumpFor(context, 'deploy', previous, from)
+    const commit = bump.commit ?? from
+    if (bump.commit) {
+      if (onRemote) {
+        try { await git(root, ['push', '--quiet', remote, `${commit}:refs/heads/${source}`]) } catch (error) {
+          // Someone pushed land first: decide again from the new tip. The deploy branch has not moved.
+          if (attempt < 3 && /rejected|non-fast-forward|fetch first|stale info/i.test(error.stderr ?? '')) continue
+          fail(`${source}에 버전 커밋을 올리지 못해 ${branches.deploy}에 배포하지 않았습니다.`, [(error.stderr || error.message).trim()])
         }
+        await git(root, ['update-ref', ref(source), commit])
       }
-      const state = upsertActive(remoteState, { ...row, doing: options.task ?? '-', at: minuteNow() })
-      const file = path.join(temporary, 'STATE.md')
-      await writeFile(file, state)
-      await indexGit(['read-tree', parent])
-      const blob = await indexGit(['hash-object', '-w', file])
-      await indexGit(['update-index', '--add', '--cacheinfo', `100644,${blob},spec/STATE.md`])
-      const tree = await indexGit(['write-tree'])
-      const commit = (await git(context.root, ['commit-tree', tree, '-p', parent, '-m', `vibe ${options.tag}: claim ${options.task ?? 'session'}`])).trim()
-      try { await git(context.root, ['push', '--quiet', context.remote, `${commit}:refs/heads/${context.target}`]) }
-      catch (error) {
-        if (/rejected|non-fast-forward|fetch first/i.test(error.stderr ?? '') && attempt < 2) continue
-        throw error
-      }
-      try { await git(context.root, [...await stateMergeArgs(context.root, context.runtime), 'merge', '--no-edit', '--quiet', commit]) }
-      catch (error) { await git(context.root, ['merge', '--abort'], [1, 128]); fail('원격 선점은 기록됐지만 로컬 병합에 실패했습니다. 변경을 보존하고 sync하세요.', [error.stderr || error.message]) }
-      return { schemaVersion: 1, ok: true, pushed: commit, task: options.task ?? null, progressOnly: true }
+      const landed = await forwardBranch(context, source, commit)
+      if (!onRemote && landed !== 'ff') fail(`${source}에 버전 커밋을 올리지 못해 ${branches.deploy}에 배포하지 않았습니다(${landed}). ${source} checkout의 변경을 커밋한 뒤 다시 배포하세요.`, [commit])
     }
-  } finally { await rm(temporary, { recursive: true, force: true }) }
-}
-
-// Repair reserves the task through active.doing without changing its malformed lifecycle row.
-// Every claimant checks that reservation, plus ownership in either task source, on every retry.
-async function assertRemoteTaskAvailable(context, parent, state, task, tag) {
-  const { root, remote } = context
-  const names = (await git(root, ['ls-tree', '--name-only', '-z', `${parent}:spec/tasks`], [128]))?.split('\0').filter((name) => name.startsWith(`${task}.`) && name.endsWith('.md')) ?? []
-  const specs = names.map((name) => `${parent}:spec/tasks/${name}`), contents = await batchShow(root, specs)
-  const files = await Promise.all(specs.map((spec, index) => contents[index] ?? git(root, ['show', spec])))
-  const statuses = [taskRow(state, task)?.st, ...files.map((text) => quoteFields(quoteLine(text ?? '') ?? '').get('st'))]
-  const owner = statuses.find((st) => st?.startsWith('doing@') && st.split('.')[1] !== tag)
-  if (owner) fail('다른 세션이 선점했거나 소유자를 확인해야 하는 태스크입니다.', [task, owner])
-  for (const row of activeRows(state).filter((entry) => entry.tag !== tag && entry.doing === task)) {
-    let live = !(minutesSince(row.at) > STALE_MINUTES)
-    if (!live) {
-      const wip = `refs/remotes/${remote}/wip/${row.tag}`
-      if (await fetchBranch(root, remote, `refs/heads/wip/${row.tag}`, wip)) live = !(minutesSince(await commitTime(root, wip)) > STALE_MINUTES)
+    if (onRemote) {
+      await git(root, ['push', '--quiet', remote, `${commit}:refs/heads/${branches.deploy}`])
+      await git(root, ['update-ref', ref(branches.deploy), commit])
+    } else if (!previous) await git(root, ['branch', branches.deploy, commit])
+    const local = previous || onRemote ? await advanceBranch(context, branches.deploy, commit) : 'created'
+    if (!onRemote && ['dirty', 'diverged', 'moved', 'self'].includes(local)) fail(`${branches.deploy}에 반영하지 못했습니다(${local}).`, [commit])
+    const result = await settleLanded(context, { schemaVersion: 1, ok: true, deployed: commit, previous, from: source, to: branches.deploy, remote: onRemote ? remote : null, local, version: bump.version }, commit)
+    if (onRemote && options.waitCi) {
+      try { result.ci = await vibeCIWait({ ...options, diffBase: previous ?? undefined, commit, branch: branches.deploy }); result.ok = result.ci.ok }
+      catch (error) { result.ok = false; result.ci = { ok: false, outcome: 'error', error: error.message } }
     }
-    if (live) fail('다른 세션이 선점한 태스크입니다.', [task, row.tag])
+    return result
   }
 }
 
-// This session's presence row; the caller commits and pushes it.
-export async function vibeBeat(options = {}) {
+// The land (or current) branch on the remote as last fetched: { branch, ref, head }; head is null
+// when this clone has never seen it there.
+async function upstreamOf(context) {
+  const branch = context.target ?? context.branch
+  const ref = context.remote && branch ? `refs/remotes/${context.remote}/${branch}` : null
+  return { branch, ref, head: ref && await exists(context.root, ref) ? await sha(context.root, ref) : null }
+}
+
+// Take a task for this session on the coordination branch (src/vibe-coord.mjs claimSession): no
+// push target, clean tree or commit is needed, and nothing in the working tree changes. Without
+// --task it registers the session. Refused — a ClaimError — while another live session holds the
+// task, another session's finished copy waits to land, or the remote had it first (lost).
+export async function vibeClaim(options = {}, injected = {}) {
+  if (!SESSION_TAG.test(options.tag ?? '') || (options.task && !TASK_ID.test(options.task))) fail('claim에는 --tag와 선택적 --task T###가 필요합니다.')
+  assertSessionTag(options.tag)
+  if (options.repairTask !== undefined && (typeof options.repairTask !== 'boolean' || options.repairTask && !options.task)) fail('repairTask에는 task와 boolean 값이 필요합니다.')
+  if (options.mode !== undefined && !['pair', 'autopilot'].includes(options.mode)) fail('--mode는 pair 또는 autopilot입니다.')
+  const context = await vibeSession(options, { unborn: true })
+  await assertCoordinator(context, 'claim')
+  const { head } = await upstreamOf(context)
+  const landState = head ? await git(context.root, ['show', `${head}:spec/STATE.md`], [128]) : null
+  return claimSession(context, options, { landState, injected })
+}
+
+// This session's presence row. In a Git repository — one without a commit yet included, the
+// coordination branch being an orphan — it lives on the coordination branch (written and published
+// there, nothing for the caller to commit); only a target without Git keeps it in STATE.
+export async function vibeBeat(options = {}, injected = {}) {
   if (!SESSION_TAG.test(options.tag ?? '')) fail('--tag에는 영숫자 2-8자의 세션 tag가 필요합니다.')
+  assertSessionTag(options.tag)
   if (options.mode !== undefined && !['pair', 'autopilot'].includes(options.mode)) fail('--mode는 pair 또는 autopilot입니다.')
   if (options.doing !== undefined && options.doing !== '-' && !TASK_ID.test(options.doing)) fail('--doing은 T### 또는 -입니다.')
   const workspace = await inspectWorkspace(options)
+  if (workspace.git) {
+    const context = await vibeSession({ ...options, inspection: workspace }, { unborn: true })
+    await assertCoordinator(context, 'beat')
+    return beatSession(context, options, injected)
+  }
   const file = path.join(workspace.git?.root ?? workspace.targetRoot, 'spec/STATE.md')
   const text = await readOptional(file)
   if (text === null) fail('spec/STATE.md가 없습니다.')
@@ -381,8 +391,9 @@ export async function vibeBeat(options = {}) {
 // Snapshot the working tree (tracked, untracked, not ignored) onto wip/<tag> without touching
 // HEAD, the index or the current branch. Each snapshot builds on the previous one, so the
 // push is always a fast-forward.
-export async function vibeCheckpoint(options = {}) {
+export async function vibeCheckpoint(options = {}, injected = {}) {
   if (!SESSION_TAG.test(options.tag ?? '')) fail('--tag에는 세션 tag가 필요합니다.')
+  assertSessionTag(options.tag)
   const context = await vibeSession(options)
   const { root, remote } = context
   if (options.handoff && !remote) fail('원격 인계에는 Git remote가 필요합니다. --remote로 지정하세요.')
@@ -408,17 +419,17 @@ export async function vibeCheckpoint(options = {}) {
     try { await git(root, ['push', '--quiet', remote, `${local}:refs/heads/wip/${options.tag}`]); pushed = true } catch (error) { pushError = error.stderr || error.message }
   }
   const branch = `wip/${options.tag}`
+  // A coordination event too: the session's row gets its commit and a fresh `at` and is published,
+  // so a long task does not read as a dead session elsewhere. The snapshot stands whatever it says.
+  const coordination = await (async () => await isDelegated(context) ? { skipped: 'worker-checkout' } : recordCheckpoint(context, options.tag, injected))()
+    .catch((error) => ({ error: error.message }))
   return { schemaVersion: 1, ...(options.handoff ? { ok: pushed, purpose: 'handoff' } : {}), changed, commit, tree, branch, remote,
-    remoteBranch: remote ? `${remote}/${branch}` : null, pushed, pushError, ...(fetchError ? { fetchError } : {}),
+    remoteBranch: remote ? `${remote}/${branch}` : null, pushed, pushError, ...(fetchError ? { fetchError } : {}), coordination,
     verification: { status: 'unverified', checksRun: false },
     next: options.next ?? `Continue unfinished work from ${pushed ? `${remote}/${branch}` : branch}; inspect remaining tasks and verification failures before final integration.` }
 }
 
 const minutesSince = (iso) => iso ? (Date.now() - Date.parse(iso)) / 60000 : Infinity
-
-async function commitTime(root, ref) {
-  return (await git(root, ['log', '-1', '--format=%cI', ref, '--'], [128]))?.trim() || null
-}
 
 function summarize(text) {
   const map = sections(text)
@@ -427,8 +438,8 @@ function summarize(text) {
   const pending = rows('ssot').filter(([, rev, tasked]) => Number(tasked) < Number(rev)).map(([id, rev, tasked, delta]) => ({ id, rev: Number(rev), tasked: Number(tasked), pending: delta }))
   const reviews = rows('review').filter(([, st]) => st?.startsWith('ready@')).map(([id, st]) => ({ id, st }))
   const ideation = rows('ideation').filter(([, st]) => /^(open|ready)@/.test(st ?? '')).map(([id, st]) => ({ id, st }))
-  const inbox = (map.get('inbox') ?? []).map((line) => line.trim().match(INBOX_LINE)).filter(Boolean)
-    .map(([line, date, kind, refs, text]) => ({ line, date, kind, refs: refs.split(/\s+/), text }))
+  // The inbox is coordination: the branch's, or this STATE's while it still has the old section.
+  const inbox = inboxEntries(map.get('inbox') ?? [])
   return { tasks, pending, reviews, ideation, inbox }
 }
 
@@ -464,52 +475,64 @@ export async function specCloseIssues(root) {
   return stIssues(summarize(state).tasks, await taskFields(root))
 }
 
-// What a session needs before its first question: who else is working (as the remote sees
-// it), what is left, and which way to go.
-export async function vibeStatus(options = {}) {
+// What a session needs before its first question: who else is working and where (the coordination
+// branch, synced with the remote unless fetch is off, plus STATE's old sections while a project
+// still has them), what is left, and which way to go.
+export async function vibeStatus(options = {}, injected = {}) {
   const workspace = await inspectWorkspace(options)
   const root = workspace.git?.root ?? workspace.targetRoot
   const text = await readOptional(path.join(root, 'spec/STATE.md'))
   if (text === null) return { schemaVersion: 1, route: 'architecture', reason: 'spec/STATE.md가 없습니다.', git: Boolean(workspace.git) }
   const cfg = cfgOf(text)
-  const settings = await readSettings({ root })
+  // Without Git there is no coordination branch: STATE's own sections are the whole picture.
+  // A repository without a commit yet has one (an orphan needs no HEAD).
+  const context = workspace.git ? await vibeSession({ ...options, inspection: workspace }, { unborn: true }) : null
+  const settings = context?.settings ?? await readSettings({ root })
   const result = { schemaVersion: 1, tag: options.tag ?? null, cfg: { level: cfg.get('level') ?? null, lang: cfg.get('lang') ?? null },
-    settings: { land: settings.values.land, landVia: settings.values['land-via'], push: settings.values.push, deploy: settings.values.deploy, plan: settings.values.plan, unset: settings.unset, ...(settings.legacy.length ? { legacy: settings.legacy } : {}) } }
+    settings: { land: settings.values.land, landVia: settings.values['land-via'], push: settings.values.push, deploy: settings.values.deploy, plan: settings.values.plan, version: settings.values.version, unset: settings.unset, ...(settings.legacy.length ? { legacy: settings.legacy } : {}) } }
   if (options.section) {
     if (options.section !== 'inbox') fail('status --section은 inbox를 지원합니다.')
-    return { ...result, inbox: summarize(text).inbox }
+    const lines = context ? (await coordView(context, { fetch: options.fetch !== false, tag: options.tag, injected })).doc.inbox : null
+    return { ...result, inbox: lines ? inboxEntries(lines) : summarize(text).inbox }
   }
-  let remoteText = null
-  if (workspace.git?.head) {
-    const context = await vibeSession(options)
-    const branch = context.target ?? context.branch
+  let view = null
+  const landed = new Set()
+  if (context) {
+    const fetching = Boolean(context.remote) && options.fetch !== false
     let fetchError = null
-    if (context.remote && options.fetch !== false) {
+    if (fetching) {
       try { await git(root, ['fetch', '--quiet', context.remote]) } catch (error) { fetchError = (error.stderr || error.message).trim() }
     }
-    const upstream = context.remote && branch ? `refs/remotes/${context.remote}/${branch}` : null
-    const remoteHead = upstream && await exists(root, upstream) ? await sha(root, upstream) : null
+    const { branch, head: remoteHead } = await upstreamOf(context)
     let ahead = 0, behind = 0
-    if (remoteHead) [ahead, behind] = (await git(root, ['rev-list', '--left-right', '--count', `HEAD...${remoteHead}`])).trim().split(/\s+/).map(Number)
-    if (remoteHead) remoteText = await git(root, ['show', `${remoteHead}:spec/STATE.md`], [128])
+    if (remoteHead && workspace.git.head) [ahead, behind] = (await git(root, ['rev-list', '--left-right', '--count', `HEAD...${remoteHead}`])).trim().split(/\s+/).map(Number)
+    const remoteText = remoteHead ? await git(root, ['show', `${remoteHead}:spec/STATE.md`], [128]) : null
     const dirty = (await git(root, ['status', '--porcelain'])).split('\n').filter(Boolean).length
     result.git = { branch: context.branch, head: workspace.git.head, remote: context.remote, target: branch, remoteHead, ahead, behind, dirty, fetchError }
-    // Others as the remote sees them: their active rows, refreshed by their wip/<tag> snapshots.
-    const remoteRows = activeRows(remoteText ?? '')
-    const seen = [...remoteRows, ...activeRows(text).filter((row) => !remoteRows.some((other) => other.tag === row.tag))]
+    view = await coordView(context, { fetch: options.fetch !== false, tag: options.tag, activeFrom: [remoteText], injected })
+    // Others: where each works (branch, commit, and whether that commit is on the remote yet), and
+    // whether it still shows life — its row's `at`, or a newer wip/<tag> snapshot.
     const sessions = []
-    for (const row of seen.filter((entry) => entry.tag !== options.tag)) {
-      const wipAt = context.remote ? await commitTime(root, `refs/remotes/${context.remote}/wip/${row.tag}`) : null
+    for (const row of view.doc.active.filter((entry) => entry.tag !== options.tag)) {
+      const wipAt = await wipTime(context, row.tag)
       const lastSeen = [row.at, wipAt].filter(Boolean).map((value) => new Date(Date.parse(value)).toISOString()).sort().at(-1) ?? null
       const minutes = minutesSince(lastSeen)
-      sessions.push({ ...row, wipAt, lastSeen, minutesAgo: Number.isFinite(minutes) ? Math.round(minutes) : null, stale: minutes > STALE_MINUTES })
+      sessions.push({ ...row, pushed: await commitOnRemote(context, row.commit, fetching && !fetchError), wipAt, lastSeen, minutesAgo: Number.isFinite(minutes) ? Math.round(minutes) : null, stale: minutes > STALE_MINUTES })
     }
     const live = new Set(sessions.filter((row) => !row.stale).map((row) => row.tag))
     if (options.tag) live.add(options.tag)
     const doing = summarize(remoteText ?? text).tasks.filter((task) => task.st?.startsWith('doing@')).map((task) => ({ ...task, tag: task.st.split('.')[1] ?? null }))
     result.others = sessions
     result.orphanDoing = doing.filter((task) => task.tag !== options.tag && !live.has(task.tag))
-    result.self = seen.find((entry) => entry.tag === options.tag) ?? null
+    result.self = view.doc.active.find((entry) => entry.tag === options.tag) ?? null
+    result.unlanded = await Promise.all(view.doc.unlanded.map(async (row) => ({ ...row, pushed: await commitOnRemote(context, row.commit, fetching && !fetchError) })))
+    // Tasks the land branch already archived (its remote copy as last fetched, and its local one):
+    // a checkout that has not taken land in yet still shows them todo.
+    const land = context.branches.land && await exists(root, `refs/heads/${context.branches.land}`) ? `refs/heads/${context.branches.land}` : null
+    for (const ref of [remoteHead, land].filter(Boolean)) {
+      const names = (await git(root, ['ls-tree', '--name-only', '-z', `${ref}:spec/tasks/done`], [128]))?.split('\0') ?? []
+      for (const name of names) if (/^T\d{3,}\./.test(name)) landed.add(name.split('.')[0])
+    }
   }
   const local = summarize(text)
   const design = await designOf(workspace)
@@ -531,19 +554,37 @@ export async function vibeStatus(options = {}) {
   const sketch = { pending: local.pending, reviews: local.reviews, ideation: local.ideation }
   const executable = implementation.todo.length + implementation.resume.length + implementation.blocked.length > 0
   const untasked = sketch.pending.length + sketch.reviews.length + sketch.ideation.length > 0
-  const parked = new Set(local.inbox.filter((entry) => entry.kind === 'parked').flatMap((entry) => entry.refs))
+  const inbox = view ? inboxEntries(view.doc.inbox) : local.inbox
+  const parked = new Set(inbox.filter((entry) => entry.kind === 'parked').flatMap((entry) => entry.refs))
   const doneFiles = await readdir(path.join(root, 'spec/tasks/done')).catch(() => [])
   const done = new Set(doneFiles.map((file) => file.split('.')[0]))
-  const runnable = local.tasks.filter((task) => !parked.has(task.id) && (task.st === 'todo' || ownTag(task)) &&
+  // held: remaining tasks this session must not start — another live session is doing them
+  // (claimed), another session finished them and they have not landed (unlanded), or the land
+  // branch has them archived and this checkout has not taken land in yet (landed: sync first).
+  const remaining = new Set(local.tasks.map((task) => task.id))
+  const held = view ? [...result.others.filter((row) => !row.stale).map((row) => ({ id: row.doing, tag: row.tag, reason: 'claimed' })),
+    ...view.doc.unlanded.filter((row) => row.tag !== options.tag).map((row) => ({ id: row.id, tag: row.tag, reason: 'unlanded' })),
+    ...[...landed].map((id) => ({ id, tag: null, reason: 'landed' }))]
+    .filter((entry, index, all) => remaining.has(entry.id) && entry.id !== result.self?.doing && all.findIndex((other) => other.id === entry.id) === index) : []
+  const taken = new Set(held.map((entry) => entry.id))
+  const runnable = local.tasks.filter((task) => !parked.has(task.id) && !taken.has(task.id) && (task.st === 'todo' || ownTag(task)) &&
     (task.dep === '-' || !task.dep || task.dep.split(/[\s,]+/).filter(Boolean).every((id) => done.has(id))))
-  return { ...result, concurrency: (result.others ?? []).some((row) => !row.stale) || (result.orphanDoing ?? []).length > 0 ? 'strict' : 'solo',
+  // lost: tasks this checkout says are ours that someone else holds (the remote had them first).
+  // contested: tasks we finished that another session is doing anyway — the coordination branch
+  // settles two claims, not a claim against a finished task.
+  const coordination = view && { branch: view.branch, ...(view.error ? { error: view.error } : {}), legacy: view.legacy,
+    lost: [...view.lost, ...held.filter((entry) => implementation.resume.includes(entry.id) && !view.lost.some((lost) => lost.task === entry.id)).map((entry) => ({ task: entry.id, owner: entry.tag, reason: entry.reason }))],
+    contested: view.doc.unlanded.filter((row) => options.tag && row.tag === options.tag).flatMap((row) => result.others.filter((other) => !other.stale && other.doing === row.id).map((other) => ({ task: row.id, owner: other.tag }))),
+    push: view.push, sync: view.sync }
+  return { ...result, ...(coordination ? { coordination, held } : {}),
+    concurrency: (result.others ?? []).some((row) => !row.stale) || (result.orphanDoing ?? []).length > 0 ? 'strict' : 'solo',
     next: (sections(text).get('next') ?? []).filter((line) => line.startsWith('- ')).slice(0, 3),
-    counts: { inbox: local.inbox.length, parked: local.inbox.filter((entry) => entry.kind === 'parked').length, remaining: local.tasks.length },
+    counts: { inbox: inbox.length, parked: inbox.filter((entry) => entry.kind === 'parked').length, remaining: local.tasks.length },
     remaining: local.tasks.map((task) => ({ ...task, title: task.title.slice(0, 120) })), runnable: runnable.map((task) => task.id),
     // settled: nothing to execute and nothing to repair (untasked sketch input may remain).
     // parkedOnly: nothing runnable, nothing to sketch, only parked or blocked work left.
     issues, settled: !executable && !issues.length, parkedOnly: !runnable.length && !untasked && (parked.size > 0 || implementation.blocked.length > 0),
-    implementation, sketch, inbox: local.inbox.slice(0, 3).map(({ date, kind, refs, text }) => ({ date, kind, refs, text: text.slice(0, 220) })), inboxMore: local.inbox.length > 3, openReports,
+    implementation, sketch, inbox: inbox.slice(0, 3).map(({ id, date, kind, refs, text }) => ({ id, date, kind, refs, text: text.slice(0, 220) })), inboxMore: inbox.length > 3, openReports,
     design,
     // An open design comes first: its edits are uncommitted until the user ends it. A broken st
     // (a hand close) is fixed before anything else is chosen: gusta-implement-task's close, then lint.
@@ -562,7 +603,20 @@ export async function vibePreflight(options = {}) {
   add('push-target', true, context.target ?? 'commit only (SETTINGS push false)')
   // Informational: an undecided land is settled by gusta-init before autopilot starts (common rule 1);
   // autopilot itself commits on the current branch, so it never blocks here.
-  add('branch-settings', true, context.branches.unset ? 'land 미정 — 맡김은 현재 브랜치에 커밋만 합니다(/gusta-init으로 정하면 반영)' : `land ${context.settings.values.land}${context.branches.deploy ? ` → deploy ${context.branches.deploy}` : ''}`)
+  // version auto: which command raises the version, or why none does.
+  const bumpOn = context.branches.deploy && context.branches.deploy !== context.branches.land ? 'deploy' : 'push'
+  const version = context.settings.values.version !== 'auto' ? '' : ` · version auto (${bumpGate(context.settings.values, context.branches, bumpOn) ?? `vibe ${bumpOn}`})`
+  add('branch-settings', true, context.branches.unset ? 'land 미정 — 맡김은 현재 브랜치에 커밋만 합니다(/gusta-init으로 정하면 반영)' : `land ${context.settings.values.land}${context.branches.deploy ? ` → deploy ${context.branches.deploy}` : ''}${version}`)
+  // Where sessions coordinate, whether events reach the remote, and how the last publish went. A
+  // coordination branch this checkout cannot write needs a person: SETTINGS coord differs from the
+  // clone's or names a code branch, the name collides with another ref, the branch is checked out,
+  // or Git has no user to commit as — the loop would die at its first claim. A remote in backoff
+  // only delays publishing.
+  const coordination = await coordView(context, { fetch: false, writable: true })
+  const reach = coordination.push.enabled ? `→ ${coordination.push.remote} at every event` : `(this clone only: ${coordination.push.reason === 'disabled' ? 'coord-push false' : 'no remote'})`
+  const { last, backoff } = coordination.push
+  const blocked = coordination.error ?? (coordination.writable?.ok === false ? coordination.writable.error : null)
+  add('coord-push', !blocked, blocked ?? `${coordination.branch} ${reach}${last ? ` · last publish ${last.at}: ${last.pushed ? 'pushed' : last.reason}` : ''}${backoff ? ` · remote backoff (${backoff.reason}) until ${backoff.until}` : ''}${coordination.push.unpublished ? ' · unpublished events go with the next one' : ''}`, true)
   if (context.target) {
     if (!context.remote) add('remote', false, 'no git remote for SETTINGS push', true)
     else {

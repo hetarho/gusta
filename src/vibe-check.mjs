@@ -9,6 +9,7 @@ import { workingTree, commitTree, checkKey, cachedPass, recordPass, withHeavyLoc
 import { SkillPackageError } from './errors.mjs'
 import { sections, tableRows } from './spec-format.mjs'
 import { readVerification } from './vibe-brief.mjs'
+import { delegatedCheckout } from './work-policy.mjs'
 
 // A task check is the affected unit tests: minutes, not the suite. Longer runs are flagged.
 export const TASK_SLOW_MS = 5 * 60000
@@ -28,9 +29,7 @@ export async function runVibeCheck(options = {}, command) {
   if (!['task', 'batch', 'unit', 'group', 'ci'].includes(scope.TIER)) throw new SkillPackageError('지원하지 않는 검증 tier입니다.')
   const final = ['batch', 'group'].includes(scope.TIER)
   if (final && !options.allowFinal) {
-    const state = await readRuntime(runtime)
-    const delegated = (options.env?.GUSTA_VIBE_UNIT ?? process.env.GUSTA_VIBE_UNIT) === '1' || Object.values(state.attempts).some((entry) =>
-      (entry.workspace === root && !entry.cleanedAt) || [entry.review, ...(entry.reviewHistory ?? [])].some((review) => review?.workspace === root))
+    const delegated = (options.env?.GUSTA_VIBE_UNIT ?? process.env.GUSTA_VIBE_UNIT) === '1' || delegatedCheckout(await readRuntime(runtime), root)
     if (delegated) throw new SkillPackageError('최종 검증은 조정자/호스트가 실행합니다. 워커·리뷰어는 태스크 검사만 실행하세요. 사용자가 별도 실행을 명시한 경우만 --allow-final을 사용하세요.')
   }
   // The full suite at every task is what turns ten tasks into hours of waiting.
