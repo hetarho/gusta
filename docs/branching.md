@@ -35,7 +35,7 @@
 - **언제**: `deploy`가 없으면 `vibe push`가 land를 전진시킬 때(원격 push·로컬 병합 모두), 있으면 `vibe deploy` 때입니다. 검증을 통과한 커밋 위에 `chore: bump version to X.Y.Z` 커밋 하나를 얹습니다. deploy에서는 그 커밋을 land에 먼저 올린 뒤(push가 켜져 있으면 원격 land에 push) deploy를 fast-forward합니다 — land에 없는 커밋이 deploy에 생기면 다른 기기의 배포가 거절되기 때문입니다. push가 거절돼 원격을 다시 합치면 새 기준으로 다시 계산하므로 두 번 오르지 않고, 끝내 실패하면 버전 커밋을 남기지 않습니다.
 - **얼마나**: 모델이 아니라 Git만 보고 정합니다 — 동시에 도는 세션이 같은 답을 내고, push 시점에 모델을 부르지 않습니다. 반영할 범위에서 사람이 버전을 바꿨으면 그대로 둡니다(major는 이렇게 사람만 올립니다). 현재 버전이 정해진 뒤 `spec/ssot/`에 새로 확정된(`[o]`) 결정 ID가 있으면 minor, 아니면 patch입니다(그때 없었거나 `[?]`였던 결정이 `[o]`가 된 경우 — 열린 `[?]`·기각 `[x]`는 세지 않습니다). STATE·태스크·보고서만 바뀐 반영은 릴리스로 치지 않습니다.
 - **무엇을**: 저장소 루트 `package.json`의 `version`과, 추적 중이면 `package-lock.json`의 같은 값만 고칩니다. 그 값 말고는 한 바이트도 바꾸지 않고 git 태그도 만들지 않습니다. `X.Y.Z`가 아닌 버전(프리릴리스 등)은 올리지 않습니다.
-- **올리지 않는 경우**: `land-via: pr`(병합 시점을 CLI가 쥐지 않음), deploy 없이 land가 `current`·미정, 지원하는 매니페스트 없음. CLI가 land를 옮기지 않는 반영(land에서 직접 작업하며 push가 꺼진 경우, 작업 묶음 `--push`의 단위별 push)에서도 오르지 않습니다. `vibe push`·`vibe deploy` 결과의 `version`이 올린 내용(`from`·`to`·`level`)이나 건너뛴 이유(`skipped`)를 알려 줍니다.
+- **올리지 않는 경우**: `land-via: pr`(병합 시점을 CLI가 쥐지 않음), deploy 없이 land가 `current`·미정, 지원하는 매니페스트 없음. 작업 묶음 `--push` 등의 소유 작업 브랜치 발행은 land를 옮기지 않으므로 버전을 올리지 않습니다. land는 공동 검수를 마친 고정 후보로만 전진합니다. `vibe push`·`vibe deploy` 결과의 `version`이 올린 내용(`from`·`to`·`level`)이나 건너뛴 이유(`skipped`)를 알려 줍니다.
 
 ## 조정 브랜치
 

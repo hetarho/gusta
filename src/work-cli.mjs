@@ -48,11 +48,11 @@ const HELP = `작업 묶음 (Orca 등 외부 도구 없이도 사용 가능)
   work recover (--attempt <id> | --work <name>)
   work unlock --lock-id <id>
 
-start 배정 한도: --workers <n> (4), --reviewers <n> (1), --max-pending <n> (8).\n공통: --target <path>, --json. 생성·통합 명령은 로컬 Git을 변경하며 원격 push는 --push <branch>가 있을 때만 통합 단위마다 합니다.
+start 배정 한도: --workers <n> (4), --reviewers <n> (1), --max-pending <n> (8).\n공통: --target <path>, --json. 생성·통합 명령은 로컬 Git을 변경하며 원격 발행은 --push를 명시할 때만 소유 작업 브랜치로 합니다.
 auto: 배정 가능한 기존 linked worktree는 연결하고, 기획 공간에서는 새 worktree를 생성합니다.
 current: 현재 checkout을 사용합니다. new: 항상 별도 worktree를 만듭니다.
 lane: 같은 lane의 태스크는 한 작업 공간에서 순서대로 구현하고 함께 리뷰·통합합니다.
-push: 통합된 단위마다 그 브랜치로 push합니다(원격이 앞서 있으면 후보에서 먼저 합칩니다).
+push: 통합 단위는 소유 묶음 브랜치에만 발행합니다. land 반영과 전체 검수는 공동 고정 후보 한 번에 모읍니다.
 review: risky(기본)는 위험한 단위만 리뷰하고 나머지는 정책 승인합니다. all은 모든 단위를 리뷰합니다.
 explore 태스크와 그 후속은 배정하지 않습니다 — 메인 세션에서 단독으로 진행합니다.
 검증 단계: submit=태스크(선택, 변경 영향) · integrate=단위 통합 · finish=묶음 완료. start/configure가 저장한
