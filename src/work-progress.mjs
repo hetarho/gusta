@@ -10,7 +10,7 @@ const run = (value) => value && pick(value, ['id', 'adapter', 'providers', 'work
 
 export function progressAttempt(value) {
   return {
-    ...pick(value, ['id', 'group', 'taskId', 'tasks', 'lane', 'owner', 'contributors', 'status', 'reason', 'error', 'createdAt', 'startCommit', 'verifiedCommit', 'submittedBase', 'submissionId', 'submittedAt', 'integratedCommit', 'integratedAt', 'releasedAt', 'cleanedAt', 'risk']),
+    ...pick(value, ['id', 'group', 'taskId', 'tasks', 'lane', 'owner', 'contributors', 'status', 'reason', 'error', 'createdAt', 'startCommit', 'verifiedCommit', 'submittedBase', 'submissionId', 'submittedAt', 'integratedCommit', 'integratedAt', 'releasedAt', 'cleanedAt', 'risk', 'agentChecks']),
     ...(value.dispatch ? { dispatch: dispatch(value.dispatch) } : {}),
     ...(value.review ? { review: review(value.review) } : {}),
     ...(value.reviewHistory?.length ? { reviewHistory: value.reviewHistory.map(review) } : {}),
@@ -20,7 +20,7 @@ export function progressAttempt(value) {
   }
 }
 
-const progressGroup = (value) => ({ ...pick(value, ['id', 'branch', 'status', 'createdAt', 'limits', 'verified', 'push', 'review', 'pushed', 'taskScope']),
+const progressGroup = (value) => ({ ...pick(value, ['id', 'branch', 'status', 'createdAt', 'limits', 'verified', 'ready', 'integration', 'agentChecks', 'push', 'review', 'pushed', 'taskScope']),
   ...(value.runner ? { runner: run(value.runner) } : {}), ...(value.lastRun ? { lastRun: run(value.lastRun) } : {}) })
 
 // History and the latest state are committed by the same atomic runtime rename.

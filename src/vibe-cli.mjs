@@ -13,8 +13,7 @@ import { vibeTask } from './vibe-task.mjs'
 import { vibeInbox, vibeLog } from './vibe-inbox.mjs'
 import { vibeUsage } from './native-usage.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { prepareSessionWorkspace } from './session-workspace.mjs'
-import { vibeIntegration } from './integration-run.mjs'
+import { vibeIntegration, openSessionWorkspace } from './integration-run.mjs'
 
 const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
   vibe session open --kind start|self-improve|self-improve-remote --tag <tag>
@@ -35,6 +34,7 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 첫 리셋이 작업 시간 안이면 모델 호출 없이 대기, 아니면 reason usage-limit(hint에 도구·리셋 시각)
                                                 끝 예약(실측 전체 검증+영향 범위 수정 단위+CI)에는 새 단위 없이 공유 통합 관문·수정
                                                 --tasks: 그 태스크(와 이번 실행이 그것을 위해 만든 태스크)만, 끝나면 마감 관문
+                                                기존 --push-each-unit도 통합 대상 반영은 세션 전체의 공유 마감까지 보류한다
                                                 --timeout-ms: 단위 하나의 상한(explore는 timebox+30분). 넘기면 미커밋 변경을
                                                 스냅샷해 새 단위가 이어받고, 다시 넘기면 쪼개고, 그래도 넘기면 주차. loop는 계속
   vibe loop --tag <tag> --stop                  정지 파일 기록; 실행 중인 단위도 종료
@@ -146,7 +146,7 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
 `
 
 const allowed = {
-  session: ['kind', 'tag', 'branch', 'base', 'path'], integration: ['tag', 'token', 'file', 'remote', 'timeout-ms', 'max-gate-attempts', 'verify'],
+  session: ['kind', 'tag', 'branch', 'base', 'path'], integration: ['tag', 'token', 'file', 'reason', 'remote', 'timeout-ms', 'max-gate-attempts', 'verify'],
   loop: ['tag', 'provider', 'model', 'effort', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'max-gate-attempts', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref', 'section', 'offset', 'limit', 'snapshot'], format: ['section'],
   status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host', 'remote'],
@@ -157,7 +157,7 @@ const allowed = {
   sketch: ['port', 'ttl-ms'],
 }
 const flags = { task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], inbox: ['no-fetch'], log: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final', 'reset-gate'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'], sketch: ['all'] }
-const actions = { session: (options) => { if (options.step !== 'open') throw new SkillPackageError('vibe session open --kind <kind> --tag <tag>'); return prepareSessionWorkspace(options) }, integration: vibeIntegration, loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, inbox: vibeInbox, log: vibeLog, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, usage: vibeUsage, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
+const actions = { session: (options) => { if (options.step !== 'open') throw new SkillPackageError('vibe session open --kind <kind> --tag <tag>'); return openSessionWorkspace(options) }, integration: vibeIntegration, loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, inbox: vibeInbox, log: vibeLog, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, usage: vibeUsage, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
   ab: (options) => { if (!Object.hasOwn(AB_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe ab <${Object.keys(AB_STEPS).join('|')}> <slug>`); return AB_STEPS[options.step](options) },
   sketch: (options) => { if (!Object.hasOwn(SKETCH_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe sketch <${Object.keys(SKETCH_STEPS).join('|')}>`); return SKETCH_STEPS[options.step](options) } }
 

@@ -20,6 +20,10 @@ import { stateMergeArgs } from './git-merge.mjs'
 import { vibeSession } from './vibe-session.mjs'
 import { coordWrite, coordView, recordLanded, assertCoordinator } from './vibe-coord.mjs'
 import { readSessions, applyEvent, GROUP_TAG } from './coord-doc.mjs'
+import { openIntegration } from './integration-gate.mjs'
+import { finalizeIntegration } from './integration-run.mjs'
+import { assertImplementationWorkspace, sessionWorkspacePolicy } from './session-workspace.mjs'
+import { mergeAgentAcceptance } from './agent-acceptance.mjs'
 
 // A check runs as its own process group, so a stop or timeout ends everything it started
 // (`npm test` → node workers), not only the shell: exec signals /bin/sh alone, and a shell that
@@ -318,22 +322,21 @@ async function verify(root, checks, commit, signal, timeout = 60 * 60 * 1000, sc
 async function remoteBranch(root, group) {
   if (!group.push) return null
   const remote = group.remote ?? 'origin'
-  if ((await git(root, ['fetch', '--quiet', remote, `+refs/heads/${group.push}:refs/remotes/${remote}/${group.push}`], [1, 128])) === null) return null
-  return (await git(root, ['rev-parse', '--verify', '--quiet', `refs/remotes/${remote}/${group.push}^{commit}`], [1]))?.trim() || null
+  if ((await git(root, ['fetch', '--quiet', remote, `+refs/heads/${group.branch}:refs/remotes/${remote}/${group.branch}`], [1, 128])) === null) return null
+  return (await git(root, ['rev-parse', '--verify', '--quiet', `refs/remotes/${remote}/${group.branch}^{commit}`], [1]))?.trim() || null
 }
 
-// Every integrated unit lands on the push branch at once, so progress is visible remotely
-// and a blocked unit never holds finished ones back. A failed push is recorded, not fatal:
-// the next integration or sync merges the remote first and pushes again.
+// Publish a working head for other devices to aggregate. A unit never advances the shared
+// land branch; only the elected final owner may publish the fixed, verified cohort.
 async function pushLanded(context, group, commit) {
   if (!group.push) return null
   const remote = group.remote ?? 'origin'
   let result
   try {
-    await git(context.cwd, ['push', '--quiet', remote, `${commit}:refs/heads/${group.push}`])
-    result = { commit, branch: group.push, remote, at: now() }
+    await git(context.cwd, ['push', '--quiet', remote, `${commit}:refs/heads/${group.branch}`])
+    result = { commit, branch: group.branch, requestedTarget: group.push, remote, at: now() }
   } catch (error) {
-    result = { commit, branch: group.push, remote, at: now(), error: (error.stderr || error.message).trim().slice(-2000) }
+    result = { commit, branch: group.branch, requestedTarget: group.push, remote, at: now(), error: (error.stderr || error.message).trim().slice(-2000) }
   }
   await transaction(context.root, (state) => { if (state.groups[group.id]) state.groups[group.id].pushed = result })
   return result
@@ -489,7 +492,7 @@ export async function workStatus(options = {}) {
   const attempts = state.attempts.filter((attempt) => groupIds.has(attempt.group) && (options.work || !['integrated', 'released'].includes(attempt.status)) && !attempt.cleanedAt)
   if (options.details) return options.work ? { ...state, groups, attempts: state.attempts.filter((attempt) => attempt.group === options.work) } : state
   const pick = (record, fields) => record ? Object.fromEntries(fields.filter((field) => record[field] !== undefined).map((field) => [field, record[field]])) : null
-  const group = (entry) => pick(entry, ['id', 'branch', 'path', 'status', 'createdAt'])
+  const group = (entry) => entry && ({ ...pick(entry, ['id', 'branch', 'path', 'status', 'createdAt', 'integration', 'agentChecks']), ...(entry.ready ? { ready: pick(entry.ready, ['commit', 'at', 'verified', 'owner']) } : {}) })
   const review = (entry) => pick(entry, ['id', 'owner', 'status', 'workspace', 'commit'])
   const attempt = (entry) => entry ? { ...pick(entry, ['id', 'group', 'owner', 'tag', 'workspace', 'branch', 'taskId', 'lane', 'status', 'heartbeatAt']), tasks: unitTasks(entry),
     reason: typeof entry.reason === 'string' ? entry.reason.slice(0, 800) : null, reasonTruncated: typeof entry.reason === 'string' && entry.reason.length > 800,
@@ -502,7 +505,7 @@ export async function workStatus(options = {}) {
     next: state.currentAttempt ? `work brief --attempt ${state.currentAttempt.id}` : state.currentGroup ? `work board --work ${state.currentGroup.id}` : 'Use work board --work <name> for a group, or vibe status for standalone work.' }
 }
 
-export async function startWork(options) {
+export async function startWork(options, injected = {}) {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(options.name ?? '') || options.name.length > 60) fail('작업 이름은 60자 이하의 kebab-case로 지정하세요.')
   const context = await repository(options)
   storedChecks(options)
@@ -520,8 +523,10 @@ export async function startWork(options) {
   // Avoid silently omitting the user's uncommitted planning documents.
   await requireClean(context.cwd)
   const target = adopted ? context.cwd : await destination(context, `${options.name}-plan`, options.path)
+  const sourceOwner = await readFile(path.join(context.workspace.git.gitDir, 'gusta-session.json'), 'utf8').then(JSON.parse).catch(() => null)
+  const ownerSession = sourceOwner?.root === context.cwd && sourceOwner.branch === context.workspace.git.branch ? { root: context.cwd, branch: sourceOwner.branch, tag: sourceOwner.tag } : null
   const group = { id: options.name, branch, baseRef, baseCommit, path: target, managed: !adopted, status: 'preparing', creator: creator(), createdAt: now(), limits: workLimits(options), verify: storedChecks(options),
-    review: 'risky', ...storedPolicy(options) }
+    review: 'risky', ownerSession, integrationTag: digest(`${options.name}\n${branch}`).slice(0, 8), ...storedPolicy(options) }
   if (group.taskScope) scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: baseCommit }), group)
   await transaction(context.root, (state) => {
     if (Object.hasOwn(state.groups, group.id)) fail('같은 이름의 작업 묶음이 이미 있습니다. work status를 확인하세요.')
@@ -532,10 +537,17 @@ export async function startWork(options) {
   try {
     if (!adopted) await git(context.cwd, ['worktree', 'add', '-b', branch, target, baseCommit])
     const created = await inspectWorkspace({ targetRoot: target })
-    return await transaction(context.root, (state) => {
+    if (!adopted) await writeFile(path.join(created.git.gitDir, 'gusta-session.json'), JSON.stringify({ schemaVersion: 1, kind: 'start', tag: group.integrationTag, branch, root: target, sourceRoot: context.cwd, sourceHead: baseCommit }), { flag: 'wx' })
+    await (injected.assertWorkspace ?? assertImplementationWorkspace)({ targetRoot: target, workspace: created })
+    const activeGroup = await transaction(context.root, (state) => {
       Object.assign(state.groups[group.id], { gitDir: created.git.gitDir, status: 'active' })
       return state.groups[group.id]
     })
+    if (!ownerSession) {
+      const session = await vibeSession({ targetRoot: target })
+      await (await openIntegration(session)).register({ tag: group.integrationTag, verificationCommands: group.verify.group ?? [] })
+    }
+    return activeGroup
   } catch (error) {
     await transaction(context.root, (state) => { Object.assign(state.groups[group.id], { status: 'failed', error: error.message }) })
     throw new SkillPackageError('작업 공간 준비에 실패했습니다. 현재 작업 공간은 전환하지 않았습니다. 남은 경로/브랜치를 확인하세요.', [target, branch, error.message])
@@ -619,7 +631,11 @@ async function claimTask(options, next = false, given = null) {
   const mode = options.workspace ?? 'auto'
   if (!['auto', 'current', 'new'].includes(mode)) fail('workspace는 auto, current, new 중 하나여야 합니다.')
   const bound = Object.values(initial.attempts).some((entry) => entry.workspace === context.cwd && !entry.cleanedAt)
-  const adopted = mode === 'current' || (mode === 'auto' && !options.path && !bound && context.workspace.git.isLinkedWorktree && context.cwd !== group.path)
+  let adopted = mode === 'current' || (mode === 'auto' && !options.path && !bound && context.workspace.git.isLinkedWorktree && context.cwd !== group.path)
+  if (adopted && !(await sessionWorkspacePolicy({ targetRoot: context.cwd, workspace: context.workspace })).allowed) {
+    if (mode === 'current') await assertImplementationWorkspace({ targetRoot: context.cwd, workspace: context.workspace })
+    adopted = false
+  }
   if (adopted && options.path) fail('current 모드에 path를 함께 지정하지 마세요.')
   if (adopted) {
     await requireClean(context.cwd)
@@ -652,6 +668,8 @@ async function claimTask(options, next = false, given = null) {
   try {
     if (!adopted) await git(context.cwd, ['worktree', 'add', '-b', selected.branch, selected.workspace, selected.startCommit])
     const created = await inspectWorkspace({ targetRoot: selected.workspace })
+    if (!adopted) await writeFile(path.join(created.git.gitDir, 'gusta-session.json'), JSON.stringify({ schemaVersion: 1, kind: 'start', tag: id.slice(0, 8), branch: selected.branch, root: selected.workspace, sourceRoot: context.cwd, sourceHead: selected.startCommit }), { flag: 'wx' })
+    await assertImplementationWorkspace({ targetRoot: selected.workspace, workspace: created })
     return await transaction(context.root, (state) => {
       if (attemptOf(state, id).status !== 'preparing') fail('작업 공간 준비 중 배정 상태가 변경됐습니다.')
       Object.assign(attemptOf(state, id), { gitDir: created.git.gitDir, status: 'doing' })
@@ -1114,9 +1132,15 @@ async function groupVerification(context, group) {
   const changed = (await git(context.cwd, ['diff', '--name-only', group.verified.commit, target, '--', '.', ':(exclude)spec/STATE.md', ':(exclude)spec/reports/', `:(exclude)spec/work/${group.id}.json`], [128]))
   return { ...group.verified, current: changed !== null && !changed.trim() }
 }
+async function groupReadiness(context, group) {
+  if (!group.ready) return null
+  const target = await head(context.cwd, `refs/heads/${group.branch}`)
+  const changed = await git(context.cwd, ['diff', '--name-only', group.ready.commit, target, '--', '.', ':(exclude)spec/STATE.md', ':(exclude)spec/reports/', `:(exclude)spec/work/${group.id}.json`], [128])
+  return { ...group.ready, current: changed !== null && !changed.trim() }
+}
 
 // The group gate runs the full verification once, after every unit is integrated.
-export async function finishWork(options) {
+export async function finishWork(options, injected = {}) {
   if (options.verify?.length) commands(options)
   const timeout = verifyTimeout(options)
   const context = await repository(options)
@@ -1131,7 +1155,7 @@ export async function finishWork(options) {
     entry.operation = { token, kind: 'finishing', ...creator(), startedAt: now() }
     return structuredClone(entry)
   })
-  let verified
+  let verified, ready = null, integration = null
   try {
     await assertWorkspace(context, group)
     await requireClean(group.path)
@@ -1141,6 +1165,33 @@ export async function finishWork(options) {
     const deferred = mainSessionTasks(board.tasks)
     const remaining = board.tasks.filter((task) => !task.st?.startsWith('blocked@') && !deferred.has(task.id))
     if (remaining.length) fail('남은 태스크가 있습니다. 모두 통합한 뒤 finish하세요.', remaining.map((task) => `${task.id} ${task.st}`))
+    const finalize = Object.hasOwn(injected, 'integration') ? injected.integration : finalizeIntegration
+    if (finalize) {
+      const current = groupOf(await readRuntime(context.root), group.id)
+      const agentChecks = current.agentChecks ?? []
+      if (group.ownerSession) {
+        const owner = await vibeSession({ targetRoot: group.ownerSession.root })
+        const submitted = await (await openIntegration(owner)).register({ tag: group.ownerSession.tag, verificationCommands: checks, agentChecks })
+        ready = { commit, at: now(), verified: false, owner: { tag: group.ownerSession.tag, branch: group.ownerSession.branch }, checks, agentChecks }
+        integration = { pending: true, reason: 'owning-session-working', coordination: submitted.ok ? 'registered' : submitted.reason }
+      } else {
+        integration = await finalize({ targetRoot: group.path, tag: group.integrationTag ?? digest(group.id).slice(0, 8), verify: checks, agentChecks, signal: options.signal, timeoutMs: timeout })
+        ready = { commit, at: now(), verified: Boolean(integration.ok && integration.verified), owner: { tag: group.integrationTag, branch: group.branch }, checks, agentChecks }
+        if (integration.ok && integration.verified && integration.landed) {
+          await requireClean(group.path)
+          await git(group.path, ['merge', '--ff-only', '--quiet', integration.landed])
+          verified = { commit: integration.landed, checks: progressChecks(integration.gate?.checks ?? []), at: now(), excluded: [...(board.excludedTasks ?? []), ...board.tasks.map((task) => task.id)] }
+        }
+      }
+      await transaction(context.root, (state) => {
+        const entry = groupOf(state, group.id)
+        if (entry.operation?.token !== token) fail('finish 소유권이 변경됐습니다.')
+        entry.ready = ready
+        entry.integration = { reason: integration.reason ?? 'landed', candidate: integration.gate?.candidate ?? integration.landed ?? null, verified: Boolean(integration.verified), scope: integration.scope ?? null }
+        if (verified) entry.verified = verified
+        delete entry.finishFailure
+      })
+    } else {
     let verification
     try {
       verification = await verify(group.path, checks, commit, options.signal, timeout, { TIER: 'group', DIFF_BASE: group.baseCommit }, { runtime: context.root, heavy: true })
@@ -1155,6 +1206,7 @@ export async function finishWork(options) {
       entry.verified = verified
       delete entry.finishFailure
     })
+    }
   } finally {
     await transaction(context.root, (state) => {
       const entry = groupOf(state, group.id)
@@ -1162,9 +1214,9 @@ export async function finishWork(options) {
     })
   }
   // The runner saves its own checkpoint on exit; a manual finish saves one now.
-  if (options.runnerId) return { schemaVersion: 1, work: group.id, verified, snapshot: null }
-  try { return { schemaVersion: 1, work: group.id, verified, snapshot: await syncWork(options) } } catch (error) {
-    return { schemaVersion: 1, work: group.id, verified, snapshot: null, snapshotError: error.message }
+  if (options.runnerId) return { schemaVersion: 1, work: group.id, verified, ...(ready ? { ready, integration } : {}), snapshot: null }
+  try { return { schemaVersion: 1, work: group.id, verified, ...(ready ? { ready, integration } : {}), snapshot: await syncWork(options) } } catch (error) {
+    return { schemaVersion: 1, work: group.id, verified, ...(ready ? { ready, integration } : {}), snapshot: null, snapshotError: error.message }
   }
 }
 
@@ -1264,4 +1316,4 @@ export async function unlockWork(options) {
 }
 
 // Shared protocol primitives; only public lifecycle APIs are re-exported by index.mjs.
-export const workInternals = { repository, groupOf, attemptOf, noOperation, notIntegrating, requireStopped, destination, requireClean, assertWorkspace, checkWorker, head, clean, now, creator, fail, verify, commands, tierChecks, approvalHolds, groupVerification, storedPolicy, pushLanded, briefFor }
+export const workInternals = { repository, groupOf, attemptOf, noOperation, notIntegrating, requireStopped, destination, requireClean, assertWorkspace, checkWorker, head, clean, now, creator, fail, verify, commands, tierChecks, approvalHolds, groupVerification, groupReadiness, storedPolicy, pushLanded, briefFor }

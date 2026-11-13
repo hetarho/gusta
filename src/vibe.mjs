@@ -225,7 +225,12 @@ export async function vibePush(options = {}, injected = {}) {
   if (integration && branches.land) {
     await (injected.assertWorkspace ?? assertImplementationWorkspace)({ ...options, workspace: context.workspace })
     const result = await integration({ ...options, tag: options.tag ?? createHash('sha256').update(context.branch).digest('hex').slice(0, 8) })
-    if (options.waitCi && result.pushed) result.ci = await vibeCIWait({ ...options, commit: result.pushed, branch: result.target })
+    const landed = result.pushed ?? result.landed
+    if (result.ok && landed && !(await git(context.root, ['status', '--porcelain', '--untracked-files=all'])).trim() && await ancestor(context.root, 'HEAD', landed)) await git(context.root, ['merge', '--ff-only', '--quiet', landed])
+    if (options.waitCi && result.pushed) {
+      try { result.ci = await (injected.ci ?? vibeCIWait)({ ...options, commit: result.pushed, branch: result.target }); result.ok = result.ok && result.ci.ok }
+      catch (error) { result.ok = false; result.ci = { ok: false, outcome: 'error', error: error.message } }
+    }
     return result
   }
   if (!context.target && !branches.landTarget) {
@@ -624,7 +629,7 @@ export async function vibeStatus(options = {}, injected = {}) {
     push: view.push, sync: view.sync }
   // Advisory: an unreadable timings file or ARCH never fails status.
   const taskChecks = workspace.git ? await recentTaskChecks(workspace, root).catch(() => null) : null
-  const shared = context ? await (await openIntegration(context)).read({ fetch: options.fetch !== false }).catch((error) => ({ ok: false, reason: 'coordination-unknown', error: error.message })) : null
+  const shared = context ? await openIntegration(context).then((store) => store.read({ fetch: options.fetch !== false })).catch((error) => ({ ok: false, reason: 'coordination-unknown', error: error.message })) : null
   const integration = shared && { scope: shared.scope, fresh: shared.fresh, ...(shared.reason ? { reason: shared.reason } : {}), phase: shared.state?.gate?.phase ?? null,
     candidate: shared.state?.gate?.candidate ?? null, owner: shared.state?.gate?.owner ?? null,
     participants: Object.values(shared.state?.participants ?? {}).filter((entry) => !['landed', 'withdrawn'].includes(entry.status)).map(({ id, tag, host, branch, head, status, at }) => ({ id, tag, host, branch, head, status, at })) }

@@ -14,9 +14,17 @@ import { validateAgentAcceptance, validateAcceptanceAllocation, summarizeAgentAc
 import { SkillPackageError } from './errors.mjs'
 import { lintSpec } from './spec-lint.mjs'
 import { designOf } from './interactive-state.mjs'
+import { prepareSessionWorkspace } from './session-workspace.mjs'
 
 const execute = promisify(execFile)
 const pending = (reason, gate, extra = {}) => ({ schemaVersion: 1, ok: false, waiting: true, reason, gate, automaticRecheck: false, ...extra })
+
+export async function openSessionWorkspace(options = {}, injected = {}) {
+  const prepared = await (injected.prepare ?? prepareSessionWorkspace)(options)
+  const context = await vibeSession({ ...options, targetRoot: prepared.root })
+  const integration = await (await openIntegration(context, injected.store)).register({ tag: prepared.tag, kind: prepared.kind })
+  return { schemaVersion: 1, ok: true, ...prepared, integration, sharedVisibility: integration.ok && integration.scope === 'remote' }
+}
 
 async function prepareVersion(root, gate) {
   const context = await vibeSession({ targetRoot: root })
@@ -41,6 +49,7 @@ async function localLand(context, gate) {
 export async function finalizeIntegration(options = {}, injected = {}) {
   const context = await vibeSession(options)
   if (await designOf(context.workspace)) throw new SkillPackageError('이 checkout은 디자인 중입니다. 디자인을 마친 뒤 통합하세요.')
+  if ((await git(context.root, ['status', '--porcelain', '--untracked-files=all'])).trim()) throw new SkillPackageError('미커밋 변경을 보존합니다. 작업 브랜치의 입력을 커밋한 뒤 통합하세요.')
   if (!context.branches.land) return { schemaVersion: 1, ok: true, pending: true, reason: 'land-unset', verified: false, landed: null }
   const store = await openIntegration(context, { prepareCandidate: prepareVersion, ...injected.store })
   const status = await store.read()
@@ -78,9 +87,11 @@ export async function finalizeIntegration(options = {}, injected = {}) {
     const close = await (injected.closeIssues ?? (async (root) => (await import('./vibe.mjs')).specCloseIssues(root)))(prepared.root)
     if (lint.errors.length || close.length) results.push({ ok: false, command: 'spec close', errors: [...lint.errors, ...close.map((entry) => `${entry.id}: ${entry.reason ?? entry.st}`)] })
     const commands = verification.plan ? verification.plan.checks.some((entry) => entry.tier === 'batch') ? [{ plan: verification.plan.source }] : [] : verification.batch.map((command) => ({ command }))
+    const ciCommands = [...verification.ci], normalize = (command) => command.trim().replace(/\s+/g, ' ')
     for (const command of new Set(gate.cohort.flatMap((entry) => entry.verificationCommands ?? []))) {
-      if (verification.plan?.checks.some((entry) => entry.tier === 'ci' && entry.command === command)) throw new SkillPackageError('CI 전용 검사를 로컬 통합 관문에 추가하지 않습니다.', [command])
-      if (!verification.batch.includes(command)) commands.push({ command })
+      const inBatch = verification.batch.some((entry) => normalize(entry) === normalize(command))
+      if (verification.ci.some((entry) => normalize(entry) === normalize(command)) && !inBatch) { if (!ciCommands.includes(command)) ciCommands.push(command); continue }
+      if (!inBatch) commands.push({ command })
     }
     if (!commands.length && (!verification.declared || verification.partial)) results.push({ ok: false, command: 'verification policy', error: 'No declared batch coverage or explicit exclusion.' })
     const check = injected.check ?? runVibeCheck
@@ -94,7 +105,7 @@ export async function finalizeIntegration(options = {}, injected = {}) {
     }
     const actual = (await git(prepared.root, ['rev-parse', 'HEAD'])).trim()
     if (actual !== gate.candidate || (await git(prepared.root, ['status', '--porcelain', '--untracked-files=all'])).trim()) results.push({ ok: false, stale: true, command: 'immutable candidate', error: 'Candidate changed during verification.' })
-    const saved = await store.checked(gate.token, results, agentChecks)
+    const saved = await store.checked(gate.token, results, agentChecks, { ciCommands })
     if (!saved.ok) return { schemaVersion: 1, ...saved }
     gate = saved.value.gate
     } catch (error) {
@@ -106,8 +117,11 @@ export async function finalizeIntegration(options = {}, injected = {}) {
   const acceptance = summarizeAgentAcceptance(gate.agentChecks, { stage: 'integration', candidate: gate.candidate })
   if (gate.phase === 'waiting-agent' || !acceptance.verified) return pending('waiting-agent', gate, { acceptance, nextAction: 'Run the listed acceptance checks with a capable computer-use host, submit exact-candidate observations with vibe integration accept --file <JSON>, then finish. Do not add another automated E2E suite.' })
   if (gate.phase !== 'verified') return pending(`integration-${gate.phase}`, gate)
-  if (context.remote && !context.branches.push) return pending('waiting-publication', gate, { verified: true, nextAction: 'The candidate is verified; code publication is disabled. Preserve it and publish only when authorized. Do not rerun full verification.' })
-  if (context.branches.via === 'pr') {
+  if (gate.via === 'pr') {
+    const merged = await store.settleMergedPR(gate.token)
+    if (merged.ok) return { schemaVersion: 1, ok: true, verified: true, gate: merged.value.gate, version: gate.version, landed: gate.candidate, merged: merged.value.merged, pushed: null, target: gate.land, scope: merged.scope, acceptance }
+    if (merged.reason !== 'waiting-pr') return { schemaVersion: 1, ...merged }
+    if (!context.branches.push && context.branches.via !== 'pr') return pending('waiting-publication', gate, { verified: true, requiresPr: true })
     const result = await (injected.pr ?? (async () => {
       await git(context.root, ['push', '--quiet', context.remote, `${gate.candidate}:refs/heads/${gate.branch}`])
       try { return { pr: (await execute('gh', ['pr', 'create', '--base', gate.land, '--head', gate.branch, '--fill'], { cwd: gate.path, encoding: 'utf8', env: { ...process.env, GH_PROMPT_DISABLED: '1' } })).stdout.trim() } }
@@ -115,14 +129,21 @@ export async function finalizeIntegration(options = {}, injected = {}) {
     }))()
     return pending('waiting-pr', gate, { verified: true, ...result })
   }
+  if (context.remote && !context.branches.push) return pending('waiting-publication', gate, { verified: true, nextAction: 'The candidate is verified; code publication is disabled. Preserve it and publish only when authorized. Do not rerun full verification.' })
   const completed = await store.complete({ token: gate.token, candidate: gate.candidate }, { localLand: (entry) => (injected.localLand ?? localLand)(context, entry) })
   if (!completed.ok) return { schemaVersion: 1, ...completed }
-  return { schemaVersion: 1, ok: true, verified: true, gate: completed.value.gate, version: gate.version, landed: gate.candidate, pushed: context.remote ? gate.candidate : null, target: gate.land, scope: completed.scope, acceptance }
+  return { schemaVersion: 1, ok: true, verified: true, gate: completed.value.gate, version: gate.version, landed: gate.candidate, pushed: context.remote ? gate.candidate : null, target: gate.land, scope: completed.scope, acceptance,
+    ...(gate.ciCommands?.length ? { ci: { ok: false, outcome: 'pending', commands: gate.ciCommands } } : {}) }
 }
 
 export async function vibeIntegration(options = {}, injected = {}) {
   const context = await vibeSession(options), store = await openIntegration(context, injected.store)
   if (options.step === 'status') return { schemaVersion: 1, ...await store.read() }
+  if (options.step === 'close') {
+    const marker = await readFile(path.join(context.workspace.git.gitDir, 'gusta-session.json'), 'utf8').then(JSON.parse).catch(() => null)
+    const changed = marker?.root === context.root && marker.tag === options.tag ? (await git(context.root, ['diff', '--name-only', marker.sourceHead, 'HEAD'])).trim() : 'unknown'
+    return { schemaVersion: 1, ...await store.close({ tag: options.tag, empty: !changed && !(await git(context.root, ['status', '--porcelain', '--untracked-files=all'])).trim(), reason: options.reason ?? 'session-closed' }) }
+  }
   if (options.step === 'ready') {
     const value = options.file ? JSON.parse(await readFile(path.resolve(options.file), 'utf8')) : options.agentChecks
     return { schemaVersion: 1, ...await store.ready({ tag: options.tag, ...(value === undefined ? {} : { agentChecks: validateAgentAcceptance(Array.isArray(value) ? value : value.checks) }) }) }

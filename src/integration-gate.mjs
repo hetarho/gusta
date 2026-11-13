@@ -156,7 +156,7 @@ export async function openIntegration(context, injected = {}) {
       nextAction: 'A capable host must complete required unit acceptance in this worktree, then submit ready --file <checks JSON>. Integration-stage not-run handoff remains allowed.' })
     // Publishing a session branch follows the existing code push setting. Local-only work can
     // be ready too, but a remote owner must actually possess its object before claiming it.
-    if (shared && context.branches.push) {
+    if (shared && (context.branches.push || context.branches.via === 'pr')) {
       const participant = recorded.state.participants[id]
       try { await remoteGit(['push', '--quiet', remote, `${participant.head}:refs/heads/${participant.branch}`]) }
       catch (error) { return wait('session-head-unpublished', { error: detail(error), id }) }
@@ -239,7 +239,7 @@ export async function openIntegration(context, injected = {}) {
       const prepared = await injected.prepareCandidate?.(directory, gate)
       const head = (await git(directory, ['rev-parse', 'HEAD'])).trim()
       const saved = await mutateGate(token, (entry) => { if (entry.phase !== 'preparing') return wait('integration-phase-changed'); entry.candidate = head; entry.path = directory; entry.branch = candidateBranch; entry.phase = 'checking'; if (prepared) entry.version = prepared; return { gate: entry } })
-      if (saved.ok && shared && context.branches.push) await remoteGit(['push', '--quiet', remote, `${head}:refs/heads/${candidateBranch}`])
+      if (saved.ok && shared && (context.branches.push || context.branches.via === 'pr')) await remoteGit(['push', '--quiet', remote, `${head}:refs/heads/${candidateBranch}`])
       return saved.ok ? { ...saved, gate: saved.value.gate, root: directory } : saved
     } catch (error) {
       await git(directory, ['merge', '--abort'], [1, 128]).catch(() => {})
@@ -247,13 +247,14 @@ export async function openIntegration(context, injected = {}) {
       return wait('integration-conflict', { token, root: directory, error: detail(error), automaticRecheck: false })
     }
   }
-  async function checked(token, receipt, agentChecks = []) {
+  async function checked(token, receipt, agentChecks = [], { ciCommands = [] } = {}) {
     return mutateGate(token, (gate) => {
       if (gate.phase !== 'checking') return wait('integration-already-checked', { gate, automaticRecheck: false })
       gate.checks = receipt
       if (gate.rounds.length && receipt.some((entry) => !entry.ok)) gate.retryAllowed = improvingGate(failureProof(gate.rounds.at(-1).checks), failureProof(receipt))
       gate.rounds = [...gate.rounds, { candidate: gate.candidate, checks: receipt, at: now() }]
       gate.agentChecks = validateAgentAcceptance(agentChecks)
+      gate.ciCommands = ciCommands
       gate.phase = receipt.every((entry) => entry.ok) ? agentChecks.some((entry) => entry.required !== false && (entry.status !== 'pass' || entry.candidate !== gate.candidate)) ? 'waiting-agent' : 'verified' : 'failed'
       return { gate }
     })
