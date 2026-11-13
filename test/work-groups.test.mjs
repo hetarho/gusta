@@ -73,16 +73,22 @@ test('start auto는 외부 linked branch를 그대로 기획 공간으로 수용
   assert.equal(group.path, external)
 })
 
-test('detached 외부 워커도 지원한다', async (t) => {
+test('detached 외부 공간은 보존하고 자동 배정은 별도 하위 브랜치를 만든다', async (t) => {
   const setup = await fixture(t)
   const group = await startWork({ ...setup, name: 'detached' })
   const external = path.join(setup.temporary, 'detached')
   await git(setup.root, 'worktree', 'add', '--detach', external, group.branch)
+  const original = (await git(external, 'rev-parse', 'HEAD')).stdout.trim()
+  await assert.rejects(claimWork({ targetRoot: external, work: group.id, task: 'T001', workspace: 'current' }), /하위 작업 브랜치/)
   const attempt = await claimWork({ targetRoot: external, work: group.id, task: 'T001' })
-  assert.equal(attempt.branch, null)
+  assert.ok(attempt.branch); assert.equal(attempt.managed, true)
+  assert.notEqual(attempt.workspace, external)
   await implement(attempt)
   const submitted = await submitWork({ ...setup, attempt: attempt.id, verify: checks })
   assert.equal(submitted.status, 'ready')
+  assert.equal((await git(external, 'rev-parse', 'HEAD')).stdout.trim(), original)
+  assert.equal((await git(external, 'status', '--porcelain')).stdout.trim(), '')
+  await assert.rejects(git(external, 'symbolic-ref', '--quiet', 'HEAD'))
 })
 
 test('독립 프로세스의 동일 태스크 선점은 정확히 하나만 성공한다', async (t) => {

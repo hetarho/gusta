@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
-import { startWork, claimNextWork, submitWork, finishWork, workBoard, workHistory } from '../src/work-groups.mjs'
+import { startWork, claimNextWork, submitWork, workBoard, workHistory } from '../src/work-groups.mjs'
+import { finishWork } from './helpers/group-unit-policy.mjs'
 import { nextWork } from '../src/work-wait.mjs'
 import { finishReview } from '../src/work-review.mjs'
 import { readSessions } from '../src/coord-doc.mjs'
@@ -82,7 +83,7 @@ test('서로 기다리는 lane 계획은 배정 전에 거부한다', async (t) 
   await assert.rejects(claimNextWork({ ...setup, work: group.id, owner: 'a' }), /태스크\/STATE/)
 })
 
-test('세션 루프: 기반 → 리뷰 → 백그라운드 통합 → 줄기 분담 → 묶음 검증까지 자동으로 진행한다', async (t) => {
+test('세션 루프: 구현·리뷰·빠른 통합 뒤 전체 검증 범위를 공동 마감에 인계한다', async (t) => {
   const setup = await laneFixture(t, [['T001', '-', '-'], ['T002', 'T001', 'a'], ['T003', 'T002', 'a'], ['T004', 'T001', 'b'], ['T005', 'T003 T004', '-']])
   const log = path.join(setup.temporary, 'tiers.log')
   const record = `node -e "require('fs').appendFileSync('${log}', [process.env.GUSTA_TIER, process.env.GUSTA_TASK || '-', process.env.GUSTA_DIFF_BASE].join(' ') + String.fromCharCode(10))"`
@@ -124,7 +125,11 @@ test('세션 루프: 기반 → 리뷰 → 백그라운드 통합 → 줄기 분
   await review(await session('b', { wait: 60 }))
   const done = await session('a', { wait: 180 })
   assert.equal(done.action, 'complete', JSON.stringify(done))
-  assert.equal(done.verified.current, true)
+  assert.equal(done.verified, null)
+  assert.equal(done.ready.current, true)
+  assert.equal(done.ready.verified, false)
+  assert.deepEqual(done.ready.checks, tiers.groupVerify)
+  assert.equal(done.integration.reason, 'land-unset')
   assert.equal((await session('b')).action, 'complete')
 
   const board = await workBoard({ ...setup, work })
@@ -135,8 +140,8 @@ test('세션 루프: 기반 → 리뷰 → 백그라운드 통합 → 줄기 분
   assert.ok(lines.some(([tier, id, base]) => tier === 'task' && id === 'T003' && base === ofB.attempt.startCommit), JSON.stringify(lines))
   assert.equal(lines.filter(([tier]) => tier === 'task').length, 4)
   assert.equal(lines.filter(([tier]) => tier === 'unit').length, 4)
-  assert.deepEqual(lines.filter(([tier]) => tier === 'group').map(([, , base]) => base), [board.group.baseCommit])
-  // The background gate left what other sessions need on the coordination branch before `complete`
+  assert.equal(lines.filter(([tier]) => tier === 'group').length, 0)
+  // The background unit gates and readiness handoff leave the coordination evidence before `complete`
   // was reported: every integrated task waits in unlanded under the group's tag (nothing has landed),
   // and each of the four units has its log line.
   const shared = readSessions((await git(setup.root, 'show', 'gusta:SESSIONS.md')).stdout)

@@ -6,7 +6,8 @@ import path from 'node:path'
 import test from 'node:test'
 import { vibePush } from './helpers/unit-policy.mjs'
 import { promisify } from 'node:util'
-import { startWork, claimWork, claimNextWork, submitWork, integrateWork, finishWork, workBoard, workBrief, updateWork, syncWork } from '../src/work-groups.mjs'
+import { startWork, claimWork, claimNextWork, submitWork, integrateWork, workBoard, workBrief, updateWork, syncWork } from '../src/work-groups.mjs'
+import { finishWork } from './helpers/group-unit-policy.mjs'
 import { nextWork } from '../src/work-wait.mjs'
 import { claimReview, finishReview, resumeWork } from '../src/work-review.mjs'
 import { vibeStatus, vibeClaim } from '../src/vibe.mjs'
@@ -81,12 +82,13 @@ test('explore 태스크와 그 후속은 배정하지 않고, 묶음은 그 둘�
   assert.ok(finished.verified.commit)
 })
 
-test('push 브랜치가 있으면 통합마다 반영하고, 원격이 앞서 있으면 먼저 합친 뒤 검증한다', async (t) => {
+test('단위는 소유 작업 브랜치로만 발행하고 그 원격 변경을 합치며 land는 보존한다', async (t) => {
   const setup = await fixture(t, [{ id: 'T001', title: 'first' }, { id: 'T002', title: 'second' }])
   const remote = path.join(setup.temporary, 'remote.git')
   await execute('git', ['init', '-q', '--bare', '-b', 'trunk', remote])
   await git(setup.root, 'remote', 'add', 'origin', remote)
   await git(setup.root, 'push', '-q', 'origin', 'trunk')
+  const landBase = (await git(setup.root, 'rev-parse', 'HEAD')).stdout.trim()
   const group = await startWork({ ...setup, name: 'feature', verify: [always], push: 'trunk' })
   assert.equal(group.push, 'trunk')
   const first = await claimWork({ ...setup, work: group.id, task: 'T001' })
@@ -95,20 +97,24 @@ test('push 브랜치가 있으면 통합마다 반영하고, 원격이 앞서 �
   await approve(setup, first)
   const landed = await integrateWork({ ...setup, attempt: first.id })
   assert.equal(landed.pushed.error, undefined)
-  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'trunk'], { encoding: 'utf8' })).stdout.trim(), landed.integratedCommit)
-  // The push branch is the land branch: the unit landed with its integration, so nothing waits.
+  assert.equal(landed.pushed.branch, group.branch)
+  assert.equal(landed.pushed.requestedTarget, 'trunk')
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', group.branch], { encoding: 'utf8' })).stdout.trim(), landed.integratedCommit)
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'trunk'], { encoding: 'utf8' })).stdout.trim(), landBase)
+  // Publishing a working branch is not landing: the task remains held for the shared candidate.
   const shared = async () => readSessions((await execute('git', ['--git-dir', remote, 'show', 'gusta:SESSIONS.md'], { encoding: 'utf8' })).stdout)
-  assert.deepEqual([landed.coordination.landed, landed.coordination.unlanded, (await shared()).unlanded], [['T001'], [], []])
-  // Another machine lands a change on trunk and logs it in STATE.
+  assert.deepEqual([landed.coordination.landed ?? [], landed.coordination.unlanded, (await shared()).unlanded.map((entry) => entry.id)], [[], ['T001'], ['T001']])
+  // Another machine advances this working branch and logs it in STATE.
   const other = path.join(setup.temporary, 'other')
   await execute('git', ['clone', '-q', remote, other])
   for (const [key, value] of [['user.name', 'Other'], ['user.email', 'other@example.com'], ['commit.gpgsign', 'false']]) await git(other, 'config', key, value)
+  await git(other, 'switch', '-q', '-c', 'colleague', `origin/${group.branch}`)
   await writeFile(path.join(other, 'elsewhere.txt'), 'from the other machine\n')
   const state = path.join(other, 'spec/STATE.md')
   await writeFile(state, (await readFile(state, 'utf8')).replace('## log\n', '## log\n- 261013 other machine: hotfix\n'))
   await commit(other, 'hotfix elsewhere')
-  await git(other, 'push', '-q', 'origin', 'trunk')
-  // A checkpoint on the group branch now diverges from trunk: its push is refused and recorded.
+  await git(other, 'push', '-q', 'origin', `HEAD:refs/heads/${group.branch}`)
+  // The local group checkpoint now diverges from its remote branch: refusal is recorded.
   const saved = await syncWork({ ...setup, work: group.id })
   assert.match(saved.pushed.error, /rejected|fetch first|non-fast-forward/)
   assert.equal(saved.coordination, undefined)
@@ -118,13 +124,15 @@ test('push 브랜치가 있으면 통합마다 반영하고, 원격이 앞서 �
   await approve(setup, second)
   const both = await integrateWork({ ...setup, attempt: second.id, verify: ['node -e "require(\'fs\').accessSync(\'elsewhere.txt\')"'] })
   assert.equal(both.pushed.error, undefined)
-  const trunk = (await execute('git', ['--git-dir', remote, 'show', 'trunk:spec/STATE.md'], { encoding: 'utf8' })).stdout
-  assert.match(trunk, /- 261013 other machine: hotfix/)
+  const working = (await execute('git', ['--git-dir', remote, 'show', `${group.branch}:spec/STATE.md`], { encoding: 'utf8' })).stdout
+  assert.match(working, /- 261013 other machine: hotfix/)
   // Integration logs on the coordination branch (published with the event), never in STATE.
-  assert.doesNotMatch(trunk, /integrated/)
+  assert.doesNotMatch(working, /integrated/)
   const after = await shared()
-  assert.deepEqual([after.log.map((line) => line.replace(/^- \d{6} /, '')), after.unlanded, both.coordination.landed], [['T002 integrated', 'T001 integrated'], [], ['T002']])
-  assert.equal((await execute('git', ['--git-dir', remote, 'show', 'trunk:elsewhere.txt'], { encoding: 'utf8' })).stdout, 'from the other machine\n')
+  assert.deepEqual([after.log.map((line) => line.replace(/^- \d{6} /, '')), after.unlanded.map((entry) => entry.id).sort(), both.coordination.landed ?? []], [['T002 integrated', 'T001 integrated'], ['T001', 'T002'], []])
+  assert.equal((await execute('git', ['--git-dir', remote, 'show', `${group.branch}:elsewhere.txt`], { encoding: 'utf8' })).stdout, 'from the other machine\n')
+  assert.equal((await execute('git', ['--git-dir', remote, 'rev-parse', 'trunk'], { encoding: 'utf8' })).stdout.trim(), landBase)
+  assert.equal((await git(setup.root, 'rev-parse', 'HEAD')).stdout.trim(), landBase)
 })
 
 test('risky 정책: touches 안의 작은 변경에 테스트가 있으면 정책 승인, 아니면 리뷰로 간다', async (t) => {
