@@ -6,6 +6,7 @@ import { inspectWorkspace, git, gitInput } from './workspace.mjs'
 import { effectiveSettings, SETTINGS_FILE } from './settings.mjs'
 import { AGENT_CONFIG, LOCK_FILE, PACKAGE_NAME } from './constants.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { auditTestPolicy, readAuditTimings, testPolicySourceKind } from './test-policy-audit.mjs'
 
 // Walk the checkout, not a document-name allowlist or Git's unignored files. These known
 // boundaries remain visible in the inventory; unfamiliar vendor/build directories are walked.
@@ -37,7 +38,8 @@ async function describeFile(file, relative, before, deps) {
     // O_NOFOLLOW protects the leaf only. Recheck its parent before reading any bytes so a
     // replaced ancestor cannot turn a discovered project path into an outside-root read.
     await deps.guardDirectory(path.dirname(file))
-    const hash = createHash('sha256'), buffer = Buffer.alloc(65536), captured = []
+    const hash = createHash('sha256'), buffer = Buffer.alloc(65536), captured = [], audit = [], auditKind = testPolicySourceKind(relative)
+    let auditBytes = 0
     let decoder, binary = false, invalidEncoding = false, prefix = '', encoding = 'utf-8'
     for (;;) {
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, null)
@@ -45,6 +47,7 @@ async function describeFile(file, relative, before, deps) {
       const chunk = buffer.subarray(0, bytesRead)
       hash.update(chunk)
       if (CAPTURE.has(relative)) captured.push(Buffer.from(chunk))
+      if (auditKind && auditBytes < 65536) { const bytes = chunk.subarray(0, 65536 - auditBytes); audit.push(Buffer.from(bytes)); auditBytes += bytes.length }
       if (!decoder) {
         if (chunk[0] === 0xff && chunk[1] === 0xfe) encoding = 'utf-16le'
         if (chunk[0] === 0xfe && chunk[1] === 0xff) encoding = 'utf-16be'
@@ -69,7 +72,8 @@ async function describeFile(file, relative, before, deps) {
       ...(generated ? { reason: 'generated-content-marker; review its source before changing' } : {}),
       // Configuration consumers use readFile(..., 'utf8'). Preserve BOM/invalid encoding
       // exactly as those consumers see it; document decoding must not sanitize settings.
-      ...(CAPTURE.has(relative) ? { content: Buffer.concat(captured).toString('utf8') } : {}) }
+      ...(CAPTURE.has(relative) ? { content: Buffer.concat(captured).toString('utf8') } : {}),
+      ...(auditKind ? { auditSource: { path: relative, kind: auditKind, text: new TextDecoder(encoding).decode(Buffer.concat(audit)), sha256, truncated: auditBytes < before.size } } : {}) }
   } finally { await handle.close() }
 }
 
@@ -80,7 +84,8 @@ export async function upgradeContext(options = {}, injected = {}) {
   const offset = pageNumber(options.offset, 0, '--offset', 0), limit = pageNumber(options.limit, 100, '--limit', 1)
   if (options.snapshot !== undefined && !/^[a-f0-9]{64}$/.test(options.snapshot)) throw new SkillPackageError('--snapshot에는 inventory의 SHA-256 값이 필요합니다.')
   const workspace = await deps.inspect(options), root = workspace.git?.root ?? workspace.targetRoot
-  const errors = [], entries = [], contents = new Map(), tracked = new Map()
+  const errors = [], entries = [], contents = new Map(), tracked = new Map(), auditSources = []
+  let auditLimited = false, auditTests = 0, auditConfigurations = 0
   const directories = new Map()
   deps.guardDirectory = async (directory) => {
     const resolved = await deps.realpath(directory), relative = path.relative(root, resolved)
@@ -132,6 +137,18 @@ export async function upgradeContext(options = {}, injected = {}) {
         else if (stats.isFile()) {
           const described = await describeFile(file, name, stats, deps)
           if (Object.hasOwn(described, 'content')) { contents.set(name, described.content); delete described.content }
+          if (Object.hasOwn(described, 'auditSource')) {
+            const source = described.auditSource, isTest = source.kind === 'test'
+            let relevant = true
+            if (source.kind === 'json') {
+              try { const value = JSON.parse(source.text); relevant = value?.schemaVersion === 1 && Array.isArray(value.checks) } catch { relevant = false }
+            }
+            if (relevant) {
+              if (isTest ? auditTests < 24 : auditConfigurations < 96) { auditSources.push(source); if (isTest) auditTests++; else auditConfigurations++ }
+              else auditLimited = true
+            }
+            delete described.auditSource
+          }
           entries.push({ ...base, bytes: stats.size, ...described })
         } else entries.push({ ...base, kind: 'boundary', disposition: 'excluded', reason: 'non-regular-file' })
       } catch (error) {
@@ -179,7 +196,8 @@ export async function upgradeContext(options = {}, injected = {}) {
     } catch (error) { problem('.', error) }
   }
   const source = { kind: workspace.git ? 'worktree' : 'filesystem', head: workspace.git?.head ?? null }
-  const snapshot = digest(JSON.stringify({ source, entries, errors, settings }))
+  const testPolicy = auditTestPolicy(auditSources, { entries, timings: await readAuditTimings(workspace, injected), limited: auditLimited })
+  const snapshot = digest(JSON.stringify({ source, entries, errors, settings, testPolicy }))
   if (options.snapshot && options.snapshot !== snapshot) throw new SkillPackageError('inventory가 바뀌었습니다. 첫 페이지부터 다시 확인하세요.', [options.snapshot, snapshot])
   if (offset > entries.length) throw new SkillPackageError('--offset이 inventory 항목 수보다 큽니다.')
   const nextOffset = offset + limit < entries.length ? offset + limit : null
@@ -187,5 +205,5 @@ export async function upgradeContext(options = {}, injected = {}) {
     complete: nextOffset === null, coverage: { inventoryComplete: !errors.length, policyReviewed: false,
       excluded: entries.filter((entry) => entry.disposition === 'excluded').length,
       note: 'Excluded boundaries are not traversed. Binary or unsupported encodings need separate inspection. History and generated markers are context, not policy verdicts; resolve local references with file tools.' },
-    entries: entries.slice(offset, offset + limit), settings, errors }
+    entries: entries.slice(offset, offset + limit), settings, testPolicy, errors }
 }
