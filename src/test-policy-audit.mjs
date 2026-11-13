@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { open, lstat, realpath } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import path from 'node:path'
+import { parseSsot } from './spec-format.mjs'
 
 const digest = (text) => createHash('sha256').update(text).digest('hex')
 const normalize = (text) => text.trim().replace(/\s+/g, ' ')
@@ -50,6 +51,95 @@ export async function readAuditTimings(workspace, injected = {}) {
   } catch (error) { return { available: false, reason: error.code === 'ENOENT' ? 'not-recorded' : 'unreadable-timings', entries: {} } }
 }
 
+const supportKeys = ['product-stage', 'supported-browsers', 'supported-platforms', 'supported-app-versions', 'excluded-support', 'support-review', 'validation-baseline']
+const productStages = new Set(['prototype', 'alpha', 'beta', 'production'])
+const unresolved = (value) => !value || /^(?:\?|<[^>]+>|unknown|unresolved\b.*)$/i.test(value)
+const noSupport = (value) => /^none(?:\b|$)/i.test(value ?? '')
+
+function fencedLines(text) {
+  const excluded = new Set()
+  let fence = null
+  for (const [index, line] of text.split('\n').entries()) {
+    const trimmed = line.trim(), marker = [String.fromCharCode(96), '~'].find((char) => trimmed.startsWith(char.repeat(3)))
+    if (fence || marker) excluded.add(index + 1)
+    if (!marker) continue
+    let width = 0
+    while (trimmed[width] === marker) width++
+    if (!fence) fence = { marker, width }
+    else if (fence.marker === marker && width >= fence.width && !trimmed.slice(width).trim()) fence = null
+  }
+  return excluded
+}
+
+function supportRecommendation(stage, fields) {
+  if (!stage) return null
+  const early = stage === 'prototype' || stage === 'alpha', platforms = fields['supported-platforms'] ?? ''
+  const web = /\b(?:web|browser)\b|웹/i.test(platforms)
+  const nonWeb = /\b(?:api|cli|server|backend|native|mobile|desktop|android|ios|macos|windows)\b/i.test(platforms)
+  const native = /\b(?:native|mobile|desktop|android|ios)\b/i.test(platforms) || (!!fields['supported-app-versions'] && !noSupport(fields['supported-app-versions']))
+  const browsers = fields['supported-browsers'], names = [...new Set(browserNames(browsers).map(canonicalBrowser))]
+  return { proposalOnly: true, preserveDeclaredSupport: true,
+    compatibility: early ? 'no-broad-matrix-by-default' : 'declared-support-in-ci',
+    browsers: !unresolved(browsers) ? (noSupport(browsers) ? [] : names.length ? names : null) : early && web ? ['chrome'] : nonWeb && !web ? [] : null,
+    platforms: fields['supported-platforms'] ?? null,
+    appVersions: fields['supported-app-versions'] ?? (early && native ? 'current-client' : null),
+    review: fields['support-review'] ?? (early ? 'before-beta-or-first-external-users' : stage === 'beta' ? 'before-production' : 'agree-support-review') }
+}
+
+// Only a current decided ARCH block can supply the new product policy. Nothing here
+// promotes a recommendation or an observed legacy line into an approved decision.
+function readProductSupport(documents) {
+  const declarations = [], issues = []
+  for (const { source, doc } of documents) {
+    const excluded = fencedLines(source.text)
+    if (source.truncated) issues.push('partial-policy-source')
+    if (doc.duplicates.length) issues.push('duplicate-arch-decisions')
+    for (const block of [...doc.decisions.values(), ...doc.malformed]) {
+      const approved = block.domain === 'ARCH' && block.status === 'decided'
+      if (excluded.has(block.start) || !approved && block.id !== null) continue
+      const fields = {}, references = [], duplicates = []
+      for (const [index, line] of block.text.split('\n').entries()) {
+        if (excluded.has(block.start + index)) continue
+        const match = line.match(/^  - ([a-z-]+):\s*(.*)$/i), key = match?.[1].toLowerCase()
+        if (!supportKeys.includes(key)) continue
+        let value = match[2].trim()
+        if (value.startsWith(String.fromCharCode(96)) && value.endsWith(String.fromCharCode(96))) value = value.slice(1, -1).trim()
+        if (Object.hasOwn(fields, key)) duplicates.push('duplicate-field:' + key)
+        else fields[key] = value
+        references.push({ ...reference(source, block.start + index), decision: block.id, field: key })
+      }
+      if (Object.keys(fields).length) {
+        if (approved) declarations.push({ fields, references, duplicates })
+        else issues.push('malformed-support-decision')
+      }
+    }
+  }
+  if (declarations.length > 1) issues.push('multiple-approved-support-decisions')
+  const chosen = declarations.length === 1 ? declarations[0] : null
+  if (chosen) issues.push(...chosen.duplicates)
+  const stageValue = chosen?.fields['product-stage']?.toLowerCase() ?? null
+  if (chosen && !productStages.has(stageValue)) issues.push('invalid-or-missing-product-stage')
+  const declared = !!chosen && !issues.length
+  const stage = declared ? stageValue : null
+  const fields = declared ? Object.fromEntries(Object.entries(chosen.fields).filter(([key]) => key !== 'product-stage')) : {}
+  const missing = declared ? supportKeys.filter((key) => unresolved(chosen.fields[key])) : [...supportKeys]
+  return { declared, complete: declared && !missing.length, stage, fields,
+    sources: declarations.flatMap((entry) => entry.references), missing, issues: [...new Set(issues)],
+    recommendation: supportRecommendation(stage, fields) }
+}
+
+function legacyBrowserLines(source, doc) {
+  const lines = source.text.split('\n'), firstSection = lines.findIndex((line) => /^##\s+/.test(line))
+  const selected = lines.slice(0, firstSection < 0 ? lines.length : firstSection).map((text, index) => ({ text, line: index + 1 }))
+  for (const block of doc.decisions.values()) if (block.domain === 'ARCH' && block.status === 'decided') {
+    selected.push(...block.text.split('\n').map((text, index) => ({ text, line: block.start + index })))
+  }
+  const constraints = doc.sections.get('constraints')
+  if (constraints) selected.push(...lines.slice(constraints.start, constraints.end).map((text, index) => ({ text, line: constraints.start + index + 1 })))
+  const excluded = fencedLines(source.text)
+  return selected.filter((line) => !excluded.has(line.line))
+}
+
 // An audit queue with cited observations, never a semantic verdict or deletion command.
 // Source bodies, environment values and shell commands do not leave this boundary.
 export function auditTestPolicy(sources, { entries = [], timings = { available: false, reason: 'not-recorded', entries: {} }, limited = false } = {}) {
@@ -82,15 +172,28 @@ export function auditTestPolicy(sources, { entries = [], timings = { available: 
     }
     return seen
   }
-  const supported = new Set(), supportSources = []
-  for (const source of policies) for (const [index, line] of source.text.split('\n').entries()) if (/supported\s+browsers?|지원\s*브라우저/i.test(line)) {
-    const mentioned = browserNames(line)
-    if (mentioned.length) { mentioned.forEach((name) => supported.add(canonicalBrowser(name))); supportSources.push(reference(source, index + 1)) }
+  const documents = policies.filter((source) => source.path === 'spec/ssot/ARCH.md').map((source) => {
+    const excluded = fencedLines(source.text)
+    const current = source.text.split('\n').map((line, index) => excluded.has(index + 1) ? '' : line).join('\n')
+    return { source, doc: parseSsot(current) }
+  })
+  const productSupport = readProductSupport(documents), supported = new Set(), supportSources = []
+  const browserWindow = productSupport.fields['supported-browsers']
+  const canonicalBrowsers = productSupport.declared && !unresolved(browserWindow) && (noSupport(browserWindow) || browserNames(browserWindow).length > 0)
+  if (canonicalBrowsers) {
+    if (!noSupport(browserWindow)) browserNames(browserWindow).forEach((name) => supported.add(canonicalBrowser(name)))
+    supportSources.push(...productSupport.sources.filter((source) => source.field === 'supported-browsers'))
+  } else for (const { source, doc } of documents) for (const line of legacyBrowserLines(source, doc)) if (/supported\s+browsers?|지원\s*브라우저/i.test(line.text)) {
+    const mentioned = browserNames(line.text)
+    if (mentioned.length) { mentioned.forEach((name) => supported.add(canonicalBrowser(name))); supportSources.push(reference(source, line.line)) }
   }
-  if (!supported.size) unknowns.push('Supported browsers are not machine-readable here. Confirm the project policy; recommend Chrome only unless broader support is explicitly required.')
+  if (productSupport.recommendation && supported.size) productSupport.recommendation.browsers = [...supported]
+  if (!productSupport.declared || productSupport.missing.some((key) => key !== 'validation-baseline')) unknowns.push('Product stage/support is missing, incomplete or ambiguous. Recommend and choose it in one current decided ARCH block before implementation; preserve existing support until that choice.')
+  if (productSupport.missing.includes('validation-baseline')) unknowns.push('Resolve actual validation versions before verification and freeze that baseline for the candidate; this is not a new support-policy choice.')
+  if (!supported.size && !canonicalBrowsers) unknowns.push('Supported browsers are not machine-readable here. Confirm the selected product targets; API/CLI/native-only products do not gain browser work by default.')
   for (const source of configurations) {
     const mentioned = browserNames(source.text)
-    if (mentioned.length > 1) add('browser-matrix', 'move-ci', 'Review browser compatibility only in CI and retain only explicitly supported browsers; names are source observations, not an executed configuration.', [reference(source)], { observedBrowsers: mentioned, outsideDeclaredSupport: supported.size ? mentioned.filter((name) => !supported.has(canonicalBrowser(name))) : null })
+    if (mentioned.length > 1) add('browser-matrix', 'move-ci', 'Review browser compatibility only in CI and retain only explicitly supported browsers; names are source observations, not an executed configuration.', [reference(source)], { observedBrowsers: mentioned, outsideDeclaredSupport: canonicalBrowsers || supported.size ? mentioned.filter((name) => !supported.has(canonicalBrowser(name))) : null })
   }
   const checkRows = [], localScripts = new Map(), ciScripts = new Map()
   const observedCi = (source, name) => { const refs = ciScripts.get(name) ?? []; refs.push(reference(source)); ciScripts.set(name, refs) }
@@ -119,6 +222,7 @@ export function auditTestPolicy(sources, { entries = [], timings = { available: 
   if (limited || selected.some((source) => source.truncated)) unknowns.push('The bounded source capture is partial; read the cited originals and remaining relevant files.')
   return { schemaVersion: 1, required: true, policyReviewed: false, sourceComplete: !limited && !selected.some((source) => source.truncated),
     sources: selected, counts: { testFiles: entries.filter((entry) => entry.disposition === 'candidate' && testPolicySourceKind(entry.path) === 'test').length, sampledTests: tests.length, scripts: scripts.size, plans: plans.length },
-    supportedBrowsers: { declared: supported.size ? [...supported] : null, recommended: ['chrome'], sources: supportSources },
+    productSupport,
+    supportedBrowsers: { declared: canonicalBrowsers || supported.size ? [...supported] : null, recommended: canonicalBrowsers || supported.size ? [...supported] : productSupport.recommendation?.browsers ?? null, sources: supportSources },
     checks: checkRows, candidates, timings: { available: timings.available === true, checksWithSamples: checkRows.filter((row) => row.timing).length }, unknowns }
 }

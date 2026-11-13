@@ -87,3 +87,109 @@ test('existing safe runtime measurements are available while malformed records r
   const unknown = await readAuditTimings(workspace)
   assert.equal(unknown.available, false); assert.equal(unknown.reason, 'unreadable-timings')
 })
+
+
+const supportPolicy = (overrides = {}, status = 'o', extra = '') => {
+  const fields = { 'product-stage': 'alpha', 'supported-browsers': 'Chrome latest stable', 'supported-platforms': 'web primary environment',
+    'supported-app-versions': 'none', 'excluded-support': 'other browsers and previous versions',
+    'support-review': 'before beta or first external users', 'validation-baseline': 'browser build-a in fixed image-a', ...overrides }
+  return '# ARCH\n> r1 | architecture | all\n\n## decisions\n- ARCH-1 [' + status + '] Product support\n' +
+    Object.entries(fields).filter(([, value]) => value !== undefined).map(([key, value]) => '  - ' + key + ': ' + value).join('\n') + '\n' + extra
+}
+const auditSupport = (text, extra = [], attributes = {}) => auditTestPolicy([
+  { path: 'spec/ssot/ARCH.md', kind: 'policy', text, sha256: 'policy', ...attributes }, ...extra,
+])
+
+test('approved stage policy supplies current support, fixed baseline and review without accepting proposals or history', () => {
+  const source = supportPolicy({}, 'o', '\n- ARCH-2 [?] Proposed wider support\n  - product-stage: beta\n  - supported-browsers: Firefox\n\n## chg\n- Former supported browsers: Safari\n')
+  const result = auditSupport(source, [{ path: 'playwright.config.ts', kind: 'test-config', text: "projects: [{name:'chrome'}, {name:'firefox'}]", sha256: 'config' }])
+  const policy = result.productSupport
+  assert.equal(policy.declared, true); assert.equal(policy.complete, true); assert.equal(policy.stage, 'alpha')
+  assert.equal(policy.fields['validation-baseline'], 'browser build-a in fixed image-a')
+  assert.equal(policy.fields['support-review'], 'before beta or first external users')
+  assert.equal(policy.recommendation.compatibility, 'no-broad-matrix-by-default')
+  assert.deepEqual(result.supportedBrowsers.declared, ['chrome']); assert.deepEqual(result.supportedBrowsers.recommended, ['chrome'])
+  assert.deepEqual(result.candidates.find((candidate) => candidate.kind === 'browser-matrix').outsideDeclaredSupport, ['firefox'])
+  assert.ok(policy.sources.every((source) => source.decision === 'ARCH-1' && source.path === 'spec/ssot/ARCH.md'))
+  assert.equal(source.split('\n')[policy.sources.find((source) => source.field === 'product-stage').line - 1], '  - product-stage: alpha')
+  assert.equal(result.policyReviewed, false)
+})
+
+test('open, rejected, fenced and historical stage text never becomes an approved stage or browser recommendation', () => {
+  for (const status of ['?', 'x']) {
+    const result = auditSupport(supportPolicy({}, status, '\n## chg\n- product-stage: production\n- Supported browsers: Firefox\n'), [
+      { path: 'package.json', kind: 'package', text: '{"version":"1.0.0"}', sha256: 'package' },
+    ])
+    assert.equal(result.productSupport.stage, null); assert.equal(result.productSupport.declared, false)
+    assert.equal(result.productSupport.recommendation, null); assert.equal(result.supportedBrowsers.recommended, null)
+  }
+  const fence = String.fromCharCode(96).repeat(3)
+  const result = auditSupport('# ARCH\n## decisions\n- ARCH-1 [o] A documentation example\n  ' + fence + '\n  - product-stage: prototype\n  - supported-browsers: Firefox\n  ' + fence + '\n## chg\n- product-stage: alpha\n')
+  assert.equal(result.productSupport.stage, null); assert.equal(result.productSupport.sources.length, 0)
+  const example = auditSupport('# ARCH\n## decisions\n' + fence + 'markdown\n- ARCH-1 [o] Example only\n  - product-stage: alpha\n  - supported-browsers: Firefox\n' + fence + '\n')
+  assert.equal(example.productSupport.stage, null); assert.equal(example.supportedBrowsers.recommended, null)
+  const withExample = auditSupport(supportPolicy({}, 'o', '\n' + fence + 'markdown\n- ARCH-1 [o] Example only\n  - product-stage: production\n  - supported-browsers: Firefox\n' + fence + '\n'))
+  assert.equal(withExample.productSupport.stage, 'alpha'); assert.deepEqual(withExample.supportedBrowsers.declared, ['chrome'])
+})
+
+test('ambiguous, invalid or partial policy requires a decision instead of selecting a convenient stage', () => {
+  const cases = [
+    [supportPolicy({}, 'o', '\n- ARCH-2 [o] Another policy\n  - product-stage: production\n'), {}, 'multiple-approved-support-decisions'],
+    [supportPolicy({}, 'o', '  - product-stage: production\n'), {}, 'duplicate-field:product-stage'],
+    [supportPolicy({ 'product-stage': 'preview' }), {}, 'invalid-or-missing-product-stage'],
+    [supportPolicy(), { truncated: true }, 'partial-policy-source'],
+    [supportPolicy({}, 'o', '\n- ARCH-1 [o] Duplicate ID\n  - product-stage: production\n'), {}, 'duplicate-arch-decisions'],
+    [supportPolicy({}, 'o', '\n- ARCH-2 [approved] Malformed policy\n  - product-stage: production\n'), {}, 'malformed-support-decision'],
+  ]
+  for (const [text, attributes, issue] of cases) {
+    const policy = auditSupport(text, [], attributes).productSupport
+    assert.equal(policy.declared, false); assert.equal(policy.stage, null); assert.ok(policy.issues.includes(issue), issue)
+    assert.ok(policy.missing.includes('product-stage'))
+  }
+})
+
+test('native OS and app-client windows remain distinct and non-web targets gain no browser matrix', () => {
+  const native = auditSupport(supportPolicy({ 'product-stage': 'prototype', 'supported-browsers': 'none',
+    'supported-platforms': 'native iOS and Android; latest stable OS on both selected targets',
+    'supported-app-versions': 'current client build only' })).productSupport
+  assert.match(native.fields['supported-platforms'], /iOS and Android/)
+  assert.equal(native.fields['supported-app-versions'], 'current client build only')
+  assert.deepEqual(native.recommendation.browsers, []); assert.equal(native.recommendation.appVersions, 'current client build only')
+  const cli = auditSupport(supportPolicy({ 'supported-browsers': undefined, 'supported-platforms': 'API and CLI; selected runtime', 'supported-app-versions': 'none' }))
+  assert.deepEqual(cli.productSupport.recommendation.browsers, []); assert.deepEqual(cli.supportedBrowsers.recommended, [])
+  assert.ok(cli.productSupport.missing.includes('supported-browsers'))
+  const noBrowsers = auditSupport(supportPolicy({ 'supported-browsers': 'none — CLI does not use Chrome or Firefox', 'supported-platforms': 'API and CLI' }), [
+    { path: 'playwright.config.ts', kind: 'test-config', text: "projects: [{name:'chrome'}, {name:'firefox'}]", sha256: 'config' },
+  ])
+  assert.deepEqual(noBrowsers.supportedBrowsers.declared, []); assert.deepEqual(noBrowsers.supportedBrowsers.recommended, [])
+  assert.deepEqual(noBrowsers.productSupport.recommendation.browsers, [])
+  assert.deepEqual(noBrowsers.candidates.find((candidate) => candidate.kind === 'browser-matrix').outsideDeclaredSupport, ['chrome', 'firefox'])
+  const undecided = auditSupport(supportPolicy({ 'supported-browsers': 'unknown' }))
+  assert.equal(undecided.supportedBrowsers.declared, null); assert.deepEqual(undecided.productSupport.recommendation.browsers, ['chrome'])
+  assert.equal(undecided.productSupport.complete, false)
+})
+
+test('early recommendations and mature stages preserve explicitly agreed wider support', () => {
+  for (const stage of ['alpha', 'beta', 'production']) {
+    const result = auditSupport(supportPolicy({ 'product-stage': stage, 'supported-browsers': 'Chrome and Firefox supported window',
+      'supported-platforms': 'web and native; existing agreed OS window', 'supported-app-versions': 'current and previous supported client' }))
+    assert.deepEqual(result.supportedBrowsers.declared, ['chrome', 'firefox'])
+    assert.deepEqual(result.supportedBrowsers.recommended, ['chrome', 'firefox'])
+    assert.equal(result.productSupport.fields['supported-platforms'], 'web and native; existing agreed OS window')
+    assert.equal(result.productSupport.recommendation.appVersions, 'current and previous supported client')
+    assert.equal(result.productSupport.recommendation.preserveDeclaredSupport, true)
+  }
+  const opaque = auditSupport(supportPolicy({ 'supported-browsers': 'existing agreed browser set' }))
+  assert.equal(opaque.supportedBrowsers.declared, null); assert.equal(opaque.productSupport.recommendation.browsers, null)
+})
+
+test('audit exposes only declared support fields and citations, and separates unresolved baseline from another policy choice', () => {
+  const result = auditSupport(supportPolicy({ 'validation-baseline': 'unresolved until setup' }, 'o', '  - private note: never-return-private-policy-body\n'))
+  assert.equal(result.productSupport.declared, true); assert.equal(result.productSupport.complete, false)
+  assert.deepEqual(result.productSupport.missing, ['validation-baseline'])
+  assert.equal(result.productSupport.stage, 'alpha')
+  assert.equal(result.productSupport.fields['support-review'], 'before beta or first external users')
+  assert.ok(!JSON.stringify(result).includes('never-return-private-policy-body'))
+  const historical = auditTestPolicy([{ path: 'spec/history/ARCH.md', kind: 'policy', text: supportPolicy(), sha256: 'old' }])
+  assert.equal(historical.productSupport.stage, null)
+})
