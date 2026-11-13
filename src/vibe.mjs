@@ -1,6 +1,6 @@
 import { readFile, writeFile, readdir, mkdir, mkdtemp, rm, access, realpath } from 'node:fs/promises'
 import { execFile, spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -28,6 +28,9 @@ import { routeAgent, runLabel } from './agent-route.mjs'
 import { loopHint } from './loop-control.mjs'
 import { BOOKKEEPING, bumpGate, versionBump, beyondVersion } from './version-bump.mjs'
 import { fingerprintVerificationCheck } from './verification-plan.mjs'
+import { finalizeIntegration } from './integration-run.mjs'
+import { openIntegration } from './integration-gate.mjs'
+import { assertImplementationWorkspace } from './session-workspace.mjs'
 
 export { vibeSession }
 const execute = promisify(execFile)
@@ -215,9 +218,16 @@ async function settleLanded(context, result, commit) {
 // other than this one takes the work as a local merge. Nothing to do is not an error.
 // version auto adds the bump on top of the verified HEAD when land is the release branch; every
 // retry syncs and decides again from the new remote tip, so a version never rises twice.
-export async function vibePush(options = {}) {
+export async function vibePush(options = {}, injected = {}) {
   const context = await vibeSession(options)
   const { branches } = context
+  const integration = Object.hasOwn(injected, 'integration') ? injected.integration : finalizeIntegration
+  if (integration && branches.land) {
+    await (injected.assertWorkspace ?? assertImplementationWorkspace)({ ...options, workspace: context.workspace })
+    const result = await integration({ ...options, tag: options.tag ?? createHash('sha256').update(context.branch).digest('hex').slice(0, 8) })
+    if (options.waitCi && result.pushed) result.ci = await vibeCIWait({ ...options, commit: result.pushed, branch: result.target })
+    return result
+  }
   if (!context.target && !branches.landTarget) {
     // Land is this branch and nothing is pushed: what is committed here has landed. An undecided
     // land commits on the current branch too (gusta-start), so it lands the same way — or its

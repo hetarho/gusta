@@ -13,7 +13,8 @@ import { readVerification, vibeBrief } from './vibe-brief.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { fingerprintVerificationCheck } from './verification-plan.mjs'
 import { vibeCIWait } from './vibe-ci.mjs'
-import { git } from './workspace.mjs'
+import { git, inspectWorkspace } from './workspace.mjs'
+import { designOf } from './interactive-state.mjs'
 import { readTimings, recordTiming, timingKey, measured, workingTree, taskCheckRows, taskCheckSummary } from './check-cache.mjs'
 import { inspectWork } from './work-groups.mjs'
 import { approvedTasks } from './work-policy.mjs'
@@ -32,12 +33,15 @@ import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, read
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine, taskCheckLine } from './loop-time.mjs'
 import { parseFailure, LIMIT_KINDS, BLOCKING, OVERLOAD_RETRY_MS, LIMIT_POLL_MS, readLimits, recordLimit, activeLimits, limitBlocks, earliestReset, limitHint, fallbackNote, limitTarget } from './provider-limits.mjs'
+import { prepareSessionWorkspace } from './session-workspace.mjs'
+import { finalizeIntegration } from './integration-run.mjs'
+import { mergeAgentAcceptance, renderAgentAcceptance } from './agent-acceptance.mjs'
 
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const present = (file) => access(file).then(() => true, () => false)
 const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
 // The closing reserve is what the last gate really costs: the measured suite, one repair
-// unit and the suite's re-run, plus the measured CI wait when code is pushed. Only before
+// unit and affected repair checks, plus the measured CI wait when code is pushed. Only before
 // the gate has ever been measured does a run fall back to a share of max-hours.
 export const UNMEASURED_RESERVE_SHARE = 0.2
 // A smaller count is insufficient: retries need complete, stable identities from the same gate.
@@ -70,7 +74,7 @@ export function closingReserve({ timings, commands, push = false, hours, timeout
   const gateMs = gates.reduce((sum, ms) => sum + ms, 0)
   const fixMs = measured(timings, timingKey('unit')) ?? timeoutMs
   const ciMs = push ? measured(timings, timingKey('ci')) ?? 0 : 0
-  return { ms: 2 * gateMs + fixMs + ciMs, source: 'measured', gateMs, fixMs, ciMs }
+  return { ms: gateMs + fixMs + ciMs, source: 'measured', gateMs, fixMs, ciMs }
 }
 // A unit's time limit catches a stuck session; it does not end the run. A unit cut at the limit
 // (or by the output cap) hands its snapshot to a fresh unit: continue, then split, then park.
@@ -240,6 +244,12 @@ export async function vibeLoop(options = {}, injected = {}) {
   const batchSize = positive(options.batchSize, 3, 'batch-size', true), timeoutMs = positive(options.timeoutMs, 3600000, 'timeout-ms')
   let optionHours = options.finalReserveHours === undefined ? undefined : Number(options.finalReserveHours)
   const scopeIds = options.tasks === undefined ? null : approvedTasks(Array.isArray(options.tasks) ? options.tasks : String(options.tasks).replaceAll(',', ' '))
+  let sessionWorkspace = null
+  if (!control.length && !options.dryRun) {
+    if (await designOf(await inspectWorkspace(options))) throw new SkillPackageError('이 checkout은 디자인 중입니다. 디자인을 마친 뒤 별도 세션을 시작하세요.')
+    sessionWorkspace = await (injected.prepareWorkspace ?? prepareSessionWorkspace)({ ...options, kind: 'start' })
+    options = { ...options, targetRoot: sessionWorkspace.root }
+  }
   const context = await vibeSession(options), root = context.root
   // Units are headless: SETTINGS permission-mode (default bypass) unless this run names one.
   const mode = control.length ? null : await permissionMode(options, root)
@@ -251,7 +261,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   if (!control.length && !agents && !options.provider && !options.adapter) return { schemaVersion: 1, ok: false, tag: options.tag, ...(options.dryRun ? { dryRun: true } : {}), reason: 'needs-init', hint: loopHint('needs-init'), unset: ['agents'], modelRequests: 0 }
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'gusta-vibe-loop.lock')
-  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, beat: vibeBeat, inbox: vibeInbox, view: coordView, push: vibePush, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {},
+  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, beat: vibeBeat, inbox: vibeInbox, view: coordView, push: vibePush, integration: finalizeIntegration, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {},
     sleep: (ms, signal) => new Promise((resolve) => { const timer = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true }) }),
     catalog: () => agentCatalog({ targetRoot: root, env: { ...process.env, ...options.env } }, { agents: settings.agents }), ...injected }
   // What each installed tool can run, read once per run (no model call) and only when agents is set:
@@ -268,6 +278,11 @@ export async function vibeLoop(options = {}, injected = {}) {
   const routeFor = async (status, id, recovering = false, { blocked = null, extra = [] } = {}) => routeAgent({ role: 'worker', recommended: runOf(status, id), recovery: recovering, agents, catalog: await loadCatalog(), explicit,
     blocked: [...(blocked ?? [...limitBlocks(await heldLimits()), ...signedOut]), ...extra] })
   const previous = await readJSON(manifest)
+  if (control.length && previous?.cwd !== root && context.workspace.git.worktrees.some((entry) => entry.path === previous?.cwd)) {
+    const holder = await inspectWorkspace({ targetRoot: previous.cwd })
+    const owner = await readJSON(path.join(holder.git.gitDir, 'gusta-session.json'))
+    if (owner?.tag === options.tag && owner.sourceRoot === root && owner.root === holder.git.root && owner.branch === holder.git.branch) return vibeLoop({ ...options, targetRoot: previous.cwd }, injected)
+  }
   if (previous && previous.cwd !== root) throw new SkillPackageError('이 tag는 다른 checkout 소유입니다.', [previous.cwd])
   if (options.stop) { await bindLoopDirectory(directory, root); await writeFile(stopFile, 'stop\n'); return { schemaVersion: 1, ok: true, stopFile, action: 'cancel' } }
   if (options.status || options.configure || options.stopAfterUnit) return requestControl(directory, root, options)
@@ -338,7 +353,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   // starts inside it, so implementation time never eats the verification.
   const estimateReserve = async () => closingReserve({ timings: await readTimings(context.runtime), commands: batchVerify, push: Boolean(context.target), hours, timeoutMs, optionHours })
   let reserve = await estimateReserve()
-  if (reserve.ms >= hours * 3600000) throw new SkillPackageError(`마감 관문 실측(전체 검증 2회+수정 1회+CI)이 ${(reserve.ms / 3600000).toFixed(2)}시간이라 max-hours 안에 구현 시간이 없습니다. --max-hours를 늘리거나 --final-reserve-hours를 지정하세요.`)
+  if (reserve.ms >= hours * 3600000) throw new SkillPackageError(`마감 관문 실측(전체 검증 1회+영향 범위 수정 1회+CI)이 ${(reserve.ms / 3600000).toFixed(2)}시간이라 max-hours 안에 구현 시간이 없습니다. --max-hours를 늘리거나 --final-reserve-hours를 지정하세요.`)
   const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? (options.adapter ? 'command' : 'route'), agents, ...(options.effort ? { effort: options.effort } : {}), permissionMode: mode, headlessMcp: mcp,
     cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS, maxGateAttempts }, scope: scopeIds, reserve, verify, batchVerify, requiredVerificationTiers,
     deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), notification: notificationCapability(directory, options.notifyCommand),
@@ -387,7 +402,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   await acquireLoop(lock, { pid: process.pid, host: os.hostname(), tag: options.tag, runId })
   const report = `spec/reports/${new Date(start).toISOString().slice(2, 10).replaceAll('-', '')}-${options.tag}.md`
   const reportPath = path.join(root, report)
-  let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false, pruned = null, publication = null
+  let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false, pruned = null, publication = null, integrationState = null
   let lastBatchPlan = batchIdentity()
   let lastBatchInputs = await batchInputs()
   // Usage limits this run met: every hit (limit-hit event, manifest), the notes a unit's done line carries
@@ -491,7 +506,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const snapshot = () => ({ ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, pruned, publication, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), refused: [...refused].map(([task, held]) => ({ task, ...held })), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, usageLimits: limitHits, ...(limitWait ? { limitWait } : {}), reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, publication, integration: integrationState, sessionWorkspace, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), refused: [...refused].map(([task, held]) => ({ task, ...held })), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, usageLimits: limitHits, ...(limitWait ? { limitWait } : {}), reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -554,6 +569,11 @@ export async function vibeLoop(options = {}, injected = {}) {
       : entry.errors ? `- ${entry.command}: fail (${entry.errorCount} errors; first: ${entry.errors[0]})` : `- ${entry.command}: ${entry.cancelled ? 'cancelled' : entry.ok ? 'pass' : 'fail'} (${entry.log ?? '-'})`)
       .filter((line) => !text.includes(line))
     if (checks.length) text = text.replace('\n## next', `${checks.join('\n')}\n\n## next`)
+    const agentChecks = dispatches.reduce((items, entry) => mergeAgentAcceptance(items, entry.result?.agentChecks ?? []), [])
+    const agentTable = renderAgentAcceptance(agentChecks)
+    text = text.replace(/<!-- gusta:agent-acceptance -->[\s\S]*?<!-- gusta:agent-acceptance:end -->\n*/g, '')
+    if (agentTable) text = text.replace('\n## next', `<!-- gusta:agent-acceptance -->\n${agentTable}\n<!-- gusta:agent-acceptance:end -->\n\n## next`)
+    if (integrationState) text = text.replace(/^- shared integration: .*\n/m, '').replace('\n## next', `- shared integration: ${integrationState.ok ? 'landed' : integrationState.reason} (${integrationState.gate?.candidate ?? '-'}); full verification is not repeated automatically.\n\n## next`)
     // Where the run's time went, once, when the run closes (a reopened report gets a fresh line).
     if (closing) text = text.replace(/^- time: .*\n/m, '').replace('\n## next', `${timeLine(timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }))}\n\n## next`)
     const tasks = closing ? taskChecks() : null
@@ -725,6 +745,19 @@ export async function vibeLoop(options = {}, injected = {}) {
     await recordReport(closing)
     await metadataCommit(`vibe ${options.tag}: ${closing ? 'close report' : 'batch report'}`)
     await metadata.assertClean()
+    if (deps.integration && publish) {
+      // A batch boundary never means the session has finished. Even explicit per-unit pushes
+      // now submit only at the settled session boundary, so another session cannot invalidate
+      // a long gate by landing the next unit while it is still checking.
+      if (!closing) { pending = []; await save(); return true }
+      const agentChecks = dispatches.reduce((items, entry) => mergeAgentAcceptance(items, entry.result?.agentChecks ?? []), [])
+      integrationState = await deps.integration({ ...options, targetRoot: root, agentChecks, signal: controller.signal, timeoutMs: Math.max(1, deadline - deps.now()) }, { check: deps.check, view: deps.view })
+      await event('shared-integration', { reason: integrationState.reason ?? 'landed', candidate: integrationState.gate?.candidate ?? null })
+      if (!integrationState.ok && !integrationState.waiting && !integrationState.pending) throw new SkillPackageError('공유 통합 검증에 실패했습니다.', [integrationState.reason ?? 'unknown'])
+      if (integrationState.waiting || integrationState.pending) reason = 'integration-waiting'
+      if (integrationState.pushed) { codePushed = true; publication = integrationState }
+      pending = []; await save(); return true
+    }
     if (publish && context.target) await deps.sync({ ...options, targetRoot: root })
     if (closing || publish) { await refreshVerification(); reserve = await estimateReserve() }
     const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
@@ -1230,6 +1263,6 @@ export async function vibeLoop(options = {}, injected = {}) {
     await notify(async () => finishedEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, finishedSummary(closed, waiting)))
   }
   const terminalEvent = await readJSON(plan.notification.terminalEvent).catch(() => null)
-  return { ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
+  return { ...plan, verify, batchVerify, requiredVerificationTiers, sessionWorkspace, integration: integrationState, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
     time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(taskChecks().runs ? { taskChecks: taskChecks() } : {}), ...(measurement ? { measurement } : {}), ...(limitHits.length ? { usageLimits: limitHits } : {}) }
 }

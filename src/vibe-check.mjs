@@ -12,6 +12,8 @@ import { readVerification } from './vibe-brief.mjs'
 import { delegatedCheckout } from './work-policy.mjs'
 import { GATE_CAP, gateKey, gateCount, gateView, readGates, recordGateRun, resetGate } from './gate-ledger.mjs'
 import { readVerificationPlan, fingerprintVerificationCheck } from './verification-plan.mjs'
+import { vibeSession } from './vibe-session.mjs'
+import { assertIntegrationCandidate } from './integration-gate.mjs'
 
 // A task check is the affected unit tests: minutes, not the suite. Longer runs are flagged.
 export const TASK_SLOW_MS = 5 * 60000
@@ -29,7 +31,7 @@ function failureNext(result, command, gate, tag) {
   if (!gate.left) return [what, `Gate cap reached (${gate.failures}/${gate.cap} rounds failed): do not run the full gate again. Record the remaining failures in the report and park them in one call: ${park(tag)}; then stop.`, OUTSIDE]
   return [what, `Fix only what failed and confirm it first with vibe check --tier task --diff-base ${result.commit} -- <the affected tests>; reproduce a build or e2e failure with --heavy, one run at a time and never alongside another check.`,
     result.plan ? `Resume vibe check --tier ${result.scope.TIER} --plan ${JSON.stringify(result.plan.source)}${tag ? ` --tag ${tag}` : ''}; unchanged successful checks are reused. ${gate.left} failed round(s) left of ${gate.cap}.`
-      : `Then run the full gate once more: ${gate.left} failed round(s) left of ${gate.cap}.`, OUTSIDE]
+      : `Recheck the failed and affected scope first. Preserve successful evidence; request another full gate only when its actual inputs or coverage changed. ${gate.left} failed round(s) left of ${gate.cap}.`, OUTSIDE]
 }
 
 function sessionTag(options) {
@@ -48,7 +50,7 @@ export async function resetVibeGate(options = {}, command) {
   return { schemaVersion: 1, ok: true, exitCode: 0, reset: key, previous: { attempts: previous.attempts, failures: previous.failures, cap: GATE_CAP } }
 }
 
-export async function runVibeCheck(options = {}, command) {
+export async function runVibeCheck(options = {}, command, injected = {}) {
   if (options.plan && command?.trim()) throw new SkillPackageError('--plan과 별도 검사 명령을 함께 쓰지 않습니다.')
   const workspace = await inspectWorkspace(options)
   if (!workspace.git?.head) throw new SkillPackageError('커밋이 있는 Git checkout이 필요합니다.')
@@ -75,6 +77,7 @@ export async function runVibeCheck(options = {}, command) {
   if (final && !options.allowFinal) {
     const delegated = (options.env?.GUSTA_VIBE_UNIT ?? process.env.GUSTA_VIBE_UNIT) === '1' || delegatedCheckout(await readRuntime(runtime), root)
     if (delegated) throw new SkillPackageError('최종 검증은 조정자/호스트가 실행합니다. 워커·리뷰어는 태스크 검사만 실행하세요. 사용자가 별도 실행을 명시한 경우만 --allow-final을 사용하세요.')
+    await (injected.integration ?? assertIntegrationCandidate)(await vibeSession({ ...options, inspection: workspace }), options)
   }
   // The full suite at every task is what turns ten tasks into hours of waiting.
   if (!plan && scope.TIER === 'task' && !options.allowFinal) {
