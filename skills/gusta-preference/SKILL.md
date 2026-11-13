@@ -16,6 +16,7 @@ description: >-
 - 인자 없이 불렸으면 여기서 끝낸다. 바꿀지 묻지 않는다.
 
 ## 2. 바꾸기
+- 조회·규칙 조사는 현재 위치에서 할 수 있다. 첫 설치·의존성 변경·이관·설정/agent-block 쓰기·커밋 **전에** Git의 현재 브랜치를 확인하고, land·deploy·plan·저장소 기본 브랜치이면 자기 소유 하위 브랜치를 만들거나 확인한 작업 브랜치로 옮긴다. 다른 세션·checkout·미커밋 사용자 변경을 옮기거나 덮지 않는다.
 - 변경 전에 적용 지침과 그 설정에 겹치는 활성 문서·실행 근거를 [프로젝트 규칙 대조](../gusta-update/references/project-rules.md)대로 확인한다(보기만 할 때는 생략). 정책 차이는 프레임워크 기본 절차에 맞추는 안과 영향을 보여 주고 괜찮은지 묻는다. 이미 구체적으로 승인한 변경은 다시 묻지 않는다.
 - 승인한 키·값만 `vibe settings --set <key>=<value> --json`으로 쓴다. 파일 생성과 해당 줄 수정은 CLI가 하며 SETTINGS.md를 직접 편집하지 않는다. 승인된 운영 문서도 일치시키며 SSOT 정책 변경은 gusta-update-ssot로 처리한다. CLI가 지원하지 않는 키·절차를 만들어 해결하지 않는다.
 - `agent-block`을 바꿨으면 `npx @haeram/gusta agent-block`(false로 바꿨으면 `--remove`)을 실행해 지침 파일의 블록을 맞춘다.

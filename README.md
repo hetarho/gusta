@@ -88,7 +88,7 @@ Spec documents are written in compact English; interviews, questions and reports
 | `/gusta-start` | Execution. Shows the run info, then runs the existing tasks unattended — commits per task, decision inbox and report, final gate. With a change request it plans (SSOT, tasks) and then runs those. Stops and points to `/gusta-sketch` when there is nothing to run |
 | `/gusta-design-mode` | Live design: edits code as you talk while you watch the screen; tests and a single commit only when you say the design is done |
 | `/gusta-showcase` | Builds 2–6 variants in real code in parallel, one port per variant (or benchmarks them), merges only the one you pick and updates the docs too |
-| `/gusta-self-improve` | Your session approves improvement proposals from sub-sessions and integrates them into the current branch — no PR |
+| `/gusta-self-improve` | Your session approves improvement proposals in a dedicated worktree/session branch and submits reviewed changes for shared candidate verification and integration — no PR |
 | `/gusta-self-improve-remote` | Within a scope and budget you delegate once, finds problems, measures, implements, gets an independent review and opens a PR |
 | `/gusta-init` | Asks only the unset settings (branch strategy, automatic version bumps, the managed gusta block in CLAUDE.md/AGENTS.md) and saves them to `spec/SETTINGS.md` |
 | `/gusta-preference` | Shows `spec/SETTINGS.md` as a table and changes only the values you name |

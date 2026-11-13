@@ -16,6 +16,8 @@ description: >-
 - 이 checkout에서 `vibe loop`나 `work run`이 실행 중이면, 끝난 뒤에 업데이트하라고 안내한다. 실행 중인 세션이 읽는 스킬이 바뀌기 때문이다.
 - 맡김 세션에서는 업데이트하지 않는다. 대신 `vibe inbox add --kind parked`로 남긴다. 설치 충돌이나 FORMAT 판단처럼 사람이 골라야 할 일이 생길 수 있다.
 
+- 조회·규칙 조사는 현재 위치에서 할 수 있다. 첫 설치·의존성 변경·이관·설정/agent-block 쓰기·커밋 **전에** Git의 현재 브랜치를 확인하고, land·deploy·plan·저장소 기본 브랜치이면 자기 소유 하위 브랜치를 만들거나 확인한 작업 브랜치로 옮긴다. 다른 세션·checkout·미커밋 사용자 변경을 옮기거나 덮지 않는다.
+
 ## 2. 버전과 프로젝트 규칙
 - `gusta outdated`로 installed(lock 파일), latest, `changes`(installed 이후 CHANGELOG 항목)를 본다. `error`가 있으면 레지스트리 조회 실패를 알리고 멈춘다.
 - 테스트 감사도 버전과 무관한 필수 단계다. `upgrade-context.testPolicy`의 후보·원시 경로/줄·미확인을 읽고 실제 스크립트 호출망, 테스트 설정과 대표 테스트, ARCH 계획, runtime timings를 대조한다. inventory complete나 후보 없음만으로 의미 검토 완료라 하지 않는다. 결과는 유지/축소/agent 대체/CI 이동/미확인으로 구분하고 중복·지원 밖 브라우저·소스/구현 추종 테스트와 대체 증거·제거될 비용을 남긴다. [감사 기준](references/project-rules.md)을 따른다.
@@ -24,7 +26,6 @@ description: >-
 - `outdated`가 false여도 `gusta migrate --dry-run`과 규칙 대조를 끝낸다. 설치 갱신이 불필요하면 건너뛰되 이관·정합성 확인 전에는 완료로 보고하지 않는다.
 
 ## 3. 갱신과 이관
-- 쓰기·커밋은 보호 브랜치가 아닌 하위 브랜치에서 진행한다. 원래 사용자 변경을 보존하며 다른 활성 세션이 읽는 설치를 변경하지 않는다.
 - `gusta install --dry-run`을 실행한다. 충돌(로컬에서 고친 스킬 파일)이 있으면 목록을 보여 주고, `--force`로 덮어쓸지 묻는다. 그다음 `gusta install`, `gusta agent-block`, `gusta check` 순서로 실행한다.
 - `gusta agent-block`은 SETTINGS `agent-block`이 true일 때만 CLAUDE.md·AGENTS.md의 마커 사이 블록을 새 버전으로 바꾼다(아니면 건너뛴다). broken이면 아무것도 쓰지 않는다 — 보고된 파일·줄을 보여 주고 고칠 방법을 승인받아 마커만 정리한 뒤 다시 실행한다.
 - `gusta migrate --dry-run`으로 적용될 이관(`applied`)을 보여 준다. expert에게는 id와 파일을, novice에게는 무엇이 어디로 옮겨지는지 알려 준다. 그다음 `gusta migrate`를 실행한다. 이관은 여러 번·여러 checkout에서 실행해도 결과가 같다.

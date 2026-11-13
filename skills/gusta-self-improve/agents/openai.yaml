@@ -1,4 +1,4 @@
 interface:
   display_name: "Gusta Self Improve"
-  short_description: "하위 세션이 제안하고 실행 세션이 승인·검토해 현재 브랜치에 개선 통합"
-  default_prompt: "Use $gusta-self-improve to coordinate proposal-first improvements, approve bounded work, and integrate independently reviewed changes into this local branch."
+  short_description: "전용 워크트리에서 제안을 승인·구현하고 공동 후보를 검증·통합"
+  default_prompt: "Use $gusta-self-improve to approve bounded proposals in a dedicated worktree and session branch, then submit independently reviewed changes to the shared integration candidate."
