@@ -40,9 +40,9 @@ test('a dirty original checkout is retained verbatim and cannot be silently omit
 
 test('configured land, deployment, planning and repository default branches are protected by role rather than a fixed name', async (t) => {
   const { root } = await fixture(t)
-  await mkdir(path.join(root, 'spec')); await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: delivery\n- deploy: published\n- plan: planning\n')
+  await mkdir(path.join(root, 'spec')); await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: delivery\n- deploy: published\n- plan: planning\n- coord: coordination\n')
   const policy = await sessionWorkspacePolicy({ targetRoot: root })
-  for (const branch of ['stable', 'delivery', 'published', 'planning']) assert.ok(policy.protectedBranches.includes(branch))
+  for (const branch of ['stable', 'delivery', 'published', 'planning', 'coordination', 'coordination-integration']) assert.ok(policy.protectedBranches.includes(branch))
   await assert.rejects(assertImplementationWorkspace({ targetRoot: root }), /하위 작업 브랜치/)
   await git(root, ['add', '.']); await git(root, ['commit', '-m', 'policy'])
   await assert.rejects(prepareSessionWorkspace({ targetRoot: root, branch: 'delivery', tag: 'cc' }), /보호 브랜치/)
