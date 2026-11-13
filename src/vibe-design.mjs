@@ -51,7 +51,8 @@ async function verifyDesign(options, root, design) {
   let tree = null
   for (const step of plan) {
     if (step.tier === 'batch' && results.some((result) => !result.ok)) { skipped.push(step.command); continue }
-    const result = await runVibeCheck({ targetRoot: root, tier: 'batch', uncommitted: true, timeoutMs: options.timeoutMs, signal: options.signal, env: options.env }, step.command)
+    // The person asked for this run: it is not a coordinator's gate round and never refused by the cap.
+    const result = await runVibeCheck({ targetRoot: root, tier: 'batch', uncommitted: true, gateLedger: false, timeoutMs: options.timeoutMs, signal: options.signal, env: options.env }, step.command)
     results.push({ tier: step.tier, command: step.command, ok: result.ok, cached: result.cached, exitCode: result.exitCode, timedOut: result.timedOut ?? false, stale: result.stale ?? false,
       ms: result.ms ?? 0, failedTests: result.failedTests, tail: result.ok ? [] : result.tail, log: result.log })
     tree = result.tree

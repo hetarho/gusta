@@ -29,6 +29,7 @@ const requiredCoreFiles = [
   'src/loop-control.mjs',
   'src/loop-metadata.mjs',
   'src/agent-adapter.mjs',
+  'src/provider-limits.mjs',
   'src/work-providers.mjs',
   'src/work-progress.mjs',
   'src/vibe.mjs',

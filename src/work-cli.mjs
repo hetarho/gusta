@@ -22,9 +22,13 @@ const HELP = `작업 묶음 (Orca 등 외부 도구 없이도 사용 가능)
   work doctor
   work run --work <name> [--provider auto|codex|claude | --providers codex,claude | --adapter <json-file>] --verify <command>
     [--task-verify <command>] [--group-verify <command>]
-    [--reviewer-provider codex|claude] [--model <id>] [--reviewer-model <id>] [--dry-run]
+    [--reviewer-provider codex|claude] [--model <id>] [--reviewer-model <id>] [--effort <level>] [--dry-run]
+                                    auto(기본): dispatch마다 그 태스크의 run:을 SETTINGS agents 안에서 배정(리뷰어는 워커 능력 이상·다른 도구 먼저).
+                                    agents 미정이면 needs-init. --provider/--providers/--reviewer-provider는 그 도구로 고정
     [--timeout-ms <ms>] [--max-dispatches <n>] [--max-task-runs <n>]
-    [--autopilot] [--decision-wait-ms <ms>] [--checkpoint-ms <ms>] [--permission-mode bypass|acceptEdits] [--detach]
+    [--autopilot] [--decision-wait-ms <ms>] [--limit-wait-ms <ms>] [--checkpoint-ms <ms>] [--permission-mode bypass|acceptEdits] [--detach]
+                                    사용량·속도 한도·과부하·로그인 실패는 max-task-runs에 세지 않고 agents 안 다음 조합으로 다시 띄운다(차단은
+                                    clone 공용 limits.json). 모두 막히면 첫 리셋이 limit-wait-ms(기본 5시간) 안이면 모델 호출 없이 기다리고, 아니면 usage-limit
   work run --work <name> (--status | --stop)   --detach는 분리된 호스트로 시작해 {runId,pid,log}만 반환. --status는 파일만 읽어
                                     호스트 생존·dispatch 로그 경로·종료 결과 요약을, --stop은 호스트에 정상 종료 신호(SIGTERM)를 보낸다
   work runner-recover --work <name>
@@ -74,7 +78,7 @@ const allowed = {
   'claim-next': ['work', 'owner', 'workspace', 'path'], next: ['work', 'owner', 'workspace', 'path', 'wait', 'workers', 'reviewers', 'max-pending', 'task-verify', 'verify', 'group-verify', ...POLICY], resume: ['work', 'owner', 'attempt'],
   'review-claim': ['work', 'owner', 'attempt', 'wait'], 'review-finish': ['review', 'result-file'],
   'review-update': ['review'], 'review-release': ['review', 'reason'],
-  doctor: [], run: ['work', 'adapter', 'verify', 'task-verify', 'group-verify', 'verify-timeout-ms', 'provider', 'providers', 'reviewer-provider', 'model', 'reviewer-model', 'timeout-ms', 'max-dispatches', 'max-task-runs', 'decision-wait-ms', 'checkpoint-ms', 'permission-mode'], 'runner-recover': ['work'],
+  doctor: [], run: ['work', 'adapter', 'verify', 'task-verify', 'group-verify', 'verify-timeout-ms', 'provider', 'providers', 'reviewer-provider', 'model', 'reviewer-model', 'effort', 'timeout-ms', 'max-dispatches', 'max-task-runs', 'decision-wait-ms', 'limit-wait-ms', 'checkpoint-ms', 'permission-mode'], 'runner-recover': ['work'],
   scout: ['prompt-file', 'provider', 'model', 'timeout-ms'],
   history: ['work', 'task'], sync: ['work'],
   status: ['work'], board: ['work'], brief: ['attempt'], update: ['attempt', 'status', 'reason', 'decision-file', 'note'],

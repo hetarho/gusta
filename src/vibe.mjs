@@ -5,23 +5,27 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { inspectWorkspace, git, batchShow } from './workspace.mjs'
-import { sections, tableRows, quoteLine, quoteFields, exploreValue, SESSION_TAG, TASK_ID, TASK_ST } from './spec-format.mjs'
+import { sections, tableRows, quoteLine, quoteFields, exploreValue, runValue, SESSION_TAG, TASK_ID, TASK_ST } from './spec-format.mjs'
 import { activeRows, upsertActive, mergeState } from './state-doc.mjs'
 import { inboxEntries, STALE_MINUTES } from './coord-doc.mjs'
 import { coordView, beatSession, claimSession, recordLanded, recordCheckpoint, assertCoordinator, assertSessionTag, isDelegated, commitOnRemote, wipTime, hostName } from './vibe-coord.mjs'
 import { designOf } from './interactive-state.mjs'
-import { workingTree, checkKey, cachedPass, recordPass, withHeavyLock } from './check-cache.mjs'
+import { workingTree, checkKey, cachedPass, recordPass, withHeavyLock, readTimings, taskTimingRows, taskCheckSummary } from './check-cache.mjs'
+import { runtimeRoot } from './work-runtime.mjs'
 import { lintSpec } from './spec-lint.mjs'
 import { workInternals } from './work-groups.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { readSettings, readSetting, permissionMode } from './settings.mjs'
+import { readSettings, readSetting, permissionMode, agentList } from './settings.mjs'
 import { vibeSession } from './vibe-session.mjs'
-import { runVibeCheck } from './vibe-check.mjs'
+import { runVibeCheck, resetVibeGate } from './vibe-check.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { vibeCIWait, githubRepository } from './vibe-ci.mjs'
 import { providerFlags } from './work-providers.mjs'
-import { claudeOptionalFlags } from './agent-adapter.mjs'
+import { claudeOptionalFlags, claudeEffort, providerEnvironment } from './agent-adapter.mjs'
+import { agentCatalog } from './agent-catalog.mjs'
+import { routeAgent, runLabel } from './agent-route.mjs'
+import { loopHint } from './loop-control.mjs'
 import { BOOKKEEPING, bumpGate, versionBump, beyondVersion } from './version-bump.mjs'
 
 export { vibeSession }
@@ -475,6 +479,17 @@ export async function specCloseIssues(root) {
   return stIssues(summarize(state).tasks, await taskFields(root))
 }
 
+// The task checks this clone ran lately (each command's last runs in timings.json) and the ones that
+// average over a minute: candidates for the final gate, decided by a person (gusta-update). A command
+// ARCH now lists only under batch was moved already: the task tier refuses it, so it is left out.
+async function recentTaskChecks(workspace, root) {
+  const rows = taskTimingRows(await readTimings(runtimeRoot(workspace)))
+  if (!rows.length) return null
+  const verify = await readVerification(root), same = (a) => (b) => a === b.trim().replace(/\s+/g, ' ')
+  const summary = taskCheckSummary(rows.filter(({ command }) => !verify.batch.some(same(command)) || verify.task.some(same(command))))
+  return summary.runs ? summary : null
+}
+
 // What a session needs before its first question: who else is working and where (the coordination
 // branch, synced with the remote unless fetch is off, plus STATE's old sections while a project
 // still has them), what is left, and which way to go.
@@ -576,11 +591,14 @@ export async function vibeStatus(options = {}, injected = {}) {
     lost: [...view.lost, ...held.filter((entry) => implementation.resume.includes(entry.id) && !view.lost.some((lost) => lost.task === entry.id)).map((entry) => ({ task: entry.id, owner: entry.tag, reason: entry.reason }))],
     contested: view.doc.unlanded.filter((row) => options.tag && row.tag === options.tag).flatMap((row) => result.others.filter((other) => !other.stale && other.doing === row.id).map((other) => ({ task: row.id, owner: other.tag }))),
     push: view.push, sync: view.sync }
-  return { ...result, ...(coordination ? { coordination, held } : {}),
+  // Advisory: an unreadable timings file or ARCH never fails status.
+  const taskChecks = workspace.git ? await recentTaskChecks(workspace, root).catch(() => null) : null
+  return { ...result, ...(coordination ? { coordination, held } : {}), ...(taskChecks ? { taskChecks } : {}),
     concurrency: (result.others ?? []).some((row) => !row.stale) || (result.orphanDoing ?? []).length > 0 ? 'strict' : 'solo',
     next: (sections(text).get('next') ?? []).filter((line) => line.startsWith('- ')).slice(0, 3),
     counts: { inbox: inbox.length, parked: inbox.filter((entry) => entry.kind === 'parked').length, remaining: local.tasks.length },
-    remaining: local.tasks.map((task) => ({ ...task, title: task.title.slice(0, 120) })), runnable: runnable.map((task) => task.id),
+    // run: the planned tool/model@effort, only where the task file names one (format checked by lint).
+    remaining: local.tasks.map((task) => { const run = runValue(fields.get(task.id)?.get('run')); return { ...task, title: task.title.slice(0, 120), ...(run ? { run } : {}) } }), runnable: runnable.map((task) => task.id),
     // settled: nothing to execute and nothing to repair (untasked sketch input may remain).
     // parkedOnly: nothing runnable, nothing to sketch, only parked or blocked work left.
     issues, settled: !executable && !issues.length, parkedOnly: !runnable.length && !untasked && (parked.size > 0 || implementation.blocked.length > 0),
@@ -595,7 +613,8 @@ export async function vibeStatus(options = {}, injected = {}) {
 const which = (command) => execute('sh', ['-c', `command -v ${command}`], { timeout: 5000 }).then(() => true, () => false)
 
 // Everything autopilot needs before the user leaves. needsUser lists what only a person can fix.
-export async function vibePreflight(options = {}) {
+// deps.catalog: the caller's agentCatalog read (vibe loop shares its own), else read here for the probe.
+export async function vibePreflight(options = {}, deps = {}) {
   if (options.probeWorkspace !== undefined && !['current', 'new'].includes(options.probeWorkspace)) fail('--probe-workspace는 current 또는 new입니다.')
   const context = await vibeSession(options)
   const checks = []
@@ -607,6 +626,10 @@ export async function vibePreflight(options = {}) {
   const bumpOn = context.branches.deploy && context.branches.deploy !== context.branches.land ? 'deploy' : 'push'
   const version = context.settings.values.version !== 'auto' ? '' : ` · version auto (${bumpGate(context.settings.values, context.branches, bumpOn) ?? `vibe ${bumpOn}`})`
   add('branch-settings', true, context.branches.unset ? 'land 미정 — 맡김은 현재 브랜치에 커밋만 합니다(/gusta-init으로 정하면 반영)' : `land ${context.settings.values.land}${context.branches.deploy ? ` → deploy ${context.branches.deploy}` : ''}${version}`)
+  // Unlike land, undecided agents stops autopilot: the CLI routes units only within that list.
+  const agents = agentList(context.settings.values.agents)
+  const needsInit = !agents && !options.provider && !options.adapter
+  add('agents', !needsInit, needsInit ? 'agents 미정 — /gusta-init으로 쓸 AI 목록을 정한 뒤 맡기세요' : agents ? `${agents.join(',')} (fallback order)` : `${options.provider ?? 'command adapter'} (explicit)`, true)
   // Where sessions coordinate, whether events reach the remote, and how the last publish went. A
   // coordination branch this checkout cannot write needs a person: SETTINGS coord differs from the
   // clone's or names a code branch, the name collides with another ref, the branch is checked out,
@@ -657,8 +680,8 @@ export async function vibePreflight(options = {}) {
     if (!available) missing.push(command)
   }
   add('verification', missing.length === 0, missing.length ? `missing commands: ${missing.join(', ')}` : verify.declared ? `task: ${verify.task.length}, batch: ${verify.batch.length}; conditional checks remain in ARCH guidance` : 'legacy ARCH: changed tests + fast checks at task tier; select batch commands before code push', true)
-  if (options.probe) checks.push(await probeWorker(context, { ...options, permissionMode: await permissionMode(options, context.root), headlessMcp: await readSetting({ root: context.root }, 'headless-mcp') }))
-  return { schemaVersion: 1, ok: checks.every((check) => check.ok), checks, needsUser: checks.filter((check) => check.needsUser) }
+  if (options.probe && !needsInit) checks.push(await probeWorker(context, { ...options, permissionMode: await permissionMode(options, context.root), headlessMcp: await readSetting({ root: context.root }, 'headless-mcp') }, { agents, catalog: deps.catalog, blocked: deps.blocked }))
+  return { schemaVersion: 1, ok: checks.every((check) => check.ok), checks, needsUser: checks.filter((check) => check.needsUser), ...(needsInit ? { reason: 'needs-init', hint: loopHint('needs-init') } : {}) }
 }
 
 const PROBE_SCHEMA = { type: 'object', additionalProperties: false, required: ['ran', 'exitCode', 'denied', 'note'],
@@ -671,10 +694,25 @@ export function probeFailureKind({ denied = false, note = '', code } = {}) {
   return 'command'
 }
 
+// The probe's tool·model·effort: an explicit --provider as given, else the first tool of SETTINGS
+// agents (not at a usage limit) at its cheapest combination (routeAgent probe). null: no usable tool, with the reasons.
+async function probeRoute(context, options, { agents, catalog, blocked }) {
+  if (options.provider) return { route: { tool: options.provider, model: options.model ?? null, effort: options.effort ?? null } }
+  if (!agents) return { route: null }
+  const read = catalog ?? (() => agentCatalog({ targetRoot: context.root, env: options.env ?? process.env }, { agents: context.settings.values.agents }))
+  // A loop hands in the tools at a usage limit now: the probe runs on one that can answer.
+  const routed = routeAgent({ role: 'probe', agents, catalog: await read(), blocked: blocked ? await blocked() : [] })
+  return routed.chosen ? { route: routed.chosen } : { route: null, unusable: routed.skipped.map(({ option, reason }) => `${runLabel(option)}: ${reason}`) }
+}
+
 // Runs the command once through a real headless worker in a fresh, never-trusted worktree —
 // the same place work-group workers run — so a permission gap shows before the user leaves.
-async function probeWorker(context, options) {
-  const provider = options.provider ?? (await which('claude') ? 'claude' : 'codex')
+async function probeWorker(context, options, routing = {}) {
+  const { route, unusable } = await probeRoute(context, options, routing)
+  if (unusable) return { name: 'worker-probe', ok: false, needsUser: true, failureKind: 'agents', permissionMode: options.permissionMode, detail: `SETTINGS agents의 도구를 쓸 수 없습니다 (gusta agents로 확인): ${unusable.join(', ')}` }
+  // Without agents (an explicit command adapter run) the probe takes whichever CLI is installed.
+  const provider = route?.tool ?? (await which('claude') ? 'claude' : 'codex')
+  const model = route?.model ?? null, effort = route?.effort ?? null
   const allow = options.allowTool ?? []
   const place = options.probeWorkspace === 'current' ? null : await workInternals.destination({ workspace: context.workspace, cwd: context.root }, `probe-${randomUUID().slice(0, 8)}`)
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'gusta-probe-'))
@@ -689,10 +727,10 @@ async function probeWorker(context, options) {
     const args = provider === 'claude'
       ? ['--print', '--output-format', 'json', '--json-schema', JSON.stringify(PROBE_SCHEMA), '--permission-mode', bypass ? 'bypassPermissions' : 'acceptEdits', '--permission-prompts', 'none',
           '--tools', 'Bash,Read', '--allowedTools', ['Read', ...allow].join(',')]
-      : [...(bypass ? ['exec', '--dangerously-bypass-approvals-and-sandbox'] : ['-a', 'never', 'exec', '--sandbox', 'workspace-write']), '--output-schema', schemaFile, '--output-last-message', resultFile, '-']
-    if (options.model) args.push('--model', options.model)
-    const env = { ...(options.env ?? process.env) }
-    delete env.CLAUDECODE
+      : [...(bypass ? ['exec', '--dangerously-bypass-approvals-and-sandbox'] : ['-a', 'never', 'exec', '--sandbox', 'workspace-write']), '--output-schema', schemaFile, '--output-last-message', resultFile,
+          ...(model ? ['--model', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '-']
+    if (provider === 'claude') args.push(...(model ? ['--model', model] : []), ...(effort ? ['--effort', claudeEffort(effort)] : []))
+    const env = providerEnvironment(provider, options.env ?? process.env, effort)
     // Same optional flags (MCP isolation included) as the workers it stands in for.
     if (provider === 'claude') args.push(...claudeOptionalFlags(await providerFlags(provider, { env }), { headlessMcp: options.headlessMcp }))
     const output = await new Promise((resolve, reject) => {
@@ -713,7 +751,7 @@ async function probeWorker(context, options) {
     })
     const result = provider === 'claude' ? JSON.parse(output).structured_output : JSON.parse(await readFile(resultFile, 'utf8'))
     const ok = Boolean(result?.ran) && !result.denied && result.exitCode === 0
-    return { name: 'worker-probe', ok, needsUser: !ok, failureKind: ok ? null : probeFailureKind(result), ran: Boolean(result?.ran), exitCode: result?.exitCode ?? null, permissionMode: options.permissionMode,
+    return { name: 'worker-probe', ok, needsUser: !ok, failureKind: ok ? null : probeFailureKind(result), ran: Boolean(result?.ran), exitCode: result?.exitCode ?? null, permissionMode: options.permissionMode, route: runLabel({ tool: provider, model, effort }),
       detail: `${provider} ${options.permissionMode}: ${result?.denied ? 'denied' : `exit ${result?.exitCode}`} — ${result?.note ?? ''}`.trim(), allowTool: allow, workspace: probeRoot, workspaceMode: place ? 'new' : 'current',
       projectSettings: probeRoot === context.root ? 'current checkout: project settings available; effective permissions checked by this probe' : 'new worktree: project allowlist and installed dependencies may differ' }
   } catch (error) {
@@ -750,7 +788,7 @@ export async function vibeAwake(options = {}) {
 
 // Compatibility API: callers still receive an exit code; CLI prints one bounded summary.
 export async function vibeCheck(options = {}, command) {
-  const result = await runVibeCheck(options, command)
+  const result = options.resetGate ? await resetVibeGate(options, command) : await runVibeCheck(options, command)
   process.stdout.write(`${JSON.stringify(result)}\n`)
   return result.exitCode
 }

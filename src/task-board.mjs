@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { inspectWorkspace, git, showMany } from './workspace.mjs'
-import { quoteLine, quoteFields, sections, tableRows, splitRefs, TASK_ID, TASK_ST, EXPLORE, exploreValue } from './spec-format.mjs'
+import { quoteLine, quoteFields, sections, tableRows, splitRefs, TASK_ID, TASK_ST, EXPLORE, exploreValue, RUN, runValue } from './spec-format.mjs'
 import { touchesErrors } from './work-policy.mjs'
 import { dependencyErrors, laneErrors, laneValue } from './task-graph.mjs'
 
@@ -79,13 +79,15 @@ export async function readTaskBoard(options = {}) {
     for (const value of touchesErrors(fields.get('touches'))) errors.push(`${file}: touches 경로 형식 오류: ${value}`)
     const explore = exploreValue(fields.get('explore'))
     if (explore && !EXPLORE.test(explore)) errors.push(`${file}: explore 형식 오류: ${explore}`)
+    const run = runValue(fields.get('run'))
+    if (run && !RUN.test(run)) errors.push(`${file}: run 형식 오류: ${run}`)
     const deps = splitRefs(fields.get('dep'))
     const lane = laneValue(fields.get('lane'))
     graph.set(id, deps)
     lanes.set(id, lane)
     tasks.push({ id, title: title?.[2] ?? id, file: `spec/tasks/${file}`, st,
       ssot: splitRefs(fields.get('ssot')), base: splitRefs(fields.get('base')),
-      touches: splitRefs(fields.get('touches')), lane, explore, deps, waitingOn: deps.filter((dep) => !doneIds.has(dep)), dependencyReady: false,
+      touches: splitRefs(fields.get('touches')), lane, explore, run, deps, waitingOn: deps.filter((dep) => !doneIds.has(dep)), dependencyReady: false,
     })
   }
   errors.push(...dependencyErrors(graph, doneIds))

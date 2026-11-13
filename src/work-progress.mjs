@@ -6,7 +6,7 @@ const checks = progressChecks
 const step = (value) => ({ ...pick(value, ['taskId', 'commit', 'at']), verification: checks(value.verification) ?? [] })
 const dispatch = (value) => value && pick(value, ['id', 'runner', 'role', 'slot', 'provider', 'model', 'status', 'startedAt', 'finishedAt', 'error', 'summary'])
 const review = (value) => value && pick(value, ['id', 'owner', 'status', 'verdict', 'summary', 'findings', 'commit', 'baseCommit', 'submissionId', 'createdAt', 'finishedAt', 'releasedAt', 'invalidatedAt', 'invalidationReason', 'reason'])
-const run = (value) => value && pick(value, ['id', 'adapter', 'providers', 'workers', 'startedAt', 'stoppedAt', 'dispatched', 'outcome', 'failures', 'autopilot', 'decisionWaitMs', 'decisionWait'])
+const run = (value) => value && pick(value, ['id', 'adapter', 'providers', 'workers', 'startedAt', 'stoppedAt', 'dispatched', 'outcome', 'failures', 'autopilot', 'decisionWaitMs', 'decisionWait', 'limitWait', 'limit'])
 
 export function progressAttempt(value) {
   return {

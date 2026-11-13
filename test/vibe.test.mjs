@@ -471,11 +471,13 @@ test('preflight는 push 대상이 없으면 커밋만으로 보고 묻지 않는
   assert.equal(unset.checks.find((check) => check.name === 'push-target').ok, true)
   assert.equal(unset.checks.some((check) => check.name === 'push-permission'), false)
   // An undecided land never blocks autopilot (it commits only); preflight just reports it.
-  assert.deepEqual(unset.needsUser.filter((check) => check.name !== 'ci-access'), [])
+  // Undecided agents does: without the list the CLI has no tool to route units to.
+  assert.deepEqual(unset.needsUser.filter((check) => check.name !== 'ci-access').map((check) => check.name), ['agents'])
+  assert.deepEqual([unset.reason, unset.hint], ['needs-init', '/gusta-init으로 쓸 AI 목록(SETTINGS agents)을 정한 뒤 다시 실행하세요'])
   assert.match(unset.checks.find((check) => check.name === 'branch-settings').detail, /land 미정/)
   assert.deepEqual(await vibePush({ targetRoot: a }), { schemaVersion: 1, ok: true, pushed: null, reason: 'land-unset' })
   const { a: ready } = await machines(t)
-  const result = await vibePreflight({ targetRoot: ready })
+  const result = await vibePreflight({ targetRoot: ready, provider: 'claude' })
   assert.equal(result.checks.find((check) => check.name === 'push-permission').ok, true)
   assert.deepEqual(result.needsUser.filter((check) => check.name !== 'ci-access'), [])
 })

@@ -34,6 +34,24 @@ test('standalone brief contains exact cited blocks, freshness, touches and runna
   assert.equal(JSON.parse(result.stdout).taskId, 'T001')
 })
 
+test('task size and run: brief --json carries size.budget, status remaining and the board carry run', async (t) => {
+  const { root } = await fixture(t, 2)
+  const file = path.join(root, 'spec/tasks/T001.example.md')
+  const six = 'src/a.ts src/b.ts src/c.ts src/d.ts src/e.ts src/f.ts test/a.test.ts'
+  await writeFile(file, (await readFile(file, 'utf8')).replace('touches:src/', `touches:${six} | run:claude/sonnet@high`))
+  const brief = await vibeBrief({ targetRoot: root, task: 'T001' })
+  assert.deepEqual(brief.size.budget, { briefChars: brief.size.chars, touches: 6, limits: { briefChars: 40000, touches: 5 }, over: ['touches'] })
+  assert.deepEqual((await vibeBrief({ targetRoot: root, task: 'T002' })).size.budget.over, [])
+  const status = await vibeStatus({ targetRoot: root, fetch: false })
+  assert.deepEqual(status.remaining.map((task) => [task.id, task.run]), [['T001', 'claude/sonnet@high'], ['T002', undefined]])
+  const result = await execute(process.execPath, [fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url)), 'board', '--target', root, '--json'])
+  assert.deepEqual(JSON.parse(result.stdout).tasks.map((task) => [task.id, task.run]), [['T001', 'claude/sonnet@high'], ['T002', null]])
+  // A malformed run is a board error too: the task is not dependency-ready until the line is fixed.
+  await writeFile(file, (await readFile(file, 'utf8')).replace('run:claude/sonnet@high', 'run:sonnet'))
+  const broken = await execute(process.execPath, [fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url)), 'board', '--target', root, '--json']).catch((error) => error)
+  assert.ok(JSON.parse(broken.stdout).errors.includes('T001.example.md: run 형식 오류: sonnet'))
+})
+
 test('conditional verification prose is preserved without executing backticked paths', () => {
   const arch = '## decisions\n- ARCH-3 [o] Verification runs in three tiers.\n  - task, before each done commit: `pnpm run typecheck`, `pnpm exec vitest run --changed "$GUSTA_DIFF_BASE" --passWithNoTests`.\n  - conditional browser coverage uses the `tests/e2e` specs: `PREVIEW_BUILD=1 pnpm exec playwright test --project=chromium` with spec paths at the batch gate.\n  - batch, once before a push (`work integrate --verify`): `pnpm run test:unit`, `pnpm run build`.\n  - CI, after code push: run the remote checks; `spec/`, `docs/` do not trigger them.\n'
   const v = verificationTiers(arch)

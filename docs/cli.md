@@ -77,6 +77,9 @@ npx @haeram/gusta context --json
 npx @haeram/gusta board
 npx @haeram/gusta board --target ../my-worktree --json
 
+# 설치된 AI 도구(claude·codex)의 로그인·모델·에포트와 조합별 능력 점수·비용 순서 — 모델 호출 없음
+npx @haeram/gusta agents --json
+
 # 충돌한 로컬 파일을 패키지 버전으로 명시적으로 교체
 npx @haeram/gusta install --force
 
@@ -104,9 +107,13 @@ npx @haeram/gusta vibe checkpoint --tag k3f9 --handoff --next 'continue pending 
 npx @haeram/gusta vibe design start --tag d7 --scope "landing hero"  # 이 checkout만 디자인 중으로 (STATE·다른 worktree는 그대로)
 npx @haeram/gusta vibe design verify            # 디자인 마감: ARCH task·batch 명령 전부를 미커밋 트리에서
 npx @haeram/gusta vibe design end               # 디자인 중 표시 해제 — 이어서 커밋 하나
-npx @haeram/gusta vibe check --tier batch -- pnpm run test:e2e   # 같은 트리에서 통과한 검사는 생략, 무거운 검사는 하나씩
+npx @haeram/gusta vibe check --tier task -- pnpm exec vitest related --run src/a.ts   # 태스크 커밋 직전 한 번: 명령별 시간을 timings.json에 남긴다
+npx @haeram/gusta vibe check --tier batch --tag k3f9 -- pnpm run test:e2e   # 같은 트리에서 통과한 검사는 생략, 무거운 검사는 하나씩, 세션마다 실패 3회 상한
+npx @haeram/gusta vibe check --reset-gate --tag k3f9   # 사람이 그 세션의 관문 실패 기록을 지워 상한을 푼다 (맡김은 쓰지 않음)
 npx @haeram/gusta vibe preflight --probe-workspace current --probe 'pnpm run test' --allow-tool 'Bash(pnpm run *)'
 ```
+
+batch/group 관문(`vibe check --tier batch|group`)은 세션마다(`--tag`, 없으면 현재 브랜치) 실패한 라운드를 runtime `gates.json`에 셉니다. 한 트리에서 돈 명령들은 한 라운드이고, 같은 명령을 다시 돌리거나 트리가 바뀌면 새 라운드입니다. 캐시 적중은 세지 않고 성공해도 초기화하지 않으며, 12시간 동안 관문이 없으면 새로 셉니다. 결과의 `gate`는 `{key, attempts, failures, cap, left}`이고, 실패하면 `next`에 실패한 명령·로그, 고친 부분만 `--tier task --diff-base <관문 커밋>`으로 먼저 확인하라는 안내, 남은 시도가 실립니다. 실패 3회에 닿으면 다음 관문은 명령을 돌리지 않고 exit 1과 `{refused: 'gate-cap', attempts, failures, cap, lastFailure, next}`로 거절합니다 — 남은 실패를 보고서와 `vibe inbox add --kind parked`로 남기고 멈추라는 뜻입니다. `vibe loop`의 관문은 같은 기록에 남지만 자기 상한(`--max-gate-attempts`)으로 판정하고, `vibe design verify`는 세지 않습니다. 상한은 사람만 `--reset-gate`로 풉니다.
 
 원격에서 이어갈 현재 상태만 요청하면 `checkpoint --handoff`를 씁니다. 최종 검증·병합·수정 없이 WIP 브랜치를 원격에 보존하고, 최종 반영용 SETTINGS push가 꺼져 있어도 인계 push를 시도합니다. 결과의 원격 브랜치·커밋·`verification.status: unverified`·다음 작업을 함께 전달합니다.
 
@@ -117,7 +124,27 @@ npx @haeram/gusta vibe preflight --probe-workspace current --probe 'pnpm run tes
 | `others[]` | 다른 세션의 행 — `branch`·`commit`과 `pushed`(그 커밋이 원격에 있는지, `false`면 아직 push 안 됨)·`stale` |
 | `unlanded[]` | 끝났지만 아직 land에 들어가지 않은 태스크와 그것을 가진 브랜치·커밋 |
 | `held[]` | `runnable`에서 뺀 태스크와 이유 — `claimed`(다른 세션이 진행 중)·`unlanded`·`landed`(land에는 이미 끝나 있음: 먼저 sync) |
+| `taskChecks` | 이 clone의 태스크 단계 검사(`vibe check --tier task`, 명령마다 최근 10회 실측·캐시 적중 제외) — `runs`·`ms` 합계와 `slow`(평균 60초 초과·2회 이상인 `{command, runs, avgMs}`: 최종 관문으로 옮길 후보, 정하는 것은 사람). ARCH batch에만 있는 명령은 빠지고, 기록이 없으면 키가 없다 |
 | `coordination` | `legacy`(이관 전 STATE에 남은 옛 섹션)·`lost`(다른 기기가 먼저 올려 풀린 선점)·`contested`·`push`(원격 반영 상태, 원격 실패 뒤 쉬는 중이면 `backoff`의 이유·다시 시도할 시각)·`error`(조정 브랜치를 쓸 수 없는 이유) |
+| `remaining[].run` | 태스크 인용줄의 실행 추천 `<tool>/<model>@<effort>` — 적힌 태스크에만 있다(`board --json`의 `tasks[].run`은 없으면 `null`) |
+
+`gusta agents --json`은 모델 호출 없이(`--version`·`--help`·`claude auth status`·`codex debug models --bundled`·`codex login status`) 다음을 돌려줍니다. 출력을 읽지 못한 도구는 `status: unknown`과 `error`로 남고 추측하지 않습니다.
+
+| 키 | 뜻 |
+|---|---|
+| `agents`·`unset` | SETTINGS `agents` 목록(폴백 순서), 미정이면 `null`·`true` (`/gusta-init`이 정함) |
+| `tools[]` | 도구마다 `installed`·`version`·`loggedIn`(`null`=확인 불가)·`allowed`(agents에 있음)·`status`·`models[]{model, tier, efforts, context, superseded?}` — Claude는 패키지가 아는 별칭(haiku·sonnet·opus·fable, `--help`와 교차 확인), Codex는 번들 카탈로그의 표시 모델 |
+| `options[]` | 고를 수 있는 `{tool, model, effort, score, cost, allowed}`, 싼 순서. `score`=능력(계열 순위 1~4와 에포트 low~ultra를 한 척도로, 계열 한 단계≈에포트 세 단계), `cost`=비용 순서(계열 먼저, 그다음 에포트 — 가격이 아님). 대체된(`superseded`) 모델은 빠지고 같은 계열·에포트는 하나만 |
+| `minContext`·`contextUnknown` | 허용 도구가 제안하는 모델 중 가장 작은 context window, 모델 호출 없이 알 수 없는 도구(Claude) |
+
+`vibe loop`·`work run`·`vibe preflight --probe`·`vibe ab run`(변형·scaffold)·`work scout`는 이 카탈로그로 헤드리스 세션의 도구·모델·에포트를 정합니다(모델 호출 없음, 실행 중인 모델이 고르지 않음). 순서는 명시 지정(`--provider`·`--model`·`--effort`, `work run`의 `--providers`·`--reviewer-provider`) > 태스크 `run:` > 기본값입니다. 태스크 `run:`을 지금 쓸 수 없으면(agents 밖 도구·로그인 안 됨·호환 안 되는 CLI·목록에 없는 모델·지원 안 하는 에포트) score가 가장 가까운 allowed 조합(같으면 싼 쪽, 그다음 agents 순서), `run:`이 없으면(변형·탐색 포함) agents 첫 도구를 그 도구의 기본 설정 그대로(`--model`·`--effort`를 넘기지 않음, `source:'default'`) 돌립니다 — 변형끼리는 같은 조합입니다. 그 도구를 쓸 수 없을 때의 폴백은 다른 도구의 기본 설정, 그다음 기준 score 6(균형 계열@high)에 가까운 조합 순서입니다. 회복·관문 수정 단위와 `work run`의 수정 요청·재시도는 그보다 낮추지 않고, 리뷰어는 워커 능력 이상에서 agents에 도구가 둘 이상이면 다른 도구를 먼저, probe는 agents 첫 도구의 가장 싼 조합입니다. Claude는 `--model`·`--effort`(ultra는 max)와 자식 환경 `CLAUDE_CODE_EFFORT_LEVEL`, Codex는 `--model`(-m)·`-c model_reasoning_effort=<e>`(resume도 같음)로 받고, `--adapter`로 연결한 실행기는 job의 `route`로만 받습니다. SETTINGS `agents`가 미정이고 도구를 명시하지 않으면(`--provider`·`--providers`·`--adapter` 없음) `vibe loop`·`work run`은 시작하지 않고 `{ok:false, reason:'needs-init', hint, unset:['agents']}`(exit 1)로, `vibe preflight`는 `agents` 검사 실패와 같은 `reason`·`hint`로 끝납니다(probe 없음).
+
+| 키 | 뜻 |
+|---|---|
+| `routing[]` (`vibe loop --dry-run`) | 남은 태스크(`--tasks` 범위)마다 `task`·`recommended`(태스크 `run:`)·`run`(실행할 조합)·`source`(`task`·`nearest`·`default`·`explicit`·`none`)·`skipped`(추천을 못 쓴 이유: `not-in-agents`·`not-logged-in`·`not-installed`·`model-unavailable`·`effort-unsupported`·`pinned-tool`·`blocked`) |
+| `route` | 실제 dispatch의 `{tool, model, effort, source, recommended}` — loop의 manifest `dispatches[]`·`unit-route` 이벤트·단위 job, `work run`의 attempt `dispatch.route`·`workerRoute`·어댑터 payload. 보고서 done 줄은 `추천 → 실제`(같으면 실제만), 한도로 옮겼으면 뒤에 `(← claude limit, resets 15:45)` |
+
+**사용량 한도 폴백.** 내장 어댑터(`bin/gusta-agent-adapter.mjs`)는 실패를 분류합니다: `usage-limit`(범위 `tool` 또는 `family` — Claude session·weekly는 도구 전체, Opus·Sonnet은 계열)·`rate-limit`·`overloaded`·`auth`이면 stdout에 `{"failure":{kind, scope, tool, family?, model?, resetAt?, message}}` 한 줄을 쓰고 종료 코드 75로 끝납니다(그 밖은 종전대로 1). 리셋은 Claude `resetsAt`, 없으면 "resets 3:45pm"(로컬, 지난 시각이면 다음 날), Codex "Try again at …"이고, 모르면 30분에서 같은 대상이 반복될 때마다 두 배(최대 5시간)입니다. `usage-limit`·`rate-limit`은 clone 공용 `<git common dir>/gusta/v1/limits.json`(`{tool, family?, reason, resetAt, since, source, hits}`)에 남아 모든 worktree의 `vibe loop`·`work run`·`vibe ab run`·`work scout`·preflight probe가 피하고, 리셋이 지나면 풀립니다. 그런 실패는 `vibe loop`의 단위·사다리·연속 실패·관문 횟수와 `work run`의 `max-task-runs`에 세지 않고 같은 태스크를 agents 안 다음 조합으로 다시 띄웁니다(`overloaded`는 같은 조합 1회 재시도 뒤, `auth`는 그 도구를 이번 실행에서 빼고 결정함에 parked). 모두 막히면 `vibe loop`은 첫 리셋이 작업 시간 안이면 모델 호출 없이 기다리고(이벤트 `limit-wait`, manifest `limitWait`), 아니면 `reason:'usage-limit'`·`hint`("<도구> <시각>까지 사용량 한도 — 그 뒤 다시 실행하세요", 알림 attention)로 멈춥니다. `work run`은 `--limit-wait-ms`(기본 5시간) 안의 리셋만 기다리고 아니면 `outcome:'usage-limit'`·`limit`·`hint`로 끝나며, 이후 `work next`는 `action:'usage-limit'`으로 결정함에 남기고 마감하라고 안내합니다. 기록은 loop manifest·결과 `usageLimits[]`, `work run` 결과 `limitHits[]`, 이벤트 `limit-hit`·`route-fallback`·`limit-stop`입니다.
 
 `--force`는 로컬 수정 내용을 덮어쓸 수 있으므로 충돌 내용을 확인한 뒤 사용하세요.
 

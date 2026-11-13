@@ -102,7 +102,36 @@ export async function withHeavyLock(runtime, label, run, { timeoutMs = 4 * 60 * 
 // A timed run sizes its closing reserve from these instead of a fixed share. The last
 // few samples are kept and the largest is used, so one quick run does not shrink it.
 const TIMING_SAMPLES = 3
+// Task checks (`task` kind) are averaged, so each keeps more samples; units pick their own tests,
+// so the commands are many and only the most recently run ones are kept.
+const TASK_SAMPLES = 10, TASK_KEYS = 100
 export const timingKey = (kind, command = '') => `${kind}\u0000${command.trim().replace(/\s+/g, ' ')}`
+// A task check is meant to be fast: one that averages over a minute in at least two runs belongs
+// to the final gate. Moving it changes the ARCH tiers, so it is only ever suggested to a person.
+export const SLOW_TASK_CHECK_MS = 60000, SLOW_TASK_CHECK_RUNS = 2
+
+// rows: [{ command, runs (default 1), ms }]; one row per command after this. Pure.
+export function taskCheckRows(rows) {
+  const by = new Map()
+  for (const row of rows) {
+    if (!row?.command || !Number.isFinite(row.ms)) continue
+    const command = row.command.trim().replace(/\s+/g, ' '), entry = by.get(command) ?? { command, runs: 0, ms: 0 }
+    entry.runs += row.runs ?? 1; entry.ms += row.ms
+    by.set(command, entry)
+  }
+  return [...by.values()]
+}
+
+export function taskCheckSummary(rows) {
+  const all = taskCheckRows(rows)
+  const slow = all.filter((entry) => entry.runs >= SLOW_TASK_CHECK_RUNS && entry.ms / entry.runs > SLOW_TASK_CHECK_MS)
+    .sort((a, b) => b.ms - a.ms).map((entry) => ({ command: entry.command, runs: entry.runs, avgMs: Math.round(entry.ms / entry.runs) }))
+  return { runs: all.reduce((sum, entry) => sum + entry.runs, 0), ms: all.reduce((sum, entry) => sum + entry.ms, 0), slow }
+}
+
+// The task checks timings.json still holds: each command's kept samples.
+export const taskTimingRows = (store) => Object.entries(store.entries).filter(([key]) => key.startsWith('task\u0000'))
+  .map(([key, entry]) => ({ command: key.slice(5), runs: entry.samples?.length ?? 0, ms: (entry.samples ?? []).reduce((sum, ms) => sum + ms, 0) }))
 
 export async function readTimings(runtime) {
   try {
@@ -120,8 +149,12 @@ export function measured(store, key) {
 export async function recordTiming(runtime, key, ms) {
   if (!Number.isFinite(ms) || ms < 0) return
   await mkdir(runtime, { recursive: true })
-  const store = await readTimings(runtime)
-  store.entries[key] = { samples: [...(store.entries[key]?.samples ?? []), Math.round(ms)].slice(-TIMING_SAMPLES), at: new Date().toISOString() }
+  const store = await readTimings(runtime), task = key.startsWith('task\u0000')
+  store.entries[key] = { samples: [...(store.entries[key]?.samples ?? []), Math.round(ms)].slice(-(task ? TASK_SAMPLES : TIMING_SAMPLES)), at: new Date().toISOString() }
+  if (task) {
+    const keys = Object.keys(store.entries).filter((name) => name.startsWith('task\u0000'))
+    for (const old of keys.sort((a, b) => store.entries[a].at.localeCompare(store.entries[b].at)).slice(0, Math.max(0, keys.length - TASK_KEYS))) delete store.entries[old]
+  }
   const temporary = path.join(runtime, `timings.${randomUUID()}.tmp`)
   await writeFile(temporary, `${JSON.stringify(store)}\n`)
   await rename(temporary, path.join(runtime, 'timings.json'))

@@ -14,6 +14,7 @@ import { inspectWorkspace } from '../src/workspace.mjs'
 import { runtimeRoot, readRuntime } from '../src/work-runtime.mjs'
 import { vibeInbox } from '../src/vibe-inbox.mjs'
 import { readSessions } from '../src/coord-doc.mjs'
+import { buildCatalog } from '../src/agent-catalog.mjs'
 
 const execute = promisify(execFile)
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
@@ -48,14 +49,17 @@ async function fixture(t) {
   return { temporary, root, remote, targetRoot: root }
 }
 
-// A fake provider CLI: T001 first stops on a planning question (after writing half its work),
-// then finishes when resumed with the coordinator's note. Every call is logged.
-async function fakeProvider(setup, provider = 'claude', { holdTask = null, askDecision = true } = {}) {
+// A fake provider CLI (one per name given): T001 first stops on a planning question (after writing
+// half its work), then finishes when resumed with the coordinator's note. Every call is logged.
+// limitTask: Claude's worker run of that task stops at its session limit (after writing part of its work)
+// the first time, or every time with limitAlways.
+async function fakeProvider(setup, providers = 'claude', { holdTask = null, askDecision = true, limitTask = null, limitAlways = false, limitSeconds = 7200 } = {}) {
   const directory = path.join(setup.temporary, 'providers')
   await mkdir(directory)
   const log = path.join(setup.temporary, 'calls.jsonl')
   const release = path.join(setup.temporary, 'release-worker')
-  await writeFile(path.join(directory, provider), `#!${process.execPath}
+  const limited = path.join(setup.temporary, 'limited-once')
+  for (const provider of [providers].flat()) await writeFile(path.join(directory, provider), `#!${process.execPath}
 const fs=require('node:fs');
 const args=process.argv.slice(2);
 if(args.includes('--version')) {console.log('${provider} test');process.exit(0)}
@@ -66,8 +70,14 @@ const flag=(key)=>args.includes(key)?args[args.indexOf(key)+1]:null;
 const resume=flag('--resume')??flag('resume');
 const session=resume??flag('--session-id')??require('node:crypto').randomUUID();
 if('${provider}'==='codex')console.log(JSON.stringify({type:'thread.started',thread_id:session}));
-fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({role:job.role,taskId:job.taskId,session,resume,note:job.directive?.note??null,brief:Boolean(job.brief),mode:job.mode,bypass:args.some(arg=>arg.includes('bypass')),strict:args.includes('--strict-mcp-config'),mcpConfig:flag('--mcp-config')})+'\\n');
+fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({tool:'${provider}',role:job.role,taskId:job.taskId,session,resume,note:job.directive?.note??null,brief:Boolean(job.brief),mode:job.mode,bypass:args.some(arg=>arg.includes('bypass')),strict:args.includes('--strict-mcp-config'),mcpConfig:flag('--mcp-config'),model:flag('--model'),effort:flag('--effort')??flag('-c'),envEffort:process.env.CLAUDE_CODE_EFFORT_LEVEL??null})+'\\n');
 let result;
+if('${provider}'==='claude'&&job.role==='worker'&&job.taskId===${JSON.stringify(limitTask)}&&(${limitAlways}||!fs.existsSync(${JSON.stringify(limited)}))) {
+  fs.writeFileSync(${JSON.stringify(limited)},'1');fs.writeFileSync('limited.txt','before the limit');
+  console.log(JSON.stringify({type:'rate_limit_event',rate_limit_info:{status:'rejected',resetsAt:Math.floor(Date.now()/1000)+${limitSeconds},rateLimitType:'five_hour'}}));
+  console.log(JSON.stringify({type:'result',subtype:'success',is_error:true,result:"You've hit your session limit · resets 3:45pm",terminal_reason:'blocking_limit'}));
+  process.exitCode=1;return;
+}
 if(job.role==='worker') {
   if(job.taskId===${JSON.stringify(holdTask)})while(!fs.existsSync(${JSON.stringify(release)}))await new Promise(resolve=>setTimeout(resolve,20));
   if(${askDecision}&&job.taskId==='T001'&&!job.directive) {
@@ -364,4 +374,98 @@ console.log(JSON.stringify({type:'result',is_error:false,structured_output:resul
   assert.ok(result.pruned.cleaned.includes(attempt.id))
   assert.equal((await git(setup.root, 'show', `${group.branch}:measured.txt`)).stdout, 'round 1: 36.2%')
   assert.match((await git(setup.root, 'log', '--format=%s', group.branch)).stdout, /WIP T001: checkpoint after the time limit/)
+})
+
+// The planned run: of each task, read by the runner from the unit's workspace at every dispatch.
+test('맡김 work run: --provider 없이 dispatch마다 태스크 run:을 SETTINGS agents 안에서 배정한다 (미정이면 needs-init)', async (t) => {
+  const setup = await fixture(t)
+  const { env, log } = await fakeProvider(setup, ['claude', 'codex'], { askDecision: false })
+  const group = await startWork({ ...setup, name: 'routed', verify: ['node -e "0"'] })
+  const undecided = await runWork({ ...setup, work: group.id, env, autopilot: true }, { catalog: () => assert.fail('no catalog without agents') })
+  assert.deepEqual([undecided.ok, undecided.outcome, undecided.dispatched, undecided.hint], [false, 'needs-init', 0, '/gusta-init으로 쓸 AI 목록(SETTINGS agents)을 정한 뒤 다시 실행하세요'])
+  assert.equal((await readRuntime(runtimeRoot(await inspectWorkspace(setup)))).groups[group.id].runner, undefined)
+  // The group branch takes the planning commit (runs + agents) before the runner starts.
+  for (const [id, run] of [['T001.limits', 'codex/terra@high'], ['T002.runtime', 'claude/opus@low']]) {
+    const file = path.join(group.path, `spec/tasks/${id}.md`)
+    await writeFile(file, (await readFile(file, 'utf8')).replace('lane:-', `lane:- | run:${run}`))
+  }
+  await writeFile(path.join(group.path, 'spec/SETTINGS.md'), '# SETTINGS\n- agents: claude,codex\n')
+  await commit(group.path, 'plan runs')
+  const CLAUDE = { installed: true, loggedIn: true, models: ['haiku', 'sonnet', 'opus', 'fable'].map((model) => ({ model, efforts: ['low', 'medium', 'high', 'xhigh', 'max'], context: null })) }
+  const CODEX = { installed: true, loggedIn: true, models: ['terra', 'sol'].map((model) => ({ model, efforts: ['low', 'medium', 'high', 'xhigh'], context: 272000 })) }
+  const result = await runWork({ ...setup, targetRoot: group.path, work: group.id, env, autopilot: true, pollMs: 20 }, { catalog: () => buildCatalog({ claude: CLAUDE, codex: CODEX }, ['claude', 'codex']) })
+  assert.equal(result.outcome, 'completed', JSON.stringify(result))
+  const workers = Object.fromEntries((await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.role === 'worker').map(({ taskId, tool, model, effort, envEffort }) => [taskId, { tool, model, effort, envEffort }]))
+  // Codex gets -m and -c model_reasoning_effort; Claude gets --effort and the same level in its env.
+  assert.deepEqual(workers, { T001: { tool: 'codex', model: 'terra', effort: 'model_reasoning_effort=high', envEffort: null }, T002: { tool: 'claude', model: 'opus', effort: 'low', envEffort: 'low' } })
+  const attempts = Object.values((await readRuntime(runtimeRoot(await inspectWorkspace(setup)))).attempts).filter((entry) => entry.group === group.id)
+  assert.deepEqual(Object.fromEntries(attempts.map((entry) => [entry.taskId, entry.workerRoute])), {
+    T001: { tool: 'codex', model: 'terra', effort: 'high', source: 'task', recommended: 'codex/terra@high' },
+    T002: { tool: 'claude', model: 'opus', effort: 'low', source: 'task', recommended: 'claude/opus@low' },
+  })
+})
+
+// A usage limit is not a run of the task: the attempt goes back to doing and the next dispatch takes the
+// next tool SETTINGS agents allows, in a new session that carries the earlier progress.
+const LIMIT_CLAUDE = { installed: true, loggedIn: true, models: ['haiku', 'sonnet', 'opus'].map((model) => ({ model, efforts: ['low', 'medium', 'high'], context: null })) }
+const LIMIT_CODEX = { installed: true, loggedIn: true, models: ['terra', 'sol'].map((model) => ({ model, efforts: ['low', 'medium', 'high'], context: 272000 })) }
+test('맡김 work run: 사용량 한도는 max-task-runs를 쓰지 않고 같은 attempt를 agents 안 다음 도구의 새 세션으로 이어 간다', async (t) => {
+  const setup = await fixture(t)
+  const { env, log } = await fakeProvider(setup, ['claude', 'codex'], { askDecision: false, limitTask: 'T001' })
+  const group = await startWork({ ...setup, name: 'limited', verify: ['node -e "0"'] })
+  await writeFile(path.join(group.path, 'spec/SETTINGS.md'), '# SETTINGS\n- agents: claude,codex\n')
+  await commit(group.path, 'agents')
+  const catalog = () => buildCatalog({ claude: LIMIT_CLAUDE, codex: LIMIT_CODEX }, ['claude', 'codex'])
+  // One run per task: a limit that counted would leave T001 at the worker retry limit.
+  const result = await runWork({ ...setup, targetRoot: group.path, work: group.id, env, autopilot: true, pollMs: 20, maxTaskRuns: 1 }, { catalog })
+  assert.equal(result.outcome, 'completed', JSON.stringify(result))
+  assert.deepEqual(result.failures, [])
+  assert.deepEqual(result.limitHits.map(({ taskId, role, kind, target, route }) => [taskId, role, kind, target, route]), [['T001', 'worker', 'usage-limit', 'claude', 'claude']])
+  const calls = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.role === 'worker' && call.taskId === 'T001')
+  // The default route is the first tool at its own setting; after the limit, Codex in a new session with the note.
+  assert.deepEqual(calls.map(({ tool, model, resume }) => [tool, model, resume]), [['claude', null, null], ['codex', null, null]])
+  assert.match(calls[1].note, /claude's usage-limit; your work so far is committed as [0-9a-f]{40}\. Continue from it\./)
+  const runtime = runtimeRoot(await inspectWorkspace(setup))
+  const limits = JSON.parse(await readFile(path.join(runtime, 'limits.json'), 'utf8'))
+  assert.deepEqual(limits.entries.map(({ tool, reason, source }) => [tool, reason, source]), [['claude', 'usage-limit', 'reported']])
+  // The part written before the limit reached the group branch through the WIP commit.
+  assert.equal((await git(setup.root, 'show', `${group.branch}:limited.txt`)).stdout, 'before the limit')
+  assert.match((await git(setup.root, 'log', '--format=%s', group.branch)).stdout, /WIP T001: checkpoint after a usage-limit \(claude\)/)
+})
+
+test('맡김 work run: agents의 모든 조합이 한도이고 리셋이 limit-wait-ms 밖이면 usage-limit으로 끝나고, work next는 모델 대기 없이 결정함에 남기라고 한다', async (t) => {
+  const setup = await fixture(t)
+  const { env } = await fakeProvider(setup, ['claude'], { askDecision: false, limitTask: 'T001', limitAlways: true })
+  const group = await startWork({ ...setup, name: 'held', verify: ['node -e "0"'], workers: 1 })
+  await writeFile(path.join(group.path, 'spec/SETTINGS.md'), '# SETTINGS\n- agents: claude\n')
+  await commit(group.path, 'agents')
+  const catalog = () => buildCatalog({ claude: LIMIT_CLAUDE }, ['claude'])
+  const result = await runWork({ ...setup, targetRoot: group.path, work: group.id, env, autopilot: true, pollMs: 20, limitWaitMs: 1000 }, { catalog })
+  assert.equal(result.outcome, 'usage-limit', JSON.stringify(result))
+  assert.equal(result.limit.limits[0].tool, 'claude')
+  assert.match(result.hint, /^claude .*까지 사용량 한도 — 그 뒤 work run을 다시 실행하세요$/)
+  const state = await readRuntime(runtimeRoot(await inspectWorkspace(setup)))
+  const t001 = Object.values(state.attempts).find((entry) => entry.group === group.id && entry.taskId === 'T001')
+  assert.deepEqual([t001.status, t001.directive.kind], ['doing', 'limit'])
+  assert.equal(state.groups[group.id].lastRun.outcome, 'usage-limit')
+  const next = await nextWork({ ...setup, work: group.id, owner: 'coord', coordinator: true, autopilot: true })
+  assert.equal(next.action, 'usage-limit', JSON.stringify(next))
+  assert.equal(next.limit.limits[0].tool, 'claude')
+  assert.match(next.instruction, /vibe inbox add --kind parked/)
+  assert.doesNotMatch(next.instruction, /STATE|&&|;|sleep|kill/)
+})
+
+test('맡김 work run: 모든 조합이 한도여도 리셋이 limit-wait-ms 안이면 모델 호출 없이 기다렸다가 같은 attempt를 이어 간다', async (t) => {
+  const setup = await fixture(t)
+  const { env, log } = await fakeProvider(setup, ['claude'], { askDecision: false, limitTask: 'T001', limitSeconds: 2 })
+  const group = await startWork({ ...setup, name: 'waits', verify: ['node -e "0"'] })
+  await writeFile(path.join(group.path, 'spec/SETTINGS.md'), '# SETTINGS\n- agents: claude\n')
+  await commit(group.path, 'agents')
+  const result = await runWork({ ...setup, targetRoot: group.path, work: group.id, env, autopilot: true, pollMs: 20, maxTaskRuns: 1 }, { catalog: () => buildCatalog({ claude: LIMIT_CLAUDE }, ['claude']) })
+  assert.equal(result.outcome, 'completed', JSON.stringify(result))
+  const calls = (await readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.role === 'worker' && call.taskId === 'T001')
+  // Two runs only: the limited one and the one after the reset (nothing ran while it waited).
+  assert.deepEqual(calls.map(({ tool }) => tool), ['claude', 'claude'])
+  assert.match(calls[1].note, /claude's usage-limit/)
+  assert.deepEqual(result.limitHits.map(({ taskId, kind }) => [taskId, kind]), [['T001', 'usage-limit']])
 })

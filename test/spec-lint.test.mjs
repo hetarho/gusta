@@ -751,6 +751,34 @@ test('explore 태스크는 시간 제한 형식과 exit 줄이 필수다', async
   })
 })
 
+test('run 추천은 형식만 오류로 보고(필드 없음·-·done 아카이브는 통과), todo의 테스트 아닌 touches 5개 초과는 검토 후보다', async () => {
+  const withRun = (value) => T002.replace('dep:T001', `dep:T001 | run:${value}`)
+  for (const value of ['claude/sonnet@high', 'codex/gpt-6.1-sol@ultra', 'claude/claude-opus-5-5@xhigh', '-']) {
+    await withFixture({ tasks: { 'T002.api.md': withRun(value) } }, async (root) => assert.deepEqual((await lintSpec({ targetRoot: root })).errors, [], value))
+  }
+  // 그 기기에 그 모델이 있는지는 판정하지 않는다: 모르는 모델 이름도 형식이 맞으면 통과.
+  await withFixture({ tasks: { 'T002.api.md': withRun('codex/some-future-model@low') } }, async (root) => assert.deepEqual((await lintSpec({ targetRoot: root })).errors, []))
+  for (const value of ['gemini/pro@high', 'claude/sonnet', 'claude/sonnet@huge', '<tool>/<model>@<effort>']) {
+    await withFixture({ tasks: { 'T002.api.md': withRun(value) } }, async (root) => {
+      const { errors } = await lintSpec({ targetRoot: root })
+      assert.deepEqual(errors, [`tasks/T002.api.md: run 형식 오류: ${value} (<claude|codex>/<model>@<low|medium|high|xhigh|max|ultra>|-)`], value)
+    })
+  }
+  // 완료 아카이브는 역사 기록이라 다시 판정하지 않는다(원칙 8).
+  await withFixture({ done: { 'T001.scaffold.md': T001.replace('dep:-', 'dep:- | run:old/format') } }, async (root) => assert.deepEqual((await lintSpec({ targetRoot: root })).errors, []))
+  const touches = (list) => T002.replace('dep:T001', `dep:T001 | touches:${list}`)
+  const six = 'src/a.ts src/b.ts src/c.ts src/d.ts src/e.ts src/f.ts'
+  await withFixture({ tasks: { 'T002.api.md': touches(six) } }, async (root) => {
+    const result = await lintSpec({ targetRoot: root })
+    assert.deepEqual([result.ok, result.errors], [true, []])
+    assert.ok(result.reviewHints.some((hint) => hint.startsWith('tasks/T002.api.md: 테스트 아닌 touches 6개(기준 5)')), result.reviewHints.join('\n'))
+  })
+  // 테스트 경로는 세지 않고, todo가 아닌 태스크는 이미 나뉜 작업이라 보지 않는다.
+  for (const [content, state] of [[touches('src/a.ts src/b.ts src/c.ts src/d.ts src/e.ts test/a.test.ts src/f.test.ts'), STATE], [touches(six).replace('st:todo', 'st:doing@261013.k3f9'), STATE.replace('| T001 | todo |', '| T001 | doing@261013.k3f9 |')]]) {
+    await withFixture({ tasks: { 'T002.api.md': content }, state }, async (root) => assert.equal((await lintSpec({ targetRoot: root })).reviewHints.some((hint) => /touches/.test(hint)), false))
+  }
+})
+
 test('보고서는 파일명·제목·인용줄·골격을 검사한다', async () => {
   const report = '# REPORT 261013-k3f9\n> mode:autopilot | host:mbp | from:2026-10-13T01:00Z | to:- | push:main\n\n## done\n- T002 api, 1a2b3c4\n\n## decided\n- ARCH-2: 정적 호스팅으로 진행\n\n## parked\n- -\n\n## checks\n- npm test: pass\n\n## next\n- inbox 확인\n'
   const root = await mkdtemp(path.join(tmpdir(), 'spec-lint-'))
@@ -789,5 +817,27 @@ test('cfg always는 있는 결정·도메인만 가리키고, 빠지면 기본(A
   })
   await withFixture({ state: STATE.replace('- docs: en', '- docs: en\n- always: ARCH') }, async (root) => {
     assert.deepEqual((await lintSpec({ targetRoot: root })).errors, [])
+  })
+})
+
+test('[o] 검증 결정에 단계 선언이 없으면 검토 후보만 낸다 — 오류·경고는 그대로이고, 세 단계를 선언하면 사라진다', async () => {
+  const hinted = (result) => result.reviewHints.filter((hint) => hint.includes('검증 단계 선언'))
+  const baseline = await withFixture({}, (root) => lintSpec({ targetRoot: root }))
+  assert.deepEqual(hinted(baseline), [], '검증 결정이 없는 ARCH에는 후보가 없다')
+  const undeclared = ARCH.replace('- ARCH-2 [?] deploy target', '- ARCH-2 [?] deploy target\n- ARCH-3 [o] verification: `pnpm run typecheck`, `pnpm run build` before each done')
+  await withFixture({ arch: undeclared }, async (root) => {
+    const result = await lintSpec({ targetRoot: root })
+    assert.deepEqual([result.ok, result.errors, result.warnings], [baseline.ok, baseline.errors, baseline.warnings])
+    assert.deepEqual(hinted(result), ['ssot/ARCH.md: [o] 검증 결정(ARCH-3)에 task / batch / CI 검증 단계 선언이 없습니다 — 단계를 모두 명시하고 1분 넘는 검사는 batch에 두는 개정 후보입니다(gusta-update 규칙 대조).'])
+  })
+  const partial = ARCH.replace('- ARCH-2 [?] deploy target', '- ARCH-2 [?] deploy target\n- ARCH-3 [o] verification tiers\n  - task, before each done commit: `pnpm run lint`\n  - batch, before code push or final completion: `pnpm run build`')
+  await withFixture({ arch: partial }, async (root) => {
+    assert.match(hinted(await lintSpec({ targetRoot: root }))[0], /ARCH-3\)에 .*일부만 있습니다/)
+  })
+  const declared = partial.replace('`pnpm run build`', '`pnpm run build`\n  - CI, after code push: remote checks')
+  await withFixture({ arch: declared }, async (root) => {
+    const result = await lintSpec({ targetRoot: root })
+    assert.deepEqual(hinted(result), [])
+    assert.deepEqual([result.ok, result.errors, result.warnings], [baseline.ok, baseline.errors, baseline.warnings])
   })
 })

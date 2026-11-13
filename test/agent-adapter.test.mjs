@@ -83,13 +83,15 @@ test('CLI 검사와 auto 선택은 모델을 호출하지 않고 필수 flag 지
   const info = await inspectProviders({ targetRoot: fixture.root, env: fixture.env })
   assert.equal(info.autoProvider, 'codex')
   assert.equal(info.providers.find((entry) => entry.provider === 'claude').available, false)
+  // auto pins no tool: every dispatch is routed (agent-route) among the compatible CLIs.
   const config = await builtInAdapter({ targetRoot: fixture.root, env: fixture.env, provider: 'auto', model: 'chosen', reviewerModel: 'review-model' })
-  assert.equal(config.roles.worker.provider, 'codex')
-  assert.equal(config.roles.reviewer.model, 'review-model')
+  assert.deepEqual([config.roles.worker.provider, config.roles.worker.model, config.roles.reviewer.provider, config.roles.reviewer.model], ['route', 'chosen', 'route', 'review-model'])
+  assert.deepEqual([config.compatible, config.flags], [['codex'], { codex: [] }])
   await assert.rejects(readFile(path.join(fixture.root, 'model-request')), { code: 'ENOENT' })
   await assert.rejects(builtInAdapter({ targetRoot: fixture.root, env: fixture.env, provider: 'claude' }), /사용 가능한/)
   await writeFile(path.join(fixture.root, 'codex'), `#!${process.execPath}\nconsole.log('old cli')`, { mode: 0o755 })
   assert.equal((await inspectProviders({ targetRoot: fixture.root, env: fixture.env })).autoProvider, null)
+  await assert.rejects(builtInAdapter({ targetRoot: fixture.root, env: fixture.env }), /사용 가능한 codex·claude CLI가 없습니다/)
 })
 
 test('Orca 실행 파일의 실제 경로가 주어지면 PATH 등록 없이 runtime을 감지한다', async (t) => {
@@ -396,4 +398,67 @@ test('A/B 변형 세션은 쓰기 권한·허용 명령으로 실행되고 커�
   assert.match(sent.text, /\(1\) fixtures served by the project's own dev server or a dev-only route\/middleware.*\(3\) only if unavoidable, registration from the entry point with the smallest possible insertion/)
   assert.match(sent.text, /\?mock=empty\|error\|slow/); assert.match(sent.text, /removes exactly your lines and files/)
   for (const prompt of [text, sent.text]) assert.match(prompt, /Write only inside this workspace.*git-ignored path in it or in the OS temp dir\), never in its parent folders\./)
+})
+
+test('배정된 에포트를 전달한다: Claude는 --effort와 자식 env(사용자 값을 덮어씀, ultra→max), Codex는 -c (exec·resume)', async (t) => {
+  // Claude: CLAUDE_CODE_EFFORT_LEVEL outranks --effort, so the session's env carries the routed level.
+  const fixture = await stub(t, 'claude', `const fs=require('node:fs');process.stdin.resume();process.stdin.on('end',()=>{fs.writeFileSync('received.json',JSON.stringify({args:process.argv.slice(2),effort:process.env.CLAUDE_CODE_EFFORT_LEVEL??null,nested:process.env.CLAUDECODE??null}));console.log(JSON.stringify({type:'result',is_error:false,structured_output:{verdict:'approved',summary:'reviewed',findings:[]}}))});`)
+  const env = { ...fixture.env, CLAUDE_CODE_EFFORT_LEVEL: 'low', CLAUDECODE: '1' }
+  for (const [effort, sent] of [['high', 'high'], ['ultra', 'max']]) {
+    await executeAgentAdapter({ provider: 'claude', model: 'opus', effort, job: job(fixture.root, 'reviewer'), env, log: () => {} })
+    const received = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
+    assert.deepEqual([flag(received.args, '--model'), flag(received.args, '--effort'), received.effort, received.nested], ['opus', sent, sent, null])
+  }
+  // No routed effort: no flag, and the user's own setting stays.
+  await executeAgentAdapter({ provider: 'claude', job: job(fixture.root, 'reviewer'), env, log: () => {} })
+  const plain = JSON.parse(await readFile(path.join(fixture.root, 'received.json'), 'utf8'))
+  assert.deepEqual([plain.args.includes('--effort'), plain.effort], [false, 'low'])
+  // Codex: -m (as --model) and -c model_reasoning_effort=<e>, on exec and on exec resume alike.
+  const files = { schema: 'schema', result: 'result' }
+  for (const resume of [null, 'thread-1']) {
+    const args = providerArguments('codex', 'worker', files, 'sol', { effort: 'xhigh', resume })
+    assert.equal(flag(args, '--model'), 'sol'); assert.equal(flag(args, '-c'), 'model_reasoning_effort=xhigh'); assert.equal(args.at(-1), '-')
+    if (resume) assert.deepEqual(args.slice(4, 7), ['exec', 'resume', 'thread-1'])
+  }
+  assert.ok(!providerArguments('codex', 'worker', files, null).includes('-c'))
+  // The built-in adapter command line carries the route.
+  const { adapterArgs } = await import('../src/work-providers.mjs')
+  const line = adapterArgs('claude', { model: 'sonnet', effort: 'high' }, ['--strict-mcp-config'])
+  assert.deepEqual(line.slice(1), ['--provider', 'claude', '--model', 'sonnet', '--effort', 'high', '--provider-flag', '--strict-mcp-config'])
+  assert.deepEqual(adapterArgs('codex').slice(1), ['--provider', 'codex'])
+})
+
+// A usage limit reaches the host as a classified failure: the adapter keeps the events that say why
+// (Claude's rejected rate limit and error result; Codex's turn.failed after a long stream) and the bin
+// prints one {"failure":{...}} line with exit code 75. Anonymous fixtures, no real account data.
+test('한도 실패는 분류된 failure로 남고 bin은 failure 한 줄과 종료 코드 75로 끝난다 (Claude·Codex)', async (t) => {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const { fileURLToPath } = await import('node:url')
+  const { LIMIT_EXIT, parseFailure } = await import('../src/provider-limits.mjs')
+  const reset = Math.floor(Date.now() / 1000) + 5400
+  const claude = await stub(t, 'claude', `process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'system',subtype:'init'}));console.log(JSON.stringify({type:'rate_limit_event',rate_limit_info:{status:'allowed_warning'}}));console.log(JSON.stringify({type:'rate_limit_event',rate_limit_info:{status:'rejected',resetsAt:${reset},rateLimitType:'seven_day_opus'}}));console.log(JSON.stringify({type:'result',is_error:true,result:"You've hit your Opus limit · resets 3:45pm"}));process.exitCode=1})`)
+  const caught = await executeAgentAdapter({ provider: 'claude', model: 'opus', job: job(claude.root), env: claude.env, log: () => {} }).then(() => assert.fail('resolved'), (error) => error)
+  assert.match(caught.message, /claude 실행 실패 \(1\)/)
+  assert.deepEqual(caught.failure, { kind: 'usage-limit', scope: 'family', tool: 'claude', family: 'opus', model: 'opus', resetAt: new Date(reset * 1000).toISOString(), message: "You've hit your Opus limit · resets 3:45pm seven_day_opus" })
+  // An ordinary failure stays unclassified (exit 1, no failure line).
+  const plain = await stub(t, 'claude', `process.stdin.resume();process.stdin.on('end',()=>{console.error('boom');process.exit(3)})`)
+  assert.equal((await executeAgentAdapter({ provider: 'claude', job: job(plain.root), env: plain.env, log: () => {} }).catch((error) => error)).failure, undefined)
+  // Codex: the failure is the last event after more than the 64 KiB head the session ID is read from.
+  const noise = JSON.stringify({ type: 'item.completed', item: { text: 'x'.repeat(2000) } })
+  const codex = await stub(t, 'codex', `process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'thread.started',thread_id:'thread-1'}));for(let i=0;i<60;i++)console.log(${JSON.stringify(noise)});console.log(JSON.stringify({type:'turn.failed',error:{message:"You've hit your usage limit. Try again at Nov 14, 2099 3:45 PM."}}));process.exitCode=1})`)
+  const failed = await executeAgentAdapter({ provider: 'codex', job: job(codex.root), env: codex.env, log: () => {} }).catch((error) => error)
+  assert.deepEqual([failed.failure.kind, failed.failure.scope, failed.failure.tool, failed.failure.resetAt], ['usage-limit', 'tool', 'codex', new Date(2099, 10, 14, 15, 45).toISOString()])
+  // The bin the hosts spawn: the failure line on stdout and its own exit code.
+  const bin = fileURLToPath(new URL('../bin/gusta-agent-adapter.mjs', import.meta.url))
+  const run = promisify(execFile)
+  const child = run(process.execPath, [bin, '--provider', 'claude'], { env: claude.env, cwd: claude.root })
+  child.child.stdin.end(JSON.stringify(job(claude.root)))
+  const exited = await child.then(() => assert.fail('exit 0'), (error) => error)
+  assert.equal(exited.code, LIMIT_EXIT)
+  assert.deepEqual([parseFailure(exited.stdout).kind, parseFailure(exited.stdout).family], ['usage-limit', 'opus'])
+  const ordinary = run(process.execPath, [bin, '--provider', 'claude'], { env: plain.env, cwd: plain.root })
+  ordinary.child.stdin.end(JSON.stringify(job(plain.root)))
+  const other = await ordinary.then(() => assert.fail('exit 0'), (error) => error)
+  assert.deepEqual([other.code, parseFailure(other.stdout)], [1, null])
 })

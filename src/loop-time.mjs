@@ -2,13 +2,16 @@
 // guesses. Pure: the loop passes its dispatch and batch records, nothing is read here.
 // Task checks count only when they ran through `vibe check`; other commands inside a
 // unit are part of its model time.
+import { SLOW_TASK_CHECK_MS } from './check-cache.mjs'
+
 const KIND = { task: 'implementation', fix: 'implementation', planning: 'planning', inbox: 'inbox', none: 'none' }
 const sum = (values) => values.reduce((total, value) => total + (Number.isFinite(value) ? value : 0), 0)
 
 export function timeBreakdown({ dispatches = [], batches = [], totalMs = 0 }) {
   const units = {}
   for (const unit of dispatches) {
-    const group = units[unit.result ? KIND[unit.result.kind] ?? unit.result.kind : 'failed'] ??= { units: 0, ms: 0, checkMs: 0, modelMs: 0 }
+    // An attempt a usage limit ended is not a unit; its time is its own line.
+    const group = units[unit.limit ? 'limit' : unit.result ? KIND[unit.result.kind] ?? unit.result.kind : 'failed'] ??= { units: 0, ms: 0, checkMs: 0, modelMs: 0 }
     group.units++
     group.ms += unit.ms ?? 0
     group.checkMs += unit.checks?.ms ?? 0
@@ -27,6 +30,12 @@ export function timeBreakdown({ dispatches = [], batches = [], totalMs = 0 }) {
 export function duration(ms) {
   const minutes = Math.round((ms ?? 0) / 60000)
   return minutes >= 60 ? `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m` : `${minutes}m`
+}
+
+// The run's task-tier checks (taskCheckSummary), with the ones slow enough for the final gate.
+export function taskCheckLine({ runs, ms, slow }) {
+  const named = slow.map((entry) => `\`${entry.command}\` avg ${Math.round(entry.avgMs / 1000)}s ×${entry.runs}`)
+  return `- task checks: ${runs} runs, ${duration(ms)}${named.length ? `; avg over ${SLOW_TASK_CHECK_MS / 1000}s: ${named.join(', ')} — suggested for the batch gate (inbox)` : ''}`
 }
 
 // One report line under ## checks: totals first, then the slowest unit to look at.

@@ -1,9 +1,13 @@
-import { readFile, rm, mkdir, open, writeFile } from 'node:fs/promises'
+import { readFile, readdir, rm, mkdir, open, writeFile } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { builtInAdapter } from './work-providers.mjs'
+import { builtInAdapter, adapterArgs } from './work-providers.mjs'
+import { agentCatalog } from './agent-catalog.mjs'
+import { routeAgent, routeRecord, runLabel } from './agent-route.mjs'
+import { quoteLine, quoteFields, runValue, EFFORTS } from './spec-format.mjs'
+import { loopHint } from './loop-control.mjs'
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { inspectWork, claimNextWork, commitWorkerWork, submitWork, integrateWork, finishWork, workBoard, syncWork, workInternals } from './work-groups.mjs'
@@ -15,8 +19,9 @@ import { stateMergeArgs } from './git-merge.mjs'
 import { git } from './workspace.mjs'
 import { pruneWork, dispatchLogDir } from './prune.mjs'
 import { processAlive, atomicJSON, readJSON } from './loop-control.mjs'
-import { permissionMode, readSettings } from './settings.mjs'
+import { permissionMode, readSettings, agentList, AGENT_TOOLS } from './settings.mjs'
 import { usageRun, finishUsageRun } from './usage-measurement.mjs'
+import { parseFailure, LIMIT_EXIT, LIMIT_KINDS, BLOCKING, OVERLOAD_RETRY_MS, readLimits, recordLimit, activeLimits, limitBlocks, earliestReset, limitTarget } from './provider-limits.mjs'
 
 const { repository, groupOf, attemptOf, now, fail, requireStopped, commands, tierChecks, briefFor } = workInternals
 // A session carries its context into the next lane task, correction or answered decision,
@@ -51,6 +56,25 @@ export async function recoverRunner(options) {
   })
 }
 
+// The run: a task file plans (tool/model@effort), read from the workspace that runs it.
+async function taskRun(workspace, taskId) {
+  try {
+    const name = (await readdir(path.join(workspace, 'spec/tasks'))).find((entry) => entry.startsWith(`${taskId}.`) && entry.endsWith('.md'))
+    return name ? runValue(quoteFields(quoteLine(await readFile(path.join(workspace, 'spec/tasks', name), 'utf8')) ?? '').get('run')) : null
+  } catch { return null }
+}
+
+// A run that names no tool (no --provider/--providers/adapter) routes every dispatch within SETTINGS
+// agents; undecided, it does not start: the owner decides with /gusta-init first.
+const namesTool = (options) => Boolean(options.adapter || (options.provider && options.provider !== 'auto') || options.providers || options.workers)
+const NEEDS_INIT = (work) => ({ schemaVersion: 1, ok: false, work: work ?? null, outcome: 'needs-init', reason: 'needs-init', hint: loopHint('needs-init'), unset: ['agents'], dispatched: 0, modelRequests: 0 })
+async function needsInit(options) {
+  if (namesTool(options)) return null
+  const context = await repository(options)
+  return agentList((await readSettings({ root: context.cwd })).values.agents) ? null : NEEDS_INIT(options.work)
+}
+const routedConfig = (config) => config.kind === 'builtin' && [config.roles?.worker, config.roles?.reviewer, ...(config.workers ?? [])].some((entry) => entry?.provider === 'route')
+
 async function adapterConfig(options) {
   let config
   const providerOptions = ['provider', 'providers', 'reviewerProvider', 'model', 'reviewerModel']
@@ -76,8 +100,12 @@ async function adapterConfig(options) {
 
 // Three verification tiers: taskVerify at every task submission (optional, fast),
 // verify at every unit integration, groupVerify once after the last integration.
-export async function runWork(options) {
+// deps.catalog replaces the agentCatalog read (no model call) that routing uses when agents is set.
+export async function runWork(options, deps = {}) {
   for (const key of ['verify', 'taskVerify', 'groupVerify']) if (options[key] !== undefined) commands(options, key, true)
+  if (options.effort !== undefined && !EFFORTS.includes(options.effort)) fail(`--effort는 ${EFFORTS.join('|')} 중 하나입니다.`)
+  const undecided = await needsInit(options)
+  if (undecided) return undecided
   const config = await adapterConfig(options)
   // Autopilot: nobody answers. Planning decisions are filed for the coordinator, and the
   // runner waits for them (no model calls) instead of ending while they are open.
@@ -85,19 +113,33 @@ export async function runWork(options) {
   const decisionWaitMs = positive(options.decisionWaitMs, (autopilot ? 15 : 120) * 60 * 1000, 'decision-wait-ms')
   const checkpointMs = positive(options.checkpointMs, 30 * 60 * 1000, 'checkpoint-ms')
   const pollMs = positive(options.pollMs, 5000, 'poll-ms')
+  // Every allowed combination at a usage limit: wait (no model call) when the first reset is this close, else end usage-limit.
+  const limitWaitMs = positive(options.limitWaitMs, 5 * 3600000, 'limit-wait-ms')
   const heartbeatMs = positive(options.heartbeatMs, 10000, 'heartbeat-ms')
   const context = await repository(options)
   // Workers are headless: SETTINGS permission-mode (default bypass) unless this run names one.
   const mode = await permissionMode(options, context.cwd)
   const settings = (await readSettings({ root: context.cwd })).values
   const mcp = settings['headless-mcp']
+  // Every dispatch's tool·model·effort comes from agent-route: the task's run: within agents, a pinned
+  // tool (--provider, --providers, --reviewer-provider) narrowed to that tool. The catalog is read once.
+  const agents = agentList(settings.agents)
+  if (routedConfig(config) && !agents) return NEEDS_INIT(options.work)
+  let catalogRead = null
+  const loadCatalog = () => catalogRead ??= agents ? Promise.resolve((deps.catalog ?? (() => agentCatalog({ targetRoot: context.cwd, env: options.env ?? process.env }, { agents: settings.agents })))()) : Promise.resolve(null)
+  const incompatible = config.kind === 'builtin' ? AGENT_TOOLS.filter((tool) => !config.compatible.includes(tool)).map((tool) => ({ tool, reason: 'incompatible' })) : []
+  // A usage or rate limit, an overload or a failed sign-in is not a run of the task (maxTaskRuns): the clone's
+  // limits.json and this run's signed-out tools steer the next dispatch to another allowed combination.
+  const signedOut = [], limitHits = [], overloads = new Map(), paused = new Map()
+  let limitHold = null, limitStopped = null
+  const holding = () => Boolean(limitHold) && Date.now() < limitHold.until
   const stored = groupOf(await readRuntime(context.root), options.work)
   const verify = tierChecks(options, stored, 'unit')
   const taskVerify = options.taskVerify ?? stored.verify?.task ?? []
   const groupVerify = options.groupVerify ?? stored.verify?.group ?? []
   if (options.dryRun) {
     const group = groupOf(await readRuntime(context.root), options.work)
-    return { schemaVersion: 1, dryRun: true, work: group.id, limits: workLimits(group.limits), adapter: config, verify, taskVerify, groupVerify, autopilot, decisionWaitMs, permissionMode: mode, headlessMcp: mcp, modelRequests: 0 }
+    return { schemaVersion: 1, dryRun: true, work: group.id, limits: workLimits(group.limits), adapter: config, agents, verify, taskVerify, groupVerify, autopilot, decisionWaitMs, permissionMode: mode, headlessMcp: mcp, modelRequests: 0 }
   }
   const run = { adapter: config.kind, providers: config.roles ? Object.fromEntries(Object.entries(config.roles).map(([role, entry]) => [role, { provider: entry.provider, model: entry.model, version: entry.version }])) : null,
     workers: config.workers?.map((entry) => ({ provider: entry.provider, model: entry.model, version: entry.version })) ?? null,
@@ -129,8 +171,8 @@ export async function runWork(options) {
   let decisionTimedOut = false
   let integrationStalled = false
   const outcomeFor = (board) => interrupted || heartbeatError ? 'interrupted' : board.tasks.length === 0 && !finishError ? 'completed'
-    : board.tasks.every((task) => task.mainSession) && !finishError ? 'main-session' : integrationStalled ? 'needs-attention' : dispatched >= config.maxDispatches ? 'dispatch-limit'
-      : decisionTimedOut ? 'decision-wait' : 'needs-attention'
+    : board.tasks.every((task) => task.mainSession) && !finishError ? 'main-session' : limitStopped ?? (integrationStalled ? 'needs-attention' : dispatched >= config.maxDispatches ? 'dispatch-limit'
+      : decisionTimedOut ? 'decision-wait' : 'needs-attention')
   const recordDecisionWait = async (attempts) => {
     if (JSON.stringify(run.decisionWait?.attempts ?? []) === JSON.stringify(attempts)) return
     if (attempts.length) run.decisionWait = { startedAt: now(), deadlineAt: new Date(lastActivity + decisionWaitMs).toISOString(), attempts }
@@ -232,7 +274,7 @@ export async function runWork(options) {
     try {
       if (config.kind === 'builtin') await workInternals.requireClean(workspace)
       // An answered decision changed planning: bring the group branch (SSOT, inbox) in first.
-      if (role === 'worker' && current.directive && current.directive.kind !== 'timeout') {
+      if (role === 'worker' && current.directive && !['timeout', 'limit'].includes(current.directive.kind)) {
         try { await git(workspace, [...await stateMergeArgs(workspace, context.root), 'merge', '--no-edit', '--quiet', `refs/heads/${group.branch}`]) } catch (error) {
           await git(workspace, ['merge', '--abort'], [128]).catch(() => {})
           fail(`기획 브랜치를 워커 공간에 합치지 못했습니다: ${(error.stderr || error.message).trim().slice(-400)}`)
@@ -251,26 +293,57 @@ export async function runWork(options) {
     const log = path.join(dispatchLogDir(context.root, attempt.id), `dispatch-${id}.log`)
     await mkdir(path.dirname(log), { recursive: true })
     const adapter = role === 'worker' && config.workers?.length ? config.workers[(slot - 1) % config.workers.length] : config.roles?.[role] ?? config
-    const provider = adapter.provider ?? 'custom'
+    const key = role === 'worker' ? `worker:${attempt.id}:${attempt.taskId}` : `reviewer:${attempt.id}`
+    // The dispatch's route: its task's run:, a correction or retry never below it, a reviewer at its
+    // worker's capability or more on another tool first. A command adapter gets the route in its job.
+    const pin = config.kind === 'builtin' ? { tool: adapter.provider === 'route' ? null : adapter.provider, model: adapter.model ?? null, effort: options.effort ?? null } : { effort: options.effort ?? null }
+    const held = activeLimits(await readLimits(context.root), Date.now())
+    const routed = routeAgent({ role, recommended: await taskRun(workspace, attempt.taskId), recovery: Boolean(attempt.correction) || (counts.get(key) ?? 0) > 0, agents, catalog: await loadCatalog(), explicit: pin,
+      blocked: [...incompatible, ...limitBlocks(held), ...signedOut, ...(overloads.get(key)?.blocks ?? [])], worker: role === 'reviewer' ? current.workerRoute ?? null : null })
+    const route = routeRecord(routed)
+    if (config.kind === 'builtin' && !route) {
+      // Every allowed combination is at a usage limit: nothing starts until the first reset (the attempt
+      // stays as it is), and the main loop waits for it or ends usage-limit. Only signed-out tools left: needs-login.
+      const tools = pin.tool ? [pin.tool] : agents ?? config.compatible
+      const holdingNow = held.filter((entry) => tools.includes(entry.tool))
+      const limited = holdingNow.length && routed.skipped.some(({ reason: why }) => BLOCKING.includes(why))
+      if (limited || (signedOut.length && routed.skipped.some(({ reason: why }) => why === 'auth'))) {
+        if (limited) limitHold = { until: earliestReset(holdingNow), limits: holdingNow.map(({ tool, family, reason: why, resetAt, source }) => ({ tool, ...(family ? { family } : {}), reason: why, resetAt, source })) }
+        else limitStopped = 'needs-login'
+        if (review) await releaseReview({ ...options, review: review.id, reason: limited ? 'usage-limit' : 'needs-login' })
+        return
+      }
+      const reason = `실행할 수 있는 도구가 없습니다: ${routed.skipped.map(({ option, reason: why }) => `${runLabel(option)} ${why}`).join(', ') || 'agents'}`
+      failures.push({ attempt: attempt.id, role, error: reason })
+      if (review) await releaseReview({ ...options, review: review.id, reason })
+      else await transaction(context.root, (state) => { Object.assign(attemptOf(state, attempt.id), { status: 'blocked', reason }) })
+      return
+    }
+    const provider = config.kind === 'builtin' ? route.tool : adapter.provider ?? 'custom'
+    const command = config.kind === 'builtin' ? process.execPath : adapter.command
+    const args = config.kind === 'builtin' ? adapterArgs(route.tool, route, config.flags[route.tool] ?? []) : adapter.args
     const resume = role === 'worker' && current.session?.provider === provider && (current.resumes ?? 0) < MAX_RESUMES ? current.session.id : null
     const directive = role === 'worker' ? current.directive ?? null : null
-    const job = { id, role, attempt: attempt.id, taskId: attempt.taskId, slot, review, expectedHead, provider, startedAt: Date.now(), workspace: review?.workspace ?? attempt.workspace, settled: false,
+    // An answered decision brings planning in and is not a retry; a time or usage limit's continuation is a run.
+    const answered = Boolean(directive) && !['timeout', 'limit'].includes(directive.kind)
+    const job = { id, role, attempt: attempt.id, taskId: attempt.taskId, slot, review, expectedHead, provider, route, key, startedAt: Date.now(), workspace: review?.workspace ?? attempt.workspace, settled: false,
       sessionFile: role === 'worker' ? path.join(os.tmpdir(), `gusta-session-${id}`) : null }
     await transaction(context.root, (state) => {
       const entry = attemptOf(state, attempt.id)
-      entry.dispatch = { id, runner: run.id, role, slot, provider, model: adapter.model ?? null, status: 'starting', pid: null, host: os.hostname(), startedAt: now(), log }
+      entry.dispatch = { id, runner: run.id, role, slot, provider, model: route?.model ?? adapter.model ?? null, ...(route ? { route } : {}), status: 'starting', pid: null, host: os.hostname(), startedAt: now(), log }
       if (role === 'worker') {
         entry.resumes = resume ? (entry.resumes ?? 0) + 1 : 0
         delete entry.directive
+        // The reviewer of this attempt matches the capability it ran on.
+        if (route) entry.workerRoute = route
       }
     })
     jobs.set(id, job)
     dispatched += 1
     lastActivity = Date.now()
-    const key = role === 'worker' ? `worker:${attempt.id}:${attempt.taskId}` : `reviewer:${attempt.id}`
     // Resuming after an answered decision is progress, not a retry; decisions have their own limit.
-    if (!(directive && directive.kind !== 'timeout')) counts.set(key, (counts.get(key) ?? 0) + 1)
-    const payload = { schemaVersion: 1, dispatchId: id, role, slot, provider: adapter.provider ?? 'custom', model: adapter.model ?? null, group: group.id, attempt: attempt.id,
+    if (!answered) counts.set(key, (counts.get(key) ?? 0) + 1)
+    const payload = { schemaVersion: 1, dispatchId: id, role, slot, provider, model: route?.model ?? adapter.model ?? null, route, group: group.id, attempt: attempt.id,
       taskId: attempt.taskId, tasks: attempt.tasks ?? [attempt.taskId], lane: attempt.lane ?? null, workspace: job.workspace, groupBranch: group.branch,
       cliCommand: [process.execPath, fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))],
       boardCommand: ['work', 'board', '--work', group.id, '--json'],
@@ -286,7 +359,7 @@ export async function runWork(options) {
     // A log write failure must not end the dispatch. The record never holds log content (it reaches
     // coordinator output): only the adapter's last plain stderr line, as the failure reason.
     file.on('error', () => {})
-    const child = spawn(adapter.command, adapter.args, { cwd: job.workspace, shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], env: { ...(options.env ?? process.env), GUSTA_ROLE: role, GUSTA_ATTEMPT: attempt.id, GUSTA_DISPATCH: id } })
+    const child = spawn(command, args, { cwd: job.workspace, shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'], env: { ...(options.env ?? process.env), GUSTA_ROLE: role, GUSTA_ATTEMPT: attempt.id, GUSTA_DISPATCH: id } })
     job.child = child
     let output = '', overflow = false, pending = '', reason = null
     // Provider events arrive as JSON lines; the adapter's own message (its error) is plain text.
@@ -308,7 +381,7 @@ export async function runWork(options) {
       child.stderr.setEncoding('utf8')
       child.stderr.on('data', (data) => { file.write(data); scan(data) })
       child.on('error', (error) => finish(error.message))
-      child.on('close', (code, signal) => { scan('\n'); finish(job.timedOut ? 'adapter timeout' : overflow ? 'adapter output exceeded 1 MiB' : code === 0 ? null : `adapter exited ${code ?? signal}${reason ? `: ${reason}` : ''}`) })
+      child.on('close', (code, signal) => { scan('\n'); if (code === LIMIT_EXIT) job.failure = parseFailure(output); finish(job.timedOut ? 'adapter timeout' : overflow ? 'adapter output exceeded 1 MiB' : code === 0 ? null : `adapter exited ${code ?? signal}${reason ? `: ${reason}` : ''}`) })
       child.stdin.on('error', () => {})
       child.stdin.end(`${JSON.stringify(payload)}\n`)
     })
@@ -332,6 +405,37 @@ export async function runWork(options) {
     decisions.push({ attempt: job.attempt, taskId: job.taskId, question: result.decision.question })
   }
 
+  // A usage or rate limit, an overload or a failed sign-in: the run does not count (maxTaskRuns). A worker's
+  // edits become a commit and the attempt goes back to doing for the next allowed combination (a new
+  // session when the tool changes, with this note); a reviewer's claim is released. An overload is
+  // retried once on the same combination after a pause.
+  const limitHit = async (job) => {
+    const failure = { ...job.failure, tool: job.failure.tool || job.provider }
+    job.resultError = `${failure.kind}: ${failure.message ?? ''}`.trim()
+    counts.set(job.key, Math.max(0, (counts.get(job.key) ?? 1) - 1))
+    if (failure.kind === 'overloaded') {
+      const state = overloads.get(job.key) ?? { retried: false, blocks: [] }
+      if (state.retried) state.blocks.push({ tool: job.route?.tool ?? job.provider, model: job.route?.model ?? null, effort: job.route?.effort ?? null, reason: 'overloaded' })
+      else paused.set(job.attempt, Date.now() + OVERLOAD_RETRY_MS)
+      state.retried = true
+      overloads.set(job.key, state)
+    } else if (failure.kind === 'auth') signedOut.push({ tool: failure.tool, reason: 'auth' })
+    else {
+      const recorded = await recordLimit(context.root, failure).catch(() => null)
+      if (!failure.resetAt && recorded?.resetAt) Object.assign(failure, { resetAt: recorded.resetAt, estimated: true })
+    }
+    limitHits.push({ attempt: job.attempt, taskId: job.taskId, role: job.role, route: job.route ? runLabel(job.route) : job.provider, kind: failure.kind, target: limitTarget(failure), ...(failure.resetAt ? { resetAt: failure.resetAt } : {}), at: now() })
+    process.stderr.write(`[work run] ${failure.kind} ${limitTarget(failure)}${failure.resetAt ? ` until ${failure.resetAt}` : ''}: ${job.taskId} goes to the next allowed combination\n`)
+    if (job.role === 'reviewer') { await releaseReview({ ...options, review: job.review.id, reason: job.resultError }).catch(() => {}); return }
+    const commit = config.kind === 'builtin' ? await commitProgress(job.workspace, `WIP ${job.taskId}: checkpoint after a ${failure.kind} (${limitTarget(failure)})`).catch(() => null) : null
+    await transaction(context.root, (state) => {
+      const entry = attemptOf(state, job.attempt)
+      if (!['doing', 'blocked'].includes(entry.status)) return
+      Object.assign(entry, { status: 'doing', reason: null, directive: { kind: 'limit', at: now(),
+        note: `The previous session stopped at ${limitTarget(failure)}'s ${failure.kind}${commit ? `; your work so far is committed as ${commit}` : ''}. Continue from it.` } })
+    })
+  }
+
   const settle = async (job) => {
     lastActivity = Date.now()
     if (job.sessionFile) {
@@ -340,6 +444,7 @@ export async function runWork(options) {
       if (session) await transaction(context.root, (state) => { attemptOf(state, job.attempt).session = { id: session, provider: job.provider } })
     }
     try {
+      if (job.failure && LIMIT_KINDS.includes(job.failure.kind) && !job.timedOut && !stopping) return await limitHit(job)
       if (job.error) fail(job.error)
       const result = JSON.parse(job.output)
       job.summary = result.summary ?? null
@@ -409,7 +514,9 @@ export async function runWork(options) {
         }
         continue
       }
-      if (dispatched < config.maxDispatches) {
+      // A passed reset frees the hold; the tools are read again (a login may have changed meanwhile).
+      if (limitHold && !holding()) { limitHold = null; catalogRead = null }
+      if (dispatched < config.maxDispatches && !holding() && !limitStopped) {
         for (let slot = 1; slot <= limits.workers && !stopping && dispatched < config.maxDispatches; slot += 1) {
           if ([...jobs.values()].some((job) => job.role === 'worker' && job.slot === slot)) continue
           const owner = `${run.id}/worker-${slot}`
@@ -426,6 +533,7 @@ export async function runWork(options) {
             if (attempt.idle) attempt = await claimNextWork({ ...options, owner, workspace: 'new' }, slotContext)
           }
           if (attempt.idle) continue
+          if ((paused.get(attempt.id) ?? 0) > Date.now()) continue
           if ((counts.get(`worker:${attempt.id}:${attempt.taskId}`) ?? 0) >= config.maxTaskRuns) {
             await transaction(context.root, (live) => { Object.assign(attemptOf(live, attempt.id), { status: 'blocked', reason: 'worker retry limit; inspect review findings' }) })
             failures.push({ attempt: attempt.id, error: 'worker retry limit' }); continue
@@ -448,6 +556,25 @@ export async function runWork(options) {
       }
       if (!jobs.size) {
         state = await readRuntime(context.root)
+        if (limitStopped) break
+        // Everything allowed is at a usage limit: wait for the first reset without a model call when it is
+        // within limit-wait-ms, else end usage-limit (the attempts stay doing for a later run).
+        if (holding()) {
+          if (limitHold.until - Date.now() > limitWaitMs) { limitStopped = 'usage-limit'; run.limit = { until: new Date(limitHold.until).toISOString(), limits: limitHold.limits }; break }
+          if (!run.limitWait) {
+            run.limitWait = { until: new Date(limitHold.until).toISOString(), limits: limitHold.limits }
+            // work run --status shows the wait, like a decision wait.
+            await transaction(context.root, (live) => { const runner = groupOf(live, group.id).runner; if (runner?.id === run.id) runner.limitWait = run.limitWait })
+            process.stderr.write(`[work run] limit-wait ${JSON.stringify(run.limitWait)}\n`)
+          }
+          await sleep(Math.min(pollMs, Math.max(1, limitHold.until - Date.now())))
+          continue
+        }
+        if (run.limitWait) {
+          delete run.limitWait
+          await transaction(context.root, (live) => { const runner = groupOf(live, group.id).runner; if (runner?.id === run.id) delete runner.limitWait })
+        }
+        if ([...paused.values()].some((until) => until > Date.now())) { await sleep(pollMs); continue }
         const pendingIntegrations = entries().filter((entry) => entry.status === 'approved')
         // A coordinator may have resubmitted while slots were being filled. Try the fresh
         // submission first; a failed submission cannot make progress by waiting for a decision.
@@ -499,7 +626,7 @@ export async function runWork(options) {
     try {
       await transaction(context.root, (state) => {
         const current = groupOf(state, group.id)
-        if (current.runner?.id === run.id) { current.lastRun = { ...run, stoppedAt: now(), dispatched, failures, outcome: finalBoard ? outcomeFor(finalBoard) : 'needs-attention' }; delete current.runner }
+        if (current.runner?.id === run.id) { current.lastRun = { ...run, stoppedAt: now(), dispatched, failures, ...(limitHits.length ? { limitHits } : {}), outcome: finalBoard ? outcomeFor(finalBoard) : 'needs-attention' }; delete current.runner }
       })
     } finally {
       clearInterval(timer)
@@ -512,7 +639,8 @@ export async function runWork(options) {
   const status = await inspectWork(options)
   const attempts = status.attempts.filter((entry) => entry.group === group.id)
   return { schemaVersion: 1, run: run.id, dispatched, failures, decisions, heartbeatError, snapshot, snapshotError, finish, finishError, pruned, pruneError, summary: board.summary,
-    ...(measurement ? { measurement } : {}),
+    ...(measurement ? { measurement } : {}), ...(limitHits.length ? { limitHits } : {}), ...(run.limit ? { limit: run.limit } : {}),
+    ...(limitStopped === 'usage-limit' && run.limit ? { hint: `${run.limit.limits.map((entry) => `${limitTarget(entry)} ${entry.resetAt}`).join(', ')}까지 사용량 한도 — 그 뒤 work run을 다시 실행하세요` } : limitStopped ? { hint: loopHint(limitStopped) } : {}),
     outcome: outcomeFor(board),
     remaining: board.tasks.map(({ id, waitingOn, runtimeStatus, attempt }) => ({ id, waitingOn, runtimeStatus, attempt: attempt?.id ?? null })),
     attempts: attempts.map(({ id, taskId, status, reason }) => ({ id, taskId, status, reason })) }
@@ -527,6 +655,7 @@ const runnerHealth = (runner, alive, at) => runner.host !== os.hostname() ? 'unk
   : at - Date.parse(runner.heartbeatAt ?? runner.startedAt) > STALE_MS ? 'heartbeat-stale' : 'running'
 const brief = (text) => String(text).slice(0, 300)
 const outcomeOf = (result) => result.ok === false ? { ok: false, error: brief(result.error) } : { outcome: result.outcome, dispatched: result.dispatched, summary: result.summary,
+  ...(result.limit ? { limit: result.limit, hint: result.hint } : {}),
   ...(result.measurement ? { measurement: result.measurement } : {}),
   decisions: result.decisions ?? [], failures: result.failures?.length ?? 0, remaining: result.remaining?.length ?? 0,
   errors: Object.fromEntries(['heartbeatError', 'finishError', 'pruneError', 'snapshotError'].filter((key) => result[key]).map((key) => [key, brief(result[key])])) }
@@ -544,7 +673,7 @@ export async function workRunStatus(options, deps = {}) {
     const dispatches = Object.values(state.attempts).filter((entry) => entry.dispatch?.runner === runner.id && ['starting', 'running'].includes(entry.dispatch.status))
       .map(({ id, taskId, dispatch }) => ({ id: dispatch.id, attempt: id, taskId, role: dispatch.role, status: dispatch.status, log: dispatch.log ?? null }))
     return { schemaVersion: 1, work: group.id, state: health, running: health === 'running', runId: runner.id, pid: runner.pid, host: runner.host, log: runner.log ?? null,
-      startedAt: runner.startedAt, heartbeatAt: runner.heartbeatAt ?? null, ...(runner.decisionWait ? { decisionWait: runner.decisionWait } : {}), dispatches,
+      startedAt: runner.startedAt, heartbeatAt: runner.heartbeatAt ?? null, ...(runner.decisionWait ? { decisionWait: runner.decisionWait } : {}), ...(runner.limitWait ? { limitWait: runner.limitWait } : {}), dispatches,
       ...(health === 'host-lost' ? { next: `work runner-recover --work ${group.id}` } : {}) }
   }
   const last = group.lastRun
@@ -628,6 +757,6 @@ export async function workRun(options) {
   if (modes.length > 1) fail(`${modes.map((key) => key === 'dryRun' ? '--dry-run' : `--${key}`).join('·')}는 함께 지정할 수 없습니다.`)
   if (options.status) return workRunStatus(options)
   if (options.stop) return stopWorkRun(options)
-  if (options.detach) return detachWork(options)
+  if (options.detach) return await needsInit(options) ?? detachWork(options)
   return runWork(options)
 }

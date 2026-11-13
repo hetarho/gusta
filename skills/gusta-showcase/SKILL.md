@@ -13,7 +13,7 @@ description: >-
 **역할: 비교 진행자.** 서로 다른 안을 코드까지 실제로 만들어 변형마다 포트 하나씩 띄우고, 사용자는 보고 고른다. 사용자가 직접 부를 때만 쓴다. 변형 구현은 하위 세션이, 브랜치·worktree·커밋·서버·측정·정리는 `vibe ab`가 맡는다. 이 세션은 변형 설계·비교표·채택 기록만 하고 코드를 직접 쓰지 않는다.
 
 ## 공통 규칙 (모든 spec 스킬)
-1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 한다).
+1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 하고, agents 미정이면 맡김을 시작하지 않는다).
 2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 문서 상태를 STATE에, 세션 기록(시작·상태 변화·활동)을 `vibe` 명령으로만(`beat`·`claim`·`inbox`·`log`) 남기고 SESSIONS.md를 직접 고치지 않는다. 워커는 STATE·SSOT·세션 기록 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 inbox(`vibe inbox add`)와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
@@ -37,7 +37,7 @@ SETTINGS `usage-measurement`가 true인 시작 대화는 [사용량 절차](../g
 
 ## 3. 병렬 구현 — 하위 세션
 변형마다 이 변형의 접근만 `<dir>/<v>.md`에 쓰고 동시에 띄운다:
-- 기본(헤드리스): `vibe ab run <slug> --all --prompt-dir <dir> --provider <claude|codex> [--allow-tool '<태스크 검사 명령 규칙>'] --json` 하나를 백그라운드로 실행한다(병렬, 끝나면 한 번 알림). 한 변형만은 `--variant <v> --prompt-file <file>`. 세션은 자기 worktree만 고치고, CLI가 shared를 앞에 붙이고 끝나면 변형 브랜치에 커밋한다. 돌아오는 것은 summary·view·path(볼 곳·URL 경로)뿐이다.
+- 기본(헤드리스): `vibe ab run <slug> --all --prompt-dir <dir> [--allow-tool '<태스크 검사 명령 규칙>'] --json` 하나를 백그라운드로 실행한다(병렬, 끝나면 한 번 알림, 도구·모델은 CLI가 SETTINGS `agents`에서 배정 — `--provider`는 사용자가 고를 때만). 한 변형만은 `--variant <v> --prompt-file <file>`. 세션은 자기 worktree만 고치고, CLI가 shared를 앞에 붙이고 끝나면 변형 브랜치에 커밋한다. 돌아오는 것은 summary·view·path(볼 곳·URL 경로)뿐이다.
 - run이 scaffoldTouched(scaffold 줄·파일 수정)를 주면 보여 주기 전에 되돌리는 follow-up을 보낸다(데이터 변경은 summary로). scaffoldResidue는 줄이 실제 scaffold를 가리킬 때만 follow-up, 아니면 사용자에게 보이고 확인받아 `pick --accept-residue`.
 - 네이티브 하위 세션 도구를 써도 된다(worktree 경로·shared+접근을 주고 커밋·서버·scaffold 수정은 하지 않게). 같은 대화에서 역할만 바꿔 변형을 직접 만들지 않는다.
 - 변형은 영향 단위 테스트와 빠른 검사만 돌린다(전체 스위트는 합친 뒤 마감 관문에서 한 번).

@@ -503,12 +503,17 @@ export function renderBrief(brief) {
   if (brief.verify || brief.diffBase) {
     out.push('', '## verify')
     if (brief.diffBase) out.push(`- diff-base: ${brief.diffBase}`)
+    const verify = brief.verify ?? {}
+    // ARCH declares no (or not every) tier: the commands below are partly or wholly inferred.
+    if (verify.declared === false) out.push(`- declared: ${verify.partial ? 'partial' : 'no'} — ${verify.inferred?.length ? `${verify.inferred.join(', ')} inferred from package.json scripts` : 'nothing inferred'}`)
     const shown = brief.decisions.map((entry) => entry.text).join('\n')
-    for (const [tier, value] of Object.entries(brief.verify ?? {})) {
-      if (!Array.isArray(value) || !value.length) continue
+    for (const [tier, value] of Object.entries(verify)) {
+      if (!Array.isArray(value) || !value.length || ['inferred', 'excluded'].includes(tier)) continue
       if (tier === 'guidance') for (const line of value.filter((item) => !shown.includes(item.trim()))) out.push(`- guidance: ${line.trim().replace(/^- /, '')}`)
       else out.push(`- ${tier}: ${value.map((command) => `\`${command}\``).join(' ')}`)
     }
+    // Verification decisions that are not rules (yet): listed with their status, never served as guidance.
+    if (verify.excluded?.length) out.push(`- not in guidance: ${verify.excluded.map((entry) => `${entry.id}(${entry.reason})`).join(' ')}`)
   }
   const body = out.join('\n')
   return `${body}\n\nend ${label} sha256:${short(sha256(body))} chars:${body.length}\n`

@@ -252,6 +252,40 @@ test('variant and scaffold sessions get the optional provider flags the installe
   assert.deepEqual(seen, [['scaffold', ['--exclude-dynamic-system-prompt-sections']], ['variant', ['--exclude-dynamic-system-prompt-sections']]])
 })
 
+// The CLI assigns the variants' tool·model·effort: routeAgent's variant default within SETTINGS agents (the
+// first tool at its own setting, past one at a usage limit), the same for every variant; --provider only
+// when the person names one. The scout takes the same rule.
+test('변형과 탐색 세션의 도구는 CLI가 SETTINGS agents 안에서 배정하고 변형끼리 같다 (한도에 걸린 도구는 건너뜀)', async (t) => {
+  const { buildCatalog } = await import('../src/agent-catalog.mjs')
+  const { recordLimit } = await import('../src/provider-limits.mjs')
+  const { workScout } = await import('../src/work-scout.mjs')
+  const { inspectWorkspace } = await import('../src/workspace.mjs')
+  const { runtimeRoot } = await import('../src/work-runtime.mjs')
+  const { root, temporary } = await project(t, 'routed')
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- agents: codex,claude\n'); await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', 'agents')
+  const both = async () => ({ autoProvider: 'claude', providers: [{ provider: 'claude', compatible: true }, { provider: 'codex', compatible: true }] })
+  const tool = { installed: true, loggedIn: true, models: [{ model: 'sonnet', efforts: ['low', 'high'], context: null }, { model: 'terra', efforts: ['low', 'high'], context: null }] }
+  const catalog = () => buildCatalog({ claude: tool, codex: tool }, ['codex', 'claude'])
+  await abStart({ targetRoot: root, slug: 'routed', variants: 2, basePort: 4861 })
+  const promptDir = path.join(temporary, 'routed'); await mkdir(promptDir)
+  for (const name of ['a', 'b']) await writeFile(path.join(promptDir, `${name}.md`), `Make it ${name}.`)
+  const seen = []
+  const execute = async (input) => { seen.push([input.provider, input.model ?? null, input.effort]); return session(`r${input.job.workspace.slice(-1)}`)(input) }
+  await abRun({ targetRoot: root, slug: 'routed', all: true, promptDir }, { inspect: both, flags: noFlags, catalog, execute })
+  assert.deepEqual(seen, [['codex', null, null], ['codex', null, null]])
+  // Codex at its usage limit (the clone's limits.json): the next allowed tool, for scouts too.
+  await recordLimit(runtimeRoot(await inspectWorkspace({ targetRoot: root })), { kind: 'usage-limit', tool: 'codex', resetAt: new Date(Date.now() + 3600000).toISOString() })
+  seen.length = 0
+  await abRun({ targetRoot: root, slug: 'routed', variant: 'a', followUpFile: path.join(promptDir, 'a.md') }, { inspect: both, flags: noFlags, catalog, execute })
+  const promptFile = path.join(temporary, 'scout.md'); await writeFile(promptFile, 'Assigned area: src/')
+  const scouted = await workScout({ targetRoot: root, promptFile }, { inspect: both, flags: noFlags, catalog, execute: async (input) => { seen.push([input.provider, input.model ?? null, input.effort]); return { summary: 'none', proposals: [] } } })
+  assert.deepEqual([seen, scouted.provider], [[['claude', null, null], ['claude', null, null]], 'claude'])
+  // A tool the person names runs as given.
+  seen.length = 0
+  await abRun({ targetRoot: root, slug: 'routed', variant: 'b', followUpFile: path.join(promptDir, 'b.md'), provider: 'codex' }, { inspect: both, flags: noFlags, catalog, execute })
+  assert.deepEqual(seen, [['codex', null, null]])
+})
+
 test('a server that never listens is reported with its log tail instead of a URL claim', async (t) => {
   const { root } = await project(t, 'crash')
   await abStart({ targetRoot: root, slug: 'crash', variants: 2, basePort: 4791 })

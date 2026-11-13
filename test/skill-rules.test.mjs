@@ -49,8 +49,8 @@ test('spec 스킬은 gusta-sketch·gusta-self-improve·gusta-showcase를 포함�
   assert.deepEqual([...rules.keys()].sort(), ['gusta-create-architecture', 'gusta-create-narrative', 'gusta-create-ssot', 'gusta-create-task', 'gusta-design-mode', 'gusta-doc-review', 'gusta-implement-task', 'gusta-manage-work', 'gusta-review-code', 'gusta-review-task', 'gusta-self-improve', 'gusta-self-improve-remote', 'gusta-showcase', 'gusta-sketch', 'gusta-start', 'gusta-update-ssot'])
 })
 
-test('공통 규칙 1번은 미정 설정(settings.unset)을 gusta-init으로 먼저 정하게 하고 맡김은 묻지 않는다', async () => {
-  for (const [name, entry] of await commonRules()) assert.ok(entry['1'].endsWith('`settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 한다).'), `${name}: 공통 규칙 1번에 설정 확인이 없습니다.`)
+test('공통 규칙 1번은 미정 설정(settings.unset)을 gusta-init으로 먼저 정하게 하고 맡김은 묻지 않는다(agents 미정이면 시작하지 않음)', async () => {
+  for (const [name, entry] of await commonRules()) assert.ok(entry['1'].endsWith('`settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 하고, agents 미정이면 맡김을 시작하지 않는다).'), `${name}: 공통 규칙 1번에 설정 확인이 없습니다.`)
 })
 
 test('spec 스킬은 브랜치 대상을 고정하지 않는다: main 반영·cfg push/plan 대신 SETTINGS', async () => {
@@ -128,4 +128,37 @@ test('gusta-start: 인자 없으면 STATE·태스크로 실행하고, 기획 변
   assert.match(start, /기획 변경 요청 인자 없이 실행할 태스크가 없으면\(route `sketch-first`\)/)
   for (const pattern of [/시작 대화만 읽는다/, /요청문이 직접 정한 것은 사용자 결정이다/, /`vibe plan-sync`/, /`vibe plan-push`/, /gusta-update-ssot/, /gusta-create-task/, /`vibe loop --tasks '<범위>'`/, /다른 기존 태스크는 하지 않는다/, /`\[\?\]`/]) assert.match(request, pattern)
   for (const name of ['gusta-update-ssot', 'gusta-create-ssot']) assert.match(await readFile(new URL(`${name}/SKILL.md`, skillsRoot), 'utf8'), /gusta-start 요청 실행이면 요청문이/, name)
+})
+
+test('태스크 크기·실행 추천: gusta-create-task가 크기 예산과 가장 싼 충분한 조합을 정하고, init이 쓸 도구를 정한다', async () => {
+  const read = (file) => readFile(new URL(file, skillsRoot), 'utf8')
+  const create = await read('gusta-create-task/SKILL.md')
+  assert.doesNotMatch(create, /분해 중인 모델 자신/)
+  for (const pattern of [/관심사 하나·모듈 경계 하나, 테스트를 뺀 touches 5개 이하, 단위 상한\(기본 60분\)/, /`vibe brief T### --json`의 `size\.budget\.over`[^\n]*쪼갠다/, /`minContext`/,
+    /`gusta agents --json`의 options는 싼 순서다 — `allowed` 중 이 태스크를 완주하기에 충분한 첫 조합/, /먼저 쪼갤 수 있는지/, /score 9 이상이면 impl notes에 이유 한 줄/, /`agents`가 미정이면 `run:-`으로 두고 inbox `suggest`로 gusta-init/]) assert.match(create, pattern)
+  const init = await read('gusta-init/SKILL.md')
+  for (const pattern of [/`npx @haeram\/gusta agents --json`의 `tools`/, /이 목록 안에서만 다음 도구로/, /로그인 안 된 도구는 고를 수 없다/, /`agents=claude,codex`/, /agents 미정이면 태스크 `run:`을 비워 둔다/]) assert.match(init, pattern)
+  assert.match(await read('gusta-preference/SKILL.md'), /agents\(쓸 AI 도구와 폴백 순서\)/)
+  // FORMAT task skeleton, the task template and lint name the same quote fields (CLAUDE.md principle 4).
+  const format = await read('gusta-create-architecture/assets/FORMAT.md')
+  const fields = (quote) => quote.split('|').map((part) => part.trim().split(':')[0])
+  const skeleton = format.split('\n').find((line) => line.startsWith('- task: ')).match(/`> ([^`]+)`/)[1]
+  const template = (await read('gusta-create-task/assets/task.md')).split('\n')[1].slice(2)
+  assert.deepEqual(fields(template), fields(skeleton))
+  assert.ok(fields(skeleton).includes('run'))
+  assert.match(format, /\n- Task run \(optional\): planned `<tool>\/<model>@<effort>` from `gusta agents`[^\n]*lint checks shape only\./)
+})
+
+test('검증 단계 계약: 태스크 검사는 커밋 직전 한 번, 태스크는 태스크 단계 검사만 적고, ARCH는 세 단계를 선언한다', async () => {
+  const read = (file) => readFile(new URL(file, skillsRoot), 'utf8')
+  assert.match(await read('gusta-implement-task/SKILL.md'), /바뀐 범위의 태스크 단계 검사[^\n]*커밋 직전에 `vibe check --tier task`로 한 번[^\n]*편집할 때마다 반복하지 않/)
+  assert.match(await read('gusta-create-task/SKILL.md'), /acceptance·검증 줄에는 태스크 단계 검사[^\n]*빌드·통합·e2e·전체 스위트는 적지 않고 최종 관문/)
+  assert.match(await read('gusta-create-task/assets/task.md'), /task-tier checks only: build, full suite and e2e run at the final gate/)
+  assert.match(await read('gusta-create-architecture/SKILL.md'), /세 단계를 모두 명시적으로 선언한다[^\n]*1분 넘게 걸리는\(측정 또는 예상\) 검사는 task가 아니라 batch/)
+  const format = await read('gusta-create-architecture/assets/FORMAT.md')
+  for (const pattern of [/a task names task-tier checks only/, /declares all three tiers as `task`, `batch` \(a work group's `--group-verify`\), `CI`/, /A check over a minute \(measured or expected\) goes under batch, not task/]) assert.match(format, pattern)
+  assert.match(await read('gusta-update/references/project-rules.md'), /단계 선언이 없거나\(lint 검토 후보\) 태스크 단계에 느린 명령이 있으면\(`vibe status`의 `taskChecks\.slow`/)
+  // The same contract reaches headless sessions through the CLI's prompt (a variant here: no skill files read).
+  const { agentPrompt } = await import('../src/agent-adapter.mjs')
+  assert.match(await agentPrompt({ role: 'variant', workspace: '/tmp/w', prompt: 'p' }), /task-tier checks of the changed scope [^.]*once, when the edits are done and before any commit, with vibe check --tier task[^;]*; never after each edit/)
 })

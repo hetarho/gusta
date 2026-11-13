@@ -82,7 +82,11 @@ export const NOTIFY_LEVELS = { failed: 'failure', 'host-lost': 'failure', 'heart
 export const NOTIFY_CAP = 10
 // What the owner does next after a stop reason that only a person can resolve (report, notice, result).
 // needs-sketch: nothing runnable while untasked SSOT deltas, reviews or ideation remain.
-export const LOOP_HINTS = { 'needs-sketch': '/gusta-sketch로 태스크까지 만든 뒤 다시 실행하세요' }
+// needs-init: SETTINGS agents is undecided, so the CLI has no AI tool to route units to.
+// usage-limit: every allowed tool is at a usage limit past the work window (the run names tools and
+// reset times in its own hint). needs-login: the tools left failed sign-in.
+export const LOOP_HINTS = { 'needs-sketch': '/gusta-sketch로 태스크까지 만든 뒤 다시 실행하세요', 'needs-init': '/gusta-init으로 쓸 AI 목록(SETTINGS agents)을 정한 뒤 다시 실행하세요',
+  'usage-limit': 'AI 도구 사용량 한도 — 리셋 시각 뒤 다시 실행하세요', 'needs-login': 'agents의 도구에 로그인한 뒤(gusta agents로 확인) 다시 실행하세요' }
 export const loopHint = (reason) => LOOP_HINTS[reason] ?? null
 
 // A hook is a bridge candidate, not proof that a person (or the parent chat) received anything.
@@ -138,7 +142,7 @@ export function finishedSummary(state, now = {}) {
   const push = last?.pushed ? { pushed: true, commit: last.pushed, target: last.target ?? null }
     : { pushed: false, reason: last?.reason ?? (last?.landed ? 'local' : status === 'stopped' ? 'not-attempted' : status), ...(last?.landed ? { landed: last.landed, target: last.target ?? null } : {}) }
   const ciUnchecked = (state.batches ?? []).filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => ({ commit: entry.ci.commit ?? null, url: entry.ci.checkUrl ?? null }))
-  const hint = loopHint(state.reason)
+  const hint = state.hint ?? loopHint(state.reason)
   return { level: status === 'failed' ? 'failure' : waiting.length || ciUnchecked.length || hint ? 'attention' : 'info', status, reason: state.reason ?? null, ...(hint ? { hint } : {}), ...(state.error ? { error: state.error } : {}),
     units: state.units ?? 0, judgment: capped(waiting), parked: waiting.filter((item) => item.kind === 'parked').length, push, ...(ciUnchecked.length ? { ciUnchecked } : {}), report: state.report ?? null,
     ...(state.measurement ? { measurement: state.measurement } : {}),

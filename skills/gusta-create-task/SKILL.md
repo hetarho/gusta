@@ -14,7 +14,7 @@ description: >-
 말고 gusta-update-ssot로 올린다. 단독 맡김이면 추천안을 반영한 뒤 분해를 잇고, 직접 호출(gusta-sketch 등)은 확인을 요청하며 묶음 워커는 기획 공간으로 인계한다.
 
 ## 공통 규칙 (모든 spec 스킬)
-1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 한다).
+1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 하고, agents 미정이면 맡김을 시작하지 않는다).
 2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 문서 상태를 STATE에, 세션 기록(시작·상태 변화·활동)을 `vibe` 명령으로만(`beat`·`claim`·`inbox`·`log`) 남기고 SESSIONS.md를 직접 고치지 않는다. 워커는 STATE·SSOT·세션 기록 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 inbox(`vibe inbox add`)와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
@@ -38,10 +38,11 @@ ARCH·SSOT·기존 코드에 답이 있으면 묻지 않는다. 영역: 데이�
 
 ## 3. 분해
 - 크기: 태스크 1개 = 구현 세션이 **추가 질문 없이** 처음부터 끝까지 완주할 수 있는 단위. 그러기 위해 필요한 결정은 전부 이 단계에서 끝내 impl notes에 담는다 — 구현 중 질문이 생기면 분해 실패다.
-- 크기 상한은 모델 능력 기준: 기본은 지금 분해 중인 모델 자신("내가 이걸 한 세션에 완주할 수 있나"). 사용자가 구현에 쓸 모델을 지정하면 그 모델 기준 — 약한 모델일수록 잘게, 강한 모델이면 응집된 큰 단위.
+- 크기 상한은 새 세션 하나에 넉넉히 들어가는 양: 관심사 하나·모듈 경계 하나, 테스트를 뺀 touches 5개 이하, 단위 상한(기본 60분) 안. 쓴 뒤 `vibe brief T### --json`의 `size.budget.over`(brief 40k자·touches 기준)가 비어 있지 않으면 도메인·모듈별로 쪼갠다. 큰 파일은 impl notes에 읽을 범위(함수·구간)를 적는다. 기준 창은 `gusta agents --json`의 `minContext`다.
+- **실행 추천 `run:`**: `gusta agents --json`의 options는 싼 순서다 — `allowed` 중 이 태스크를 완주하기에 충분한 첫 조합을 쓴다. 어려운 설계 판단·여러 모듈 계약은 높은 score, 기계적 변경·문서·작은 수정은 낮은 score. 높은 조합이 필요해 보이면 먼저 쪼갤 수 있는지 보고, score 9 이상이면 impl notes에 이유 한 줄. `agents`가 미정이면 `run:-`으로 두고 inbox `suggest`로 gusta-init을 권한다.
 - **탐색형(explore)**: 보정·튜닝·밸런스처럼 돌려 보고 측정해서 정하는 일은 일반 태스크와 분리해 explore 태스크로 만든다. 인용줄 `explore:<시간>`(예 `explore:2h`)이 시간 제한이고, acceptance에 `- [ ] exit: <시간이 다 되면 무엇을 기록하고 done인지>`를 반드시 넣는다(lint 오류로 강제). 기준 밴드를 "모두 통과"로 완료 조건 삼지 않는다 — 기준은 측정 대상이고 끝은 exit가 정한다. 기준을 못 맞출 때 규칙을 바꿔야 한다면 그건 gusta-update-ssot 거리라고 impl notes에 적는다. explore 태스크와 그 후속은 메인 세션에서 실행되므로 lane에 넣지 않는다.
 - **작업 묶음(lane)**: 단독 진행이면 lane을 쓰지 않는다(`lane:-`). 여러 세션·worktree가 병렬로 진행할 묶음을 설계할 때만 [기반 → 줄기 → 통합](references/lanes.md)을 읽는다.
-- acceptance에는 그 변경을 검증하는 테스트가 포함된다. 예외는 ARCH에 테스트 제외 [o] 결정이 있을 때뿐. 테스트는 파일·케이스 이름과 실행 단계로 적는다. 태스크는 추가·변경·영향 단위 테스트+빠른 검사만, 통합·e2e·전체 스위트는 조정자 최종 관문이 한 번 실행한다. 통합/e2e 테스트도 구현할 때 함께 고치고 result limits에 묶음 실행 대상을 남기게 한다. 테스트 분류는 이름이 아닌 격리 범위와 의존성으로 판단하고 단위 검사는 작은 fixture로 독립 검증하게 한다.
+- acceptance에는 그 변경을 검증하는 테스트가 포함된다. 예외는 ARCH에 테스트 제외 [o] 결정이 있을 때뿐. 테스트는 파일·케이스 이름과 실행 단계로 적는다. acceptance·검증 줄에는 태스크 단계 검사(바뀐 범위의 테스트·빠른 정적 검사)만 쓴다 — 빌드·통합·e2e·전체 스위트는 적지 않고 최종 관문(ARCH batch/묶음)이 한 번 실행한다. 통합/e2e 테스트도 구현할 때 함께 고치고 result limits에 묶음 실행 대상을 남기게 한다. 테스트 분류는 이름이 아닌 격리 범위와 의존성으로 판단하고 단위 검사는 작은 fixture로 독립 검증하게 한다.
 - 명령이 실제로 실행하는 스크립트·테스트 범위를 읽는다. 기본 task acceptance는 구현·영향 검사·필요한 인계 완료이며, 뒤에 실행할 전체 스위트의 성공을 done 선행 조건으로 만들지 않는다. 전체 범위·성공 증거는 실제 실행될 ARCH batch/묶음 최종 관문에 등록하고 인계 경로를 남긴다. 기존 "done 전 전체 검사 통과"를 바꾸려면 [규칙 대조](../gusta-update/references/project-rules.md)로 완료 시점·주체 변경을 승인받아 활성 계약과 최종 관문을 함께 맞춘다(진행 중이면 중단·해제 후 재기획). 미승인·미지원이면 해당 변경은 parked이며 미실행 검사를 통과로 쓰지 않는다.
 - **경계를 따라 나눈다**: 태스크는 ARCH의 모듈 경계 안에서 응집된 변경으로 만든다. 여러 모듈을 가로지르면 계약(타입·인터페이스)을 먼저 만드는 태스크와 모듈별 태스크로 나눈다. 바깥 의존(DB·네트워크·시간 등)을 받는 주입 지점을 impl notes에 적어 acceptance의 단위 테스트가 실제 서비스 없이 돌게 한다.
 - **공용 코드**: 여러 태스크가 쓰는 helper·타입·검증·정규화 같은 공통 판단은 처음 필요한 태스크가 공용 위치(기존 모듈 또는 새 공용 파일)에 만들게 한다 — impl notes에 위치와 이름을 적고 그 파일을 touches에 넣는다. 뒤 태스크의 impl notes는 그 이름으로 가리킨다(예 `normalize from validation.ts`). touches를 태스크 자기 파일로만 좁혀 같은 helper를 파일마다 만들게 두지 않는다. 단독 진행에도 적용한다(작업 묶음의 기반 단계와 같은 원리).

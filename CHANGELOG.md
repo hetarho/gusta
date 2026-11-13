@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.17.0
+
+Released: 2026-11-13.
+
+- Breaking: SETTINGS `agents` is required. `/gusta-init` shows the installed,
+  logged-in Claude and Codex tools (`gusta agents`, no model calls) and asks
+  which to use and in what order. `vibe loop`, `work run` and `vibe preflight`
+  stop with `needs-init` until it is set; an explicit `--provider` still runs.
+- Per-task model and effort: tasks carry `run:<tool>/<model>@<effort>`, which
+  gusta-create-task picks as the cheapest sufficient option in the catalog, and
+  are sized for one session (one concern, at most 5 non-test touches, a brief
+  budget; lint hints above that). Loops and work groups route every unit
+  deterministically — explicit flags, then the task's `run:`, then the first
+  agent's own defaults — and move an unavailable recommendation to the nearest
+  allowed capability. Reviewers prefer another tool; recovery units never route
+  lower. Effort reaches the CLIs (Claude `--effort` and
+  `CLAUDE_CODE_EFFORT_LEVEL`, Codex `model_reasoning_effort`); reports show
+  recommended → actual.
+- Usage-limit fallback: limit failures (a whole tool or one model family) are
+  classified with their reset time and shared across the clone. The same task
+  restarts on the next candidate inside `agents` without spending repair,
+  failure, unit or gate counts. When every candidate is blocked the loop waits
+  without model calls if the reset fits the deadline, else stops with
+  `usage-limit`.
+- The final gate runs once: `vibe check --tier batch|group` refuses a fourth run
+  after three failed gate rounds per session, also outside `vibe loop`, and a
+  failure points to the failed commands for a targeted fix. `vibe check
+  --reset-gate` is for humans.
+- Slow checks stay out of tasks: task-tier checks run once before commit
+  through `vibe check --tier task`; their durations are recorded and commands
+  averaging over 60 s are suggested (inbox) for the batch gate. Task acceptance
+  lists task-tier checks only, ARCH verification decisions declare task/batch/CI
+  tiers (lint hints when missing), and briefs keep pre-push verification
+  decisions when tiers are undeclared.
+- Upgrade with `/gusta-update`; the next spec skill you call sends you to
+  `/gusta-init` for the `agents` question.
+
 ## 0.16.0
 
 Released: 2026-11-13.

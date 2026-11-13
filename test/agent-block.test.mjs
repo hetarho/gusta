@@ -282,12 +282,15 @@ test('CLI: agent-block은 적용·--check·--remove·--json을, check는 설정�
 
 test('맡김: agent-block 미정은 status의 unset에만 나오고 preflight·반영을 막거나 파일을 쓰지 않는다', async (t) => {
   const { root } = await fixture(t, 1)
-  assert.deepEqual((await vibeStatus({ targetRoot: root })).settings.unset, ['land', 'version', 'agent-block'])
+  assert.deepEqual((await vibeStatus({ targetRoot: root })).settings.unset, ['land', 'version', 'agent-block', 'agents'])
   await vibeSettings({ root, set: ['land=current'] })
   await git(root, 'add', '-A'); await git(root, 'commit', '-q', '-m', 'settings')
   const status = await vibeStatus({ targetRoot: root })
-  assert.deepEqual([status.settings.unset, status.route], [['version', 'agent-block'], 'implementation'])
-  const preflight = await vibePreflight({ targetRoot: root })
+  assert.deepEqual([status.settings.unset, status.route], [['version', 'agent-block', 'agents'], 'implementation'])
+  // Undecided agents stops autopilot (needs-init); a run that names its tool passes.
+  const undecided = await vibePreflight({ targetRoot: root })
+  assert.deepEqual([undecided.ok, undecided.reason, undecided.needsUser.map((check) => check.name)], [false, 'needs-init', ['agents']])
+  const preflight = await vibePreflight({ targetRoot: root, provider: 'claude' })
   assert.deepEqual([preflight.ok, preflight.needsUser], [true, []])
   assert.match(preflight.checks.find((check) => check.name === 'branch-settings').detail, /^land current/)
   assert.ok(!JSON.stringify(preflight).includes('agent-block'))

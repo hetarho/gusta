@@ -7,6 +7,7 @@ import { runVibeCLI } from '../src/vibe-cli.mjs'
 import { inspectWork } from '../src/work-groups.mjs'
 import { migrateSpec, packageVersions } from '../src/migrate.mjs'
 import { upgradeContext } from '../src/upgrade-context.mjs'
+import { agentCatalog } from '../src/agent-catalog.mjs'
 
 const HELP = `GUSTA — Gustum usque sere, tuum aperi.
 A Spec-Driven Development (SDD) framework for code curators.
@@ -18,6 +19,8 @@ A Spec-Driven Development (SDD) framework for code curators.
   gusta check [--target <path>] [--agent both|claude|codex]
   gusta agent-block [--target <path>] [--check] [--remove] [--json]
                                  CLAUDE.md/AGENTS.md의 gusta 관리 블록을 마커 사이에만 적용 (SETTINGS agent-block이 true일 때만 씀)
+  gusta agents [--target <path>] [--json]
+                                 설치된 AI 도구별 로그인·모델·에포트와 조합별 능력 점수·비용 순서, SETTINGS agents 허용 여부 (모델 호출 없음)
   gusta lint [--target <path>] [--hints]
   gusta outdated [--target <path>]   설치 버전(lock)·실행 버전·npm 최신 버전 (JSON)
   gusta upgrade-context [--target <path>] [--offset <n>] [--limit <n>] [--snapshot <sha256>]
@@ -40,7 +43,7 @@ A Spec-Driven Development (SDD) framework for code curators.
   --hints          lint의 검토 후보를 전부 출력 (기본: 앞 10건)
   --check          agent-block: 쓰지 않고 상태만 보고 (true인데 missing·stale·broken이면 종료 코드 1)
   --remove         agent-block: 블록 제거 (설정과 무관, 블록만 있던 파일은 삭제)
-  --json           context/board/agent-block의 기계 판독용 JSON 출력 (upgrade-context는 항상 JSON)
+  --json           context/board/agent-block/agents의 기계 판독용 JSON 출력 (upgrade-context는 항상 JSON)
   -h, --help       도움말
   -v, --version    버전
 `
@@ -147,8 +150,23 @@ async function main() {
     if (!result.ok) process.exitCode = 1
     return
   }
-  if (options.json && !['context', 'board', 'agent-block'].includes(command)) {
-    throw new SkillPackageError('--json은 context/board/agent-block에서만 지원합니다.')
+  if (options.json && !['context', 'board', 'agent-block', 'agents'].includes(command)) {
+    throw new SkillPackageError('--json은 context/board/agent-block/agents에서만 지원합니다.')
+  }
+
+  if (command === 'agents') {
+    const result = await agentCatalog(options)
+    if (options.json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    else {
+      process.stdout.write(`SETTINGS agents: ${result.agents?.join(',') ?? (result.unset ? '미정 (/gusta-init)' : '-')}\n`)
+      for (const tool of result.tools) {
+        const login = tool.loggedIn === null ? '확인 불가' : tool.loggedIn ? '됨' : '안 됨'
+        process.stdout.write(`${tool.tool}\t${tool.installed ? tool.version ?? '?' : '설치 안 됨'}\t로그인 ${login}\t모델 ${tool.models.filter((model) => !model.superseded).length}개\t${tool.allowed ? '허용' : '-'}${tool.error ? `\t${tool.error}` : ''}\n`)
+      }
+      process.stdout.write(`조합 ${result.options.length}개 (허용 ${result.options.filter((option) => option.allowed).length}) — 전체는 --json\n`)
+      if (result.minContext) process.stdout.write(`허용 도구의 가장 작은 context: ${result.minContext.tokens} (${result.minContext.tool}/${result.minContext.model})${result.contextUnknown.length ? `, 모름: ${result.contextUnknown.join(',')}` : ''}\n`)
+    }
+    return
   }
 
   if (command === 'context') {

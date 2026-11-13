@@ -125,6 +125,11 @@ async function outlook(context, id, owner) {
     if (group.finishFailure?.commit === target) return { state: 'stalled', finishFailure: group.finishFailure }
     return { state: 'waiting', reason: 'finishing' }
   }
+  // The runner ended on a usage limit (or signed-out tools) with its units still doing: they and the units
+  // still to claim wait for a later work run after the reset, not for this session (a session that
+  // implements itself has already claimed what it could before this view).
+  const held = !group.runner && ['usage-limit', 'needs-login'].includes(group.lastRun?.outcome) ? group.lastRun : null
+  if (held && moving.length && moving.every((entry) => entry.owner?.startsWith(`${held.id}/`))) return { state: held.outcome, ...(held.limit ? { limit: held.limit } : {}), tasks: moving.flatMap(unitTasks) }
   // A claim can lose a race with an integration that just moved the branch; a ready unit
   // that no live attempt blocks is never a stall.
   const claimable = planUnits(board.tasks, board.doneIds, owned).some((unit) => unit.ready && !live.some((entry) => overlaps(unit.touches, entry.touches)))
@@ -148,6 +153,9 @@ const UNATTENDED = {
   stalled: `사람만 풀 수 있는 원인이다. 원인을 보고서와 결정함에 남기고(${INBOX('parked')}) 묶음 밖의 다른 일로 간다 — 기다리지 않는다.`,
   // No subagent here: its permission prompt would stall an unattended session (gusta-start §3).
   'needs-reviewer': `이 세션의 제출물만 남아 있어 독립 리뷰어가 필요하다. 맡김에서는 부하 에이전트를 띄우지 않는다 — 리뷰어 슬롯이 있는 헤드리스 실행기(work run)가 맡게 하고, 없으면 ${INBOX('parked')}로 남기고 다른 일로 간다.`,
+  // Waiting for a reset is the CLI's (work run waits up to limit-wait-ms): the session never waits with model turns.
+  'usage-limit': `실행기(work run)가 agents의 모든 조합이 사용량 한도라 멈췄다(limit: 도구·리셋 시각). 리셋을 기다리며 모델을 부르지 않는다 — ${INBOX('parked')}로 도구와 리셋 시각을 남기고 보고서에 적은 뒤 마감한다. 리셋 뒤 같은 work run을 다시 띄우면 남은 단위를 이어 간다.`,
+  'needs-login': `실행기가 agents 도구의 로그인 실패로 멈췄다. 로그인은 사람만 한다 — ${INBOX('parked')}로 로그인 필요를 남기고 마감한다.`,
 }
 
 const INSTRUCTION = {
@@ -160,6 +168,8 @@ const INSTRUCTION = {
   stalled: 'blocked·finishFailure 원인을 사용자에게 보고하고 멈춘다. 해결되면 work next를 다시 호출한다.',
   decide: 'attempt.decision(question·options·recommendation)을 사용자에게 선택지형으로 묻고, 기획 공간에서 gusta-update-ssot로 반영해 커밋한 뒤 work update --attempt <id> --status doing --note <적용한 결정과 SSOT rev>로 재개한다.',
   'main-session': '묶음에서 할 일은 끝났다. 남은 tasks는 explore 태스크와 그 후속이라 메인 세션에서 단독으로(gusta-implement-task) 진행한다.',
+  'usage-limit': '실행기가 agents의 모든 조합이 사용량 한도라 멈췄다. limit(도구·리셋 시각)을 사용자에게 보고하고 멈춘다. 리셋 뒤 work run을 다시 실행하면 이어 간다.',
+  'needs-login': '실행기가 agents 도구의 로그인 실패로 멈췄다. 사용자에게 로그인(gusta agents로 확인)을 요청하고 멈춘다.',
 }
 
 async function nextAction(context, options) {

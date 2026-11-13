@@ -4,6 +4,10 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
 import { SkillPackageError } from './errors.mjs'
+import { readSettings, agentList, AGENT_TOOLS } from './settings.mjs'
+import { agentCatalog } from './agent-catalog.mjs'
+import { routeAgent, runLabel } from './agent-route.mjs'
+import { readLimits, activeLimits, limitBlocks } from './provider-limits.mjs'
 
 const execute = promisify(execFile)
 const adapter = fileURLToPath(new URL('../bin/gusta-agent-adapter.mjs', import.meta.url))
@@ -94,14 +98,38 @@ export async function availableProvider(options = {}, inspect = inspectProviders
   return provider
 }
 
+// The tool·model·effort of a one-off headless session (an A/B variant or scaffold, a scout). A tool the
+// person names (--provider) runs as given; otherwise routeAgent's default within SETTINGS agents: the
+// first tool at its own setting, past an incompatible CLI or one at a usage limit (limits.json under
+// runtime), so every variant of one comparison gets the same. agents undecided: the auto CLI, as before.
+// deps: inspect (inspectProviders), catalog (agentCatalog), now. No model call.
+export async function sessionRoute(options = {}, role, { root, runtime = null, inspect = inspectProviders, catalog = null, now = Date.now } = {}) {
+  const requested = options.provider ?? 'auto'
+  const value = (await readSettings({ root })).values.agents
+  const agents = agentList(value)
+  if (requested !== 'auto' || !agents) return { tool: await availableProvider(options, inspect), model: options.model ?? null, effort: options.effort ?? null, source: requested === 'auto' ? 'auto' : 'explicit' }
+  const inspection = await inspect(options)
+  const incompatible = AGENT_TOOLS.filter((tool) => !inspection.providers.some((entry) => entry.provider === tool && entry.compatible)).map((tool) => ({ tool, reason: 'incompatible' }))
+  const held = runtime ? activeLimits(await readLimits(runtime), now()) : []
+  const read = catalog ?? (() => agentCatalog({ targetRoot: root, env: options.env ?? process.env }, { agents: value }))
+  const routed = routeAgent({ role, agents, catalog: await read(), explicit: { model: options.model ?? null, effort: options.effort ?? null }, blocked: [...incompatible, ...limitBlocks(held)] })
+  if (!routed.chosen) throw new SkillPackageError('SETTINGS agents의 도구 중 실행할 수 있는 것이 없습니다 — gusta agents로 설치·로그인을 확인하세요(사용량 한도는 리셋 뒤).', routed.skipped.map(({ option, reason }) => `${runLabel(option)}: ${reason}`))
+  return { ...routed.chosen, source: routed.source }
+}
+
 export async function workDoctor(options = {}) {
   const [providers, orca] = await Promise.all([inspectProviders(options), inspectOrca(options)])
   return { ...providers, orca }
 }
 
-// The built-in adapter command line; flags are the provider's supported OPTIONAL_FLAGS.
-export const adapterArgs = (provider, model, flags = []) => [adapter, '--provider', provider, ...(model ? ['--model', model] : []), ...flags.flatMap((flag) => ['--provider-flag', flag])]
+// The built-in adapter command line for one route ({ model, effort }, either may be null: the CLI's
+// own setting); flags are the provider's supported OPTIONAL_FLAGS.
+export const adapterArgs = (provider, { model = null, effort = null } = {}, flags = []) => [adapter, '--provider', provider, ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...flags.flatMap((flag) => ['--provider-flag', flag])]
 
+// The built-in adapter's roles. A provider the run names (--provider, --providers, workers, a reviewer
+// provider) pins that tool; 'auto' (the default) leaves the tool to agent-route at every dispatch: the
+// task's run: within SETTINGS agents (provider 'route', no fixed args). compatible lists the CLIs a
+// routed dispatch may take, flags their optional flags.
 export async function builtInAdapter(options = {}) {
   if (options.provider !== undefined && (options.providers !== undefined || options.workers !== undefined)) throw new SkillPackageError('--provider와 혼합 워커 설정을 함께 지정할 수 없습니다.')
   if (options.providers !== undefined && options.workers !== undefined) throw new SkillPackageError('providers와 workers 설정 중 하나만 지정하세요.')
@@ -121,18 +149,23 @@ export async function builtInAdapter(options = {}) {
   }
   const inspection = await inspectProviders(options)
   const select = (requested) => {
-    const provider = requested === 'auto' ? inspection.autoProvider : requested
-    const entry = inspection.providers.find((item) => item.provider === provider && item.compatible)
+    if (requested === 'auto') return null
+    const entry = inspection.providers.find((item) => item.provider === requested && item.compatible)
     if (!entry) throw new SkillPackageError(`사용 가능한 ${requested} CLI가 없습니다. work doctor로 설치/호환성을 확인하세요.`, inspection.providers.map((item) => JSON.stringify(item)))
     return entry
   }
   const configure = (entry, model) => {
     if (model !== undefined && (typeof model !== 'string' || !model.trim())) throw new SkillPackageError('model은 비어 있지 않은 문자열이어야 합니다.')
-    return { command: process.execPath, args: adapterArgs(entry.provider, model, entry.extraFlags), provider: entry.provider, version: entry.version, model: model ?? null }
+    if (!entry) return { command: process.execPath, args: null, provider: 'route', version: null, model: model ?? null }
+    return { command: process.execPath, args: adapterArgs(entry.provider, { model }, entry.extraFlags), provider: entry.provider, version: entry.version, model: model ?? null }
   }
   const workers = requests.map((entry) => configure(select(entry.provider), entry.model))
   const worker = workers[0]
-  const reviewer = options.reviewerProvider ? select(options.reviewerProvider) : select(worker.provider)
-  const roles = { worker, reviewer: configure(reviewer, options.reviewerModel ?? (workers.length === 1 && reviewer.provider === worker.provider ? requests[0].model : undefined)) }
-  return { kind: 'builtin', roles, workers, ...Object.fromEntries(['timeoutMs', 'maxDispatches', 'maxTaskRuns'].filter((key) => options[key] !== undefined).map((key) => [key, Number(options[key])])) }
+  // A pinned worker's reviewer keeps its tool unless one is named; a routed worker's reviewer is routed too.
+  const reviewer = options.reviewerProvider ? select(options.reviewerProvider) : worker.provider === 'route' ? null : select(worker.provider)
+  const compatible = inspection.providers.filter((entry) => entry.compatible)
+  if (!compatible.length) throw new SkillPackageError('사용 가능한 codex·claude CLI가 없습니다. work doctor로 설치/호환성을 확인하세요.', inspection.providers.map((item) => JSON.stringify(item)))
+  const roles = { worker, reviewer: configure(reviewer, options.reviewerModel ?? (workers.length === 1 && reviewer && reviewer.provider === worker.provider ? requests[0].model : undefined)) }
+  return { kind: 'builtin', roles, workers, compatible: compatible.map((entry) => entry.provider), flags: Object.fromEntries(compatible.map((entry) => [entry.provider, entry.extraFlags ?? []])),
+    ...Object.fromEntries(['timeoutMs', 'maxDispatches', 'maxTaskRuns'].filter((key) => options[key] !== undefined).map((key) => [key, Number(options[key])])) }
 }
