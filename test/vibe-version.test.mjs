@@ -6,6 +6,7 @@ import { vibePush } from './helpers/unit-policy.mjs'
 import { fileURLToPath } from 'node:url'
 import { vibeDeploy, vibeStatus, vibePreflight } from '../src/vibe.mjs'
 import { vibeSettings } from '../src/settings.mjs'
+import { prepareSessionWorkspace } from '../src/session-workspace.mjs'
 import { machines, execute, git } from './helpers/vibe-fixture.mjs'
 
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
@@ -309,7 +310,14 @@ test('land-via pr: 병합 시점을 CLI가 쥐지 않으므로 올리지 않는�
 })
 
 test('version 값은 status·preflight·settings와 CLI 결과(JSON)에 나온다', async (t) => {
-  const { a, remote } = await project(t, ['land: main', 'push: true', 'version: auto'])
+  const source = await project(t, ['land: main', 'push: true', 'version: auto'])
+  const { remote } = source
+  const { root: a } = await prepareSessionWorkspace({ targetRoot: source.a, tag: 'vers001' })
+  // The actual CLI finalizes a real isolated candidate with declared tiny coverage.
+  // Extend the existing decision, so the release remains a patch rather than a new-policy minor.
+  const arch = path.join(a, 'spec/ssot/ARCH.md')
+  await writeFile(arch, (await readFile(arch, 'utf8')).replace('- ARCH-1 [o] runtime: node', '- ARCH-1 [o] runtime: node; verification tiers.\n  - task: `node --version`.\n  - batch: `node --version`.\n  - CI: workflow.'))
+  await commitAll(a, 'declare verification coverage')
   assert.equal((await vibeStatus({ targetRoot: a })).settings.version, 'auto')
   const detail = async () => (await vibePreflight({ targetRoot: a })).checks.find((check) => check.name === 'branch-settings').detail
   assert.equal(await detail(), 'land main · version auto (vibe push)')
