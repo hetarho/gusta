@@ -2,19 +2,24 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { fixture, git } from './helpers/vibe-fixture.mjs'
-import { finalizeIntegration, vibeIntegration } from '../src/integration-run.mjs'
+import { fixture, git, machines, execute } from './helpers/vibe-fixture.mjs'
+import { finalizeIntegration, vibeIntegration, openSessionWorkspace } from '../src/integration-run.mjs'
 import { openIntegration } from '../src/integration-gate.mjs'
-import { vibeSession, vibeBeat } from '../src/vibe.mjs'
+import { vibeSession, vibeBeat, vibePush } from '../src/vibe.mjs'
 import { validateAgentAcceptance } from '../src/agent-acceptance.mjs'
 import { assertImplementationWorkspace, prepareSessionWorkspace } from '../src/session-workspace.mjs'
 import { writeInteractive } from '../src/interactive-state.mjs'
 import { inspectWorkspace } from '../src/workspace.mjs'
+import { fileURLToPath } from 'node:url'
+import { startWork, finishWork, inspectWork } from '../src/work-groups.mjs'
+import { runWork } from '../src/work-runner.mjs'
+import { vibeLoop } from '../src/vibe-loop.mjs'
+import { vibeTask } from '../src/vibe-task.mjs'
 
 const shell = (value) => `'${value.replaceAll("'", "'\\''")}'`
 const node = (code) => `node -e ${shell(code)}`
-async function project(t, { plan, version = false } = {}) {
-  const value = await fixture(t, 0), { root } = value
+async function project(t, { plan, version = false, count = 0 } = {}) {
+  const value = await fixture(t, count), { root } = value
   if (version) {
     await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'verification-fixture', version: '1.0.0' }))
     await git(root, 'add', '.'); await git(root, 'commit', '-qm', 'version baseline')
@@ -130,4 +135,139 @@ test('version auto is prepared on the fixed candidate before its one actual comm
   assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.version.to, '1.0.1')
   assert.equal(JSON.parse(await git(root, 'show', 'delivery:package.json')).version, '1.0.1')
   assert.equal((await finalizeIntegration({ targetRoot: root, tag: 'version1' })).alreadyLanded, true)
+})
+
+test('two real session-open CLI calls announce work before any beat, and empty close unblocks the one fixed gate', async (t) => {
+  const { a, b, temporary } = await machines(t), counter = path.join(temporary, 'opened-counter')
+  await writeFile(path.join(a, 'spec/SETTINGS.md'), '# SETTINGS\n- land: delivery\n- push: true\n- coord: session-ledger\n')
+  await writeFile(path.join(a, 'spec/ssot/ARCH.md'), '# ARCH Architecture\n> r1 | Architecture\n\n## decisions\n- ARCH-1 [o] Verification.\n  - task: `node --version`.\n  - batch: `' + node(`require('node:fs').appendFileSync(${JSON.stringify(counter)},'X')`) + '`.\n  - CI: workflow.\n\n## chg\n- r1 261101 initial\n')
+  await git(a, 'add', '.'); await git(a, 'commit', '-qm', 'shared policy')
+  await git(a, 'branch', 'delivery'); await git(a, 'push', '-q', 'origin', 'HEAD:main', 'delivery')
+  await git(b, 'fetch', '-q', 'origin'); await git(b, 'merge', '--ff-only', '-q', 'origin/main')
+  const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
+  const call = async (root, ...args) => JSON.parse((await execute(process.execPath, [cli, 'vibe', ...args, '--target', root], { encoding: 'utf8' })).stdout)
+  const first = await call(a, 'session', 'open', '--kind', 'self-improve', '--tag', 'opened01')
+  const second = await call(b, 'session', 'open', '--kind', 'self-improve', '--tag', 'opened02')
+  const state = await (await openIntegration(await vibeSession({ targetRoot: first.root }))).read()
+  assert.equal(Object.values(state.state.participants).filter((entry) => entry.status === 'working').length, 2)
+  const blocked = await finalizeIntegration({ targetRoot: first.root, tag: 'opened01' })
+  assert.equal(blocked.reason, 'sessions-working')
+  await assert.rejects(readFile(counter), { code: 'ENOENT' })
+  const closed = await call(second.root, 'integration', 'close', '--tag', 'opened02')
+  assert.equal(closed.value.status, 'withdrawn')
+  const completed = await finalizeIntegration({ targetRoot: first.root, tag: 'opened01' })
+  assert.equal(completed.ok, true, JSON.stringify(completed))
+  assert.equal(await readFile(counter, 'utf8'), 'X')
+})
+
+test('nested worker acceptance and required group commands are handed to the owning session without an extra full gate', async (t) => {
+  const { root, temporary } = await project(t, { count: 1 }), counter = path.join(temporary, 'nested-counter')
+  const parent = await openSessionWorkspace({ targetRoot: root, kind: 'self-improve', tag: 'parent01' })
+  const command = node(`require('node:fs').appendFileSync(${JSON.stringify(counter)},'G')`)
+  const group = await startWork({ targetRoot: parent.root, name: 'nested', groupVerify: [command] })
+  const adapterFile = path.join(temporary, 'worker.mjs'), config = path.join(temporary, 'worker.json')
+  await writeFile(adapterFile, `import fs from 'node:fs';import path from 'node:path';import {execFileSync} from 'node:child_process';
+let input='';for await(const chunk of process.stdin)input+=chunk;const job=JSON.parse(input);
+if(job.role==='worker'){
+const name=fs.readdirSync('spec/tasks').find(name=>name.startsWith(job.taskId+'.'));
+const file=path.join('spec/tasks',name);fs.writeFileSync(file,fs.readFileSync(file,'utf8').replaceAll('- [ ]','- [v]')+'- outcome: implemented\\n- at: -\\n- verified: affected checks\\n- limits: -\\n');
+fs.mkdirSync('src',{recursive:true});fs.writeFileSync('src/result.txt','done');execFileSync('git',['add','.']);execFileSync('git',['commit','-qm','worker complete']);
+console.log(JSON.stringify({outcome:'completed',summary:'done',agentChecks:[${JSON.stringify(agent())}]}));
+}else console.log(JSON.stringify({verdict:'approved',summary:'reviewed',findings:[]}));`)
+  await writeFile(config, JSON.stringify({ command: process.execPath, args: [adapterFile] }))
+  const run = await runWork({ targetRoot: parent.root, work: group.id, adapter: config, verify: ['node --version'], groupVerify: [command] })
+  assert.equal(run.outcome, 'completed', JSON.stringify(run))
+  await assert.rejects(readFile(counter), { code: 'ENOENT' })
+  const current = (await inspectWork({ targetRoot: parent.root })).groups.find((entry) => entry.id === group.id)
+  assert.equal(current.agentChecks.length, 1)
+  assert.equal(current.ready.verified, false)
+  const store = await openIntegration(await vibeSession({ targetRoot: parent.root })), before = await store.read()
+  assert.equal(Object.values(before.state.participants).length, 1)
+  assert.equal(Object.values(before.state.participants)[0].status, 'working')
+  assert.ok(Object.values(before.state.participants)[0].verificationCommands.includes(command))
+  const final = await finalizeIntegration({ targetRoot: parent.root, tag: 'parent01' })
+  assert.equal(final.reason, 'waiting-agent', JSON.stringify(final))
+  assert.equal(final.gate.agentChecks.length, 1)
+  assert.equal(await readFile(counter, 'utf8'), 'G')
+})
+
+for (const publication of [
+  { push: true, via: 'merge', name: 'a PR-only participant cannot be directly landed by an ordinary merge coordinator' },
+  { push: false, via: 'pr', name: 'configured PR strategy permits working branch publication with direct push disabled' },
+]) test(`${publication.name}; post-merge reconciliation does not recheck`, async (t) => {
+  const { root, temporary } = await project(t), remote = path.join(temporary, 'origin.git')
+  await execute('git', ['init', '--bare', '-q', remote])
+  await git(root, 'remote', 'add', 'origin', remote); await git(root, 'push', '-q', 'origin', 'delivery')
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), `# SETTINGS\n- land: delivery\n- push: ${publication.push}\n- land-via: ${publication.via}\n- coord: session-ledger\n`)
+  await git(root, 'add', '.'); await git(root, 'commit', '-qm', 'published session policy')
+  const original = (await git(root, 'ls-remote', '--heads', 'origin', 'delivery')).split(/\s/)[0]
+  const proposal = await openSessionWorkspace({ targetRoot: root, kind: 'self-improve-remote', tag: 'remote01' })
+  const ordinary = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'normal01' })
+  await vibeIntegration({ targetRoot: proposal.root, step: 'ready', tag: 'remote01' })
+  let prs = 0
+  const pr = async () => { prs++; return { pr: 'https://example.invalid/pull/1' } }
+  const waiting = await finalizeIntegration({ targetRoot: ordinary.root, tag: 'normal01' }, { pr })
+  assert.equal(waiting.reason, 'waiting-pr', JSON.stringify(waiting)); assert.equal(waiting.gate.via, 'pr')
+  assert.equal((await git(root, 'ls-remote', '--heads', 'origin', 'delivery')).split(/\s/)[0], original)
+  const store = await openIntegration(await vibeSession({ targetRoot: ordinary.root }))
+  assert.equal((await store.complete({ token: waiting.gate.token, candidate: waiting.gate.candidate })).reason, 'pr-required')
+  await git(waiting.gate.path, 'push', '-q', 'origin', `${waiting.gate.candidate}:refs/heads/delivery`)
+  const settled = await finalizeIntegration({ targetRoot: ordinary.root, tag: 'normal01' }, { pr })
+  assert.equal(settled.ok, true, JSON.stringify(settled)); assert.equal(prs, 1)
+  assert.equal(settled.gate.rounds.length, 1)
+})
+
+test('the default isolated loop observes its exact published CI failure once and reports pending repair', async (t) => {
+  const { root, temporary } = await project(t, { count: 1 }), remote = path.join(temporary, 'ci-origin.git')
+  await execute('git', ['init', '--bare', '-q', remote]); await git(root, 'remote', 'add', 'origin', remote)
+  await git(root, 'push', '-q', 'origin', 'delivery')
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: delivery\n- push: true\n- coord: session-ledger\n')
+  await git(root, 'add', '.'); await git(root, 'commit', '-qm', 'CI publication')
+  let calls = 0
+  const result = await vibeLoop({ targetRoot: root, tag: 'cifail01', provider: 'codex', maxUnits: 1 }, {
+    preflight: async () => ({ ok: true, checks: [] }),
+    execute: async (options, job) => {
+      const id = job.brief.taskId, source = options.targetRoot
+      await vibeTask({ targetRoot: source, tag: options.tag, task: id, step: 'start' })
+      const file = path.join(source, 'spec/tasks', `${id}.example.md`)
+      await writeFile(file, (await readFile(file, 'utf8')).replaceAll('- [ ]', '- [v]').replace(/## result\n*$/, '## result\n- outcome: implemented\n- at: -\n- verified: affected check\n- limits: -\n'))
+      await writeFile(path.join(source, 'feature.txt'), 'done')
+      await vibeTask({ targetRoot: source, tag: options.tag, task: id, step: 'done' })
+      await git(source, 'add', '.'); await git(source, 'commit', '-qm', 'implementation complete')
+      return { exitCode: 0, result: { kind: 'task', id, outcome: 'completed', pushed: false, next: '' } }
+    },
+    ci: async (options) => {
+      calls++; assert.equal(options.branch, 'delivery')
+      assert.equal((await git(root, 'ls-remote', '--heads', 'origin', 'delivery')).split(/\s/)[0], options.commit)
+      return { ok: false, outcome: 'failed', commit: options.commit, runUrl: 'https://example.invalid/check/1', jobs: [{ name: 'supported-browser', conclusion: 'failure' }], ms: 1 }
+    },
+  })
+  assert.equal(calls, 1, JSON.stringify(result))
+  assert.equal(result.ok, false); assert.equal(result.integration.ci.ok, false)
+  assert.equal(result.integration.gate.rounds.length, 1)
+  assert.ok(result.priorityTask)
+  assert.match(await readFile(path.join(result.sessionWorkspace.root, result.report), 'utf8'), /CI .*failed/)
+})
+
+test('default vibe push --wait-ci cannot return success after the published candidate CI fails', async (t) => {
+  const { root, temporary } = await project(t), remote = path.join(temporary, 'wait-origin.git')
+  await execute('git', ['init', '--bare', '-q', remote]); await git(root, 'remote', 'add', 'origin', remote); await git(root, 'push', '-q', 'origin', 'delivery')
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: delivery\n- push: true\n- coord: session-ledger\n')
+  await git(root, 'add', '.'); await git(root, 'commit', '-qm', 'CI publication')
+  let calls = 0
+  const result = await vibePush({ targetRoot: root, waitCi: true }, { ci: async (options) => { calls++; return { ok: false, outcome: 'failed', commit: options.commit } } })
+  assert.equal(calls, 1); assert.equal(result.ok, false); assert.equal(result.ci.ok, false)
+})
+
+test('a legacy CI-only command handed off by a group is deferred and remains a visible CI obligation', async (t) => {
+  const { root, temporary } = await project(t), marker = path.join(temporary, 'ci-only-counter')
+  const command = node(`require('node:fs').appendFileSync(${JSON.stringify(marker)},'X')`)
+  const arch = path.join(root, 'spec/ssot/ARCH.md')
+  await writeFile(arch, (await readFile(arch, 'utf8')).replace('  - CI: workflow.', `  - CI: remote checks.\n    - \`${command}\``))
+  await git(root, 'add', '.'); await git(root, 'commit', '-qm', 'CI-only coverage')
+  const result = await finalizeIntegration({ targetRoot: root, tag: 'cidefer1', verify: [command] })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  await assert.rejects(readFile(marker), { code: 'ENOENT' })
+  assert.ok(result.gate.ciCommands.includes(command))
+  assert.equal(result.ci.outcome, 'pending')
 })

@@ -11,7 +11,7 @@ import { claimReview, resumeWork } from './work-review.mjs'
 import { activeAttempt, unitTasks, overlaps, scopedBoard } from './work-policy.mjs'
 import { planUnits, mainSessionTasks } from './task-graph.mjs'
 
-const { repository, groupOf, fail, head, groupVerification } = workInternals
+const { repository, groupOf, fail, head, groupVerification, groupReadiness } = workInternals
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const alive = (pid) => { try { process.kill(pid, 0); return true } catch (error) { return error.code === 'EPERM' } }
@@ -75,7 +75,7 @@ async function kickGate(context, options, id) {
     const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: target }), group)
     const deferred = mainSessionTasks(board.tasks)
     if (board.ok && !board.warnings.length && board.tasks.every((task) => task.st?.startsWith('blocked@') || deferred.has(task.id)) &&
-        !(await groupVerification(context, group))?.current && group.finishFailure?.commit !== target) args = ['finish', '--work', group.id]
+        !(await groupVerification(context, group))?.current && !(await groupReadiness(context, group))?.current && group.finishFailure?.commit !== target) args = ['finish', '--work', group.id]
   }
   if (!args) return
   const token = randomUUID()
@@ -118,6 +118,8 @@ async function outlook(context, id, owner) {
   const blocked = live.filter((entry) => entry.status === 'blocked').map((entry) => ({ attempt: entry.id, tasks: unitTasks(entry), owner: entry.owner, reason: entry.reason ?? null }))
   if (!open.length && !live.length) {
     const verified = await groupVerification(context, group)
+    const ready = await groupReadiness(context, group)
+    if (ready?.current && !verified?.current) return { state: 'complete', verified: null, ready, integration: group.integration, branch: group.branch }
     if (!group.verify?.group?.length || verified?.current) {
       const later = board.tasks.filter((task) => deferred.has(task.id)).map((task) => task.id)
       return later.length ? { state: 'main-session', tasks: later, verified, branch: group.branch } : { state: 'complete', verified, branch: group.branch }
@@ -149,7 +151,7 @@ const INBOX = (kind) => `vibe inbox add --kind ${kind} --ref <T###|ID-n> --text 
 const UNATTENDED = {
   blocked: 'attempt.reason을 확인한다. 직접 고칠 수 있으면 고친 뒤 work update --attempt <id> --status doing으로 재개해 다시 submit한다. 기획 결정이 필요하면 결정 요청(question·options·recommendation)을 세션 임시 폴더의 JSON에 써서 work update --attempt <id> --status blocked --reason <요약> --decision-file <path>로 남기고 work next를 다시 호출한다 — 기다리지 않는다.',
   decide: `attempt.decision에 답한다(조정자). 기획 공간에서 recommendation으로 gusta-update-ssot를 진행해 커밋하고(잠정), 질문·선택·대안을 보고서와 결정함에 남긴다 — 결정함은 기획 공간에서 ${INBOX('decided')}. 그 뒤 work update --attempt <id> --status doing --note <적용한 결정과 SSOT rev>로 재개한다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 ${INBOX('parked')}로 남긴 뒤 work release --attempt <id> --reason parked. 그리고 work next를 다시 호출한다.`,
-  complete: `남은 일이 없다. landFrom에서 vibe push --target <landFrom> --verified-commit <verified.commit>으로 SETTINGS land에 반영하고, 반영 결과와 검증 커밋을 보고서에 남긴 뒤 마감한다. 결과 reason이 land-unset이면 ${INBOX('parked')}로 남긴다.`,
+  complete: `묶음 구현이 끝났다. ready가 있으면 전체 검수는 아직 통과한 것이 아니다. 중첩 묶음은 소유 세션의 작업 브랜치에 합치고 그 세션의 다른 작업을 잇는다. 소유 세션 전체가 끝났을 때만 vibe integration finish --tag <session tag> --target <session root>로 공유 통합을 요청하고 waiting/AC/CI 상태와 후보를 보고한다. verified가 있는 이전 프로토콜 결과도 vibe push를 통해 공유 관문을 거친다. land-unset이면 ${INBOX('parked')}로 남긴다.`,
   stalled: `사람만 풀 수 있는 원인이다. 원인을 보고서와 결정함에 남기고(${INBOX('parked')}) 묶음 밖의 다른 일로 간다 — 기다리지 않는다.`,
   // No subagent here: its permission prompt would stall an unattended session (gusta-start §3).
   'needs-reviewer': `이 세션의 제출물만 남아 있어 독립 리뷰어가 필요하다. 맡김에서는 부하 에이전트를 띄우지 않는다 — 리뷰어 슬롯이 있는 헤드리스 실행기(work run)가 맡게 하고, 없으면 ${INBOX('parked')}로 남기고 다른 일로 간다.`,
@@ -229,7 +231,7 @@ export async function nextWork(options) {
       const integrationTarget = group?.managed === false ? { branch: group.branch, path: group.path } : null
       return { schemaVersion: 1, work, owner: options.owner, ...rest, ...(timedOut && seconds ? { reason: 'timeout', detail: result.reason } : {}),
         ...(integrationTarget ? { integrationTarget } : {}), ...(group ? { landFrom: group.path } : {}),
-        instruction: integrationTarget ? '지정한 기존 로컬 브랜치에 통합과 최종 검증이 끝났다. integrationTarget과 검증 커밋을 보고한다. 이미 위임된 로컬 통합을 다시 묻지 않는다. 이후 반영은 SETTINGS land·push를 따른다: vibe push --target <landFrom> --verified-commit <verified.commit> (land가 current이고 push가 false면 할 일 없음).' : (options.autopilot ? UNATTENDED[key] : null) ?? INSTRUCTION[key] }
+        instruction: integrationTarget && result.verified?.current ? '지정한 작업 브랜치의 검증 증거가 있다. integrationTarget과 검증 커밋을 보고한다. 이후 공유 통합은 모든 세션이 준비된 고정 후보를 사용하며 SETTINGS land·push를 따른다.' : integrationTarget && result.ready ? UNATTENDED.complete : (options.autopilot ? UNATTENDED[key] : null) ?? INSTRUCTION[key] }
     }
     await sleep(Math.min(options.pollMs ?? 5000, deadline - Date.now()))
   }
