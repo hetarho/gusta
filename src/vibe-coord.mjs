@@ -150,9 +150,11 @@ export async function beatSession(context, options, injected = {}) {
     await remember(coord, { session: { tag, forget: true } })
     return { schemaVersion: 1, tag, removed: ended.changed, coordination: ended.coordination }
   }
-  const where = await place(context)
   const task = TASK_ID.test(options.doing ?? '') ? options.doing : null
   const known = await registration(coord, tag)
+  const who = identity(context, (await coord.store.read()).text, options, known)
+  const integration = await registerIntegration(context, { ...options, host: who.host }, injected)
+  const where = { ...await place(context), ...(integration.participant ? { session: integration.participant } : {}) }
   const written = await coordWrite(context, (text, { now }) => {
     const who = identity(context, text, options, known)
     if (!rowOf(text, tag) && !who.mode) fail('새 세션 행에는 --mode가 필요합니다.')
@@ -161,7 +163,7 @@ export async function beatSession(context, options, injected = {}) {
   }, { tag, message: `gusta ${tag}: ${task ? `claim ${task}` : 'beat'}`, injected, coord })
   if (task) lostClaim(written.coordination, task)
   return { schemaVersion: 1, row: rowOf((await written.store.read()).text, tag), changed: written.changed, coordination: written.coordination,
-    integration: await registerIntegration(context, options, injected) }
+    integration }
 }
 
 // The task's own st — this checkout's row and file, and the land branch's row as last fetched: a
@@ -199,7 +201,9 @@ export async function claimSession(context, options, { landState = null, check =
   const legacy = task ? mergeLegacy(readSessions(''), context.state, { activeFrom: [landState] }).active.filter((row) => row.tag !== tag && row.doing === task) : []
   const snapshots = new Map()
   for (const row of task ? [...readSessions(before).active.filter((entry) => entry.tag !== tag && entry.doing === task), ...legacy] : []) snapshots.set(row.tag, await wipTime(context, row.tag))
-  const where = await place(context)
+  const who = identity(context, before, options, known)
+  const integration = await registerIntegration(context, { ...options, host: who.host }, injected)
+  const where = { ...await place(context), ...(integration.participant ? { session: integration.participant } : {}) }
   const written = await coordWrite(context, (text, { now }) => {
     const who = identity(context, text, options, known)
     who.mode ??= DEFAULT_MODE
@@ -213,7 +217,7 @@ export async function claimSession(context, options, { landState = null, check =
   if (task) lostClaim(written.coordination, task)
   return { schemaVersion: 1, ok: true, tag, task: task ?? null, claimed: Boolean(task), released: written.value.released ?? [],
     row: rowOf((await written.store.read()).text, tag), unpublished: written.coordination.unpublished, coordination: written.coordination,
-    integration: await registerIntegration(context, options, injected) }
+    integration }
 }
 
 // vibe task done: the finished task waits in unlanded until the land branch holds it (so no other

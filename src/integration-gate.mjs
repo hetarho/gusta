@@ -10,7 +10,8 @@ import { git as runGit, gitInput as runInput } from './workspace.mjs'
 import { remoteEnv, REMOTE_TIMEOUT_MS } from './coord-branch.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { validateAgentAcceptance } from './agent-acceptance.mjs'
+import { validateAgentAcceptance, summarizeAgentAcceptance } from './agent-acceptance.mjs'
+import { improvingGate } from './gate-ledger.mjs'
 
 const execute = promisify(execFile)
 const FILE = 'INTEGRATION.json'
@@ -23,6 +24,10 @@ const validRef = (name) => typeof name === 'string' && /^[A-Za-z0-9][\w./-]*$/.t
 const validHead = (head) => /^[0-9a-f]{40,64}$/.test(head ?? '')
 const wait = (reason, extra = {}) => ({ ok: false, waiting: true, reason, ...extra })
 const participantKey = ({ owner, tag, branch }) => createHash('sha256').update(`${owner}\n${tag}\n${branch}`).digest('hex').slice(0, 24)
+const failureProof = (checks) => ({ plan: JSON.stringify(checks.map((entry) => [entry.command, entry.checks?.map((check) => [check.id, check.command])])), evidence: 'checks-or-commands',
+  failureSetComplete: checks.every((entry) => !entry.stale && !entry.timedOut && !entry.cancelled && (entry.checks ? entry.failureSetComplete === true : Number.isInteger(entry.exitCode))),
+  identities: checks.flatMap((entry) => entry.checks ? entry.checks.filter((check) => !check.ok).map((check) => `check:${check.id}`) : entry.ok ? [] : [`command:${entry.command}`]),
+  timedOut: checks.some((entry) => entry.timedOut), stale: checks.some((entry) => entry.stale) })
 
 function parse(text) {
   let value
@@ -121,25 +126,33 @@ export async function openIntegration(context, injected = {}) {
     if (!state.gate || state.gate.token !== token) return wait('integration-owner-changed', { automaticRecheck: false })
     return state.gate
   }
-  async function register({ tag, host, branch: sessionBranch = context.branch, head, agentChecks }) {
+  async function register({ tag, host, branch: sessionBranch = context.branch, head, agentChecks, verificationCommands }) {
     if (!tag || !validRef(sessionBranch)) return wait('session-branch-required')
     head ??= await sha('HEAD')
     if (!validHead(head)) return wait('session-head-required')
+    if (verificationCommands !== undefined && (!Array.isArray(verificationCommands) || verificationCommands.some((command) => typeof command !== 'string' || !command.trim()))) return wait('invalid-verification-commands')
     const owner = await ownerId(), id = participantKey({ owner, tag, branch: sessionBranch })
-    return transaction((state, at) => {
+    const result = await transaction((state, at) => {
       const previous = state.participants[id]
+      if (previous?.status === 'landed' && previous.head === head) return { id, alreadyLanded: true, landed: previous.landed }
       // A frozen participant cannot quietly replace the input under an existing gate.
       if (state.gate?.cohort.some((entry) => entry.id === id) && previous?.head !== head) return wait('candidate-frozen', { token: state.gate.token })
       if (previous && previous.owner !== owner) return wait('participant-owner-changed')
       state.participants[id] = { ...previous, id, owner, tag, host: host ?? previous?.host ?? os.hostname().replace(/\.local$/, '').replace(/[|\s]/g, '-'), branch: sessionBranch, head, land: context.branches.land ?? context.branches.landTarget ?? null,
-        status: previous?.status === 'ready' && previous.head === head ? 'ready' : 'working', at: at.now, agentChecks: agentChecks === undefined ? previous?.agentChecks ?? [] : validateAgentAcceptance(agentChecks) }
+        status: previous?.status === 'ready' && previous.head === head ? 'ready' : 'working', at: at.now, agentChecks: agentChecks === undefined ? previous?.agentChecks ?? [] : validateAgentAcceptance(agentChecks),
+        verificationCommands: verificationCommands ?? previous?.verificationCommands ?? [] }
       return { id }
     })
+    return { ...result, participant: id }
   }
   async function ready(options) {
     const recorded = await register(options)
     if (!recorded.ok) return recorded
+    if (recorded.value.alreadyLanded) return recorded
     const id = recorded.value.id
+    const unitAcceptance = summarizeAgentAcceptance(recorded.state.participants[id].agentChecks ?? [], { stage: 'unit' })
+    if (!unitAcceptance.verified) return wait('waiting-unit-agent', { checks: recorded.state.participants[id].agentChecks, candidate: recorded.state.participants[id].head, acceptance: unitAcceptance,
+      nextAction: 'A capable host must complete required unit acceptance in this worktree, then submit ready --file <checks JSON>. Integration-stage not-run handoff remains allowed.' })
     // Publishing a session branch follows the existing code push setting. Local-only work can
     // be ready too, but a remote owner must actually possess its object before claiming it.
     if (shared && context.branches.push) {
@@ -154,7 +167,17 @@ export async function openIntegration(context, injected = {}) {
       return { id }
     })
   }
-  async function claim({ tag, active = [], deadline = null } = {}) {
+  async function close({ tag, empty: noWork = false, reason = 'session-stopped' }) {
+    const id = participantKey({ owner: await ownerId(), tag, branch: context.branch })
+    return transaction((state, at) => {
+      const entry = state.participants[id]
+      if (!entry || state.gate?.cohort.some((participant) => participant.id === id) || ['ready', 'landed'].includes(entry.status)) return { id, unchanged: true }
+      entry.status = noWork ? 'withdrawn' : 'paused'; entry.reason = reason; entry.at = at.now
+      return { id, status: entry.status }
+    })
+  }
+  async function claim({ tag, active = [], deadline = null, maxAttempts = 3 } = {}) {
+    if (!Number.isInteger(Number(maxAttempts)) || Number(maxAttempts) < 2 || Number(maxAttempts) > 5) return wait('invalid-integration-attempt-limit')
     const seen = await read()
     if (!seen.ok) return seen
     const pending = Object.values(seen.state.participants).filter((entry) => !terminal.has(entry.status))
@@ -179,7 +202,7 @@ export async function openIntegration(context, injected = {}) {
       const cohort = Object.values(state.participants).filter((entry) => !terminal.has(entry.status) && entry.land === land)
       const unregistered = []
       for (const row of active) {
-        const matches = cohort.filter((entry) => entry.tag === row.tag && entry.branch === row.branch && entry.host === row.host)
+        const matches = cohort.filter((entry) => entry.id === row.session && entry.tag === row.tag && entry.branch === row.branch && entry.host === row.host)
         const commit = typeof row.commit === 'string' && row.commit !== '-' ? await sha(row.commit) : null
         if (matches.length !== 1 || row.doing && row.doing !== '-' || !commit || !await ancestor(commit, matches[0].head)) unregistered.push(row)
       }
@@ -188,7 +211,8 @@ export async function openIntegration(context, injected = {}) {
       if (working.length) return wait('sessions-working', { participants: working.map(({ id, tag, branch, at }) => ({ id, tag, branch, at })) })
       if (!cohort.length) return wait('no-ready-sessions')
       if (cohort.some((entry) => !pending.some((known) => known.id === entry.id && known.head === entry.head))) return wait('participants-changed')
-      state.gate = { token: uuid(), owner: tag, executor: { host: os.hostname(), pid: process.pid }, phase: 'preparing', land, base, cohort: cohort.map(({ id, tag, branch, head, agentChecks }) => ({ id, tag, branch, head, agentChecks })), at: at.now, deadline, attempts: 1, candidate: null, checks: [], agentChecks: [], rounds: [] }
+      if (await remoteLand(land) !== base) return wait('land-base-moved', { automaticRecheck: false })
+      state.gate = { token: uuid(), owner: tag, executor: { host: os.hostname(), pid: process.pid }, phase: 'preparing', land, base, cohort: cohort.map(({ id, tag, branch, head, agentChecks, verificationCommands }) => ({ id, tag, branch, head, agentChecks, verificationCommands })), at: at.now, deadline, maxAttempts: Number(maxAttempts), attempts: 1, candidate: null, checks: [], agentChecks: [], rounds: [] }
       return { gate: state.gate }
     })
   }
@@ -225,6 +249,7 @@ export async function openIntegration(context, injected = {}) {
     return mutateGate(token, (gate) => {
       if (gate.phase !== 'checking') return wait('integration-already-checked', { gate, automaticRecheck: false })
       gate.checks = receipt
+      if (gate.rounds.length && receipt.some((entry) => !entry.ok)) gate.retryAllowed = improvingGate(failureProof(gate.rounds.at(-1).checks), failureProof(receipt))
       gate.rounds = [...gate.rounds, { candidate: gate.candidate, checks: receipt, at: now() }]
       gate.agentChecks = validateAgentAcceptance(agentChecks)
       gate.phase = receipt.every((entry) => entry.ok) ? agentChecks.some((entry) => entry.required !== false && (entry.status !== 'pass' || entry.candidate !== gate.candidate)) ? 'waiting-agent' : 'verified' : 'failed'
@@ -237,8 +262,9 @@ export async function openIntegration(context, injected = {}) {
     if ((await git(checkout, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim() !== common) return wait('repair-workspace-mismatch')
     return mutateGate(token, async (gate) => {
       if (gate.phase !== 'failed') return wait('repair-requires-failed-receipt', { gate })
-      if (gate.attempts >= 3) return wait('integration-attempt-limit', { attempts: gate.attempts, gate })
-      if (gate.deadline && Date.parse(gate.deadline) <= Date.now()) return wait('integration-deadline', { gate })
+      if (gate.attempts >= (gate.maxAttempts ?? 3)) return wait('integration-attempt-limit', { attempts: gate.attempts, gate })
+      if (gate.retryAllowed === false) return wait('failure-set-not-improving', { gate })
+      if (gate.deadline && Date.parse(gate.deadline) <= Date.parse(now())) return wait('integration-deadline', { gate })
       if (next === gate.candidate || !await ancestor(gate.candidate, next)) return wait('repair-needs-descendant-change', { gate })
       gate.candidate = next; gate.path = checkout; gate.branch = (await git(checkout, ['symbolic-ref', '--short', 'HEAD'])).trim()
       gate.phase = 'checking'; gate.attempts++; gate.executor = { host: os.hostname(), pid: process.pid }
@@ -279,13 +305,13 @@ export async function openIntegration(context, injected = {}) {
       const owned = own(state, token)
       if (owned.ok === false) return owned
       if (owned.phase !== 'verified' || owned.candidate !== expected) return wait('candidate-not-verified')
-      for (const entry of owned.cohort) if (state.participants[entry.id]?.head === entry.head) state.participants[entry.id].status = 'landed'
+      for (const entry of owned.cohort) if (state.participants[entry.id]?.head === entry.head) { state.participants[entry.id].status = 'landed'; state.participants[entry.id].landed = expected }
       state.history = [{ ...owned, phase: 'landed', at: now() }, ...state.history].slice(0, 20)
       state.gate = null
       return { gate: { ...owned, phase: 'landed' }, landed: expected }
     }, { publication: shared && context.branches.push && context.branches.via !== 'pr' ? { land: gate.land, base: gate.base, candidate: expected } : null })
   }
-  return { branch, ref, scope: shared ? 'remote' : 'clone', read, transaction, register, ready, claim, candidate, checked, repair, accept, complete, remoteLand }
+  return { branch, ref, scope: shared ? 'remote' : 'clone', read, transaction, register, ready, close, claim, candidate, checked, repair, accept, complete, remoteLand }
 }
 
 export async function assertIntegrationCandidate(context, options = {}, injected = {}) {

@@ -20,6 +20,8 @@ export const GROUP_TAG = 'work'
 export const RESERVED_TAGS = [GROUP_TAG]
 
 const WIDE = { header: SESSION_ACTIVE_HEADER }
+const INTEGRATION_ACTIVE_HEADER = ['| tag | host | mode | since | at | doing | branch | commit | session |', '|---|---|---|---|---|---|---|---|---|']
+const wide = (row) => row.session ? { header: INTEGRATION_ACTIVE_HEADER } : WIDE
 const ACTIVE_KEYS = ['tag', 'host', 'mode', 'since', 'at', 'doing', 'branch', 'commit']
 const UNLANDED_KEYS = ['id', 'tag', 'branch', 'commit', 'at']
 const need = (ok, message, details = []) => { if (!ok) throw new SkillPackageError(message, details) }
@@ -47,7 +49,7 @@ export function readSessions(text) {
   const blocks = parseState(text ?? '')
   const body = (name) => blocks.find((block) => block.name === name)?.body ?? []
   const bullets = (name) => body(name).map((line) => line.trimEnd()).filter((line) => line.startsWith('- '))
-  return { active: tableRows(body('active')).map(record(ACTIVE_KEYS)), inbox: bullets('inbox'), log: bullets('log'),
+  return { active: tableRows(body('active')).map((row) => ({ ...record(ACTIVE_KEYS)(row), ...(row[8] && row[8] !== '-' ? { session: row[8] } : {}) })), inbox: bullets('inbox'), log: bullets('log'),
     unlanded: tableRows(body('unlanded')).map(record(UNLANDED_KEYS)) }
 }
 
@@ -98,7 +100,10 @@ export function splitState(stateText, { rows: withRows = true, line: keepLine = 
   }
   const blocks = parseState(EMPTY_SESSIONS)
   const rows = withRows ? tableRows(from('active')) : []
-  if (rows.length) blocks.push({ name: 'active', body: [...SESSION_ACTIVE_HEADER, ...rows.map((row) => rowLine(padded(row, ACTIVE_KEYS.length)))] })
+  if (rows.length) {
+    const width = rows.some((row) => row.length > ACTIVE_KEYS.length) ? ACTIVE_KEYS.length + 1 : ACTIVE_KEYS.length
+    blocks.push({ name: 'active', body: [...(width === 9 ? INTEGRATION_ACTIVE_HEADER : SESSION_ACTIVE_HEADER), ...rows.map((row) => rowLine(padded(row, width)))] })
+  }
   for (const name of ['inbox', 'log']) {
     const lines = from(name).filter((line) => line.trim() !== '' && (!line.startsWith('- ') || keepLine(line.trimEnd())))
     if (lines.length) blocks.push({ name, body: lines })
@@ -163,7 +168,7 @@ export function sweepStale(text, { now, keep = [] } = {}) {
 // alive — a predicate on the active row, or the live tags; by default a row whose `at` is within
 // STALE_MINUTES of now. A dead session's hold is released, named in `released` and logged
 // (`released stale <tag> from <task>`): whoever finds the task taken over can tell who had it.
-export function claimTask(text, { tag, task, now, live, host, mode, branch, commit } = {}) {
+export function claimTask(text, { tag, task, now, live, host, mode, branch, commit, session } = {}) {
   need(SESSION_TAG.test(tag ?? '') && TASK_ID.test(task ?? ''), '선점에는 세션 tag와 태스크 T###가 필요합니다.')
   timed(now)
   const doc = readSessions(text)
@@ -177,7 +182,7 @@ export function claimTask(text, { tag, task, now, live, host, mode, branch, comm
     next = upsertActive(next, { ...row, doing: '-' }, WIDE)
     next = applyEvent(next, { type: 'log', text: `released stale ${row.tag} from ${task}`, now }).text
   }
-  const beat = applyEvent(next, { type: 'beat', tag, now, doing: task, host, mode, branch, commit })
+  const beat = applyEvent(next, { type: 'beat', tag, now, doing: task, host, mode, branch, commit, session })
   return { text: beat.text, changed: beat.changed || holders.length > 0, released: holders.map((row) => row.tag) }
 }
 
@@ -198,18 +203,19 @@ function writeUnlanded(text, rows) {
 const EVENTS = {
   // This session's row. `changed` is false when only `at` moved: the text carries the new time,
   // and the caller decides whether a bare heartbeat is worth a commit.
-  beat(text, { tag, now, host, mode, doing, branch, commit }) {
+  beat(text, { tag, now, host, mode, doing, branch, commit, session }) {
     need(SESSION_TAG.test(tag ?? ''), '세션 tag는 영숫자 2-8자입니다.')
     timed(now)
     need(mode === undefined || ['pair', 'autopilot'].includes(mode), 'mode는 pair 또는 autopilot입니다.')
     need(doing === undefined || doing === '-' || TASK_ID.test(doing), 'doing은 T### 또는 -입니다.')
+    need(session === undefined || /^[0-9a-f]{24}$/.test(session), 'session은 통합 참여자의 정확한 ID여야 합니다.')
     const previous = readSessions(text).active.find((row) => row.tag === tag)
     need(previous || (host && mode), '새 세션 행에는 host와 mode가 필요합니다.')
     const row = { tag, host: cell(host ?? previous.host), mode: mode ?? previous.mode, since: previous?.since ?? now, at: now,
-      doing: doing ?? previous?.doing ?? '-', branch: cell(branch ?? previous?.branch), commit: cell(commit ?? previous?.commit) }
-    const changed = !previous || ACTIVE_KEYS.some((key) => key !== 'at' && row[key] !== previous[key])
+      doing: doing ?? previous?.doing ?? '-', branch: cell(branch ?? previous?.branch), commit: cell(commit ?? previous?.commit), ...(session ?? previous?.session ? { session: session ?? previous.session } : {}) }
+    const changed = !previous || [...ACTIVE_KEYS, 'session'].some((key) => key !== 'at' && row[key] !== previous[key])
     if (!changed && previous.at === now) return { text, changed }
-    return { text: upsertActive(text, row, WIDE), changed }
+    return { text: upsertActive(text, row, wide(row)), changed }
   },
   // With a task: let go of that task only. Without: the session ended, its row goes.
   release(text, { tag, task, now }) {

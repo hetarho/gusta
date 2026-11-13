@@ -624,7 +624,11 @@ export async function vibeStatus(options = {}, injected = {}) {
     push: view.push, sync: view.sync }
   // Advisory: an unreadable timings file or ARCH never fails status.
   const taskChecks = workspace.git ? await recentTaskChecks(workspace, root).catch(() => null) : null
-  return { ...result, ...(coordination ? { coordination, held } : {}), ...(taskChecks ? { taskChecks } : {}),
+  const shared = context ? await (await openIntegration(context)).read({ fetch: options.fetch !== false }).catch((error) => ({ ok: false, reason: 'coordination-unknown', error: error.message })) : null
+  const integration = shared && { scope: shared.scope, fresh: shared.fresh, ...(shared.reason ? { reason: shared.reason } : {}), phase: shared.state?.gate?.phase ?? null,
+    candidate: shared.state?.gate?.candidate ?? null, owner: shared.state?.gate?.owner ?? null,
+    participants: Object.values(shared.state?.participants ?? {}).filter((entry) => !['landed', 'withdrawn'].includes(entry.status)).map(({ id, tag, host, branch, head, status, at }) => ({ id, tag, host, branch, head, status, at })) }
+  return { ...result, ...(coordination ? { coordination, held } : {}), ...(integration ? { integration } : {}), ...(taskChecks ? { taskChecks } : {}),
     concurrency: (result.others ?? []).some((row) => !row.stale) || (result.orphanDoing ?? []).length > 0 ? 'strict' : 'solo',
     next: (sections(text).get('next') ?? []).filter((line) => line.startsWith('- ')).slice(0, 3),
     counts: { inbox: inbox.length, parked: inbox.filter((entry) => entry.kind === 'parked').length, remaining: local.tasks.length },
