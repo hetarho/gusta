@@ -6,6 +6,7 @@ import { vibeSession, fetchBranch, exists, sha, ancestor, advanceBranch } from '
 import { stateMergeArgs } from './git-merge.mjs'
 import { TASK_ID } from './spec-format.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { openIntegration } from './integration-gate.mjs'
 
 // Planning documents have one home: the SETTINGS plan branch (unset: land, else the repository
 // default branch). Every checkout merges
@@ -102,6 +103,10 @@ async function mergeInto(context, commit, label) {
 const advanceLocal = (context, commit) => advanceBranch(context, context.plan, commit)
 
 const collision = (duplicates) => fail('태스크 ID 충돌: 다른 checkout이 같은 번호를 먼저 기획 브랜치에 올렸습니다. plan-sync 후 이 checkout의 미발행 태스크를 다시 채번하세요.', duplicates)
+const pendingPlanning = (context, result) => ({ schemaVersion: 1, ...result, pending: true, pushed: null, plan: context.plan, automaticRecheck: false,
+  nextAction: result.reason === 'integration-frozen'
+    ? '기획 커밋과 현재 태스크 ID를 보존하고 고정 통합이 끝난 뒤 plan-push를 다시 실행하세요. 준비 관문 때문에 재채번하거나 전체 검수를 다시 시작하지 마세요.'
+    : '기획 커밋을 보존하고 통합/기획 발행 상태를 확인한 뒤 plan-push를 다시 실행하세요. 미발행을 성공으로 처리하지 마세요.' })
 
 // Before planning: merge the plan branch's latest into this checkout.
 export async function vibePlanSync(options = {}) {
@@ -131,9 +136,20 @@ export async function vibePlanPush(options = {}) {
     if (outside.length) fail('기획 커밋에 spec/ 밖 변경이 있습니다. 코드와 기획 문서를 나눠 커밋하세요.', outside)
     commits.push({ commit, parent: parents[0] })
   }
-  let last
+  // A plan branch distinct from land retains its independent canonical numbering flow.
+  // When they resolve to the same branch, planning must share the integration CAS fence.
+  const authority = context.branches.land && plan === context.branches.land ? await openIntegration(context) : null
+  let last, lastPending
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const tip = await planTip(context)
+    if (authority && (await Promise.all(commits.map((entry) => ancestor(root, entry.commit, tip.commit)))).every(Boolean)) return { schemaVersion: 1, ok: true, pushed: null, reason: 'up-to-date', plan }
+    if (authority) {
+      const status = await authority.read()
+      if (!status.ok) return pendingPlanning(context, status)
+      // This is only an early refusal, not publication authority: the late atomic CAS below
+      // re-evaluates the predicate if a gate claims ownership while commits are prepared.
+      if (status.state.gate?.land === plan) return pendingPlanning(context, { ok: false, waiting: true, reason: 'integration-frozen', gate: status.state.gate })
+    }
     let current = tip.commit, applied = 0
     for (const entry of commits) {
       if (await ancestor(root, entry.commit, current)) continue
@@ -150,7 +166,23 @@ export async function vibePlanPush(options = {}) {
     if (!applied) return { schemaVersion: 1, ok: true, pushed: null, reason: 'up-to-date', plan }
     const duplicates = await duplicateTasks(root, current)
     if (duplicates.length) collision(duplicates)
-    if (tip.remote) {
+    let local
+    if (authority) {
+      const publication = await authority.publishPlanning({ land: plan, base: tip.commit, candidate: current }, {
+        localOnly: !tip.remote,
+        localPublish: async () => {
+          local = await advanceLocal(context, current)
+          return ['dirty', 'diverged', 'moved', 'absent'].includes(local) ? { ok: false, reason: `local-plan-${local}` } : { ok: true, local }
+        },
+      })
+      if (!publication.ok) {
+        if (['dirty', 'diverged'].includes(local)) fail(`로컬 기획 브랜치 ${plan}에 반영하지 못했습니다(${local === 'dirty' ? '그 checkout에 커밋하지 않은 변경' : '갈라진 이력'}).`, [current])
+        lastPending = publication
+        if (local === 'moved' || publication.reason === 'land-base-moved') continue
+        return pendingPlanning(context, publication)
+      }
+      if (tip.remote) await git(root, ['update-ref', `refs/remotes/${context.remote}/${plan}`, current])
+    } else if (tip.remote) {
       try { await git(root, ['push', '--quiet', context.remote, `${current}:refs/heads/${plan}`]) } catch (error) {
         last = error.stderr || error.message
         if (/rejected|non-fast-forward|fetch first|stale info/i.test(last)) continue
@@ -158,7 +190,7 @@ export async function vibePlanPush(options = {}) {
       }
       await git(root, ['update-ref', `refs/remotes/${context.remote}/${plan}`, current])
     }
-    const local = await advanceLocal(context, current)
+    local ??= await advanceLocal(context, current)
     if (!tip.remote && local === 'moved') continue
     if (!tip.remote && ['dirty', 'diverged'].includes(local)) fail(`로컬 기획 브랜치 ${plan}에 반영하지 못했습니다(${local === 'dirty' ? '그 checkout에 커밋하지 않은 변경' : '갈라진 이력'}).`, [current])
     const receipt = await mergeInto(context, current, plan)
@@ -166,5 +198,6 @@ export async function vibePlanPush(options = {}) {
     if (!result.ok) Object.assign(result, { error: `${plan}에는 올렸지만 이 checkout에 합치지 못했습니다. 충돌을 해결한 뒤 plan-sync하세요.`, details: receipt.conflicts ?? receipt.duplicates })
     return result
   }
+  if (lastPending) return pendingPlanning(context, lastPending)
   return fail('기획 브랜치에 올리지 못했습니다.', [last ?? '다른 checkout이 계속 먼저 반영했습니다.'])
 }
