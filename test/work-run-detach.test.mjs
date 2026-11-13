@@ -249,6 +249,9 @@ const stillBeating = async (marker) => {
 
 test('묶음 최종 검증 중의 stop은 검증 명령을 멈추고 실행을 interrupted로 끝낸다', async (t) => {
   const setup = await fixture(t)
+  await writeFile(path.join(setup.root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: trunk\n- push: false\n- coord: session-ledger\n')
+  await git(setup.root, 'add', 'spec/SETTINGS.md')
+  await git(setup.root, 'commit', '-qm', 'explicit shared gate fixture')
   await startWork({ ...setup, name: 'gate-stop' })
   const marker = path.join(setup.temporary, 'gate.pid')
   const stop = new AbortController()
@@ -259,8 +262,12 @@ test('묶음 최종 검증 중의 stop은 검증 명령을 멈추고 실행을 i
   stop.abort()
   const result = await running
   assert.equal(result.outcome, 'interrupted', JSON.stringify(result))
-  assert.ok(result.finishError, 'the gate did not pass')
-  assert.equal(result.finish, null)
+  assert.equal(result.finishError, null)
+  assert.equal(result.finish.verified, false, 'aborted shared candidate did not pass')
+  const group = (await readRuntime(setup.runtime)).groups['gate-stop']
+  assert.equal(group.verified, undefined)
+  assert.equal(group.integration.reason, 'integration-failed')
+  assert.equal(group.integration.verified, false)
   assert.ok(Date.now() - stopped < 60000, 'the gate command did not run to its end')
   assert.equal(await stillBeating(marker), false, 'the gate command (forked by the shell) kept running after stop')
   assert.equal((await readRuntime(setup.runtime)).groups['gate-stop'].lastRun.outcome, 'interrupted')
@@ -268,6 +275,9 @@ test('묶음 최종 검증 중의 stop은 검증 명령을 멈추고 실행을 i
 
 test('heartbeat는 묶음 최종 검증 동안에도 이어져 긴 관문이 stale로 보이지 않는다', async (t) => {
   const setup = await fixture(t)
+  await writeFile(path.join(setup.root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: trunk\n- push: false\n- coord: session-ledger\n')
+  await git(setup.root, 'add', 'spec/SETTINGS.md')
+  await git(setup.root, 'commit', '-qm', 'explicit shared gate fixture')
   await startWork({ ...setup, name: 'gate-beat' })
   const marker = path.join(setup.temporary, 'gate.pid')
   const release = path.join(setup.temporary, 'gate.release')

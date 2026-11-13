@@ -14,15 +14,20 @@ const checks = ['node --version']
 async function setup(t) {
   const result = await fixture(t)
   const root = await realpath(result.root)
-  return { root, targetRoot: root }
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- push: false\n- coord: session-ledger\n')
+  await git(root, 'switch', '-qc', 'approved-work')
+  await git(root, 'add', 'spec/SETTINGS.md')
+  await git(root, 'commit', '-qm', 'explicit child branch policy')
+  return { root, targetRoot: root, temporary: result.temporary }
 }
 
 test('approved task scope prevents unrelated claims and finishes on the invoking branch', async (t) => {
   const local = await setup(t)
-  const finalCheck = `node -e "require('fs').appendFileSync('.git/final-count', 'run'+String.fromCharCode(10))"`
+  const countFile = path.join(local.temporary, 'final-count')
+  const finalCheck = `node -e "require('fs').appendFileSync('${countFile}', 'run'+String.fromCharCode(10))"`
   const created = await execute(process.execPath, [cli, 'work', 'start', 'approved-local', '--workspace', 'current', '--tasks', 'T001', '--review', 'all', '--push', '-', '--verify', checks[0], '--group-verify', finalCheck, '--target', local.root, '--json'])
   const group = JSON.parse(created.stdout)
-  assert.equal(group.branch, 'main')
+  assert.equal(group.branch, 'approved-work')
   assert.equal(group.path, local.root)
   assert.equal(group.push, null)
   await assert.rejects(claimWork({ ...local, work: group.id, task: 'T002', owner: 'outside' }))
@@ -52,8 +57,8 @@ test('approved task scope prevents unrelated claims and finishes on the invoking
   assert.equal(board.verified.current, true)
   const completed = await nextWork({ ...local, work: group.id, owner: 'idle' })
   assert.equal(completed.action, 'complete')
-  assert.deepEqual(completed.integrationTarget, { branch: 'main', path: local.root })
-  assert.equal(await readFile(path.join(local.root, '.git/final-count'), 'utf8'), 'run\n')
+  assert.deepEqual(completed.integrationTarget, { branch: 'approved-work', path: local.root })
+  assert.equal(await readFile(countFile, 'utf8'), 'run\n')
   assert.equal(await readFile(path.join(local.root, 'result.txt'), 'utf8'), 'approved change\n')
   const state = await readFile(path.join(local.root, 'spec/STATE.md'), 'utf8')
   assert.ok(state.includes('| T002 |'))
