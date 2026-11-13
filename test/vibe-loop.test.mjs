@@ -573,4 +573,6 @@ test('a unit session records its vibe check runs and token usage for the breakdo
   const r = await executeVibeUnit({ adapter, tag: 't060' }, { workspace: root, role: 'unit', diffBase: initial }, directory, { stopFile: path.join(directory, 'STOP'), deadline: Date.now() + 60000, timeoutMs: 60000 })
   assert.equal(r.result.id, 'T001'); assert.deepEqual(r.usage, { input: 3, cacheWrite: 4, cacheRead: 5, output: 6 })
   assert.equal(r.checks.runs, 1); assert.equal(r.checks.cached, 0); assert.ok(r.checks.ms >= 50)
+  // Its task-tier runs per command: what the closing report's task checks line and slow suggestions read.
+  assert.deepEqual(r.checks.task.map(({ command, runs }) => [command, runs]), [['node -e "setTimeout(()=>{},50)"', 1]])
 })

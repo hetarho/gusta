@@ -791,3 +791,25 @@ test('cfg always는 있는 결정·도메인만 가리키고, 빠지면 기본(A
     assert.deepEqual((await lintSpec({ targetRoot: root })).errors, [])
   })
 })
+
+test('[o] 검증 결정에 단계 선언이 없으면 검토 후보만 낸다 — 오류·경고는 그대로이고, 세 단계를 선언하면 사라진다', async () => {
+  const hinted = (result) => result.reviewHints.filter((hint) => hint.includes('검증 단계 선언'))
+  const baseline = await withFixture({}, (root) => lintSpec({ targetRoot: root }))
+  assert.deepEqual(hinted(baseline), [], '검증 결정이 없는 ARCH에는 후보가 없다')
+  const undeclared = ARCH.replace('- ARCH-2 [?] deploy target', '- ARCH-2 [?] deploy target\n- ARCH-3 [o] verification: `pnpm run typecheck`, `pnpm run build` before each done')
+  await withFixture({ arch: undeclared }, async (root) => {
+    const result = await lintSpec({ targetRoot: root })
+    assert.deepEqual([result.ok, result.errors, result.warnings], [baseline.ok, baseline.errors, baseline.warnings])
+    assert.deepEqual(hinted(result), ['ssot/ARCH.md: [o] 검증 결정(ARCH-3)에 task / batch / CI 검증 단계 선언이 없습니다 — 단계를 모두 명시하고 1분 넘는 검사는 batch에 두는 개정 후보입니다(gusta-update 규칙 대조).'])
+  })
+  const partial = ARCH.replace('- ARCH-2 [?] deploy target', '- ARCH-2 [?] deploy target\n- ARCH-3 [o] verification tiers\n  - task, before each done commit: `pnpm run lint`\n  - batch, before code push or final completion: `pnpm run build`')
+  await withFixture({ arch: partial }, async (root) => {
+    assert.match(hinted(await lintSpec({ targetRoot: root }))[0], /ARCH-3\)에 .*일부만 있습니다/)
+  })
+  const declared = partial.replace('`pnpm run build`', '`pnpm run build`\n  - CI, after code push: remote checks')
+  await withFixture({ arch: declared }, async (root) => {
+    const result = await lintSpec({ targetRoot: root })
+    assert.deepEqual(hinted(result), [])
+    assert.deepEqual([result.ok, result.errors, result.warnings], [baseline.ok, baseline.errors, baseline.warnings])
+  })
+})

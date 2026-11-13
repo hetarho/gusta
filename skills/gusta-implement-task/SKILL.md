@@ -36,12 +36,12 @@ brief의 stale-base와 history(base 이후 chg 줄)가 델타다 — chg를 따�
 explore는 시작 시각·timebox를 기록하고 측정값을 result에 보존한다. 시간이 다 되면 acceptance의 exit대로 끝낸다(직접 호출은 한 번 확인, 맡김은 inbox decided).
 
 ## 4. 검증
-① 구현한 acceptance를 확인 ② 추가·수정·영향받는 단위 테스트 ③ typecheck·lint·format ④ spec lint ⑤ 통합·e2e·전체 스위트·CI는 묶음 관문에 맡긴다([검증 절차](../gusta-start/references/verification.md)). 미실행 검사를 통과로 쓰지 않는다.
+① 구현한 acceptance를 확인 ② 바뀐 범위의 태스크 단계 검사(추가·수정·영향 단위 테스트, ARCH task 명령)를 커밋 직전에 `vibe check --tier task`로 한 번(같은 트리는 캐시) — 편집할 때마다 반복하지 않고, 실패하면 고친 것만 다시 ③ spec lint ④ 빌드·통합·e2e·전체 스위트·CI는 묶음 관문에 맡긴다([검증 절차](../gusta-start/references/verification.md)). 미실행 검사를 통과로 쓰지 않는다.
 - acceptance가 최종 스위트 성공을 done 전에 요구하면 그 체크를 미체크로 둔 채 닫지 않고, 인계만 한 검사를 통과로 표시하지 않는다. 기본 절차의 영향 검사+등록된 최종 관문 인계로 바꾸는 안을 조정자/gusta-create-task에 올려 완료 시점 변경을 승인받고 활성 계약을 맞춘다([규칙 대조](../gusta-update/references/project-rules.md)). 이미 승인한 예외는 따르되 지원할 수 없거나 미승인이면 해당 태스크를 parked로 남긴다. 워커가 계약·SSOT를 임의로 고치지 않는다.
-- 커밋 전에 자기 변경(`git diff $GUSTA_DIFF_BASE`)의 hunk만 한 번 훑는다: 다른 파일에 이미 있는 helper·타입의 재정의, 설정이 있는데 숫자로 쓴 값, 정의만 하고 읽히지 않는 설정·export, 동작과 다른 주석, 같은 식의 반복, 바깥 세계와 묶여 단위 테스트로 검증할 수 없는 로직. 고칠 수 있으면 고치고 영향 테스트를 다시 돌린다. touches 밖이면 limits에 남긴다.
+- 커밋 전에 자기 변경(`git diff $GUSTA_DIFF_BASE`)의 hunk만 한 번 훑는다: 다른 파일에 이미 있는 helper·타입의 재정의, 설정이 있는데 숫자로 쓴 값, 정의만 하고 읽히지 않는 설정·export, 동작과 다른 주석, 같은 식의 반복, 바깥 세계와 묶여 단위 테스트로 검증할 수 없는 로직. 고칠 수 있으면 검사 전에 고친다. touches 밖이면 limits에 남긴다.
 - 통합/e2e 테스트는 코드와 함께 고치되 실행할 명령·spec(brief의 조건부 브라우저 요구 포함)은 result limits로 묶음 관문에 넘긴다. 빈 단위 테스트 선택은 동작 검증이 아니며 필요한 작은 테스트를 보완한다.
 - 테스트 분류는 스크립트 이름이 아닌 격리 범위와 의존성으로 판단한다. 단위 테스트는 필요한 최소 데이터·fixture로 대상 함수·컴포넌트를 독립 검증한다. 통합·e2e 검사를 타임아웃 상향으로 태스크마다 반복하지 않는다.
-- 검사는 `vibe check --tier task --diff-base <태스크 시작 SHA> --task T### -- <command>`로 실행한다. `GUSTA_TIER=task`, `GUSTA_DIFF_BASE`와 TASK(S)가 전달된다. 요약의 실패 테스트·마지막 줄만 보고, 필요할 때만 log 경로의 범위를 읽는다. 같은 트리·명령·범위의 성공은 재사용한다. 긴 명령은 완료 알림까지 모델을 깨우지 않는다(sleep→조회 반복 금지).
+- 형식: `vibe check --tier task --diff-base <태스크 시작 SHA> --task T### -- <command>`. `GUSTA_TIER=task`, `GUSTA_DIFF_BASE`와 TASK(S)가 전달된다. 요약의 실패 테스트·마지막 줄만 보고, 필요할 때만 log 경로의 범위를 읽는다. 긴 명령은 완료 알림까지 모델을 깨우지 않는다(sleep→조회 반복 금지).
 - `lint` 오류·경고는 고친다. reviewHints는 의미 검토 후보라 자동 수정하지 않고 next의 gusta-doc-review 또는 result limits로 넘긴다.
 
 ## 5. 마감

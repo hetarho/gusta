@@ -57,13 +57,13 @@
 
 ## 검증과 push
 
-- **태스크마다**: 변경 영향 단위 테스트와 빠른 검사(typecheck·lint·format)만 돌립니다. 테스트는 스크립트 이름이 아니라 격리 범위·의존성으로 분류하고, 실행하지 않은 통합/e2e는 result limits에 남겨 마감 관문에 넘깁니다. `vibe check --tier task`는 ARCH batch 단계에만 있는 명령(전체 스위트)을 거절하고, 5분 넘는 태스크 검사에는 `slow`·`hint`를 붙입니다(사용자가 별도 실행을 명시하면 `--allow-final`).
-- **마감 관문**: 통합·e2e·전체 스위트는 조정자/loop 호스트 하나가 최종 후보에서 한 번 실행합니다(단독 `vibe check --tier batch`, 묶음 `--group-verify`). 같은 트리·같은 명령의 통과는 재사용하고, 무거운 검사는 clone 공용 락으로 하나씩 돌립니다. 구현·리뷰 세션은 세션이 끝났다고 브라우저·전체 검사를 띄우지 않습니다. 검증 없는 코드 push는 중단합니다.
+- **태스크마다**: 변경 영향 단위 테스트와 1분 안에 끝나는 빠른 검사만, 커밋 직전에 한 번 돌립니다(같은 트리는 캐시). 테스트는 스크립트 이름이 아니라 격리 범위·의존성으로 분류하고, 실행하지 않은 통합/e2e는 result limits에 남겨 마감 관문에 넘깁니다. `vibe check --tier task`는 ARCH batch 단계에만 있는 명령(전체 스위트)을 거절하고, 5분 넘는 태스크 검사에는 `slow`·`hint`를 붙입니다(사용자가 별도 실행을 명시하면 `--allow-final`). 명령별 시간은 runtime `timings.json`에 남아, 평균 60초가 넘는 명령은 `vibe status`의 `taskChecks.slow`와 loop 보고서에 나오고 loop가 끝날 때 batch로 옮기자는 inbox `suggest`가 한 번 남습니다 — 옮길지는 사람이 정합니다.
+- **마감 관문**: 통합·e2e·전체 스위트는 조정자/loop 호스트 하나가 최종 후보에서 한 번 실행합니다(단독 `vibe check --tier batch`, 묶음 `--group-verify`). 같은 트리·같은 명령의 통과는 재사용하고, 무거운 검사는 clone 공용 락으로 하나씩 돌립니다. 실패한 관문은 세션(`--tag`, 없으면 브랜치)마다 누적 3회가 상한이고, loop 밖에서도 CLI가 세어 그다음 관문을 명령 실행 없이 거절합니다([CLI](cli.md)). 구현·리뷰 세션은 세션이 끝났다고 브라우저·전체 검사를 띄우지 않습니다. 검증 없는 코드 push는 중단합니다.
 - **반영**: 끝난 작업은 SETTINGS `land`로 갑니다([브랜치 전략](#브랜치-전략)). 세션 끝에 검증한 SHA로 한 번 반영하고(`vibe push --verified-commit <SHA>` — 그 뒤 코드가 바뀌면 거절), push가 켜져 있으면 CI를 한 번 기다립니다(`vibe ci wait`: gh → 토큰 API → 공개 페이지 순, 기본 no-run 유예 2분·제한 1시간, 대기 중 모델 호출 없음). 셋 다 CI를 읽지 못하면(gh·토큰 없는 비공개 저장소, GitHub 원격 아님) 유예 뒤 `unchecked`로 끝내고 진행을 멈추지 않습니다 — 통과로 치지 않고, 보고서 next의 `check CI later`와 종료 알림의 `ciUnchecked`로 확인할 커밋을 알려 줍니다. 단위별 push는 사용자가 명시할 때만입니다(`vibe loop --push-each-unit`, 묶음 `--push`).
-- 단계는 ARCH의 task/batch/CI 하위 줄이 정합니다. 단계가 없는 legacy ARCH는 package.json의 verify/test 스크립트를 batch로 보거나 `--verify '<command>'`를 씁니다. 세부 절차는 [조정자 검증 절차](../skills/gusta-start/references/verification.md)에 있습니다.
+- 단계는 ARCH의 task/batch/CI 하위 줄이 정합니다. 검증 결정은 세 단계를 모두 선언하고 1분 넘는 검사(빌드 포함)는 batch에 두기를 권합니다 — 선언이 빠지면 `lint`가 검토 후보로 알리고 `/gusta-update`가 정리를 제안합니다. 단계가 없는 legacy ARCH는 package.json의 verify/test 스크립트를 batch로 보거나 `--verify '<command>'`를 씁니다. 세부 절차는 [조정자 검증 절차](../skills/gusta-start/references/verification.md)에 있습니다.
 
 ```bash
 npx @haeram/gusta vibe check --tier task --diff-base <task-start-sha> -- pnpm run typecheck
-npx @haeram/gusta vibe check --tier batch --diff-base <batch-start-sha> -- pnpm run test
+npx @haeram/gusta vibe check --tier batch --tag <tag> --diff-base <batch-start-sha> -- pnpm run test
 npx @haeram/gusta vibe push --verified-commit <SHA> --wait-ci --diff-base <batch-start-sha>
 ```

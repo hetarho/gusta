@@ -129,3 +129,17 @@ test('gusta-start: 인자 없으면 STATE·태스크로 실행하고, 기획 변
   for (const pattern of [/시작 대화만 읽는다/, /요청문이 직접 정한 것은 사용자 결정이다/, /`vibe plan-sync`/, /`vibe plan-push`/, /gusta-update-ssot/, /gusta-create-task/, /`vibe loop --tasks '<범위>'`/, /다른 기존 태스크는 하지 않는다/, /`\[\?\]`/]) assert.match(request, pattern)
   for (const name of ['gusta-update-ssot', 'gusta-create-ssot']) assert.match(await readFile(new URL(`${name}/SKILL.md`, skillsRoot), 'utf8'), /gusta-start 요청 실행이면 요청문이/, name)
 })
+
+test('검증 단계 계약: 태스크 검사는 커밋 직전 한 번, 태스크는 태스크 단계 검사만 적고, ARCH는 세 단계를 선언한다', async () => {
+  const read = (file) => readFile(new URL(file, skillsRoot), 'utf8')
+  assert.match(await read('gusta-implement-task/SKILL.md'), /바뀐 범위의 태스크 단계 검사[^\n]*커밋 직전에 `vibe check --tier task`로 한 번[^\n]*편집할 때마다 반복하지 않/)
+  assert.match(await read('gusta-create-task/SKILL.md'), /acceptance·검증 줄에는 태스크 단계 검사[^\n]*빌드·통합·e2e·전체 스위트는 적지 않고 최종 관문/)
+  assert.match(await read('gusta-create-task/assets/task.md'), /task-tier checks only: build, full suite and e2e run at the final gate/)
+  assert.match(await read('gusta-create-architecture/SKILL.md'), /세 단계를 모두 명시적으로 선언한다[^\n]*1분 넘게 걸리는\(측정 또는 예상\) 검사는 task가 아니라 batch/)
+  const format = await read('gusta-create-architecture/assets/FORMAT.md')
+  for (const pattern of [/a task names task-tier checks only/, /declares all three tiers as `task`, `batch` \(a work group's `--group-verify`\), `CI`/, /A check over a minute \(measured or expected\) goes under batch, not task/]) assert.match(format, pattern)
+  assert.match(await read('gusta-update/references/project-rules.md'), /단계 선언이 없거나\(lint 검토 후보\) 태스크 단계에 느린 명령이 있으면\(`vibe status`의 `taskChecks\.slow`/)
+  // The same contract reaches headless sessions through the CLI's prompt (a variant here: no skill files read).
+  const { agentPrompt } = await import('../src/agent-adapter.mjs')
+  assert.match(await agentPrompt({ role: 'variant', workspace: '/tmp/w', prompt: 'p' }), /task-tier checks of the changed scope [^.]*once, when the edits are done and before any commit, with vibe check --tier task[^;]*; never after each edit/)
+})

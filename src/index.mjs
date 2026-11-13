@@ -26,7 +26,7 @@ export { abStart, abRun, abServe, abExec, abStatus, abPick, abStop } from './vib
 export { vibeCIWait } from './vibe-ci.mjs'
 export { vibeBrief, vibeFormat, verificationTiers } from './vibe-brief.mjs'
 export { assembleBrief, renderBrief, specSource, commitSource } from './spec-context.mjs'
-export { runVibeCheck } from './vibe-check.mjs'
+export { runVibeCheck, resetVibeGate } from './vibe-check.mjs'
 export { vibeSettings, readSetting, SETTINGS } from './settings.mjs'
 export { vibePrune, pruneWork } from './prune.mjs'
 export { migrateSpec, packageVersions, MIGRATIONS } from './migrate.mjs'

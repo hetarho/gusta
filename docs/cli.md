@@ -104,9 +104,13 @@ npx @haeram/gusta vibe checkpoint --tag k3f9 --handoff --next 'continue pending 
 npx @haeram/gusta vibe design start --tag d7 --scope "landing hero"  # 이 checkout만 디자인 중으로 (STATE·다른 worktree는 그대로)
 npx @haeram/gusta vibe design verify            # 디자인 마감: ARCH task·batch 명령 전부를 미커밋 트리에서
 npx @haeram/gusta vibe design end               # 디자인 중 표시 해제 — 이어서 커밋 하나
-npx @haeram/gusta vibe check --tier batch -- pnpm run test:e2e   # 같은 트리에서 통과한 검사는 생략, 무거운 검사는 하나씩
+npx @haeram/gusta vibe check --tier task -- pnpm exec vitest related --run src/a.ts   # 태스크 커밋 직전 한 번: 명령별 시간을 timings.json에 남긴다
+npx @haeram/gusta vibe check --tier batch --tag k3f9 -- pnpm run test:e2e   # 같은 트리에서 통과한 검사는 생략, 무거운 검사는 하나씩, 세션마다 실패 3회 상한
+npx @haeram/gusta vibe check --reset-gate --tag k3f9   # 사람이 그 세션의 관문 실패 기록을 지워 상한을 푼다 (맡김은 쓰지 않음)
 npx @haeram/gusta vibe preflight --probe-workspace current --probe 'pnpm run test' --allow-tool 'Bash(pnpm run *)'
 ```
+
+batch/group 관문(`vibe check --tier batch|group`)은 세션마다(`--tag`, 없으면 현재 브랜치) 실패한 라운드를 runtime `gates.json`에 셉니다. 한 트리에서 돈 명령들은 한 라운드이고, 같은 명령을 다시 돌리거나 트리가 바뀌면 새 라운드입니다. 캐시 적중은 세지 않고 성공해도 초기화하지 않으며, 12시간 동안 관문이 없으면 새로 셉니다. 결과의 `gate`는 `{key, attempts, failures, cap, left}`이고, 실패하면 `next`에 실패한 명령·로그, 고친 부분만 `--tier task --diff-base <관문 커밋>`으로 먼저 확인하라는 안내, 남은 시도가 실립니다. 실패 3회에 닿으면 다음 관문은 명령을 돌리지 않고 exit 1과 `{refused: 'gate-cap', attempts, failures, cap, lastFailure, next}`로 거절합니다 — 남은 실패를 보고서와 `vibe inbox add --kind parked`로 남기고 멈추라는 뜻입니다. `vibe loop`의 관문은 같은 기록에 남지만 자기 상한(`--max-gate-attempts`)으로 판정하고, `vibe design verify`는 세지 않습니다. 상한은 사람만 `--reset-gate`로 풉니다.
 
 원격에서 이어갈 현재 상태만 요청하면 `checkpoint --handoff`를 씁니다. 최종 검증·병합·수정 없이 WIP 브랜치를 원격에 보존하고, 최종 반영용 SETTINGS push가 꺼져 있어도 인계 push를 시도합니다. 결과의 원격 브랜치·커밋·`verification.status: unverified`·다음 작업을 함께 전달합니다.
 
@@ -117,6 +121,7 @@ npx @haeram/gusta vibe preflight --probe-workspace current --probe 'pnpm run tes
 | `others[]` | 다른 세션의 행 — `branch`·`commit`과 `pushed`(그 커밋이 원격에 있는지, `false`면 아직 push 안 됨)·`stale` |
 | `unlanded[]` | 끝났지만 아직 land에 들어가지 않은 태스크와 그것을 가진 브랜치·커밋 |
 | `held[]` | `runnable`에서 뺀 태스크와 이유 — `claimed`(다른 세션이 진행 중)·`unlanded`·`landed`(land에는 이미 끝나 있음: 먼저 sync) |
+| `taskChecks` | 이 clone의 태스크 단계 검사(`vibe check --tier task`, 명령마다 최근 10회 실측·캐시 적중 제외) — `runs`·`ms` 합계와 `slow`(평균 60초 초과·2회 이상인 `{command, runs, avgMs}`: 최종 관문으로 옮길 후보, 정하는 것은 사람). ARCH batch에만 있는 명령은 빠지고, 기록이 없으면 키가 없다 |
 | `coordination` | `legacy`(이관 전 STATE에 남은 옛 섹션)·`lost`(다른 기기가 먼저 올려 풀린 선점)·`contested`·`push`(원격 반영 상태, 원격 실패 뒤 쉬는 중이면 `backoff`의 이유·다시 시도할 시각)·`error`(조정 브랜치를 쓸 수 없는 이유) |
 
 `--force`는 로컬 수정 내용을 덮어쓸 수 있으므로 충돌 내용을 확인한 뒤 사용하세요.

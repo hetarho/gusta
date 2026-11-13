@@ -300,7 +300,10 @@ export async function lintSpec({ targetRoot } = {}) {
       errors.push(`ssot/${id}.md 파일이 없습니다.`)
       continue
     }
-    if (id === 'ARCH' && /\b(verify|verification|test)\b|검증/i.test(content) && !verificationTiers(content).declared) reviewHints.push('ssot/ARCH.md: verify 명령은 있으나 task / batch·push 전 / CI 검증 단계가 없습니다. gusta-create-architecture 개정 후보입니다.')
+    // A review hint, never an error: undeclared tiers are inferred (task: package.json fast scripts), and
+    // whether a check moves between tiers is the project's policy (gusta-update rule comparison).
+    const tiers = id === 'ARCH' ? verificationTiers(content) : null
+    if (tiers?.decision && !tiers.declared) reviewHints.push(`ssot/ARCH.md: [o] 검증 결정(${tiers.decision})에 task / batch / CI 검증 단계 선언이 ${tiers.partial ? '일부만 있습니다' : '없습니다'} — 단계를 모두 명시하고 1분 넘는 검사는 batch에 두는 개정 후보입니다(gusta-update 규칙 대조).`)
     const quote = quoteLine(content)
     const revMatch = quote?.match(/^r(\d+)\b/)
     if (!revMatch) errors.push(`ssot/${id}.md 인용줄이 'rN | 목적' 형식이 아닙니다.`)

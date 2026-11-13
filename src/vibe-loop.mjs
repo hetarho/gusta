@@ -13,7 +13,7 @@ import { readVerification, vibeBrief } from './vibe-brief.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { vibeCIWait } from './vibe-ci.mjs'
 import { git } from './workspace.mjs'
-import { readTimings, recordTiming, timingKey, measured, workingTree } from './check-cache.mjs'
+import { readTimings, recordTiming, timingKey, measured, workingTree, taskCheckRows, taskCheckSummary } from './check-cache.mjs'
 import { inspectWork } from './work-groups.mjs'
 import { approvedTasks } from './work-policy.mjs'
 import { taskRow } from './state-doc.mjs'
@@ -27,7 +27,7 @@ import { permissionMode, readSettings, SETTINGS } from './settings.mjs'
 import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive, notificationCapability, loopDeadline, requestedLoopConfig, loopHint } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
-import { timeBreakdown, timeLine } from './loop-time.mjs'
+import { timeBreakdown, timeLine, taskCheckLine } from './loop-time.mjs'
 
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const present = (file) => access(file).then(() => true, () => false)
@@ -88,7 +88,8 @@ export const timeboxMs = (value) => {
 export const UNIT_LISTED = 5
 export function unitStatus(status, selected, recovery) {
   if (!selected || !status.remaining || ['split', 'blocked-task'].includes(recovery?.reason)) return status
-  const { remaining, runnable = [], implementation, counts, ...rest } = status
+  // taskChecks is the owner's (which checks to move to the final gate), not the unit's.
+  const { remaining, runnable = [], implementation, counts, taskChecks, ...rest } = status
   // The unit's own task leads a cut list, so the cut never hides it.
   const cut = (ids) => (ids.includes(selected) ? [selected, ...ids.filter((id) => id !== selected)] : ids).slice(0, UNIT_LISTED)
   return { ...rest, counts: { ...counts, runnable: runnable.length, todo: implementation?.todo?.length ?? 0 },
@@ -191,7 +192,9 @@ export async function executeVibeUnit(options, job, directory, limits = {}) {
         }
         const session = await readFile(sessionFile, 'utf8').catch(() => null)
         const ran = (await readFile(checkLog, 'utf8').catch(() => '')).split('\n').flatMap((line) => { try { return line ? [JSON.parse(line)] : [] } catch { return [] } })
-        const checks = { runs: ran.length, cached: ran.filter((entry) => entry.cached).length, ms: ran.reduce((total, entry) => total + (Number(entry.ms) || 0), 0) }
+        // task: the unit's task-tier runs per command (cache hits ran nothing), for the slow-check line.
+        const task = taskCheckRows(ran.filter((entry) => entry.tier === 'task' && !entry.cached && typeof entry.command === 'string').map((entry) => ({ command: entry.command, ms: Number(entry.ms) || 0 })))
+        const checks = { runs: ran.length, cached: ran.filter((entry) => entry.cached).length, ms: ran.reduce((total, entry) => total + (Number(entry.ms) || 0), 0), ...(task.length ? { task } : {}) }
         resolve({ dispatch: id, exitCode: code, stopped, error: error ?? null, result, usage, checks, session: session?.trim() ?? null, log: logPath })
       }
       child.stdout.on('data', (chunk) => { append(chunk); output += chunk; if (output.length > 1024 * 1024) stop('output-limit') })
@@ -447,6 +450,21 @@ export async function vibeLoop(options = {}, injected = {}) {
     })().catch(async (caught) => { operationalErrors.push({ operation: 'heartbeat', error: caught.message }); stop('operational-error'); await event('failed', { error: caught.message }) }).finally(() => { watching = null })
   }, 1000)
   const metadataCommit = (message) => metadataStep('metadata-commit', () => metadata.commit(message))
+  // This run's task-tier checks (from its units' check logs, not other sessions' timings).
+  const taskChecks = () => taskCheckSummary(dispatches.flatMap((unit) => unit.checks?.task ?? []))
+  // A task check too slow for every task belongs to the final gate, but moving it changes the ARCH
+  // tiers: the owner gets one suggestion per command (none while the inbox already names it).
+  const suggestSlowChecks = async () => {
+    const { slow } = taskChecks()
+    if (!slow.length) return
+    try {
+      const named = (await inboxNow()).map((entry) => entry.text)
+      for (const { command, runs, avgMs } of slow.filter(({ command }) => !named.some((text) => text.includes(`\`${command}\``)))) {
+        await deps.inbox({ targetRoot: root, step: 'add', tag: options.tag, kind: 'suggest', ...(verify.decision ? { ref: [verify.decision] } : {}),
+          text: `move task check \`${command}\` to the final gate (ARCH batch): it averaged ${Math.round(avgMs / 1000)}s over ${runs} runs` })
+      }
+    } catch (caught) { await event('suggest-error', { error: caught.message }) }
+  }
   const updateReport = async (closing = false) => {
     let text = await readFile(reportPath, 'utf8')
     if (closing) text = text.replace(/\bto:-/, `to:${new Date(deps.now()).toISOString()}`)
@@ -466,6 +484,8 @@ export async function vibeLoop(options = {}, injected = {}) {
     if (checks.length) text = text.replace('\n## next', `${checks.join('\n')}\n\n## next`)
     // Where the run's time went, once, when the run closes (a reopened report gets a fresh line).
     if (closing) text = text.replace(/^- time: .*\n/m, '').replace('\n## next', `${timeLine(timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }))}\n\n## next`)
+    const tasks = closing ? taskChecks() : null
+    if (tasks?.runs) text = text.replace(/^- task checks: .*\n/m, '').replace('\n## next', `${taskCheckLine(tasks)}\n\n## next`)
     if (closing && measurement?.summary) text = text.replace(/^- usage: .*\n/m, '').replace('\n## next', `- usage: ${measurement.summary} ${measurement.reportLink ?? 'Human-readable usage report unavailable.'}\n\n## next`)
     const kept = snapshots.filter((snapshot) => !snapshot.dropped).map((snapshot) => `- uncommitted work kept: ${snapshot.ref} (${snapshot.task ?? '-'}, ${snapshot.fileCount} files)\n`).join('')
     // CI the run could not read waits for the owner, not for the run.
@@ -640,8 +660,10 @@ export async function vibeLoop(options = {}, injected = {}) {
       for (const [index, command] of batchVerify.entries()) {
         await ensureActive()
         let checked
-        // The gate may use its whole reserve even when a unit's timeout is shorter.
-        try { checked = await deps.check({ targetRoot: root, tier: 'batch', diffBase: base, heavy: true, signal: controller.signal, timeoutMs: Math.min(Math.max(timeoutMs, reserve.ms), Math.max(1, deadline - deps.now())) }, command) }
+        // The gate may use its whole reserve even when a unit's timeout is shorter. Its rounds go to the
+        // session's gate record (a later standalone gate with this tag continues the count), but this
+        // loop stops on its own counter, so 'record' never refuses it.
+        try { checked = await deps.check({ targetRoot: root, tier: 'batch', tag: options.tag, gateLedger: 'record', diffBase: base, heavy: true, signal: controller.signal, timeoutMs: Math.min(Math.max(timeoutMs, reserve.ms), Math.max(1, deadline - deps.now())) }, command) }
         catch (caught) { batches.push({ command, ok: false, cancelled: controller.signal.aborted, error: caught.message }); throw caught }
         batches.push({ command, ...checked, ...(!checked.ok && controller.signal.aborted ? { cancelled: true } : {}) })
         round.push({ command, index, checked })
@@ -958,6 +980,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     // Also report preflight/no-work exits, before the owned spec report exists.
     if (measurementRun) measurement = await finishUsageRun(measurementRun, dispatches.length)
     if (initialized) {
+      await suggestSlowChecks()
       // Always persist the final reason and commit the owned report, including failures.
       try { await recordReport(true); await metadataCommit(`vibe ${options.tag}: stopped (${reason})`) }
       catch { /* metadataStep recorded a separate operational error and durable journal */ }
@@ -1004,5 +1027,5 @@ export async function vibeLoop(options = {}, injected = {}) {
   }
   const terminalEvent = await readJSON(plan.notification.terminalEvent).catch(() => null)
   return { ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, ...(loopHint(reason) ? { hint: loopHint(reason) } : {}), stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
-    time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}) }
+    time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(taskChecks().runs ? { taskChecks: taskChecks() } : {}), ...(measurement ? { measurement } : {}) }
 }

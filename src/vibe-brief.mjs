@@ -3,7 +3,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { readTaskBoard } from './task-board.mjs'
-import { sections, TASK_ID } from './spec-format.mjs'
+import { sections, TASK_ID, DECISION_HEAD, DECISION_STATUS } from './spec-format.mjs'
 import { assembleBrief, specSource } from './spec-context.mjs'
 import { vibeSession } from './vibe-session.mjs'
 import { coordView } from './vibe-coord.mjs'
@@ -20,33 +20,70 @@ export async function briefInbox(targetRoot, injected = {}) {
   return { branch: view.branch, commit: view.commit, inbox: view.sessions.inbox, ...(view.error ? { error: view.error } : {}) }
 }
 
+const VERIFY_HEAD = /\b(verification|verify|checks|testing|tests|CI\/CD)\b|검증/i
+// A line that sets the final gate: what runs before a push·merge·release, or the full suite.
+const GATE = /\b(?:before|prior to)\s+(?:(?:a|an|the|each|every|any)\s+)?(?:(?:code|target[- ]branch|remote|final)\s+)?(?:push|pushing|merge|merging|release|deploy(?:ing|ment)?)\b|\bpre-?(?:push|merge|release)\b|\b(?:full|whole|entire|complete)\s+(?:test\s+)?(?:suites?|test runs?|verification|checks?)\b|\bfinal\s+(?:gate|verification|checks?)\b|push\s*전|(?:전체|최종)\s*(?:테스트|스위트|검증|관문)/i
+const CHECKS = /\b(?:tests?|testing|suites?|builds?|lint(?:ing|er)?|typecheck(?:ing|s)?|type[- ]checks?|checks?|verify|verification|e2e)\b|검증|테스트|빌드|검사|린트/i
+const gateLine = (line) => GATE.test(line) && CHECKS.test(line)
+
 // Extract only explicitly labelled tiers. Conditional prose remains guidance, never
 // a shell command. Conditional browser invocations may still need specific paths.
+// Without declared tiers the guidance is the only place that says where a check belongs, so a
+// task condition ("build and type checks must pass") never travels without the decisions that
+// set the final gate (before push, the full suite): those blocks join the guidance whole, even
+// when their head names no verification keyword. Declared tiers keep the keyword scan alone.
+// excluded: verification blocks left out of the guidance and why (open or rejected).
+// decision: the [o] decision that labels the tiers, else the first [o] verification one, else null
+// (what a tier change revises: the lint hint, the loop's slow-check suggestion).
 export function verificationTiers(markdown) {
+  const lines = sections(markdown).get('decisions') ?? []
+  const keyword = scanTiers(lines, false)
+  return keyword.declared ? keyword : scanTiers(lines, true)
+}
+
+function scanTiers(lines, withGate) {
   const result = { task: [], batch: [], ci: [], guidance: [], declared: false }
-  let tier = null, relevant = false
-  const labels = new Set()
-  for (const line of sections(markdown).get('decisions') ?? []) {
-    if (/^- /.test(line)) { tier = null; relevant = /\b(verification|verify|checks|testing|tests|CI\/CD)\b|검증/i.test(line) && /\[o\]/.test(line) }
-    if (!relevant) continue
-    if (/\[x\]/.test(line)) continue
-    const label = line.match(/^\s*-\s*(task|batch|CI|태스크|묶음|push 전)(?=[,:\s])/i)
-    if (label) {
-      tier = /^(task|태스크)$/i.test(label[1]) ? 'task' : /^(ci)$/i.test(label[1]) ? 'ci' : 'batch'
-      labels.add(tier)
-      const colon = line.indexOf(':', label[0].length)
-      if (colon >= 0 && tier !== 'ci') {
-        for (const match of line.slice(colon + 1).matchAll(/`([^`]+)`/g)) result[tier].push(match[1])
+  const excluded = []
+  const blocks = []
+  for (const line of lines) {
+    if (/^- /.test(line)) blocks.push([line])
+    else blocks.at(-1)?.push(line)
+  }
+  const labels = new Set(), decisions = [], labelled = []
+  for (const block of blocks) {
+    const verification = VERIFY_HEAD.test(block[0])
+    if (!verification && !(withGate && block.some(gateLine))) continue
+    const head = block[0].match(DECISION_HEAD), id = head && `${head[1]}-${head[2]}`
+    if (!/\[o\]/.test(block[0])) {
+      if (head && head[3] !== 'o') excluded.push({ id, reason: DECISION_STATUS[head[3]] })
+      continue
+    }
+    if (id) decisions.push(id)
+    let tier = null
+    for (const line of block) {
+      if (/\[x\]/.test(line)) continue
+      // A gate-only block is prose for the reader: its lines never become tier commands.
+      const label = verification && line.match(/^\s*-\s*(task|batch|CI|태스크|묶음|push 전)(?=[,:\s])/i)
+      if (label) {
+        tier = /^(task|태스크)$/i.test(label[1]) ? 'task' : /^(ci)$/i.test(label[1]) ? 'ci' : 'batch'
+        labels.add(tier)
+        if (id) labelled.push(id)
+        const colon = line.indexOf(':', label[0].length)
+        if (colon >= 0 && tier !== 'ci') {
+          for (const match of line.slice(colon + 1).matchAll(/`([^`]+)`/g)) result[tier].push(match[1])
+        }
+        if (tier === 'ci') result.guidance.push(line)
+      } else if (tier && /^\s+-\s+`[^`]+`[.,]?\s*$/.test(line)) {
+        result[tier].push(line.match(/`([^`]+)`/)[1])
+      } else if (line.trim()) {
+        result.guidance.push(line)
       }
-      if (tier === 'ci') result.guidance.push(line)
-    } else if (tier && /^\s+-\s+`[^`]+`[.,]?\s*$/.test(line)) {
-      result[tier].push(line.match(/`([^`]+)`/)[1])
-    } else if (line.trim()) {
-      result.guidance.push(line)
     }
   }
   result.declared = ['task', 'batch', 'ci'].every((tier) => labels.has(tier))
   result.partial = labels.size > 0 && !result.declared
+  result.excluded = excluded
+  result.decision = labelled[0] ?? decisions[0] ?? null
   for (const name of ['task', 'batch', 'ci']) result[name] = [...new Set(result[name])]
   return result
 }
@@ -67,8 +104,16 @@ export async function readVerification(root, archText) {
       if (pkg.packageManager?.startsWith('pnpm')) manager = 'pnpm run'
       if (pkg.packageManager?.startsWith('yarn')) manager = 'yarn'
     } catch (error) { if (error.code !== 'ENOENT') throw error }
-    if (!verify.batch.length) verify.batch = scripts.verify ? [`${manager} verify`] : scripts.test ? [`${manager} test`] : []
-    if (!verify.task.length) verify.task = ['typecheck', 'lint', 'format:check'].filter((name) => scripts[name]).map((name) => `${manager} ${name}`)
+    // inferred: the tiers whose commands came from package.json rather than ARCH (the brief says so).
+    verify.inferred = []
+    if (!verify.task.length) {
+      verify.task = ['typecheck', 'lint', 'format:check'].filter((name) => scripts[name]).map((name) => `${manager} ${name}`)
+      if (verify.task.length) verify.inferred.push('task')
+    }
+    if (!verify.batch.length) {
+      verify.batch = scripts.verify ? [`${manager} verify`] : scripts.test ? [`${manager} test`] : []
+      if (verify.batch.length) verify.inferred.push('batch')
+    }
     // Legacy commands belong to the batch gate and are selected explicitly by
     // the caller, rather than treating prose/code examples as executable config.
     verify.guidance.push('No explicit tiers: task = changed/affected unit tests plus fast checks; batch = full suite, integration and e2e once before a target-branch code push or final completion; CI = once per code push. Classify tests by their isolation and dependencies, not their script names. Select legacy ARCH batch commands explicitly with --verify.')
@@ -132,7 +177,9 @@ function briefView(brief, options) {
     chars: (entry.text ?? entry.content ?? entry.message ?? entry.lines?.join('\n') ?? '').length }
   return { schemaVersion: 1, view: options.summary ? 'summary' : 'page', roots: brief.roots, source: brief.source, snapshot,
     ...(brief.taskId ? { taskId: brief.taskId, commit: brief.commit, diffBase: brief.diffBase, freshness: brief.freshness, touches: brief.touches,
-      verify: { task: brief.verify.task, batch: brief.verify.batch, ci: brief.verify.ci, declared: brief.verify.declared, partial: brief.verify.partial, guidanceCount: brief.verify.guidance.length, guidanceSection: 'guidance' } } : {}),
+      verify: { task: brief.verify.task, batch: brief.verify.batch, ci: brief.verify.ci, declared: brief.verify.declared, partial: brief.verify.partial,
+        ...(brief.verify.inferred ? { inferred: brief.verify.inferred } : {}), ...(brief.verify.excluded?.length ? { excluded: brief.verify.excluded } : {}),
+        guidanceCount: brief.verify.guidance.length, guidanceSection: 'guidance' } } : {}),
     complete: false, readingComplete: false, sourceComplete: brief.complete, scope: brief.scope, size: brief.size,
     counts: Object.fromEntries(Object.entries(collections).map(([name, list]) => [name, list.length])),
     page: { section, offset, limit, total: collections[section].length, returned: entries.length,

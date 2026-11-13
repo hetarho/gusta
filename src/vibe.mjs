@@ -10,14 +10,15 @@ import { activeRows, upsertActive, mergeState } from './state-doc.mjs'
 import { inboxEntries, STALE_MINUTES } from './coord-doc.mjs'
 import { coordView, beatSession, claimSession, recordLanded, recordCheckpoint, assertCoordinator, assertSessionTag, isDelegated, commitOnRemote, wipTime, hostName } from './vibe-coord.mjs'
 import { designOf } from './interactive-state.mjs'
-import { workingTree, checkKey, cachedPass, recordPass, withHeavyLock } from './check-cache.mjs'
+import { workingTree, checkKey, cachedPass, recordPass, withHeavyLock, readTimings, taskTimingRows, taskCheckSummary } from './check-cache.mjs'
+import { runtimeRoot } from './work-runtime.mjs'
 import { lintSpec } from './spec-lint.mjs'
 import { workInternals } from './work-groups.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { readSettings, readSetting, permissionMode } from './settings.mjs'
 import { vibeSession } from './vibe-session.mjs'
-import { runVibeCheck } from './vibe-check.mjs'
+import { runVibeCheck, resetVibeGate } from './vibe-check.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { vibeCIWait, githubRepository } from './vibe-ci.mjs'
 import { providerFlags } from './work-providers.mjs'
@@ -475,6 +476,17 @@ export async function specCloseIssues(root) {
   return stIssues(summarize(state).tasks, await taskFields(root))
 }
 
+// The task checks this clone ran lately (each command's last runs in timings.json) and the ones that
+// average over a minute: candidates for the final gate, decided by a person (gusta-update). A command
+// ARCH now lists only under batch was moved already: the task tier refuses it, so it is left out.
+async function recentTaskChecks(workspace, root) {
+  const rows = taskTimingRows(await readTimings(runtimeRoot(workspace)))
+  if (!rows.length) return null
+  const verify = await readVerification(root), same = (a) => (b) => a === b.trim().replace(/\s+/g, ' ')
+  const summary = taskCheckSummary(rows.filter(({ command }) => !verify.batch.some(same(command)) || verify.task.some(same(command))))
+  return summary.runs ? summary : null
+}
+
 // What a session needs before its first question: who else is working and where (the coordination
 // branch, synced with the remote unless fetch is off, plus STATE's old sections while a project
 // still has them), what is left, and which way to go.
@@ -576,7 +588,9 @@ export async function vibeStatus(options = {}, injected = {}) {
     lost: [...view.lost, ...held.filter((entry) => implementation.resume.includes(entry.id) && !view.lost.some((lost) => lost.task === entry.id)).map((entry) => ({ task: entry.id, owner: entry.tag, reason: entry.reason }))],
     contested: view.doc.unlanded.filter((row) => options.tag && row.tag === options.tag).flatMap((row) => result.others.filter((other) => !other.stale && other.doing === row.id).map((other) => ({ task: row.id, owner: other.tag }))),
     push: view.push, sync: view.sync }
-  return { ...result, ...(coordination ? { coordination, held } : {}),
+  // Advisory: an unreadable timings file or ARCH never fails status.
+  const taskChecks = workspace.git ? await recentTaskChecks(workspace, root).catch(() => null) : null
+  return { ...result, ...(coordination ? { coordination, held } : {}), ...(taskChecks ? { taskChecks } : {}),
     concurrency: (result.others ?? []).some((row) => !row.stale) || (result.orphanDoing ?? []).length > 0 ? 'strict' : 'solo',
     next: (sections(text).get('next') ?? []).filter((line) => line.startsWith('- ')).slice(0, 3),
     counts: { inbox: inbox.length, parked: inbox.filter((entry) => entry.kind === 'parked').length, remaining: local.tasks.length },
@@ -750,7 +764,7 @@ export async function vibeAwake(options = {}) {
 
 // Compatibility API: callers still receive an exit code; CLI prints one bounded summary.
 export async function vibeCheck(options = {}, command) {
-  const result = await runVibeCheck(options, command)
+  const result = options.resetGate ? await resetVibeGate(options, command) : await runVibeCheck(options, command)
   process.stdout.write(`${JSON.stringify(result)}\n`)
   return result.exitCode
 }
