@@ -9,16 +9,17 @@ import { OPTIONAL_FLAGS, STRICT_MCP } from './work-providers.mjs'
 import { AGENT_CONFIG } from './constants.mjs'
 import { usageCollector, persistUsage } from './usage-measurement.mjs'
 import { classifyFailure } from './provider-limits.mjs'
+import { AGENT_CHECK_SCHEMA, validateAgentAcceptance } from './agent-acceptance.mjs'
 
 const fail = (message) => { throw new SkillPackageError(message) }
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
 const string = { type: 'string' }
 export const RESULT_SCHEMAS = {
   unit: object({ kind: { type: 'string', enum: ['task', 'planning', 'inbox', 'fix', 'none'] }, id: string,
-    outcome: { type: 'string', enum: ['completed', 'parked', 'blocked', 'no_work'] }, pushed: { type: 'boolean' }, next: string }),
+    outcome: { type: 'string', enum: ['completed', 'parked', 'blocked', 'no_work'] }, pushed: { type: 'boolean' }, next: string, agentChecks: AGENT_CHECK_SCHEMA }),
   // decision is always present so strict structured output accepts it; an empty question means none.
   worker: object({ outcome: { type: 'string', enum: ['completed', 'blocked'] }, summary: string,
-    decision: object({ question: string, options: { type: 'array', items: string }, recommendation: string }) }),
+    decision: object({ question: string, options: { type: 'array', items: string }, recommendation: string }), agentChecks: AGENT_CHECK_SCHEMA }),
   reviewer: object({ verdict: { type: 'string', enum: ['approved', 'changes_requested'] }, summary: string,
     findings: { type: 'array', items: object({ priority: { type: 'string', enum: ['P1', 'P2', 'P3'] }, where: string, message: string }) } }),
   // A scout reads and proposes; its whole return is what reaches the orchestrator's context.
@@ -36,7 +37,8 @@ const PROPOSAL = ['title', 'where', 'problem', 'evidence', 'change', 'preserves'
 export function validateAgentResult(role, result) {
   if (role === 'unit') {
     if (!result || !['task', 'planning', 'inbox', 'fix', 'none'].includes(result.kind) || !['completed', 'parked', 'blocked', 'no_work'].includes(result.outcome) || typeof result.id !== 'string' || typeof result.pushed !== 'boolean' || typeof result.next !== 'string') fail('단위 결과의 kind/id/outcome/pushed/next가 올바르지 않습니다.')
-    return { kind: result.kind, id: result.id, outcome: result.outcome, pushed: result.pushed, next: result.next }
+    return { kind: result.kind, id: result.id, outcome: result.outcome, pushed: result.pushed, next: result.next,
+      ...(result.agentChecks !== undefined ? { agentChecks: validateAgentAcceptance(result.agentChecks) } : {}) }
   }
   if (!result || typeof result !== 'object' || Array.isArray(result) || typeof result.summary !== 'string' || !result.summary.trim()) fail('에이전트 결과에 summary가 없습니다.')
   if (role === 'scout') {
@@ -57,7 +59,8 @@ export function validateAgentResult(role, result) {
     const asked = decision && typeof decision.question === 'string' && decision.question.trim()
     if (asked && (!Array.isArray(decision.options) || decision.options.some((value) => typeof value !== 'string') || typeof decision.recommendation !== 'string')) fail('워커의 결정 요청 형식이 올바르지 않습니다.')
     return { outcome: result.outcome, summary: result.summary,
-      decision: asked && result.outcome === 'blocked' ? { question: decision.question, options: decision.options, recommendation: decision.recommendation } : null }
+      decision: asked && result.outcome === 'blocked' ? { question: decision.question, options: decision.options, recommendation: decision.recommendation } : null,
+      ...(result.agentChecks !== undefined ? { agentChecks: validateAgentAcceptance(result.agentChecks) } : {}) }
   }
   if (!['approved', 'changes_requested'].includes(result.verdict) || !Array.isArray(result.findings)) fail('리뷰 결과에 verdict/findings가 없습니다.')
   const findings = result.findings.map((entry) => {
@@ -118,7 +121,7 @@ const CONFINE = 'Write only inside this workspace, your own git worktree (scratc
 // The owner's inbox and the log are not in the tree: one CLI call writes a line to the coordination
 // branch, with nothing to commit. One command per call (a compound command opens a permission prompt).
 const INBOX = "with one call of cliCommand vibe inbox add --kind decided|parked --ref <T###|ID-n> --text '<one line>' (a line holding quotes, backticks or | goes into a file in the session temp folder, passed with --file instead of --text; nothing to commit)"
-const TASK_CHECKS = 'Run the task-tier checks of the changed scope (added/changed/affected unit tests, the ARCH task commands) once, when the edits are done and before any commit, with vibe check --tier task (a passed tree is cached); never after each edit, and after a failure rerun only what failed. Write or update integration/e2e tests as needed, but leave everything else (builds, browsers, integration/e2e, full suites) to the single final gate the coordinator host runs on the integrated candidate before the target-branch push. Classify tests by their isolation and dependencies, not their script names. Use small fixtures for unit tests; record deferred commands/specs in result limits and never report unrun checks as passed.'
+const TASK_CHECKS = 'Run the task-tier checks of the changed scope (added/changed/affected unit tests, the ARCH task commands) once, when the edits are done and before any commit, with vibe check --tier task (a passed tree is cached); never after each edit, and after a failure rerun only what failed. Reuse existing behavioral evidence; add a small deterministic test only for a real gap. Keep automated e2e minimal and browser compatibility in CI for declared supported browsers. Computer-use agent acceptance replaces selected e2e coverage, never adds another suite over it. Return agentChecks with scenario/steps/expected/observed/evidence/status and replacement IDs; a tool-less unit returns integration-stage not-run with reason and host owner, never a fabricated pass or extra e2e fallback. The capable host tests its fixed candidate and reports the checklist for the user to review missing or incorrect criteria. Leave builds, integration and full suites to one shared final gate after participating sessions are ready. Classify tests by their isolation and dependencies, not their script names. Use small fixtures for unit tests; record deferred commands/specs in result limits and never report unrun checks as passed.'
 
 // The brief reaches the model as markdown ahead of the assignment JSON: inside JSON every newline
 // and quote of the decision text would be escaped. The payload adapters receive is unchanged.
