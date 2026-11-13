@@ -1,5 +1,5 @@
 import test from 'node:test'
-import { runVibeCheck } from './helpers/unit-policy.mjs'
+import { runVibeCheck, checkInFreshProcess } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
@@ -122,10 +122,8 @@ test('concurrent final checks share one run across linked worktrees without --he
   await git(root, 'worktree', 'add', '--detach', other, initial)
   const counter = path.join(temporary, 'final-runs.txt')
   const command = 'node -e \'require("fs").appendFileSync(process.env.CHECK_COUNT,"x");setTimeout(()=>{},300)\''
-  const results = await Promise.all([root, other].map((target) => execute(process.execPath,
-    [cli, 'vibe', 'check', '--target', target, '--tier', 'batch', '--diff-base', initial, '--', command],
-    { env: { ...process.env, CHECK_COUNT: counter } })))
-  const checks = results.map((result) => JSON.parse(result.stdout))
+  const checks = await Promise.all([root, other].map((targetRoot) => checkInFreshProcess(
+    { targetRoot, tier: 'batch', diffBase: initial }, command, { ...process.env, CHECK_COUNT: counter })))
   assert.equal(await readFile(counter, 'utf8'), 'x')
   assert.deepEqual(checks.map((check) => check.cached).sort(), [false, true])
   assert.ok(checks.every((check) => check.ok && check.commit === initial))

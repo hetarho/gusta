@@ -1,9 +1,8 @@
 import test from 'node:test'
-import { runVibeCheck, vibeLoop, vibePush } from './helpers/unit-policy.mjs'
+import { runVibeCheck, vibeLoop, vibePush, checkInFreshProcess } from './helpers/unit-policy.mjs'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { fixture, git, execute, archiveTask } from './helpers/vibe-fixture.mjs'
 
 import { readVerification, vibeBrief } from '../src/vibe-brief.mjs'
@@ -12,7 +11,6 @@ import { lintSpec } from '../src/spec-lint.mjs'
 import { readGates, gateCount } from '../src/gate-ledger.mjs'
 
 
-const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
 const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
 const node = (code) => `${quote(process.execPath)} -e ${quote(code)}`
 const planFile = 'verification.json'
@@ -25,7 +23,7 @@ async function planned(t, checks) {
   return { ...context, revision: await git(context.root, 'rev-parse', 'HEAD') }
 }
 
-test('named checks persist successful siblings, resume in a fresh CLI and reuse explicit inputs after a docs-only commit', async (t) => {
+test('named checks persist successful siblings, resume in a fresh process and reuse explicit inputs after a docs-only commit', async (t) => {
   const { root, temporary, initial } = await planned(t, [
     { id: 'alpha', tier: 'batch', command: node('require("fs").appendFileSync(process.env.COUNTER,"alpha\\n")'), inputs: ['alpha.js'] },
     { id: 'beta', tier: 'batch', command: node('const fs=require("fs");fs.appendFileSync(process.env.COUNTER,"beta\\n");process.exit(fs.readFileSync("beta.js","utf8").includes("fixed")?0:1)'), inputs: ['beta.js'] },
@@ -44,7 +42,7 @@ test('named checks persist successful siblings, resume in a fresh CLI and reuse 
   await git(root, 'commit', '-qam', 'repair beta')
   // The same effective environment is passed to both API and a fresh process, so only the
   // failed check's changed file invalidates it. No project paths or tests are inferred.
-  const second = JSON.parse((await execute(process.execPath, [cli, 'vibe', 'check', '--target', root, '--tier', 'batch', '--diff-base', initial, '--plan', planFile], { env: { ...process.env, ...env } })).stdout)
+  const second = await checkInFreshProcess({ targetRoot: root, tier: 'batch', diffBase: initial, plan: planFile }, undefined, { ...process.env, ...env })
   assert.equal(second.ok, true)
   assert.deepEqual(second.checks.map(({ id, status }) => [id, status]), [['alpha', 'cached'], ['beta', 'passed']])
   assert.equal(await readFile(counter, 'utf8'), 'alpha\nbeta\nbeta\n')
