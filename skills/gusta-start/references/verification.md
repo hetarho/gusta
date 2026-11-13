@@ -21,7 +21,7 @@ CLI는 항목별 성공과 입력 식별자를 즉시 보존한다. 다른 항�
 
 ## 시간 예산
 
-시간은 구현에 쓰고 전체 검증은 마지막 관문에 모은다. 시간 한도가 있는 맡김은 끝 구간을 예약한다. `vibe loop`는 이 구간에 새 일반 단위를 시작하지 않고 최종 관문·수정·push·CI를 실행한다(`reason:final-window`). 구간 = 실측 전체 검증 시간×2 + 최근 단위 시간 + (push 브랜치가 있으면) CI 대기. 측정은 batch/group 검사·`work finish`·`vibe design verify`가 runtime `timings.json`에 남기며(명령마다 최근 3회 중 최대), 측정 전 첫 실행만 max-hours의 20%를 쓴다. `--final-reserve-hours`가 있으면 그 값이다. 관문 검사의 제한 시간은 단위 timeout이 아니라 예약 구간 기준이다. 태스크 단계 명령 시간도 같은 파일에 남는다: 평균 60초가 넘는 명령(2회 이상)은 `vibe status`의 `taskChecks.slow`와 loop 보고서에 나오고, loop가 끝날 때 batch 이동을 inbox `suggest`로 한 번 제안한다 — 옮길지는 사람이 정한다(조정자·맡김은 ARCH를 고치지 않는다).
+시간은 구현에 쓰고 전체 검수는 공동 통합 후보 한 번에 모은다. 시간 한도가 있으면 실측 전체 검수 한 번+수정 단위/영향 검사+CI를 예약한다. 전체 스위트 두 번을 기본 예약하지 않는다. `vibe loop`의 마감 구간에는 새 일반 단위를 시작하지 않고 기존 결과를 ready로 제출한다. runtime `timings.json`과 `taskChecks.slow`의 실제 단계별 시간을 쓰며 1분 넘는 태스크 검사는 축소·이동 후보로 감사한다. 명령 이름만으로 단계나 비용을 판단하지 않는다.
 
 관문 실패는 실패한 것만 고친다: 결과 `next`대로 고친 부분을 `vibe check --tier task --diff-base <관문 커밋>`으로 먼저 확인하고, 같은 계획의 유효한 성공은 재사용하며 실패·영향·미실행 검사를 확인한다. 전체 스크립트를 처음부터 돌리는 것을 기본 회복으로 삼지 않고, 전체 재실행은 실제 입력·정책 변경 등 무효화 근거를 남긴다. 실패 재현용 빌드·e2e는 `--heavy`로 한 번에 하나씩, 다른 검사와 동시에 돌리지 않는다. 범위 밖 문제는 보고서 limits와 inbox(`suggest` 또는 다음 태스크)로 분리한다. 실패한 관문은 세션(`--tag`, 없으면 브랜치)마다 누적 3회가 상한이고 성공해도 초기화하지 않는다. CLI가 loop 밖에서도 세어 상한이면 실행을 거절한다(`refused:gate-cap`) — 남은 실패를 보고서와 `vibe inbox add --kind parked`로 남기고 멈춘다. loop는 같은 기록에 남기되 자기 상한(`--max-gate-attempts`, 기본 3, 2~5)으로 판정한다. 두 번째 실패 뒤 추가 수정은 같은 계획의 완전한 실패 ID 집합이 엄격히 줄었을 때만이다(로그의 개수·새 실패·불명확한 결과·timeout은 기회가 아니다). 실제 마감·남은 검증/CI 시간·단위 한도도 지킨다. 종료 결과에는 시도·누적 실패/상한·남은 수정·실제 push를 남긴다.
 
@@ -29,23 +29,23 @@ CLI는 항목별 성공과 입력 식별자를 즉시 보존한다. 다른 항�
 
 ## 작업 묶음과 기존 프로젝트
 
-기본 매핑은 ARCH task → `--task-verify`, 빠른 통합 검사 → `--verify`, 통합/e2e·전체 스위트 → `--group-verify`다. 단위 결과는 로컬 작업 브랜치에 모으고 기본으로 `--push`를 붙이지 않는다. 기존 활성 묶음도 확정한 정책·검증 범위에 맞춰 `work configure`한다(진행 중 관문은 끝난 뒤 변경). 일반 `npm test`·`verify` 안에 브라우저가 포함됐는지도 실제 스크립트·테스트 의존성으로 확인한다. 이름만 보고 분류하거나 검사를 없애지 않는다.
+기본 매핑은 ARCH task → `--task-verify`, 빠른 통합 검사 → `--verify`, 최종 통합의 결정론적 범위 → `--group-verify`다. 최소 자동 브라우저 E2E와 지원 브라우저 호환 검사는 CI에서만 수행하고, agent로 대체한 시나리오를 로컬/CI 스크립트에 중복으로 남기지 않는다. 기존 활성 묶음도 승인된 정책에 맞춰 `work configure`한다. 일반 `npm test`·`verify`의 실제 의존성·브라우저 행렬을 읽고 이름만으로 분류하지 않는다.
 
 기존 규칙과 충돌하면 gusta-create-architecture/gusta-update-ssot가 검증 범위·조건을 보존한 기본 단계 정리를 제안하고 승인 뒤 관련 활성 문서를 함께 맞춘다. 맡김의 기획 조각도 미승인 정책 차이를 추천안+inbox decided로 자동 변경하지 않는다. 구현 워커가 SSOT를 고치지 않는다. 별도 실행을 승인받은 경우는 그 범위만 예외로 두고, 비용·최종 검증 필요 여부와 CLI 지원 한계를 기록한다.
 
 ## 최종 관문과 push
 
-1. 원격의 대상·기획 변경과 발행 preflight를 먼저 확인하고 단위들을 통합해 깨끗한 최종 후보를 확정한다. 공유 checkout의 동시 쓰기를 멈출 수 없는 긴 검사는 고정 커밋의 격리 checkout에서 실행한다. 기본은 모든 단위를 모은 뒤 한 번이며, 세션 감지·보고서 경계만으로 단위별 e2e/push를 켜지 않는다.
-2. 조정자 CLI 한 곳에서 최종 검증한다: 묶음이면 저장된 `work finish` 관문, 단독이면 `vibe check --tier batch --tag <tag> --diff-base <묶음 시작 SHA>`(ARCH 계획/명령; 직접 지정은 `--plan <파일>` 또는 `-- <command>`). batch/group은 clone 공용 heavy 락을 획득하고 락 안에서 성공 기록을 재확인한다. 유효한 항목별 성공을 재사용하고 `work finish`의 현재 증거가 있으면 같은 e2e를 별도로 반복하지 않는다.
-3. 실패하거나 실행 중 코드/HEAD가 바뀌면 기본 반영을 멈추고 필요한 수정·미실행 검사를 확인한다. 후보 변경 감지를 끄지 않는다. 문서 병합만 있어도 검사 입력이 바뀌었는지 확인하며, 명시한 실제 입력이 같은 성공만 재사용하고 문서/spec 정합성은 따로 검사한다.
-4. 성공한 검증 커밋을 `vibe push --verified-commit <검증 SHA>`로 전달한다(SETTINGS land·push대로 — 할 일이 없으면 CLI가 none으로 끝낸다). sync/retry로 후보가 달라지면 바뀐 입력의 검사를 확인하고 유효한 성공과 합쳐 새 SHA의 증거를 만든다. STATE·태스크·보고서·work 실행 기록만의 변경은 CLI가 허용하는 범위에서 증거를 유지한다. CI는 실제 코드 push 후 한 번 기다린다(아래 CI 대기).
+1. 전용 세션 worktree에서 `vibe integration status --tag <tag>`로 공유 상태를 확인하고 구현 결과를 `vibe integration ready --tag <tag>`로 제출한다. 등록된 GUSTA 세션들의 working/ready·제출 SHA를 확인하며 보이지 않는 기기까지 안다고 주장하지 않는다. 원격 불명·미발행·stale은 완료가 아니다.
+2. loop/group finalizer 또는 `vibe integration finish --tag <tag>`가 모두 ready인 참여 집합과 land 기준 SHA를 고정해 한 소유자가 격리 후보를 검수한다. 새 세션은 다음 묶음에 대기한다. 전체 검수는 이 후보에서 한 번이며 유효한 검사별 성공을 재사용한다. clone heavy 락은 공유 소유권을 보조할 뿐이다.
+3. 실패 뒤에는 실패·영향·미실행만 고친다. 입력/HEAD 변경 감지는 유지하며 문서도 실제 입력이면 확인한다. 밖에서 land가 움직였으면 반영을 보류·재조정하고 자동 병합·전체 재실행을 반복하지 않는다. 필수 integration-stage AC가 미관찰이면 `waiting-agent`로 고정 후보와 기존 결정론적 성공을 보존한다.
+4. 도구가 있는 시작/검증 세션이 waiting-agent 영수증의 정확한 candidate에서 실제 computer use를 수행한다. 받은 token·candidate·checks를 JSON으로 기록해 `vibe integration accept --file <JSON>`으로 제출하고 `vibe integration finish --tag <tag>`로 이어간다. 이미 끝난 전체 결정론적 검사를 다시 돌리지 않는다. 검증된 고정 후보만 SETTINGS land·land-via·push대로 반영하며 기준 land가 바뀌면 보류한다. 원래 checkout을 전환하거나 force push로 동시 변경을 덮지 않는다.
 
 사용자가 실행 중 중단·먼저 반영·원인 보고 등 새 지시를 주면 기본 계획보다 우선한다. 소유한 검사 실행을 취소하고 종료/하위 프로세스 정리 결과를 확인한 뒤, 남은 검사를 자동 재개하지 않고 지시에 맞춰 재계획한다. 검증 예외를 명시적으로 승인받은 반영은 그 범위에서 지원되는 경로로만 수행하고 미완료 검사·실패·실제 반영을 보고한다. 미완료를 통과로 바꾸거나 CLI의 하드 관문·권한을 우회하지 않는다.
 
-위임된 단위 세션에서는 호스트가 선점([세션 절차](session.md))을 맡는다.
+위임된 단위 세션에서는 호스트가 선점([세션 절차](session.md))과 공동 마감을 맡는다. agent 결과의 `agentChecks`에는 id·scenario·steps·expected·observed·evidence·status·reason·replaces를 담고 예외적 중복은 duplicationReason으로 설명한다. agent AC의 stage는 `unit|integration`(기본 integration), required는 기본 true, owner는 기본 host다. unit-stage AC는 해당 단위에서 확인하고, integration-stage not-run은 이유·담당자와 함께 태스크 result/호스트에 인계한다. 구현+명시적 인계 acceptance가 끝난 태스크를 같은 도구 없는 단위에 반복 배정하지 않으며 UI 관찰을 했다고 체크하지 않는다. 최종 완료에는 실제 candidate SHA에 고정된 필수 integration 증거가 필요하다. candidate가 바뀌면 이전 화면 관찰을 새 SHA의 pass로 복사하지 않는다.
 
-단위별 push를 사용자가 명시하면 loop는 `--push-each-unit`, 묶음은 `--push <branch>`를 사용한다. 이 경우도 실제 push 전 관문은 조정자/호스트가 실행한다. 워커·리뷰어의 batch/group 실행은 기본 거절되며, 사용자에게 별도 실행을 명시적으로 요청받았을 때만 `--allow-final`로 예외를 표시한다. 락·실행 기록은 같은 clone의 worktree들이 공유하며 다른 clone의 직접 셸 실행까지 제어하지는 않는다.
+단위별 push를 사용자가 명시하면 loop는 `--push-each-unit`, 묶음은 `--push <branch>`를 사용한다. 이 경우도 실제 push 전 관문은 조정자/호스트가 실행한다. 워커·리뷰어의 batch/group 실행은 기본 거절되며, 사용자에게 별도 실행을 명시적으로 요청받았을 때만 `--allow-final`로 예외를 표시한다. 로컬 락은 같은 clone만 보호한다. 공유 통합 정본은 등록·갱신된 GUSTA 세션들의 원격 소유권을 확인하며 임의 셸·구버전·미등록 기기를 제어한다고 주장하지 않는다.
 
 ## CI 대기
 
-CI는 실제 push당 `vibe ci wait --commit <sha> --diff-base <묶음 시작 SHA> --json` 한 번 또는 push --wait-ci. Claude는 셸 백그라운드+하네스 완료 알림, Codex는 긴 timeout의 단일 블로킹 호출. sleep→조회→보고 모델 루프 금지. 긴 e2e·벤치마크도 완료까지 모델을 깨우지 않는다. CI를 읽을 수단이 없으면(gh·토큰 없음, 비공개 저장소, GitHub 원격 아님) CLI가 유예 뒤 `unchecked`(ok)로 돌려준다 — 멈추거나 수정 태스크를 만들지 않고 보고서 next에 `check CI later: <sha> <checkUrl>`로 남긴다. 맡김에서 실패는 근거를 담은 수정 태스크를 만들어 **다음 단위로 우선 실행**한다. 수정 태스크 생성만 하고 종료하지 않는다. 기획 판단은 SKILL.md 3절대로 해소하고, 실제 권한·외부 작업에 막히면 해당 건만 parked 후 다른 태스크로 간다. 시간·단위 한도와 반복 무진행·실행 실패 제한은 유지한다. run 없는 push는 CLI가 skipped로 마친다.
+지원 브라우저 호환 검사는 CI에만 둔다. CI는 실제 push당 `vibe ci wait --commit <sha> --diff-base <묶음 시작 SHA> --json` 한 번 또는 push --wait-ci. 같은 SHA에서 이미 통과한 CI/릴리스 증거도 재사용하며 릴리스만을 위해 전체 스위트를 중복하지 않는다. Claude는 셸 백그라운드+하네스 완료 알림, Codex는 긴 timeout의 단일 블로킹 호출. sleep→조회→보고 모델 루프 금지. 긴 e2e·벤치마크도 완료까지 모델을 깨우지 않는다. CI를 읽을 수단이 없으면(gh·토큰 없음, 비공개 저장소, GitHub 원격 아님) CLI가 유예 뒤 `unchecked`(ok)로 돌려준다 — 멈추거나 수정 태스크를 만들지 않고 보고서 next에 `check CI later: <sha> <checkUrl>`로 남긴다. 맡김에서 실패는 근거를 담은 수정 태스크를 만들어 **다음 단위로 우선 실행**한다. 수정 태스크 생성만 하고 종료하지 않는다. 기획 판단은 SKILL.md 3절대로 해소하고, 실제 권한·외부 작업에 막히면 해당 건만 parked 후 다른 태스크로 간다. 시간·단위 한도와 반복 무진행·실행 실패 제한은 유지한다. run 없는 push는 CLI가 skipped로 마친다.

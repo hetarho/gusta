@@ -2,11 +2,11 @@
 
 시작 때 묻지 않는다 — 1절의 실행 정보를 보여 주고 바로 시작한다. 결정함은 실행 중에 쌓이고, 사용자는 돌아와 `/gusta-start inbox 정리`로 승인 항목을 지우거나(`vibe inbox resolve --log`) 결정을 바꾸려면 /gusta-sketch로 간다. 열린 보고서는 to를 채운다.
 
-이 대화가 목표·마감·총 회복 예산을 소유한다. 직렬 loop가 실제 checkout에서 preflight·active·보고서·절전 방지를 준비하므로 동일 점검을 앞에서 반복하지 않는다. 독립 probe가 필요하면 `vibe preflight --probe-workspace current --probe '<태스크 단계 명령>' --json`으로 실제 실행 공간을 확인한다. 의존성 부재·네트워크 제한·권한 거부를 구분하고, 네트워크 실패만으로 별도 worktree 의존성 설치를 반복하지 않는다. 작업 묶음 조정자는 실제 워커 공간에 맞는 probe를 쓰며 이 세션에서 세션 등록(`vibe beat --tag <tag> --mode autopilot`)·보고서·awake를 준비한다.
+이 대화가 목표·마감·총 회복 예산을 소유한다. 기획·구현 전 `vibe session open --kind start --tag <tag> --json`으로 받은 전용 worktree의 targetRoot/branch에서 실행한다. 배정된 hostManaged 단위는 기존 격리 공간을 검증해 잇는다. 직렬 loop가 실제 checkout에서 preflight·active·보고서·절전 방지를 준비하므로 동일 점검을 앞에서 반복하지 않는다. 독립 probe가 필요하면 `vibe preflight --probe-workspace current --probe '<태스크 단계 명령>' --json`으로 실제 실행 공간을 확인한다. 의존성 부재·네트워크 제한·권한 거부를 구분하고, 네트워크 실패만으로 별도 worktree 의존성 설치를 반복하지 않는다. 작업 묶음 조정자는 실제 워커 공간에 맞는 probe를 쓰며 이 세션에서 세션 등록(`vibe beat --tag <tag> --mode autopilot`)·보고서·awake를 준비한다.
 
 ## loop 옵션
 
-시간 한도의 끝 구간은 마감 관문 전용이라 새 단위를 시작하지 않는다(`final-window`). 길이는 CLI가 실측으로 정한다(전체 검증×2+수정 단위+CI). 사용자의 마감 시각은 시간대를 확인해 `--deadline '<ISO with Z or offset>'`으로 넘긴다. `--final-reserve-hours`는 마감 전 검증·수정·CI 예약 **길이**이며 마감 시각이 아니다. 시작 응답/status의 실제 deadline·workDeadline·예약 시간을 확인한 뒤에만 마감이 설정됐다고 말한다. 맡길 태스크는 `--tasks '<T### ...>'`로 넘긴다(next 줄에 기대지 않음, 끝나면 `scope-done`). 단위 상한(`--timeout-ms`, 기본 1시간·explore는 timebox+30분)에 끊긴 단위는 CLI가 스냅샷→이어가기→쪼개기→parked로 처리하고 loop는 계속된다. `--permission-mode`는 사용자가 그 실행만 바꿀 때 넘긴다. 실제 실행 권한은 시작 probe로 확인한다.
+시간 한도의 끝 구간은 마감 관문 전용이라 새 단위를 시작하지 않는다(`final-window`). 길이는 CLI가 실측으로 정한다(전체 검수 한 번+수정 영향 범위+CI). 사용자의 마감 시각은 시간대를 확인해 `--deadline '<ISO with Z or offset>'`으로 넘긴다. `--final-reserve-hours`는 마감 전 검증·수정·CI 예약 **길이**이며 마감 시각이 아니다. 시작 응답/status의 실제 deadline·workDeadline·예약 시간을 확인한 뒤에만 마감이 설정됐다고 말한다. 맡길 태스크는 `--tasks '<T### ...>'`로 넘긴다(next 줄에 기대지 않음, 끝나면 `scope-done`). 단위 상한(`--timeout-ms`, 기본 1시간·explore는 timebox+30분)에 끊긴 단위는 CLI가 스냅샷→이어가기→쪼개기→parked로 처리하고 loop는 계속된다. `--permission-mode`는 사용자가 그 실행만 바꿀 때 넘긴다. 실제 실행 권한은 시작 probe로 확인한다.
 단위마다 도구·모델·에포트는 CLI가 정한다: 태스크 `run:`을 SETTINGS `agents` 안에서 실행하고, 쓸 수 없으면(목록 밖·미로그인·지원 안 하는 모델/에포트) score가 가장 가까운 조합, `run:`이 없으면 `agents` 첫 도구를 그 도구 기본 설정(모델·에포트 미지정)으로 쓴다. 회복·관문 수정 단위는 그보다 낮추지 않는다. 사용량·속도 한도·과부하·로그인 실패는 단위·사다리·실패 횟수에 세지 않고 같은 태스크를 `agents` 안 다음 조합의 새 세션으로 다시 띄운다(차단은 clone 공용 `limits.json`). 모두 막히면 첫 리셋이 작업 시간 안이면 모델 호출 없이 기다리고, 아니면 `usage-limit`으로 멈춘다(`hint`의 도구·리셋 시각을 보고서·사용자에게, 재실행은 리셋 뒤). 시작 전 `--dry-run`의 `routing`(task·recommended·run·source)을 실행 정보로 보여 준다. `--provider`·`--model`·`--effort`는 사용자가 실행 전체를 직접 고정할 때만 넘긴다. `agents` 미정이면 `needs-init`으로 멈추니 gusta-init으로 보낸다. 보고서 done 줄과 manifest dispatch·`unit-route` 이벤트에 실제 조합이 남는다(추천과 다르면 `추천 → 실제`).
 
 실행 중에는 `vibe loop --tag <tag> --configure --deadline '<ISO with Z or offset>' --final-reserve-hours <hours> --wait-ms 30000 --json`으로 같은 호스트의 마감·예약을 바꾼다. 단위별 push는 `--push-each-unit|--no-push-each-unit`이며 마감 변경을 대신하지 않는다. applied receipt의 실제 값으로 확인한다. 즉시 취소와 단위 완료 후 정지는 별개다. [실행 중 제어·복구 계약](loop-control.md)을 따른다.
@@ -20,4 +20,4 @@
 
 ## 마감
 
-실행기 밖 조정자/단독 시작 세션만 마감 때 보고서 to/next와 STATE next를 채우고 beat --end, 최종 후보의 묶음 검증(push 브랜치가 있으면 검증 SHA로 push 한 번), awake --stop을 한다. 마지막으로 `vibe prune --tag <tag>`를 실행한다. 이 세션의 `wip/<tag>`와 합쳐진 작업 묶음의 브랜치·worktree를 정리하며, 설정이 false면 CLI가 건너뛴다. 보고는 한 일·inbox/parked·다음 일·보고서 경로만 짧게 한다.
+마감 때 구현·태스크 결과와 agent AC를 ready로 제출하고 [공유 검증 절차](verification.md)를 따른다. 작업이 끝난 세션이 다른 기기를 idle로 추정해 전체 검사·push하지 않는다. 모두 ready인 묶음의 한 소유자만 고정 후보를 반영하며 waiting-agent이면 capable host가 실제 후보에서 관찰·기록한 뒤 기존 검수 증거로 재개한다. 보고서는 기존 checks에 AC 결과를 모으고 기준의 누락/오류에 대한 사용자 피드백을 요청한다. 마지막 `vibe prune --tag <tag>`는 합쳐진 소유 공간만 정리하고, 아직 제출·검증 중인 세션 worktree는 보존한다.

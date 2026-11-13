@@ -2,17 +2,17 @@
 name: gusta-self-improve
 description: >-
   로컬 지속 개선을 요청하면 실행한 세션이 오케스트레이터가 되어 하위 세션의 개선 제안을 검토하고,
-  승인한 작업만 구현·독립 리뷰·검증 후 현재 브랜치에 통합한다. "gusta-self-improve / PR 없이 개선 /
+  승인한 작업만 전용 worktree·하위 브랜치에서 구현·독립 리뷰한 뒤 공유 통합에 제출한다. "gusta-self-improve / PR 없이 개선 /
   로컬에서 알아서 개선 / 하위 세션이 제안하고 승인 후 작업"에 사용한다. PR 중심의 발행은 gusta-self-improve-remote.
 ---
 
 # gusta-self-improve — 제안 승인과 로컬 통합
 
-**역할: 실행한 세션이 오케스트레이터.** 탐색 세션이 근거 있는 제안을 보내고, 이 세션이 범위·비용·위험을 판단해 승인한 뒤 구현 세션을 배정한다. 구현자가 아닌 별도 세션의 리뷰와 검증을 통과한 단위를 호출한 checkout의 브랜치에 통합한다. PR은 만들지 않는다. 오케스트레이터는 배정·기획·승인·검증·통합·보고를 맡고 워커의 코드를 대신 작성하거나 자기 구현을 승인하지 않는다.
+**역할: 실행한 세션이 오케스트레이터.** 탐색 세션이 근거 있는 제안을 보내고, 이 세션이 범위·비용·위험을 판단해 승인한 뒤 구현 세션을 배정한다. 별도 세션의 리뷰를 통과한 단위를 전용 작업 브랜치에 모으고 모든 참여 세션이 ready인 공유 후보의 검수·반영에 참여한다. PR은 만들지 않는다. 오케스트레이터는 배정·기획·승인·검증·통합·보고를 맡고 워커의 코드를 대신 작성하거나 자기 구현을 승인하지 않는다.
 
 ## 공통 규칙 (모든 spec 스킬)
 1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 하고, agents 미정이면 맡김을 시작하지 않는다).
-2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 문서 상태를 STATE에, 세션 기록(시작·상태 변화·활동)을 `vibe` 명령으로만(`beat`·`claim`·`inbox`·`log`) 남기고 SESSIONS.md를 직접 고치지 않는다. 워커는 STATE·SSOT·세션 기록 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
+2. **문서 먼저**: 쓰기 전 실행기 배정 또는 `work status --json`으로 확인한다(CLI가 없으면 checkout·사용자 배정 확인). 단독/기획은 문서 상태를 STATE에, 세션 기록(시작·상태 변화·활동)을 `vibe` 명령으로만(`beat`·`claim`·`inbox`·`log`) 남기고 SESSIONS.md를 직접 고치지 않는다. 워커는 STATE·SSOT·세션 기록 대신 runtime과 자기 acceptance 체크·result만 쓴다. 리뷰는 읽기 전용이며 리뷰 runtime만 쓴다. 브랜치명은 소유권이 아니다. Git 구현은 land·deploy·plan·저장소 기본 브랜치가 아닌 하위 브랜치에서만 하며, 배정된 격리 작업 공간을 쓴다. `vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고, 끝났으면 gusta-design-mode 마감부터 한다 — 맡김은 디자인 변경을 건드리지 않고 주차한다.
 3. 산출 문서는 spec/FORMAT.md 표기를 따른다. `vibe format --section task|state|ssot|report` 중 필요한 발췌만 보고 FORMAT 전체를 읽지 않는다. 규칙에 없는 표기는 만들지 않는다.
 4. 질문·확인·보고는 cfg.lang 언어로, 상세도는 cfg.level대로. 산출 문서는 영어로 쓴다(FORMAT 언어 규칙). 선택지형 질문 도구(AskUserQuestion 등)가 있으면 사용. gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 inbox(`vibe inbox add`)와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.
 5. **읽기**: status 요약·`vibe brief <T###|ID-n|ID@rev> --summary`로 필요한 범위를 찾는다. 큰 brief는 `--section decisions|tasks --offset <n> --limit <n>`으로 원문 블록째 읽고 모든 필요 블록의 coverage를 확인한다. 전체 brief의 `end` 줄이 없거나 complete:no면 빠진 부분부터 다시 읽고, unfollowed·related는 필요한 것만 연다. 직접 읽은 결정은 다음 결정 줄·제목까지 본 블록만 근거로 쓴다. STATE·FORMAT·ARCH·큰 코드 전체를 반복 읽지 않는다. tasks/done/은 특정 회귀·검증 근거만 선택 조회한다. 보고서도 필요한 절만 읽고, 출력은 요약·tail, 전체 로그는 파일로 남긴다.
@@ -22,7 +22,7 @@ SETTINGS `usage-measurement`가 true인 시작 대화는 [사용량 절차](../g
 
 이 스킬 호출은 이번 실행 범위 안의 동작 보존 개선을 오케스트레이터가 채택하고 로컬에 통합하라는 위임이다. 후보마다 사람에게 채택을 묻지 않는다. 지속 정책이 있으면 범위·예산을 이어받고, 없으면 이번 실행의 범위·예산·호출 권한을 review notes와 보고서에 기록한다. 호출만으로 상시 스케줄을 켜거나 큰 변화·원격 발행 권한을 추가하지 않는다.
 
-- 호출한 checkout의 실제 경로·브랜치·HEAD·미커밋 변경·배정을 기록한다. 현재 브랜치가 통합 대상이다. main으로 임의 전환하지 않는다. 디자인·다른 작업자 소유 공간·미커밋 사용자 변경을 보존하며 충돌 가능한 쓰기는 주차한다.
+- 호출한 checkout의 경로·브랜치·HEAD·미커밋 변경·배정을 확인한 뒤 `vibe session open --kind self-improve --tag <tag> --json`으로 전용 linked worktree와 세션 브랜치를 확보한다. 반환 targetRoot에서만 기획·구현·보고를 진행하고 원래 checkout·land·deploy·plan·기본 브랜치를 작업 공간으로 쓰지 않는다. 사용자 변경을 복사·stash·커밋하지 않으며 배정된 자기 공간만 재사용한다.
 - 독립적인 탐색·구현·리뷰 세션을 실제로 실행할 도구와 권한을 확인한다. 기본은 탐색 최대 2개, 구현 최대 2개, 독립 리뷰 1개이며 사용 가능한 슬롯·소유권·부하에 맞춘다. 특정 제품이나 모델을 필수로 요구하지 않는다. 네이티브 하위 세션 도구가 없거나 맡김이면 헤드리스로 대신한다 — 탐색은 `work scout`, 구현·리뷰는 `work run`. 둘 다 없으면 제안용 패킷까지 만들고 부족한 연결을 보고한다. 같은 대화에서 역할만 바꿔 하위 세션이나 독립 검토를 가장하지 않는다.
 - 기본은 실행 60분·하루 누적 120분·단일 명령 15분과 문제 하나다. 긴 명령·재시도·리뷰 비용까지 예약한다. 이 직접 호출은 지금 한 사이클을 시작하며 일일 발견 주기를 기다리지 않는다. 세션 밖 자동 실행은 별도 설정이다.
 - [배정과 통합 절차](references/workflow.md)를 읽는다. hostManaged 단위/묶음 워커/리뷰어로 배정된 세션은 오케스트레이터를 새로 만들지 않고 해당 배정을 마친다. 맡김에서 권한 창이 필요한 도구를 우회하지 않는다.
@@ -49,12 +49,12 @@ SETTINGS `usage-measurement`가 true인 시작 대화는 [사용량 절차](../g
 
 측정은 [측정 절차](../gusta-self-improve-remote/references/measurement.md), 반복 실험은 [실험 루프와 도구](../gusta-self-improve-remote/references/experiments.md)를 재사용한다. 측정·기록은 공유하되 통합/발행·완료 조건은 이 로컬 스킬을 따른다. 불확실한 explore와 그 후속은 기존 규칙대로 메인 세션에서 소유하고 작업 묶음에 넣지 않는다.
 
-제출 커밋은 작성자와 다른 세션이 gusta-review-task로 검토한다. 모든 개선은 리뷰하며 묶음은 `--review all`이다. P1/P2가 있으면 수정 후 재제출·재리뷰한다. 검토자가 없으면 현재 브랜치에 코드 통합을 시작하지 않는다.
+제출 커밋은 작성자와 다른 세션이 gusta-review-task로 검토한다. 모든 개선은 리뷰하며 묶음은 `--review all`이다. P1/P2가 있으면 수정 후 재제출·재리뷰한다. 검토자가 없으면 제출 코드를 세션 브랜치에 통합하지 않는다.
 
-## 5. 현재 브랜치에 통합하고 마감
+## 5. 세션 결과 제출과 공동 마감
 
-단위 검사와 독립 리뷰를 통과한 제출물은 오케스트레이터가 관리하는 CLI로 호출한 checkout/브랜치에 통합한다. 최종 후보에서 필수 통합/전체 검사를 한 번 수행하고 실제 통합 SHA·검증 SHA·배정 이력을 보고한다. 후행 관문이 실패하면 완료·push하지 않고 수정 또는 되돌림을 조정한다. 구현 worktree나 별도 작업 브랜치에만 결과를 남기고 로컬 통합이 끝났다고 보고하지 않는다. 최종 관문 뒤 `vibe prune`으로 통합된 단위의 worktree·브랜치·후보 공간을 정리한다. 설정 prune-branches가 false면 CLI가 건너뛰고, 정리되지 않은 것(`kept`)은 parked에 남긴다.
+단위 검사와 독립 리뷰를 통과한 제출물은 전용 세션 브랜치에 모으고 ready로 제출한다. [공유 검증 계약](../gusta-start/references/verification.md)대로 모든 참여 세션이 준비된 고정 후보를 한 소유자가 한 번 검수한다. 호출한 checkout으로 코드를 강제로 되가져오거나 세션 종료마다 전체 스위트를 실행하지 않는다. 실패·영향 범위만 복구하고 유효한 성공은 잇는다. 필수 agent AC가 남으면 waiting-agent의 후보·담당자·증거를 유지하며 capable host가 관찰 후 검수를 반복하지 않고 재개한다. 통합 전인 worktree는 보존하고 실제 land 반영 뒤 `vibe prune`으로 합쳐진 소유 공간만 정리한다.
 
-통합 뒤 반영은 SETTINGS land·land-via·push를 따른다. 조정자의 최종 검증 뒤 `vibe push --verified-commit <SHA>`를 한 번 실행한다. land가 current이고 push가 false면 현재 브랜치의 로컬 커밋까지이고, land-via가 pr이 아니면 PR·GitHub CLI는 필요하지 않다. land가 미정이면 반영하지 않고 parked에 남긴다. 원격 권한이 없으면 로컬 결과와 미발행 상태를 분리한다. 기획 문서의 plan-sync/plan-push는 SETTINGS plan을 따르며 이를 몰래 변경하지 않는다.
+반영은 SETTINGS land·land-via·push와 공유 통합 소유권을 따른다. 한 소유자가 검증된 후보만 반영하며 land가 밖에서 달라졌으면 보류·재조정한다. 이 세션이 ready라는 사실을 원격 land 반영 완료로 보고하지 않는다. land가 current/미정이거나 원격 조정을 확인할 수 없으면 세션 결과·로컬 범위·미발행 상태를 명확히 보고한다. 기획 plan-sync/plan-push는 정한 정책을 유지한다.
 
-기존 reports 골격으로 done=승인 제안·태스크·통합 커밋, decided=오케스트레이터의 선택/기각 이유, parked=사람 판단·권한·미통합, checks=실측/검증/미실행/예산, next=다음 관찰·재개 지점을 남긴다. expert는 범위·수치·SHA·판정, mid는 개선 효과·비용·한계, novice는 달라질 작업 경험과 사람 판단부터 보고한다. 스케줄러가 연결되지 않았다면 자동 재실행을 약속하지 않는다.
+기존 reports 골격으로 done=승인 제안·태스크·통합 커밋, decided=오케스트레이터의 선택/기각 이유, parked=사람 판단·권한·미통합, checks=실측/검증/agent acceptance/미실행/예산, next=다음 관찰·재개 지점을 남긴다. AC는 실제 scenario·steps·expected·observed·evidence·status와 대체 E2E 범위를 보여 주고 사용자에게 누락/잘못된 기준의 피드백을 요청한다. 수동 QA를 떠넘기지 않는다. expert는 범위·수치·SHA·판정, mid는 개선 효과·비용·한계, novice는 달라질 작업 경험과 사람 판단부터 보고한다. 스케줄러가 연결되지 않았다면 자동 재실행을 약속하지 않는다.

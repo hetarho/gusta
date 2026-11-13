@@ -1,4 +1,4 @@
-# 승인한 작업만 현재 브랜치에 반영
+# 승인한 작업을 전용 세션에 모아 공동 통합
 
 ## 역할과 실제 실행 수단
 
@@ -12,15 +12,15 @@
 2. 문서 표기·기획 정본은 기존 FORMAT와 SETTINGS plan을 따른다. 다른 todo를 승인으로 간주하지 않는다.
 3. 승인된 ID만 묶음 `--tasks`에 넣는다. 같은 lane은 전부 승인해야 하고, 범위 밖 선행 태스크는 승인 없이 자동 배정되지 않는다. 필요한 의존 작업을 별도로 제안/승인하거나 해당 작업을 보류한다.
 
-## 호출 브랜치를 통합 대상으로 사용
+## 전용 세션 worktree를 단위 통합 공간으로 사용
 
 아래 명령 앞에는 설치된 `npx @haeram/gusta` 또는 실행기의 실제 cliCommand를 붙인다. 명령의 자리표시자는 확인한 값으로 치환한다.
 
 ```sh
-work start <run> --workspace current --tasks '<approved task IDs>' --review all --push - --workers 2 --task-verify '<ARCH task: affected unit + fast checks>' --verify '<fast integration check>' --group-verify '<integration/e2e/full suite>'
+work start <run> --workspace current --tasks '<approved task IDs>' --review all --push - --workers 2 --task-verify '<ARCH task: affected unit + fast checks>' --verify '<fast integration check>' --group-verify '<final deterministic checks; shared integration owns the full gate>'
 ```
 
-`current`는 호출한 checkout과 **그 브랜치 그대로** 기획·통합 공간으로 채택한다. 워커는 별도 worktree를 배정받는다. `--workers 2`는 기본 구현 슬롯(SKILL 1절)이다 — 생략하면 묶음 기본값 4가 된다.
+`current`는 `vibe session open --kind self-improve`가 반환한 전용 worktree와 세션 브랜치를 뜻한다. 원래 호출한 checkout에서 이 명령을 실행하지 않는다. 워커는 또 다른 배정 worktree를 쓰며 보호 브랜치에서 구현하지 않는다. `--workers 2`는 기본 구현 슬롯이다.
 
 설치된 CLI 도움말에서 `--tasks` 지원을 확인한다. 지원하지 않으면 올바른 버전의 CLI 연결이 필요하다고 보고하고 무제한 큐로 대체하지 않는다.
 
@@ -35,10 +35,10 @@ work start <run> --workspace current --tasks '<approved task IDs>' --review all 
 
 ## 통합 완료와 원격 반영
 
-검사·리뷰된 단위가 실제 호출 브랜치에 들어온 것을 board/HEAD/diff로 확인한다. `work finish`의 조정자 소유 최종 관문을 통과해야 전체 완료다. 묶음 밖 todo는 그대로 남아도 승인 범위가 모두 통합되면 묶음을 마칠 수 있다. 스냅샷에는 승인 범위와 제외된 항목, 검증 커밋이 남는다. 최종 관문이 실패해도 로컬 브랜치에 통합된 진행분이 남을 수 있다.
+검사·리뷰된 단위가 실제 전용 세션 브랜치에 들어온 것을 board/HEAD/diff로 확인한다. `work finish`는 공동 ready/고정 후보 관문에 연결하며 다른 세션이 working이면 각자 전체 검수를 실행하지 않는다. 승인 범위와 제외 항목·후보·검증 SHA를 보존한다. 이 세션의 ready와 전체 land 반영 완료를 구별한다.
 
-현재 브랜치를 채택한 묶음의 완료 응답은 `integrationTarget`으로 실제 경로·브랜치를 알려 준다. 이 호출은 해당 브랜치의 로컬 통합까지 이미 위임했으므로 다시 묻지 않는다. 그 뒤 다른 브랜치로의 반영은 SETTINGS land·push를 따르고(완료 응답의 instruction), 배포는 사용자의 별도 요청(`vibe deploy`)이다. 원격 land를 업데이트하지 않았는데 업데이트했다고 말하지 않는다.
+묶음 응답의 `integrationTarget`은 전용 세션의 실제 경로·브랜치다. 최종 반영은 공유 묶음의 소유권과 SETTINGS land·push를 따르며 배포는 별도 요청이다. 원래 checkout을 전환하거나 원격 land가 바뀌었다고 자동 병합·전체 재검증을 반복하지 않는다. 필수 integration AC는 도구가 있는 owner가 고정 후보에서 수행한 뒤 기존 검수 증거로 이어간다.
 
-긴 측정 전에 생산 명령이 원시 수치·입력/출력 해시를 실행기 artifact에 저장하도록 준비한다. `work finish`의 성공 기록은 검사 명령/시각/결과의 영수증이며 원시 측정 stdout을 보존하는 저장소가 아니다. 근거를 잃었으면 그 공백을 보고하고 예산 안의 보완만 수행하며, 긴 실행을 자동으로 반복하지 않는다. 보고서만 추가된 커밋은 기존 최종 검증을 유지하므로 마감 보고 때문에 전체 검사를 다시 돌리지 않는다.
+긴 측정 전에 생산 명령이 원시 수치·입력/출력 해시를 실행기 artifact에 저장하도록 준비한다. `work finish`의 성공 기록은 검사 명령/시각/결과의 영수증이며 원시 측정 stdout을 보존하는 저장소가 아니다. 근거를 잃었으면 그 공백을 보고하고 예산 안의 보완만 수행하며, 긴 실행을 자동으로 반복하지 않는다. 보고서 변경도 실제 검사 입력인지 확인하고 입력이 같은 기존 성공만 재사용한다. 마감 보고라는 이유만으로 증거를 버리거나 무조건 유지하지 않는다.
 
 대기는 완료 이벤트나 실행기 대기 기능으로 처리한다. 모델이 sleep/상태 조회를 반복하지 않는다. 시간·시도 한도를 넘으면 로그·진행분·승인/검토 상태와 다음 재개 조건을 보존한다.

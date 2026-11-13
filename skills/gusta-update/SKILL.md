@@ -18,11 +18,13 @@ description: >-
 
 ## 2. 버전과 프로젝트 규칙
 - `gusta outdated`로 installed(lock 파일), latest, `changes`(installed 이후 CHANGELOG 항목)를 본다. `error`가 있으면 레지스트리 조회 실패를 알리고 멈춘다.
+- 테스트 감사도 버전과 무관한 필수 단계다. `upgrade-context.testPolicy`의 후보·원시 경로/줄·미확인을 읽고 실제 스크립트 호출망, 테스트 설정과 대표 테스트, ARCH 계획, runtime timings를 대조한다. inventory complete나 후보 없음만으로 의미 검토 완료라 하지 않는다. 결과는 유지/축소/agent 대체/CI 이동/미확인으로 구분하고 중복·지원 밖 브라우저·소스/구현 추종 테스트와 대체 증거·제거될 비용을 남긴다. [감사 기준](references/project-rules.md)을 따른다.
 - 설치·이관 전에 [프로젝트 규칙 대조](references/project-rules.md)를 수행한다. `gusta upgrade-context`의 모든 페이지와 적용 지침·참조를 조사하고, 대조 범위·제외 이유·미확인 항목을 남긴다. 최신 버전이거나 알려진 설정 키가 검색되지 않아도 이 조사를 생략하지 않는다.
 - package.json 의존성에 @haeram/gusta가 있으면 그 패키지 관리자로 올린다(예: `npm i -D @haeram/gusta@latest`, lockfile 포함).
 - `outdated`가 false여도 `gusta migrate --dry-run`과 규칙 대조를 끝낸다. 설치 갱신이 불필요하면 건너뛰되 이관·정합성 확인 전에는 완료로 보고하지 않는다.
 
 ## 3. 갱신과 이관
+- 쓰기·커밋은 보호 브랜치가 아닌 하위 브랜치에서 진행한다. 원래 사용자 변경을 보존하며 다른 활성 세션이 읽는 설치를 변경하지 않는다.
 - `gusta install --dry-run`을 실행한다. 충돌(로컬에서 고친 스킬 파일)이 있으면 목록을 보여 주고, `--force`로 덮어쓸지 묻는다. 그다음 `gusta install`, `gusta agent-block`, `gusta check` 순서로 실행한다.
 - `gusta agent-block`은 SETTINGS `agent-block`이 true일 때만 CLAUDE.md·AGENTS.md의 마커 사이 블록을 새 버전으로 바꾼다(아니면 건너뛴다). broken이면 아무것도 쓰지 않는다 — 보고된 파일·줄을 보여 주고 고칠 방법을 승인받아 마커만 정리한 뒤 다시 실행한다.
 - `gusta migrate --dry-run`으로 적용될 이관(`applied`)을 보여 준다. expert에게는 id와 파일을, novice에게는 무엇이 어디로 옮겨지는지 알려 준다. 그다음 `gusta migrate`를 실행한다. 이관은 여러 번·여러 checkout에서 실행해도 결과가 같다.
@@ -41,5 +43,6 @@ description: >-
 - 다음을 보고한다.
   - 버전(from → to)과 적용된 이관
   - 조사한 문서·범위와 제외·미확인 항목, 해결한 충돌과 남은 판단, 보존한 프로젝트 규칙
+  - 테스트 감사 처분·근거·대체 AC·제거/이동 비용·남은 미확인과 승인/구현할 정리 항목
   - 새로 정한 설정과 lint 결과
   - `changes`를 요약한 "달라진 동작"(cfg.level에 맞춰서)

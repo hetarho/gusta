@@ -17,5 +17,6 @@ change. A missing decision does not authorize silently choosing new product rule
 Use the existing work runtime for ownership and the host's completion protocol.
 A built-in headless worker returns edits; its runner commits/submits. A native
 worker follows its explicit commit/submit assignment. Do not duplicate host steps.
+For agent acceptance, use the assigned primary method and replace the named E2E scope; do not add a duplicate suite. Return actual scenario/steps/expected/observed/evidence/status. Without computer-use tools, hand off integration-stage not-run with reason and host owner; never invent a pass or add E2E fallback.
 After this assignment, return the actual artifact/commit and verification evidence;
 do not continue a generic work-next loop. Another session reviews your submission.
