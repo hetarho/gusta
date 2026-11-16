@@ -11,7 +11,6 @@ import { remoteEnv, REMOTE_TIMEOUT_MS } from './coord-branch.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { validateAgentAcceptance, summarizeAgentAcceptance, mergeAgentAcceptance } from './agent-acceptance.mjs'
-import { improvingGate } from './gate-ledger.mjs'
 
 const execute = promisify(execFile)
 const FILE = 'INTEGRATION.json'
@@ -24,10 +23,6 @@ const validRef = (name) => typeof name === 'string' && /^[A-Za-z0-9][\w./-]*$/.t
 const validHead = (head) => /^[0-9a-f]{40,64}$/.test(head ?? '')
 const wait = (reason, extra = {}) => ({ ok: false, waiting: true, reason, ...extra })
 const participantKey = ({ owner, tag, branch }) => createHash('sha256').update(`${owner}\n${tag}\n${branch}`).digest('hex').slice(0, 24)
-const failureProof = (checks) => ({ plan: JSON.stringify(checks.map((entry) => [entry.command, entry.checks?.map((check) => [check.id, check.command])])), evidence: 'checks-or-commands',
-  failureSetComplete: checks.every((entry) => !entry.stale && !entry.timedOut && !entry.cancelled && (entry.checks ? entry.failureSetComplete === true : Number.isInteger(entry.exitCode))),
-  identities: checks.flatMap((entry) => entry.checks ? entry.checks.filter((check) => !check.ok).map((check) => `check:${check.id}`) : entry.ok ? [] : [`command:${entry.command}`]),
-  timedOut: checks.some((entry) => entry.timedOut), stale: checks.some((entry) => entry.stale) })
 
 function parse(text) {
   let value
@@ -177,8 +172,7 @@ export async function openIntegration(context, injected = {}) {
       return { id, status: entry.status }
     })
   }
-  async function claim({ tag, active = [], deadline = null, maxAttempts = 3 } = {}) {
-    if (!Number.isInteger(Number(maxAttempts)) || Number(maxAttempts) < 2 || Number(maxAttempts) > 5) return wait('invalid-integration-attempt-limit')
+  async function claim({ tag, active = [], deadline = null } = {}) {
     const seen = await read()
     if (!seen.ok) return seen
     const pending = Object.values(seen.state.participants).filter((entry) => !terminal.has(entry.status))
@@ -214,7 +208,7 @@ export async function openIntegration(context, injected = {}) {
       if (!cohort.length) return wait('no-ready-sessions')
       if (cohort.some((entry) => !pending.some((known) => known.id === entry.id && known.head === entry.head))) return wait('participants-changed')
       if (await remoteLand(land) !== base) return wait('land-base-moved', { automaticRecheck: false })
-      state.gate = { token: uuid(), owner: tag, via: context.branches.via === 'pr' || cohort.some((entry) => entry.publication === 'pr') ? 'pr' : 'merge', executor: { host: os.hostname(), pid: process.pid }, phase: 'preparing', land, base, cohort: cohort.map(({ id, tag, branch, head, agentChecks, verificationCommands, publication }) => ({ id, tag, branch, head, agentChecks, verificationCommands, publication })), at: at.now, deadline, maxAttempts: Number(maxAttempts), attempts: 1, candidate: null, checks: [], agentChecks: [], rounds: [] }
+      state.gate = { token: uuid(), owner: tag, via: context.branches.via === 'pr' || cohort.some((entry) => entry.publication === 'pr') ? 'pr' : 'merge', executor: { host: os.hostname(), pid: process.pid }, phase: 'preparing', land, base, cohort: cohort.map(({ id, tag, branch, head, agentChecks, verificationCommands, publication }) => ({ id, tag, branch, head, agentChecks, verificationCommands, publication })), at: at.now, deadline, candidate: null, checks: [], agentChecks: [], rounds: [] }
       return { gate: state.gate }
     })
   }
@@ -251,7 +245,6 @@ export async function openIntegration(context, injected = {}) {
     return mutateGate(token, (gate) => {
       if (gate.phase !== 'checking') return wait('integration-already-checked', { gate, automaticRecheck: false })
       gate.checks = receipt
-      if (gate.rounds.length && receipt.some((entry) => !entry.ok)) gate.retryAllowed = improvingGate(failureProof(gate.rounds.at(-1).checks), failureProof(receipt))
       gate.rounds = [...gate.rounds, { candidate: gate.candidate, checks: receipt, at: now() }]
       gate.agentChecks = validateAgentAcceptance(agentChecks)
       gate.ciCommands = ciCommands
@@ -265,12 +258,10 @@ export async function openIntegration(context, injected = {}) {
     if ((await git(checkout, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim() !== common) return wait('repair-workspace-mismatch')
     return mutateGate(token, async (gate) => {
       if (gate.phase !== 'failed') return wait('repair-requires-failed-receipt', { gate })
-      if (gate.attempts >= (gate.maxAttempts ?? 3)) return wait('integration-attempt-limit', { attempts: gate.attempts, gate })
-      if (gate.retryAllowed === false) return wait('failure-set-not-improving', { gate })
       if (gate.deadline && Date.parse(gate.deadline) <= Date.parse(now())) return wait('integration-deadline', { gate })
       if (next === gate.candidate || !await ancestor(gate.candidate, next)) return wait('repair-needs-descendant-change', { gate })
       gate.candidate = next; gate.path = checkout; gate.branch = (await git(checkout, ['symbolic-ref', '--short', 'HEAD'])).trim()
-      gate.phase = 'checking'; gate.attempts++; gate.executor = { host: os.hostname(), pid: process.pid }
+      gate.phase = 'checking'; gate.executor = { host: os.hostname(), pid: process.pid }
       return { gate }
     })
   }

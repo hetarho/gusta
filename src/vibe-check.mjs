@@ -10,7 +10,6 @@ import { SkillPackageError } from './errors.mjs'
 import { sections, tableRows, SESSION_TAG } from './spec-format.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { delegatedCheckout } from './work-policy.mjs'
-import { GATE_CAP, gateKey, gateCount, gateView, readGates, recordGateRun, resetGate } from './gate-ledger.mjs'
 import { readVerificationPlan, fingerprintVerificationCheck } from './verification-plan.mjs'
 import { vibeSession } from './vibe-session.mjs'
 import { assertIntegrationCandidate } from './integration-gate.mjs'
@@ -18,36 +17,24 @@ import { assertIntegrationCandidate } from './integration-gate.mjs'
 // A task check is the affected unit tests: minutes, not the suite. Longer runs are flagged.
 export const TASK_SLOW_MS = 5 * 60000
 const normalized = (command) => command.trim().replace(/\s+/g, ' ')
-const park = (tag) => `vibe inbox add --kind parked${tag ? ` --tag ${tag}` : ''} --text "<remaining gate failures with their log paths>"`
 const OUTSIDE = 'A problem found outside this failure is not fixed now: put it in the report limits and vibe inbox add --kind suggest.'
 
 // What a failed full gate leaves the coordinator: the failed command as run (its inner steps are
-// the project's, so only the log can name one), the narrow re-check, and the rounds left.
-function failureNext(result, command, gate, tag) {
+// the project's, so only the log can name one) and the narrow re-check.
+function failureNext(result, command, tag) {
   const what = result.stale ? 'Code or HEAD changed while the gate ran, so it verified nothing: commit the candidate first and change nothing while a gate runs.'
     : result.timedOut ? `Timed out: ${command}. Log: ${result.log}`
     : result.failedTests.length ? `Failed (exit ${result.exitCode}): ${command}. Failing lines: failedTests. Log: ${result.log}`
     : `Failed (exit ${result.exitCode}): ${command}. No failing step identified; read the log: ${result.log}`
-  if (!gate.left) return [what, `Gate cap reached (${gate.failures}/${gate.cap} rounds failed): do not run the full gate again. Record the remaining failures in the report and park them in one call: ${park(tag)}; then stop.`, OUTSIDE]
   return [what, `Fix only what failed and confirm it first with vibe check --tier task --diff-base ${result.commit} -- <the affected tests>; reproduce a build or e2e failure with --heavy, one run at a time and never alongside another check.`,
-    result.plan ? `Resume vibe check --tier ${result.scope.TIER} --plan ${JSON.stringify(result.plan.source)}${tag ? ` --tag ${tag}` : ''}; unchanged successful checks are reused. ${gate.left} failed round(s) left of ${gate.cap}.`
-      : `Recheck the failed and affected scope first. Preserve successful evidence; request another full gate only when its actual inputs or coverage changed. ${gate.left} failed round(s) left of ${gate.cap}.`, OUTSIDE]
+    result.plan ? `Resume vibe check --tier ${result.scope.TIER} --plan ${JSON.stringify(result.plan.source)}${tag ? ` --tag ${tag}` : ''}; unchanged successful checks are reused.`
+      : 'Recheck the failed and affected scope first. Preserve successful evidence; request another full gate only when its actual inputs or coverage changed.', OUTSIDE]
 }
 
 function sessionTag(options) {
   const tag = options.tag ?? options.env?.GUSTA_VIBE_TAG ?? process.env.GUSTA_VIBE_TAG
   if (tag !== undefined && !SESSION_TAG.test(tag)) throw new SkillPackageError('--tag에는 영숫자 2-8자의 세션 tag가 필요합니다.')
   return tag
-}
-
-// The person's way to lift the cap after deciding what to do; unattended instructions never use it.
-export async function resetVibeGate(options = {}, command) {
-  if (command?.trim()) throw new SkillPackageError('--reset-gate는 검사 명령 없이 씁니다: vibe check --reset-gate [--tag <tag>]')
-  const workspace = await inspectWorkspace(options)
-  if (!workspace.git) throw new SkillPackageError('Git checkout이 필요합니다.')
-  const key = gateKey({ tag: sessionTag(options), branch: workspace.git.branch, root: workspace.git.root })
-  const previous = await resetGate(runtimeRoot(workspace), key)
-  return { schemaVersion: 1, ok: true, exitCode: 0, reset: key, previous: { attempts: previous.attempts, failures: previous.failures, cap: GATE_CAP } }
 }
 
 export async function runVibeCheck(options = {}, command, injected = {}) {
@@ -70,10 +57,7 @@ export async function runVibeCheck(options = {}, command, injected = {}) {
   const label = plan ? `verification-plan:${plan.source}#${scope.TIER}` : command
   const env = { ...process.env, ...options.env, ...Object.fromEntries(Object.entries(scope).map(([key, value]) => [`GUSTA_${key}`, value])) }
   const final = ['batch', 'group'].includes(scope.TIER)
-  // Every full gate counts against its session's cap (gate-ledger.mjs). The loop host passes
-  // 'record' — it stops on its own counter — and design verification, a run the person asked for, false.
   const tag = final ? sessionTag(options) : undefined
-  const ledger = final && options.gateLedger !== false ? gateKey({ tag, branch: workspace.git.branch, root }) : null
   if (final && !options.allowFinal) {
     const delegated = (options.env?.GUSTA_VIBE_UNIT ?? process.env.GUSTA_VIBE_UNIT) === '1' || delegatedCheckout(await readRuntime(runtime), root)
     if (delegated) throw new SkillPackageError('최종 검증은 조정자/호스트가 실행합니다. 워커·리뷰어는 태스크 검사만 실행하세요. 사용자가 별도 실행을 명시한 경우만 --allow-final을 사용하세요.')
@@ -100,15 +84,6 @@ export async function runVibeCheck(options = {}, command, injected = {}) {
         : { key: `${checkKey(tree, check.command, scope)}\u0000${JSON.stringify(scope)}` }
       prepared.push({ check, identity, hit: !options.noCache && await cachedPass(runtime, identity.key) })
     }
-    const counted = ledger ? gateCount((await readGates(runtime)).entries[ledger]) : null
-    // A cache hit runs nothing, so it is not an attempt and is never refused.
-    const allCached = prepared.every(({ hit }) => hit)
-    if (!allCached && ledger && options.gateLedger !== 'record' && counted.failures >= GATE_CAP) {
-      return { schemaVersion: 1, ok: false, exitCode: 1, cached: false, refused: 'gate-cap', key: ledger, attempts: counted.attempts, failures: counted.failures, cap: GATE_CAP, scope, commit, tree,
-        ...(plan ? { plan: { source: plan.source, checks: checks.map(({ id }) => id) }, checks: prepared.map(({ check, hit }) => ({ id: check.id, command: check.command, status: hit ? 'cached' : 'not-run', ok: Boolean(hit), cached: Boolean(hit) })), failureSetComplete: false } : {}),
-        lastFailure: counted.last ? { commit: counted.last.commit, failed: counted.last.commands.filter((step) => !step.ok) } : null,
-        next: [`${counted.failures} of ${GATE_CAP} full-gate rounds failed for ${ledger}; this run was refused and the command did not run.`, `Record the remaining failures in the report and park them in one call: ${park(tag)}; then stop.`] }
-    }
     const directory = path.join(runtime, 'logs')
     await mkdir(directory, { recursive: true })
     const start = Date.now()
@@ -131,11 +106,6 @@ export async function runVibeCheck(options = {}, command, injected = {}) {
       if (hit) {
         if (plan) observed.set(check.id, identity.key)
         results.push({ ...metadata, ok: true, status: 'cached', exitCode: 0, cached: true, log: hit.log ?? null, tail: [], failedTests: [], ms: 0 })
-        continue
-      }
-      if (ledger && options.gateLedger !== 'record' && counted.failures >= GATE_CAP) {
-        stopped = 'gate-cap'
-        results.push({ ...metadata, ok: false, status: 'not-run', cached: false, reason: stopped })
         continue
       }
       const remaining = timeout - (Date.now() - start)
@@ -187,16 +157,11 @@ export async function runVibeCheck(options = {}, command, injected = {}) {
     const ok = !cancelled && results.every((entry) => entry.ok), ms = Date.now() - start
     const result = { schemaVersion: 1, ok, exitCode: ok ? 0 : first.exitCode || 1, cached: results.every((entry) => entry.cached), timedOut, cancelled, stale, ms, scope, commit, tree,
       log: first.log ?? null, tail: first.tail ?? [], failedTests: results.flatMap((entry) => entry.failedTests ?? []).slice(0, 20),
-      failureSetComplete: Boolean(plan && !cancelled && !timedOut && !stale && results.every((entry) => ['passed', 'failed', 'cached'].includes(entry.status))),
       ...(plan ? { plan: { source: plan.source, checks: checks.map(({ id }) => id) }, checks: results, failedCheckIds: results.filter((entry) => entry.status === 'failed').map(({ id }) => id) } : {}),
-      ...(stopped === 'gate-cap' ? { refused: 'gate-cap', key: ledger, attempts: counted.attempts, failures: counted.failures, cap: GATE_CAP } : {}),
       ...(first.slow ? { slow: true, hint: first.hint } : {}), ...(first.cleanup ? { cleanup: first.cleanup } : {}) }
-    // A run stopped from outside verified nothing and is not charged.
-    if (!ledger || cancelled || stopped === 'gate-cap') return result
-    const gate = gateView(ledger, allCached ? counted : await recordGateRun(runtime, ledger, { tree, commit, command: label, ok: result.ok, log: result.log }))
-    // The loop reports its own counter and queues its own repair.
-    if (options.gateLedger === 'record') return result
-    return { ...result, gate, ...(result.ok ? {} : { next: failureNext(result, label, gate, tag) }) }
+    // The loop and the shared integration queue their own repair.
+    if (!final || result.ok || cancelled || options.host) return result
+    return { ...result, next: failureNext(result, label, tag) }
   }
   // Read the tree and cache only after acquiring the lock: a second caller reuses
   // the first caller's receipt instead of queuing a duplicate browser run.

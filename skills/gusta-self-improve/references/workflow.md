@@ -22,8 +22,6 @@ work start <run> --workspace current --tasks '<approved task IDs>' --review all 
 
 `current`는 `vibe session open --kind self-improve`가 반환한 전용 worktree와 세션 브랜치를 뜻한다. 원래 호출한 checkout에서 이 명령을 실행하지 않는다. 워커는 또 다른 배정 worktree를 쓰며 보호 브랜치에서 구현하지 않는다. `--workers 2`는 기본 구현 슬롯이다.
 
-설치된 CLI 도움말에서 `--tasks` 지원을 확인한다. 지원하지 않으면 올바른 버전의 CLI 연결이 필요하다고 보고하고 무제한 큐로 대체하지 않는다.
-
 기존 묶음이 이 checkout을 이미 소유하면 새 이름으로 중복 시작하지 않는다. 이 로컬 개선 묶음이고 기존 실행이 끝난 것이 확인되면 기존 승인 ID/완료 이력을 보존해 `work configure --work <run> --tasks '<old and newly approved IDs>' --review all --push -`로 확장한다. 무관한 활성 묶음이면 침범하지 않고 보고한다. 진행/통합된 ID를 범위에서 제거해 이력을 숨길 수 없다.
 
 ## 구현과 리뷰 실행

@@ -10,7 +10,7 @@ const DECISION_ID = /^([A-Z]{2,6})-(\d+)$/
 const DOMAIN_ID = /^[A-Z]{2,6}$/
 const SINCE_ID = /^([A-Z]{2,6})@(\d+)$/
 const CHG_LINE = /^-\s+r(\d+)\b/
-// Scope of a cited decision's domain. domain (default, and what pre-0.7 tasks were written for):
+// Scope of a cited decision's domain. domain (default, safe whatever a task cites):
 // the current rules of every cited domain, whole. cited: only the cited blocks and what they
 // reference — precise, and safe only when tasks cite every decision they must obey.
 const SCOPES = ['domain', 'cited']
@@ -214,7 +214,7 @@ export async function assembleBrief({ source, roots, deep = false, always: alway
     }
   }
 
-  // cited decisions keep the order the old brief used: domain of first citation, then citation order
+  // cited decisions are ordered by domain of first citation, then citation order
   const citedIds = [...new Set(tasks.flatMap((task) => task.ssot))]
   const cited = []
   for (const domain of [...new Set(citedIds.map((ref) => ref.split('-')[0]))]) cited.push(...citedIds.filter((ref) => ref.startsWith(`${domain}-`)))

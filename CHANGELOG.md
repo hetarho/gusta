@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.17.3
+
+Released: 2026-11-16.
+
+- Final gates run whenever they are asked: `vibe check --tier batch|group`
+  never refuses for earlier failures, and a failure still returns the failed
+  commands and a targeted fix. `vibe loop` and the shared integration keep
+  queuing repairs for a failed gate within the deadline, closing reserve and
+  unit limits. `vibe check --reset-gate`, `--max-gate-attempts`, the runtime
+  `gates.json` record and the receipt field `failureSetComplete` are removed.
+- Guidance describes current behavior only. The closing reserve is documented
+  as it is computed (one full gate, one repair unit and CI), and
+  `vibe design verify` as running task checks while batch and CI wait for the
+  shared integration.
+- Upgrade with `/gusta-update`.
+
 ## 0.17.2
 
 Released: 2026-11-14.

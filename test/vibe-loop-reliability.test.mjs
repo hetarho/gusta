@@ -4,7 +4,6 @@ import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fixture, git, archiveTask } from './helpers/vibe-fixture.mjs'
-import { improvingGate } from '../src/vibe-loop.mjs'
 
 
 const options = (root) => ({ targetRoot: root, tag: 'reliable', provider: 'codex', maxUnits: 8, pushEachUnit: true })
@@ -19,9 +18,9 @@ async function publishing(root) {
   await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n- push: true\n')
   await git(root, 'add', 'spec/SETTINGS.md'); await git(root, 'commit', '-qm', 'publication settings')
 }
-const failure = (ids, extra = {}) => ({ ok: false, failedTests: ids, failureSetComplete: true, ms: 100, ...extra })
+const failure = (ids, extra = {}) => ({ ok: false, failedTests: ids, ms: 100, ...extra })
 
-test('strict complete failure identity subsets earn a third attempt, then successful publication', async (t) => {
+test('a repaired final gate publishes after earlier failed rounds', async (t) => {
   const { root } = await fixture(t, 1); await publishing(root)
   let checks = 0, units = 0, pushes = 0
   const result = await vibeLoop(options(root), { preflight: passed, sync: passed,
@@ -36,70 +35,37 @@ test('strict complete failure identity subsets earn a third attempt, then succes
   assert.equal(terminal.objectiveComplete, false); assert.equal(terminal.delivery, 'recorded-locally')
 })
 
-for (const [name, second, expected] of [
-  ['unchanged', failure(['FAIL alpha', 'FAIL beta']), 'failure-set-not-improving'],
-  ['changed identities', failure(['FAIL new']), 'failure-set-not-improving'],
-  ['growing', failure(['FAIL alpha', 'FAIL beta', 'FAIL gamma']), 'failure-set-not-improving'],
-  ['unknown', failure([], { failureSetComplete: false }), 'failure-set-not-improving'],
-  ['truncated', failure(['FAIL alpha'], { failureSetComplete: false }), 'failure-set-not-improving'],
-  ['timed out', failure(['FAIL alpha'], { timedOut: true }), 'failure-set-not-improving'],
-]) test(`${name} failures do not earn a third attempt and leave actionable continuation`, async (t) => {
+test('failed final gates keep queuing repairs past three failures until the candidate passes', async (t) => {
   const { root } = await fixture(t, 1); await publishing(root)
-  let checks = 0, units = 0
-  const result = await vibeLoop(options(root), { preflight: passed, sync: passed,
-    execute: async (config, job) => complete(root, job.brief.taskId, ++units),
-    check: async () => ++checks === 1 ? failure(['FAIL alpha', 'FAIL beta']) : second,
-    push: () => assert.fail('failed code cannot publish'),
-  })
-  assert.equal(checks, 2); assert.equal(result.ok, false); assert.equal(result.gate.stopReason, expected)
-  assert.equal(result.continuation.recoverable, true); assert.equal(result.continuation.hardStop, false)
-  assert.equal(result.continuation.pendingRepairTasks.length, 1); assert.equal(result.codePushed, false)
-  assert.match(await readFile(path.join(root, result.report), 'utf8'), /2 rounds, 2 failed, failed-round cap 3; pending repair: T003; code pushed: false/)
-})
-
-test('shrinking failures still obey the global failure cap', async (t) => {
-  const { root } = await fixture(t, 1); await publishing(root)
-  let checks = 0, units = 0
-  const result = await vibeLoop(options(root), { preflight: passed, sync: passed,
-    execute: async (config, job) => complete(root, job.brief.taskId, ++units),
-    check: async () => failure(['FAIL alpha', 'FAIL beta', 'FAIL gamma', 'FAIL delta'].slice(++checks)),
-    push: () => assert.fail('failed code cannot publish'),
-  })
-  assert.equal(checks, 3); assert.equal(result.gate.failures, 3); assert.equal(result.gate.stopReason, 'attempt-limit')
-  assert.equal(result.continuation.pendingRepairTasks[0], 'T004')
-})
-
-test('complete configured-command identity sets support retries without trusting human output, and cap failed rounds separately', async (t) => {
-  const { root } = await fixture(t); await publishing(root)
   let checks = 0, units = 0, pushes = 0
   const seen = []
   const result = await vibeLoop({ ...options(root), verify: ['check alpha', 'check beta'] }, { preflight: passed, sync: passed,
     execute: async (config, job) => complete(root, job.brief.taskId, ++units),
     check: async (config, command) => {
       const round = Math.floor(checks++ / 2); seen.push([round, command])
-      // One successful regular round, then 2 failed commands -> 1 failed command -> still 1.
-      const ok = round === 0 || (round >= 2 && command === 'check alpha')
-      return { ok, exitCode: ok ? 0 : 1, failedTests: ['FAIL repeated diagnostic title'], failureSetComplete: false, ms: 10 }
+      // The same failure four rounds in a row, then a passing candidate.
+      const ok = command === 'check alpha' || round >= 4
+      return { ok, exitCode: ok ? 0 : 1, failedTests: ok ? [] : ['FAIL beta'], ms: 10 }
     },
     push: async () => { pushes++; return { ok: true, pushed: await git(root, 'rev-parse', 'HEAD') } }, ci: async () => ({ ok: true, outcome: 'success' }),
   })
-  assert.equal(result.ok, false); assert.equal(pushes, 1)
-  assert.equal(checks, 8); assert.equal(result.gate.attempts, 4); assert.equal(result.gate.failures, 3)
-  assert.equal(result.gate.maxFailedAttempts, 3); assert.equal(result.gate.stopReason, 'attempt-limit')
-  assert.equal(result.gate.evidence, 'commands'); assert.deepEqual(result.gate.failedCommands, [{ index: 1, command: 'check beta' }])
-  assert.deepEqual(seen, Array.from({ length: 4 }, (_, n) => [[n, 'check alpha'], [n, 'check beta']]).flat())
+  assert.equal(result.ok, true, result.error); assert.ok(pushes)
+  assert.equal(units, 5); assert.equal(result.gate.attempts, 5); assert.equal(result.gate.failures, 4)
+  assert.deepEqual(seen, Array.from({ length: 5 }, (_, n) => [[n, 'check alpha'], [n, 'check beta']]).flat())
 })
 
-test('an improving failure set cannot spend the final verification time twice', async (t) => {
+test('repairs after a failed gate run until the deadline, which ends the loop without publishing', async (t) => {
   const { root } = await fixture(t, 1); await publishing(root)
   const start = Date.now(); let now = start, checks = 0, units = 0
   const result = await vibeLoop({ ...options(root), maxHours: 2, timeoutMs: 60000 }, { preflight: passed, sync: passed, now: () => now,
-    execute: async (config, job) => complete(root, job.brief.taskId, ++units),
-    check: async () => { checks++; if (checks === 2) now = start + 119 * 60000; return failure(checks === 1 ? ['FAIL alpha', 'FAIL beta'] : ['FAIL alpha'], { ms: 30000 }) },
+    // Each unit takes 70 minutes: the repair after the first failed gate ends past the deadline.
+    execute: async (config, job) => { now += 70 * 60000; return complete(root, job.brief.taskId, ++units) },
+    check: async () => { checks++; return failure(['FAIL alpha'], { ms: 30000 }) },
     push: () => assert.fail('failed code cannot publish'),
   })
-  assert.equal(checks, 2); assert.equal(result.gate.stopReason, 'insufficient-time')
+  assert.deepEqual([checks, units, result.reason, result.codePushed], [1, 2, 'max-hours', false])
   assert.equal(result.continuation.deadline, new Date(start + 2 * 3600000).toISOString())
+  assert.match(await readFile(path.join(root, result.report), 'utf8'), /verification: 1 rounds, 1 failed; pending repair: T\d+; code pushed: false/)
 })
 
 test('live deadline and reserve apply at the next boundary in the same host with exact receipt', async (t) => {
@@ -154,18 +120,10 @@ test('deadline options require an explicit timezone and preserve local-only noti
   assert.equal(plan.notification.hookConfigured, false); assert.equal(plan.notification.externalDelivered, false)
 })
 
-test('the real checker marks bounded/truncated failure captures unsafe for adaptive retries', async (t) => {
+test('the real checker keeps failing lines, bounded to twenty', async (t) => {
   const { root } = await fixture(t)
   const normal = await runVibeCheck({ targetRoot: root }, `node -e 'console.log("not ok 12 - alpha");process.exit(1)'`)
-  assert.deepEqual(normal.failedTests, ['not ok 12 - alpha']); assert.equal(normal.failureSetComplete, false)
+  assert.deepEqual(normal.failedTests, ['not ok 12 - alpha'])
   const many = await runVibeCheck({ targetRoot: root }, `node -e 'for(let n=0;n<21;n++)console.log("FAIL case "+n);process.exit(1)'`)
-  assert.equal(many.failedTests.length, 20); assert.equal(many.failureSetComplete, false)
-  const before = { command: 'check', ...normal }
-  assert.equal(improvingGate(before, { ...before, failedTests: [] }), false)
-  assert.equal(improvingGate({ ...before, failedTests: ['FAIL alpha', 'FAIL beta'] }, { ...before, command: 'different', failedTests: ['FAIL alpha'] }), false)
-  for (const output of ['FAIL known\\nunknown runner error', 'FAIL duplicate\\nFAIL duplicate', '# tests 2\\n# pass 2\\n# fail 0']) {
-    const checked = await runVibeCheck({ targetRoot: root }, `node -e 'console.log("${output}");process.exit(1)'`)
-    assert.equal(checked.failureSetComplete, false)
-  }
-  assert.equal(improvingGate({ command: 'check', failureSetComplete: true, failedTests: ['FAIL same', 'FAIL same'] }, { command: 'check', failureSetComplete: true, failedTests: ['FAIL same'] }), false)
+  assert.equal(many.failedTests.length, 20)
 })

@@ -447,7 +447,8 @@ async function assessRisk(context, group, attempt, current, targetCommit) {
 // Everything a worker needs before its first edit, so it does not rediscover it by reading:
 // the unit's task files and the decision blocks they need (cfg brief scope, requires, referrers, global rules), as of the
 // fixed group-branch commit, plus the stored verification commands and any correction or
-// coordinator note. The first fields keep their pre-0.7 meaning; the rest come from assembleBrief.
+// coordinator note. The named fields lead (verify from the group, correction and directive from
+// the attempt); everything else passes through from assembleBrief.
 export async function workBrief(options) {
   const context = await repository(options)
   const state = await readRuntime(context.root)
@@ -601,7 +602,7 @@ async function claimTask(options, next = false, given = null) {
   if (!next && group.taskScope && !group.taskScope.includes(options.task)) fail('승인 범위 밖 태스크입니다. 오케스트레이터의 승인 뒤 범위를 갱신하세요.')
   // A claim-next the group would refuse anyway answers before reading the board. The transaction
   // judges the live state again, so a slot freed meanwhile is still taken by the next call. A refusal
-  // for capacity, owner-busy, a pending correction or backpressure therefore no longer reports plan,
+  // for capacity, owner-busy, a pending correction or backpressure therefore does not report plan,
   // scope or --workspace errors: they surface at the next claim that can take work, and `work next`
   // reports wait meanwhile.
   const refused = next ? claimRefusal(initial, group, options.owner, next) : null

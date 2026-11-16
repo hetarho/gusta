@@ -24,7 +24,7 @@
 그 밖: 커밋만         land: current
 ```
 
-구현은 항상 보호된 land·deploy·plan·기본 브랜치 밖의 하위 브랜치에서 합니다. `/gusta-start`와 두 self-improve 경로는 `vibe session open`이 만든 전용 linked worktree/세션 브랜치를 쓰며, 원래 checkout과 사용자 변경은 그대로 둡니다. 결과를 ready로 제출한 뒤 공유 통합 묶음의 한 소유자가 고정 후보를 검수하고 SETTINGS대로 반영합니다. 밖에서 land가 바뀌면 자동 병합·전체 검수 초기화 대신 보류·재조정합니다. PR 전략이면 검증된 후보 브랜치로 PR을 엽니다. `vibe deploy`는 deploy 브랜치를 land의 검증된 커밋으로 fast-forward만 하고, deploy에 land에 없는 커밋(핫픽스 등)이 있으면 거절합니다. 그 커밋을 land에 합쳐 검증한 뒤 다시 배포합니다.
+구현은 항상 보호된 land·deploy·plan·기본 브랜치 밖의 하위 브랜치에서 합니다. `/gusta-start`와 두 self-improve 경로는 `vibe session open`이 만든 전용 linked worktree/세션 브랜치를 쓰며, 원래 checkout과 사용자 변경은 그대로 둡니다. 결과를 ready로 제출한 뒤 공유 통합 묶음의 한 소유자가 고정 후보를 검수하고 SETTINGS대로 반영합니다. 밖에서 land가 바뀌면 반영을 보류하고 재조정합니다. PR 전략이면 검증된 후보 브랜치로 PR을 엽니다. `vibe deploy`는 deploy 브랜치를 land의 검증된 커밋으로 fast-forward만 하고, deploy에 land에 없는 커밋(핫픽스 등)이 있으면 거절합니다. 그 커밋을 land에 합쳐 검증한 뒤 다시 배포합니다.
 
 기획 문서는 예외입니다. `plan` 브랜치에서 `vibe plan-sync`로 최신을 합친 뒤 기획하고, spec/만 담은 기획 커밋을 `vibe plan-push`로 그 브랜치에 바로 올립니다(태스크 ID 충돌이면 거절). 명령 목록은 [CLI](cli.md#cli-명령)에 있습니다.
 
@@ -58,7 +58,7 @@
 ## 검증과 push
 
 - **태스크마다**: 변경 영향 단위 테스트와 1분 안에 끝나는 빠른 검사만, 커밋 직전에 한 번 돌립니다(같은 트리는 캐시). 테스트는 스크립트 이름이 아니라 격리 범위·의존성으로 분류하고, 실행하지 않은 통합/e2e는 result limits에 남겨 마감 관문에 넘깁니다. `vibe check --tier task`는 ARCH batch 단계에만 있는 명령(전체 스위트)을 거절하고, 5분 넘는 태스크 검사에는 `slow`·`hint`를 붙입니다(사용자가 별도 실행을 명시하면 `--allow-final`). 명령별 시간은 runtime `timings.json`에 남아, 평균 60초가 넘는 명령은 `vibe status`의 `taskChecks.slow`와 loop 보고서에 나오고 loop가 끝날 때 batch로 옮기자는 inbox `suggest`가 한 번 남습니다 — 옮길지는 사람이 정합니다.
-- **마감 관문**: 등록된 참여 세션이 모두 ready이면 한 소유자가 참여자·제출 SHA·land 기준·격리 후보를 고정해 전체 결정론적 검수를 한 번 합니다. 새 세션은 다음 묶음으로 갑니다. 실패 뒤에는 실패·영향·미실행을 확인하고 유효한 성공은 재사용합니다. clone 락은 원격 공유 소유권의 대체물이 아니며, 원격을 확인할 수 없으면 조용히 로컬 마감으로 바꾸지 않습니다. 기존 누적 실패·마감·회복 상한은 유지합니다.
+- **마감 관문**: 등록된 참여 세션이 모두 ready이면 한 소유자가 참여자·제출 SHA·land 기준·격리 후보를 고정해 전체 결정론적 검수를 한 번 합니다. 새 세션은 다음 묶음으로 갑니다. 실패 뒤에는 실패·영향·미실행을 확인하고 유효한 성공은 재사용합니다. clone 락은 원격 공유 소유권의 대체물이 아니며, 원격을 확인할 수 없으면 조용히 로컬 마감으로 바꾸지 않습니다. 기존 마감은 유지합니다.
 - **반영**: 공유 소유자가 검증된 고정 후보만 SETTINGS대로 반영합니다. 필수 integration-stage agent AC가 남으면 waiting-agent로 후보·기존 검수 증거를 보존하고, 도구가 있는 host가 실제 관찰을 기록한 뒤 전체 검수를 반복하지 않고 재개합니다. 같은 후보의 CI는 한 번 기다리고, 조회할 수 없으면 unchecked와 확인할 SHA/URL을 남깁니다. 세션 종료가 각자의 전체 검사·push를 뜻하지 않습니다.
 - 단계는 ARCH의 task/batch/CI와 실제 의존성으로 정합니다. task는 작은 영향 검사, batch는 공동 고정 후보의 전체 결정론적 검수, 최소 자동 브라우저 E2E·선언한 지원 호환 검사는 CI입니다. computer-use agent AC로 대체한 자동 범위를 제거·축소하고, worker가 적은 중복 이유로 두 방법을 함께 실행하지 않습니다. `/gusta-update`는 실제 테스트·스크립트·설정·시간과 중복 비용을 필수 감사합니다. 세부 절차는 [공유 검증 계약](../skills/gusta-start/references/verification.md)에 있습니다.
 

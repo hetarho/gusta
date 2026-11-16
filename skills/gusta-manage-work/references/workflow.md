@@ -1,6 +1,6 @@
 # 작업 묶음 조정
 
-아래 `work ...`는 모두 `npx @haeram/gusta work ...`의 축약이다. CLI가 `work`를 지원하는 버전인지 확인한다. 직접 runtime JSON을 편집하지 않는다. `--verify`는 ARCH의 실제 검증 명령을 셸로 실행한다.
+아래 `work ...`는 모두 `npx @haeram/gusta work ...`의 축약이다. 직접 runtime JSON을 편집하지 않는다. `--verify`는 ARCH의 실제 검증 명령을 셸로 실행한다.
 
 ## 1. 작업 묶음 시작
 - 현재 `work status --json`에 활성 묶음이 있으면 이어 쓴다. 사용자가 작은 수정만 요청했다면 작업 묶음을 강제하지 않는다.
@@ -11,7 +11,7 @@
 - 미커밋 변경은 새 worktree에 복사되지 않는다. 관련 기획을 먼저 정리하고 사용자가 허용한 범위로 커밋한다. 관련 없는 변경은 자동 stash·commit하지 않는다.
 - 반환된 `path`에서 기획·채번을 진행한다. 채번 기준은 묶음 브랜치가 아니라 SETTINGS plan 브랜치다 — 기획 전 `vibe plan-sync`로 합치고, spec/만 담은 기획 커밋 직후 `vibe plan-push`로 올린다. 그래서 여러 묶음·worktree가 동시에 기획해도 번호가 겹치지 않는다(먼저 올린 쪽이 이기고, 거절된 쪽이 다시 채번한다). 한 묶음의 기획 공간에는 쓰기 담당을 하나만 둔다. 기획 커밋이 worker 배정의 기준이다.
 - 태스크는 gusta-create-task의 [기반 → 줄기 → 통합](../../gusta-create-task/references/lanes.md) 구조로 분해한다. 배정 전에 `work board`의 `units`와 errors를 확인한다 — `lane 순환`이 있으면 배정되지 않으므로 기획 공간에서 dep·lane을 먼저 고친다.
-- Git 미지원·생성 실패 시 남은 branch/path를 보고한다. 다른 작업자가 없는 안전한 단독 작업은 기존 방식으로 진행할 수 있지만, 선점 실패나 격리 실패를 같은 폴더 병렬 쓰기로 우회하지 않는다.
+- Git 미지원·생성 실패 시 남은 branch/path를 보고한다. 다른 작업자가 없는 안전한 단독 작업은 단독 흐름으로 진행할 수 있지만, 선점 실패나 격리 실패를 같은 폴더 병렬 쓰기로 우회하지 않는다.
 
 ## 2. 태스크 배정과 진행
 - `work board --work <slug> --json`으로 상위 브랜치의 작업과 공유 실행 기록을 함께 읽는다. 배정 단위는 `units`다: lane 하나 또는 lane 없는 태스크 하나. `claimable`은 배정 후보이며 최종 선점은 claim의 원자적 검사로 결정된다.

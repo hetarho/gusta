@@ -17,11 +17,11 @@
 
 PR이나 GitHub CLI가 없어도 로컬 구현·리뷰·통합을 할 수 있습니다. 하위 세션은 에이전트의 하위 세션 도구로, 없거나 `/gusta-start`가 맡긴 실행이면 헤드리스 `work scout`(읽기 전용 탐색, 제안 JSON만 반환)·`work run`(구현·리뷰)으로 띄웁니다. 오케스트레이터는 코드를 직접 훑지 않습니다. 기존 작업 묶음의 `--workspace current --tasks '<approved IDs>' --review all --push -`를 사용해 승인 범위 밖 todo를 소비하지 않으며, 그 todo가 남아 있어도 승인 범위를 마칠 수 있습니다. 실행 도구가 없으면 하위 세션을 가장하지 않고 제안 패킷과 필요한 연결을 보고합니다.
 
-반영은 SETTINGS land·land-via·push와 공유 통합 소유권을 따릅니다. 밖에서 land가 움직이면 자동 병합·전체 검수 초기화 대신 후보를 재조정하고 유효한 성공은 재사용합니다. 필수 agent 관찰이 남으면 후보와 검수 증거를 보존한 waiting-agent에서 이어갑니다. 기획 문서는 SETTINGS plan을 따릅니다([브랜치 전략](branching.md#브랜치-전략)). 실제 원격 land 반영과 전용 세션의 로컬 결과를 구분해 보고합니다. [실행 절차](../skills/gusta-self-improve/SKILL.md)에 역할·승인·통합 경계가 있습니다.
+반영은 SETTINGS land·land-via·push와 공유 통합 소유권을 따릅니다. 밖에서 land가 움직이면 후보를 재조정하고 유효한 성공은 재사용합니다. 필수 agent 관찰이 남으면 후보와 검수 증거를 보존한 waiting-agent에서 이어갑니다. 기획 문서는 SETTINGS plan을 따릅니다([브랜치 전략](branching.md#브랜치-전략)). 실제 원격 land 반영과 전용 세션의 로컬 결과를 구분해 보고합니다. [실행 절차](../skills/gusta-self-improve/SKILL.md)에 역할·승인·통합 경계가 있습니다.
 
 ## 지시 없이 문제를 찾는 지속 개선 — `/gusta-self-improve-remote`
 
-`/gusta-self-improve-remote`는 느린 엔진·과도한 테스트 비용·반복 실패·재작업을 기록과 코드에서 찾아 개선합니다. 먼저 한 번 범위와 예산을 위임하면, 그 안의 동작 보존 개선은 후보마다 다시 묻지 않고 측정·태스크·구현·별도 세션 검토·PR 작성으로 이어집니다. 일반 `gusta-review-code`는 사용자가 제안을 채택하는 기존 흐름을 유지합니다.
+`/gusta-self-improve-remote`는 느린 엔진·과도한 테스트 비용·반복 실패·재작업을 기록과 코드에서 찾아 개선합니다. 먼저 한 번 범위와 예산을 위임하면, 그 안의 동작 보존 개선은 후보마다 다시 묻지 않고 측정·태스크·구현·별도 세션 검토·PR 작성으로 이어집니다. 일반 `gusta-review-code`에서는 사용자가 제안을 채택합니다.
 
 ```text
 /gusta-self-improve-remote 지속 개선 켜줘. 내가 따로 시키지 않아도 실행 기록과 코드를 보고

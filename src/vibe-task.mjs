@@ -42,7 +42,7 @@ export async function vibeTask(options = {}, { now = () => new Date(), coord, as
 }
 
 // The coordination side of this checkout: { session }, or why there is none — no Git (STATE keeps
-// the old sections), a work-group worker's checkout, or settings that cannot be read. The task
+// the sections), a work-group worker's checkout, or settings that cannot be read. The task
 // lifecycle never waits on it. A repository without a commit yet has it like any other.
 async function coordinationOf(options, inspection) {
   if (!inspection.git) return { skipped: 'no-git' }

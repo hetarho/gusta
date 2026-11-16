@@ -8,19 +8,13 @@
   not proof the objective is complete. The conversation awaits a foreground
   helper or a real parent continuation bridge. After a recoverable CLI failure
   it re-plans targeted fixes through fresh delegated units or the ordinary skill
-  workflow, preserving cumulative attempt history and the user's original
-  deadline and total budgets. A helper's automatic-repair cap alone does not
-  finish the user's task. It records generic CLI
-  defects for later maintenance instead of adding package repairs to the target
-  project's task. Missing continuation or notification capability is disclosed.
-- Final verification recovery has a cumulative failed-round cap and remains
-  inside the existing deadline and closing reserve. The same completely observed
-  command plan may earn a bounded additional repair when its failed-command set
-  strictly shrinks. A structured check adapter may certify complete test IDs;
-  generic test-output parsing never certifies completeness. Equal, new, unknown
-  or interrupted failures do not prove progress. Every exit identifies the attempts, remaining
-  repair work and publication result. A failed candidate is never published as a
-  verified integration.
+  workflow, preserving the user's original deadline and total budgets. It
+  records generic CLI defects for later maintenance instead of adding package
+  repairs to the target project's task. Missing continuation or notification capability is disclosed.
+- Final verification recovery stays inside the existing deadline and closing
+  reserve. Every exit identifies the attempts, remaining repair work and
+  publication result. A failed candidate is never published as a verified
+  integration.
 - A running host may accept an explicit deadline and closing-reserve update.
   Application preserves its run identity and consumed budget, validates the new
   values and returns a durable receipt with the actual deadline, reserve and
@@ -77,7 +71,7 @@
 ## Verification and limits
 
 Regression tests use fake workers and isolated Git repositories. They cover
-progress and non-progress, hard attempt/time bounds, applied control receipts,
+progress and non-progress, hard unit/time bounds, applied control receipts,
 notification capabilities and delivery results, remote preservation, compact
 output with explicit detail access, and actual-workspace probe diagnostics.
 These checks do not prove an external messaging integration delivers to a user,

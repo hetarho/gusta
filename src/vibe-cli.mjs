@@ -22,9 +22,9 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 모든 참여 세션의 준비 뒤 고정 후보에서 전체 검수 한 번. 늦은 세션은 다음 통합
   vibe integration accept --file <JSON>       computer-use 호스트의 정확한 후보별 AC 관측·증거 제출; finish는 전체 검수 없이 재개
   vibe integration repair --token <token> --target <candidate worktree>
-                                                실패·영향 범위만 수정해 커밋한 후보. 원래 cohort·마감·재시도 상한과 성공 캐시 유지
+                                                실패·영향 범위만 수정해 커밋한 후보. 원래 cohort·마감과 성공 캐시 유지
   vibe loop --tag <tag> [--max-units 100] [--max-hours 8]
-    [--deadline <ISO>] [--final-reserve-hours <measured>] [--max-gate-attempts 3] [--batch-size 3] [--permission-mode bypass|acceptEdits] [--allow-tool <rule> ...]
+    [--deadline <ISO>] [--final-reserve-hours <measured>] [--batch-size 3] [--permission-mode bypass|acceptEdits] [--allow-tool <rule> ...]
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
     [--tasks 'T001 T002'] [--timeout-ms 3600000] [--provider claude|codex [--model <name>]] [--effort low|medium|high|xhigh|max|ultra]
                                                 단위마다 도구·모델·에포트를 CLI가 정한다: 태스크 run:을 SETTINGS agents 안에서(못 쓰면 score가
@@ -140,14 +140,12 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
   vibe check [--plan <JSON file>] [--tier task|batch] [--tag <tag>] [--diff-base <task-start-sha>] [--task T###] [--timeout-ms <ms>] [--heavy] [--no-cache] [--allow-final] [-- <command>]
                                                 명령을 생략하면 ARCH plan의 해당 단계를 실행하고 유효한 성공 항목을 재사용
                                                 batch/group은 조정자 전용·자동 heavy 락. --allow-final은 명시적 예외만
-                                                batch/group 관문은 세션(--tag, 없으면 브랜치)마다 실패 3회 누적이면 명령을 돌리지 않고 거절(refused:gate-cap)
-  vibe check --reset-gate [--tag <tag>]         사람이 그 세션의 관문 실패 기록을 지운다(맡김은 쓰지 않는다)
 공통: --target <path>, --remote <name>. 출력은 JSON(brief는 기본 마크다운, sketch는 --json 없으면 한 줄). check는 요약·실패 이름·마지막 8줄·전체 로그 경로만 출력.
 `
 
 const allowed = {
-  session: ['kind', 'tag', 'branch', 'base', 'path'], integration: ['tag', 'token', 'file', 'reason', 'remote', 'timeout-ms', 'max-gate-attempts', 'verify'],
-  loop: ['tag', 'provider', 'model', 'effort', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'max-gate-attempts', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
+  session: ['kind', 'tag', 'branch', 'base', 'path'], integration: ['tag', 'token', 'file', 'reason', 'remote', 'timeout-ms', 'verify'],
+  loop: ['tag', 'provider', 'model', 'effort', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref', 'section', 'offset', 'limit', 'snapshot'], format: ['section'],
   status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host', 'remote'],
   claim: ['tag', 'task', 'mode', 'host', 'remote'], task: ['tag', 'at'], inbox: ['tag', 'kind', 'ref', 'text', 'file', 'line', 'id', 'log', 'remote'], log: ['tag', 'text', 'file', 'remote'],
@@ -156,7 +154,7 @@ const allowed = {
   ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'reuse', 'from', 'shared-file', 'scaffold-prompt', 'scaffold', 'variant', 'approach', 'prompt-file', 'prompt-dir', 'follow-up-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
   sketch: ['port', 'ttl-ms'],
 }
-const flags = { task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], inbox: ['no-fetch'], log: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final', 'reset-gate'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'], sketch: ['all'] }
+const flags = { task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], inbox: ['no-fetch'], log: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'], sketch: ['all'] }
 const actions = { session: (options) => { if (options.step !== 'open') throw new SkillPackageError('vibe session open --kind <kind> --tag <tag>'); return openSessionWorkspace(options) }, integration: vibeIntegration, loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, inbox: vibeInbox, log: vibeLog, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, usage: vibeUsage, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
   ab: (options) => { if (!Object.hasOwn(AB_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe ab <${Object.keys(AB_STEPS).join('|')}> <slug>`); return AB_STEPS[options.step](options) },
   sketch: (options) => { if (!Object.hasOwn(SKETCH_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe sketch <${Object.keys(SKETCH_STEPS).join('|')}>`); return SKETCH_STEPS[options.step](options) } }

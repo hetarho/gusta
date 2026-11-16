@@ -34,7 +34,7 @@ async function project(t, { plan, version = false, count = 0 } = {}) {
 }
 const agent = (extra = {}) => ({ id: 'view-flow', scenario: 'Open the view', steps: ['Open candidate view'], expected: 'The view renders', status: 'not-run', reason: 'No computer-use tool in this worker', ...extra })
 
-test('failed named check repairs reuse valid successes, same token/base/deadline and original attempt cap', async (t) => {
+test('failed named check repairs reuse valid successes and keep the same token/base/deadline', async (t) => {
   const initial = await fixture(t, 0), counter = path.join(initial.temporary, 'counter')
   // Use the project helper's clean Git checkout while keeping the counter outside its tree.
   const plan = { schemaVersion: 1, checks: [
@@ -44,7 +44,7 @@ test('failed named check repairs reuse valid successes, same token/base/deadline
   const { root } = await project(t, { plan })
   await writeFile(path.join(root, 'alpha.txt'), 'stable'); await writeFile(path.join(root, 'beta.txt'), 'bad')
   await git(root, 'add', '.'); await git(root, 'commit', '-qm', 'verification inputs')
-  const first = await finalizeIntegration({ targetRoot: root, tag: 'repair01', maxGateAttempts: 2 })
+  const first = await finalizeIntegration({ targetRoot: root, tag: 'repair01' })
   assert.equal(first.reason, 'integration-failed')
   assert.equal(await readFile(counter, 'utf8'), 'AB')
   const gate = first.gate
@@ -54,7 +54,6 @@ test('failed named check repairs reuse valid successes, same token/base/deadline
   assert.equal(repaired.ok, true, JSON.stringify(repaired))
   assert.equal(await readFile(counter, 'utf8'), 'ABB')
   assert.equal(repaired.gate.token, gate.token); assert.equal(repaired.gate.base, gate.base); assert.equal(repaired.gate.deadline, gate.deadline)
-  assert.equal(repaired.gate.attempts, 2); assert.equal(repaired.gate.maxAttempts, 2)
   assert.deepEqual(repaired.gate.checks[0].checks.map(({ id, status }) => [id, status]), [['alpha', 'cached'], ['beta', 'passed']])
 })
 

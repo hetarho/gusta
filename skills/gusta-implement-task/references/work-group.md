@@ -1,7 +1,7 @@
 # 작업 묶음의 배정과 세션 루프
 
 ## 1. 환경과 선택
-- `npx @haeram/gusta work status --json`으로 현재 배정을 확인한다. CLI가 없거나 `work`를 지원하지 않으면 기존 단독 흐름은 가능하지만 공유 선점을 흉내 내지 않는다.
+- `npx @haeram/gusta work status --json`으로 현재 배정을 확인한다. 명령이 실패하면 단독 흐름으로 진행하되 공유 선점을 흉내 내지 않는다.
 - `mode:worker`이면 반환된 currentAttempt의 태스크와 workspace를 사용한다. `tasks`가 둘 이상이면 lane 배정이다 — `taskId`가 지금 구현할 태스크이고, 앞 태스크의 커밋 위에서 이어 간다. doing은 배정대로 구현하고 blocked는 원인 해소와 `work update --status doing` 이후 재개한다. changes_requested는 `work resume`로 수정 배정을 받는다. ready·reviewing·approved는 리뷰·통합 대기다. verifying/integrating/cleaning 중인 공간에 쓰지 않는다. integrated/released/failed라면 종료 기록을 보고 gusta-manage-work로 정리·재배정한다. 브랜치명으로 이어받을 태스크를 추정하지 않는다.
 - `mode:reviewer`이면 구현하지 않고 gusta-review-task/gusta-manage-work로 인계한다.
 - 배정이 없거나 끝난 워커 세션은 바로 종료하지 않고 아래 **세션 루프**로 다음 일을 받는다.

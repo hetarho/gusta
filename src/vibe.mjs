@@ -18,7 +18,7 @@ import { stateMergeArgs } from './git-merge.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { readSettings, readSetting, permissionMode, agentList } from './settings.mjs'
 import { vibeSession } from './vibe-session.mjs'
-import { runVibeCheck, resetVibeGate } from './vibe-check.mjs'
+import { runVibeCheck } from './vibe-check.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { vibeCIWait, githubRepository } from './vibe-ci.mjs'
 import { providerFlags } from './work-providers.mjs'
@@ -832,7 +832,7 @@ export async function vibeAwake(options = {}) {
 
 // Compatibility API: callers still receive an exit code; CLI prints one bounded summary.
 export async function vibeCheck(options = {}, command) {
-  const result = options.resetGate ? await resetVibeGate(options, command) : await runVibeCheck(options, command)
+  const result = await runVibeCheck(options, command)
   process.stdout.write(`${JSON.stringify(result)}\n`)
   return result.exitCode
 }

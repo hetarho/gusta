@@ -36,7 +36,6 @@ import { parseFailure, LIMIT_KINDS, BLOCKING, OVERLOAD_RETRY_MS, LIMIT_POLL_MS, 
 import { prepareSessionWorkspace } from './session-workspace.mjs'
 import { finalizeIntegration } from './integration-run.mjs'
 import { openIntegration } from './integration-gate.mjs'
-import { improvingGate } from './gate-ledger.mjs'
 import { mergeAgentAcceptance, renderAgentAcceptance } from './agent-acceptance.mjs'
 
 const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
@@ -46,21 +45,14 @@ const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
 // unit and affected repair checks, plus the measured CI wait when code is pushed. Only before
 // the gate has ever been measured does a run fall back to a share of max-hours.
 export const UNMEASURED_RESERVE_SHARE = 0.2
-// A smaller count is insufficient: retries need complete, stable identities from the same gate.
-export { improvingGate }
 
-// Every command in the fixed plan must finish. Its exit receipt is authoritative even when its
-// human-readable test output is not; a single command's internal shrinking failures need a typed adapter.
+// A failed round leaves the repair unit its commands, tests and log, and the code it failed on.
 function gateEvidence(commands, round, head, plan = null) {
   const failures = round.filter((entry) => !entry.checked.ok), first = failures[0]
   if (!first) return null
-  const complete = round.length === commands.length && round.every(({ checked }) => typeof checked.ok === 'boolean' && !checked.timedOut && !checked.stale && !checked.cancelled && (!plan || checked.failureSetComplete === true))
-  const tests = !plan && failures.every(({ checked }) => checked.failureSetComplete === true && Array.isArray(checked.failedTests) && checked.failedTests.length > 0)
-  const identities = failures.flatMap(({ command, index, id, checked }) => plan ? [`check:${id}`] : tests ? checked.failedTests.map((id) => `${index}:${command}\n${id}`) : [`${index}:${command}`])
   return { head, command: first.command, plan: JSON.stringify(plan ?? commands), log: first.checked.log ?? null,
     failedTests: failures.flatMap(({ checked }) => checked.failedTests ?? []).slice(0, 20), failedCommands: failures.map(({ command, index, id }) => ({ index, command, ...(id ? { id } : {}) })),
-    identities, evidence: plan ? 'checks' : tests ? 'adapter-tests' : 'commands', failureSetComplete: complete && (tests || round.every(({ checked }) => checked.ok || Number.isInteger(checked.exitCode))),
-    timedOut: round.some(({ checked }) => checked.timedOut), stale: round.some(({ checked }) => checked.stale), ms: round.reduce((sum, { checked }) => sum + (Number.isFinite(checked.ms) ? checked.ms : 0), 0) }
+    ms: round.reduce((sum, { checked }) => sum + (Number.isFinite(checked.ms) ? checked.ms : 0), 0) }
 }
 export function closingReserve({ timings, commands, push = false, hours, timeoutMs, optionHours }) {
   if (optionHours !== undefined) return { ms: optionHours * 3600000, source: 'option' }
@@ -234,8 +226,6 @@ export async function vibeLoop(options = {}, injected = {}) {
   if (options.notifyCommand !== undefined && (typeof options.notifyCommand !== 'string' || !options.notifyCommand.trim())) throw new SkillPackageError('--notify-command에는 실행 가능한 명령이 필요합니다.')
   const maxUnits = positive(options.maxUnits, 100, 'max-units', true)
   let hours = positive(options.maxHours, 8, 'max-hours')
-  const maxGateAttempts = positive(options.maxGateAttempts, 3, 'max-gate-attempts', true)
-  if (maxGateAttempts < 2 || maxGateAttempts > 5) throw new SkillPackageError('--max-gate-attempts에는 2-5 정수가 필요합니다.')
   const batchSize = positive(options.batchSize, 3, 'batch-size', true), timeoutMs = positive(options.timeoutMs, 3600000, 'timeout-ms')
   let optionHours = options.finalReserveHours === undefined ? undefined : Number(options.finalReserveHours)
   const scopeIds = options.tasks === undefined ? null : approvedTasks(Array.isArray(options.tasks) ? options.tasks : String(options.tasks).replaceAll(',', ' '))
@@ -350,7 +340,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   let reserve = await estimateReserve()
   if (reserve.ms >= hours * 3600000) throw new SkillPackageError(`마감 관문 실측(전체 검증 1회+영향 범위 수정 1회+CI)이 ${(reserve.ms / 3600000).toFixed(2)}시간이라 max-hours 안에 구현 시간이 없습니다. --max-hours를 늘리거나 --final-reserve-hours를 지정하세요.`)
   const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? (options.adapter ? 'command' : 'route'), agents, ...(options.effort ? { effort: options.effort } : {}), permissionMode: mode, headlessMcp: mcp,
-    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS, maxGateAttempts }, scope: scopeIds, reserve, verify, batchVerify, requiredVerificationTiers,
+    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS }, scope: scopeIds, reserve, verify, batchVerify, requiredVerificationTiers,
     deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), notification: notificationCapability(directory, options.notifyCommand),
     directory, stopFile, manifest, freshSessionPerUnit: true, pushEachUnit: Boolean(options.pushEachUnit), notifyCommand: options.notifyCommand ?? null }
   // routing: the tool·model·effort each remaining task would run on now, and why (dry-run only:
@@ -421,7 +411,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   }
   let priorityTask = /^T\d+$/.test(previous?.priorityTask ?? '') && inScope(previous.priorityTask) ? previous.priorityTask : null
   // repairTask: the gate/CI repair this run queued. failedGate: the code a gate last failed on.
-  let repairTask = null, failedGate = null, gateFailures = 0, gateAttempts = 0, gateRetryAllowed = true, gateStopReason = null, verifiedCommit = null
+  let repairTask = null, failedGate = null, gateFailures = 0, gateAttempts = 0, verifiedCommit = null
   // One spec-close repair per task survives a restart of the same helper run.
   const specRepairs = new Map(Object.entries(previous?.specRepairs ?? {}).filter(([id, count]) => TASK_ID.test(id) && Number.isSafeInteger(count) && count > 0))
   const specRejected = new Map(Object.entries(previous?.specRejected ?? {}).filter(([id, violations]) => TASK_ID.test(id) && Array.isArray(violations) && violations.every((value) => typeof value === 'string')))
@@ -489,8 +479,8 @@ export async function vibeLoop(options = {}, injected = {}) {
   }
   const stop = (why) => { stopped = true; stopReason ??= why; controller.abort(stopReason) }
   const interrupted = () => stop('signal')
-  const gateState = () => ({ attempts: gateAttempts, failures: gateFailures, maxFailedAttempts: maxGateAttempts, retryAllowed: gateRetryAllowed, stopReason: gateStopReason,
-    verifiedCommit, failedCommit: failedGate?.head ?? null, failedTests: failedGate?.failedTests ?? [], failedCommands: failedGate?.failedCommands ?? [], evidence: failedGate?.evidence ?? null, failureSetComplete: failedGate?.failureSetComplete ?? null,
+  const gateState = () => ({ attempts: gateAttempts, failures: gateFailures,
+    verifiedCommit, failedCommit: failedGate?.head ?? null, failedTests: failedGate?.failedTests ?? [], failedCommands: failedGate?.failedCommands ?? [],
     pendingRepairTasks: repairTask ? [repairTask] : [] })
   const continuation = () => {
     const remainingMs = Math.max(0, deadline - deps.now()), remainingUnits = Math.max(0, maxUnits - count)
@@ -579,7 +569,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     const ciLater = batches.filter((entry) => entry.ci?.outcome === 'unchecked').map((entry) => `- check CI later: ${entry.ci.commit ?? '-'} ${entry.ci.checkUrl ?? ''}`.trimEnd() + '\n').join('')
     // Tasks another session holds are not this run's to finish: the owner sees who has them.
     const held = [...refused].map(([task, { owner, reason: why }]) => `- held by another session: ${task} (${owner ?? '-'}, ${why})\n`).join('')
-    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}${hintFor(reason) ? ` — ${hintFor(reason)}` : ''}\n- verification: ${gateAttempts} rounds, ${gateFailures} failed, failed-round cap ${maxGateAttempts}; pending repair: ${repairTask ?? '-'}; code pushed: ${codePushed}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${held}${ciLater}${kept}`)
+    if (closing) text = text.replace(/## next[\s\S]*$/, `## next\n- loop stopped: ${reason}${hintFor(reason) ? ` — ${hintFor(reason)}` : ''}\n- verification: ${gateAttempts} rounds, ${gateFailures} failed; pending repair: ${repairTask ?? '-'}; code pushed: ${codePushed}\n${priorityTask ? `- priority task: ${priorityTask}\n` : ''}${held}${ciLater}${kept}`)
     await metadata.writeReport(text)
   }
   const recordReport = (closing) => metadataStep('report-write', () => updateReport(closing))
@@ -741,8 +731,8 @@ export async function vibeLoop(options = {}, injected = {}) {
     await metadataCommit(`vibe ${options.tag}: ${closing ? 'close report' : 'batch report'}`)
     await metadata.assertClean()
     if (deps.integration && publish) {
-      // A batch boundary never means the session has finished. Even explicit per-unit pushes
-      // now submit only at the settled session boundary, so another session cannot invalidate
+      // A batch boundary never means the session has finished. Explicit per-unit pushes
+      // also submit only at the settled session boundary, so another session cannot invalidate
       // a long gate by landing the next unit while it is still checking.
       if (!closing) { pending = []; await save(); return true }
       const changed = (await git(root, ['diff', '--name-only', context.workspace.git.head, 'HEAD'])).split('\n').filter((file) => file && file !== report)
@@ -817,28 +807,21 @@ export async function vibeLoop(options = {}, injected = {}) {
         await ensureActive()
         const command = run.command ?? `verification-plan:${planned.source}#batch`
         let checked
-        // The gate may use its whole reserve even when a unit's timeout is shorter. Its rounds go to the
-        // session's gate record (a later standalone gate with this tag continues the count), but this
-        // loop stops on its own counter, so 'record' never refuses it.
-        try { checked = await deps.check({ targetRoot: root, tier: 'batch', tag: options.tag, gateLedger: 'record', diffBase: base, heavy: true, signal: controller.signal, timeoutMs: Math.min(Math.max(timeoutMs, reserve.ms), Math.max(1, deadline - deps.now())), ...(run.plan ? { plan: run.plan } : {}) }, run.command) }
+        // The gate may use its whole reserve even when a unit's timeout is shorter.
+        try { checked = await deps.check({ targetRoot: root, tier: 'batch', tag: options.tag, host: true, diffBase: base, heavy: true, signal: controller.signal, timeoutMs: Math.min(Math.max(timeoutMs, reserve.ms), Math.max(1, deadline - deps.now())), ...(run.plan ? { plan: run.plan } : {}) }, run.command) }
         catch (caught) { batches.push({ command, ok: false, cancelled: controller.signal.aborted, error: caught.message }); throw caught }
         batches.push({ command, ...checked, ...(!checked.ok && controller.signal.aborted ? { cancelled: true } : {}) })
         if (planned) {
           const expected = batchDefinition()
           if (!Array.isArray(checked.checks) || checked.checks.length !== expected.length || checked.checks.some((check, i) => check.id !== expected[i].id || check.command !== expected[i].command)) throw new SkillPackageError('검사 계획 영수증에 모든 항목의 정확한 ID·명령·상태가 필요합니다.')
-          for (const [i, check] of checked.checks.entries()) round.push({ command: check.command, id: check.id, index: i, checked: { ...check, failureSetComplete: checked.failureSetComplete, stale: checked.stale || check.stale, cancelled: checked.cancelled || check.cancelled, timedOut: checked.timedOut || check.timedOut } })
+          for (const [i, check] of checked.checks.entries()) round.push({ command: check.command, id: check.id, index: i, checked: { ...check, stale: checked.stale || check.stale, cancelled: checked.cancelled || check.cancelled, timedOut: checked.timedOut || check.timedOut } })
         } else round.push({ command, index, checked })
         await ensureActive()
       }
       const current = gateEvidence(batchVerify, round, head, batchDefinition())
       if (current) {
         if (planned) current.inputIdentity = candidateInputs
-        const improved = improvingGate(failedGate, current)
-        const gateMs = reserve.gateMs ?? (current.ms > 0 ? current.ms : timeoutMs)
-        const retryFits = deadline - deps.now() > gateMs + (reserve.fixMs ?? timeoutMs) + (reserve.ciMs ?? 0)
         failedGate = current; gateFailures++
-        gateRetryAllowed = gateFailures < 2 || (gateFailures < maxGateAttempts && improved && retryFits)
-        gateStopReason = gateRetryAllowed ? null : gateFailures >= maxGateAttempts ? 'attempt-limit' : !improved ? 'failure-set-not-improving' : 'insufficient-time'
         await queueRepair('fix-gate', 'Fix final gate failure', `Make the failed final-gate commands pass on ${head}; preserve existing contracts.`,
           round.filter(({ checked }) => !checked.ok).flatMap(({ command, checked }) => [`Command: ${command}`, `Log: ${checked.log ?? '-'}`, `Failed tests: ${JSON.stringify(checked.failedTests ?? [])}`, `Tail: ${JSON.stringify(checked.tail ?? [])}`]))
         await recordReport(closing)
@@ -846,7 +829,7 @@ export async function vibeLoop(options = {}, injected = {}) {
         if (closing) throw new SkillPackageError(`묶음 검증 실패: ${current.command}`, [current.log ?? ''])
         return false
       }
-      verifiedCommit = head; lastBatchPlan = batchIdentity(); lastBatchInputs = candidateInputs; failedGate = null; gateRetryAllowed = true; gateStopReason = null
+      verifiedCommit = head; lastBatchPlan = batchIdentity(); lastBatchInputs = candidateInputs; failedGate = null
     }
     await recordReport(closing)
     await metadataCommit(`vibe ${options.tag}: record checks`)
@@ -918,8 +901,6 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (await present(stopFile)) { reason = 'stop-file'; break }
       if (deps.now() >= deadline) { reason = 'max-hours'; break }
       if (count >= maxUnits) { reason = 'max-units'; break }
-      // Extra repair is earned only by complete strictly shrinking failures, within the hard cap.
-      if (!gateRetryAllowed) { reason = 'gate-failures'; break }
       phase = 'boundary'
       await refreshVerification()
       await applyRequests()
@@ -1055,7 +1036,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       // A continuation consumes its snapshot; once the task is done the ref is dropped.
       if (dispatched?.snapshot && dispatched.reason !== 'split') for (const snapshot of snapshots) if (snapshot.ref === dispatched.snapshot.ref) snapshot.handed = true
       // A usage or rate limit, an overload or a failed sign-in ends an attempt, not a unit: no unit count,
-      // rung, failure streak, no-progress or gate attempt. The same task goes straight to the next allowed
+      // rung, failure streak or no-progress. The same task goes straight to the next allowed
       // combination (a new session; uncommitted work kept as a snapshot it restores). An overload is
       // retried once on the same one first. With none left the task goes back to the boundary, which
       // waits for the first reset or stops on usage-limit.

@@ -61,7 +61,7 @@ export async function finalizeIntegration(options = {}, injected = {}) {
     if (ready.value.alreadyLanded) return { schemaVersion: 1, ok: true, verified: true, alreadyLanded: true, landed: ready.value.landed, scope: ready.scope, pushed: null }
     const peers = await (injected.view ?? coordView)(context, { tag: options.tag })
     if (peers.error || peers.sync?.error || peers.push?.backoff || context.remote && (peers.push?.unpublished || peers.push?.enabled === false)) return pending('coordination-unknown', null, { coordination: peers })
-    const claimed = await store.claim({ tag: options.tag, active: peers.doc?.active ?? peers.active ?? [], maxAttempts: options.maxGateAttempts ?? 3, deadline: options.deadline ?? new Date(Date.now() + Number(options.timeoutMs ?? 3600000)).toISOString() })
+    const claimed = await store.claim({ tag: options.tag, active: peers.doc?.active ?? peers.active ?? [], deadline: options.deadline ?? new Date(Date.now() + Number(options.timeoutMs ?? 3600000)).toISOString() })
     if (!claimed.ok) return { schemaVersion: 1, ...claimed }
     gate = claimed.value.gate; created = true
   }
@@ -73,7 +73,7 @@ export async function finalizeIntegration(options = {}, injected = {}) {
   }
   // A second process cannot infer that a previous checker has exited. In particular it must
   // never replay the full gate merely because its receipt has not arrived yet.
-  if (!created && !repaired && ['preparing', 'checking', 'failed', 'conflict'].includes(gate.phase)) return pending(`integration-${gate.phase}`, gate, { nextAction: gate.phase === 'failed' ? 'Repair only failed/affected inputs in the candidate worktree, commit, then vibe integration repair --token <token> --target <candidate worktree>. The same deadline, cohort and three-attempt cap remain.' : 'Inspect the owning process; absence or elapsed time never authorizes replay.' })
+  if (!created && !repaired && ['preparing', 'checking', 'failed', 'conflict'].includes(gate.phase)) return pending(`integration-${gate.phase}`, gate, { nextAction: gate.phase === 'failed' ? 'Repair only failed/affected inputs in the candidate worktree, commit, then vibe integration repair --token <token> --target <candidate worktree>. The same deadline and cohort remain.' : 'Inspect the owning process; absence or elapsed time never authorizes replay.' })
   if (created || repaired) {
     const prepared = repaired ? { ok: true, root: context.root, gate } : await store.candidate(gate.token)
     if (!prepared.ok) return { schemaVersion: 1, ...prepared }
@@ -99,7 +99,7 @@ export async function finalizeIntegration(options = {}, injected = {}) {
       if (results.some((entry) => entry.command === 'spec close')) break
       if (options.signal?.aborted) { results.push({ ok: false, cancelled: true, reason: 'cancelled', ...command }); break }
       try {
-        const receipt = await check({ ...options, targetRoot: prepared.root, timeoutMs: Math.min(Number(options.timeoutMs ?? 3600000), gate.deadline ? Math.max(1, Date.parse(gate.deadline) - Date.now()) : Infinity), tag: gate.token.replaceAll('-', '').slice(0, 8), tier: 'batch', integrationToken: gate.token, diffBase: gate.base, gateLedger: 'record', ...(command.plan ? { plan: command.plan } : {}) }, command.command)
+        const receipt = await check({ ...options, targetRoot: prepared.root, timeoutMs: Math.min(Number(options.timeoutMs ?? 3600000), gate.deadline ? Math.max(1, Date.parse(gate.deadline) - Date.now()) : Infinity), tag: gate.token.replaceAll('-', '').slice(0, 8), tier: 'batch', integrationToken: gate.token, diffBase: gate.base, host: true, ...(command.plan ? { plan: command.plan } : {}) }, command.command)
         results.push({ command: command.command ?? `verification-plan:${command.plan}`, ...receipt })
       } catch (error) { results.push({ ok: false, command: command.command ?? command.plan, error: error.message }) }
     }

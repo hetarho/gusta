@@ -8,7 +8,6 @@ import { fixture, git, execute, archiveTask } from './helpers/vibe-fixture.mjs'
 import { readVerification, vibeBrief } from '../src/vibe-brief.mjs'
 
 import { lintSpec } from '../src/spec-lint.mjs'
-import { readGates, gateCount } from '../src/gate-ledger.mjs'
 
 
 const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
@@ -34,10 +33,9 @@ test('named checks persist successful siblings, resume in a fresh process and re
   await writeFile(path.join(root, 'beta.js'), 'broken\n')
   await git(root, 'add', '-A'); await git(root, 'commit', '-qm', 'candidate')
   const first = await runVibeCheck({ targetRoot: root, tier: 'batch', diffBase: initial, env })
-  assert.equal(first.ok, false); assert.equal(first.failureSetComplete, true)
+  assert.equal(first.ok, false)
   assert.deepEqual(first.checks.map(({ id, status }) => [id, status]), [['alpha', 'passed'], ['beta', 'failed']])
   assert.deepEqual(first.failedCheckIds, ['beta'])
-  assert.deepEqual([first.gate.attempts, first.gate.failures], [1, 1])
   await writeFile(path.join(root, 'beta.js'), 'fixed\n')
   await git(root, 'commit', '-qam', 'repair beta')
   // The same effective environment is passed to both API and a fresh process, so only the
@@ -49,12 +47,11 @@ test('named checks persist successful siblings, resume in a fresh process and re
   await writeFile(path.join(root, 'REPORT.md'), 'verification notes\n')
   await git(root, 'add', 'REPORT.md'); await git(root, 'commit', '-qm', 'document verification')
   const third = await runVibeCheck({ targetRoot: root, tier: 'batch', diffBase: initial, env })
-  assert.equal(third.cached, true); assert.equal(third.failureSetComplete, true)
-  assert.deepEqual([third.gate.attempts, third.gate.failures], [2, 1])
+  assert.equal(third.cached, true)
   assert.equal(await readFile(counter, 'utf8'), 'alpha\nbeta\nbeta\n')
 })
 
-test('plan failures are complete check identities, even when diagnostics have no test names', async (t) => {
+test('plan failures name every failed check, even when diagnostics have no test names', async (t) => {
   const { root } = await planned(t, [
     { id: 'first', tier: 'batch', command: node('process.exit(2)') },
     { id: 'second', tier: 'batch', command: node('process.exit(3)') },
@@ -62,9 +59,7 @@ test('plan failures are complete check identities, even when diagnostics have no
   const checked = await runVibeCheck({ targetRoot: root, tier: 'batch' })
   assert.deepEqual(checked.failedTests, [])
   assert.deepEqual(checked.failedCheckIds, ['first', 'second'])
-  assert.equal(checked.failureSetComplete, true)
   assert.deepEqual(checked.checks.map(({ exitCode }) => exitCode), [2, 3])
-  assert.deepEqual([checked.gate.attempts, checked.gate.failures], [1, 1])
 })
 
 test('a generated later input is fingerprinted after the generator, rather than reusing an earlier pass', async (t) => {
@@ -91,7 +86,7 @@ test('a later check changing an earlier checked input invalidates the plan recei
   await writeFile(path.join(root, 'trigger.txt'), 'one'); await writeFile(path.join(root, 'value.txt'), 'one')
   const checked = await runVibeCheck({ targetRoot: root, tier: 'task', diffBase: initial })
   assert.equal(checked.ok, false); assert.equal(checked.stale, true)
-  assert.equal(checked.checks[0].stale, true); assert.equal(checked.failureSetComplete, false)
+  assert.equal(checked.checks[0].stale, true)
 })
 
 test('rewriting a sibling plan definition cannot return a pass for the superseded command', async (t) => {
@@ -102,7 +97,6 @@ test('rewriting a sibling plan definition cannot return a pass for the supersede
   ])
   const checked = await runVibeCheck({ targetRoot: root, tier: 'task', diffBase: initial })
   assert.equal(checked.ok, false); assert.equal(checked.stale, true)
-  assert.equal(checked.failureSetComplete, false)
   assert.equal(checked.checks[1].reason, 'plan-changed')
 })
 
@@ -122,7 +116,7 @@ test('cancelling an owned plan stops the active process and explicitly leaves th
   assert.ok(pid, 'the command must start before cancellation')
   controller.abort()
   const receipt = await checking
-  assert.equal(receipt.cancelled, true); assert.equal(receipt.failureSetComplete, false)
+  assert.equal(receipt.cancelled, true)
   assert.deepEqual(receipt.checks.map(({ status }) => status), ['failed', 'not-run'])
   assert.equal(receipt.checks[1].cancelled, true)
   assert.equal(await readFile(later, 'utf8').catch(() => null), null)
@@ -137,7 +131,6 @@ test('a plan timeout never reports pending checks as successful', async (t) => {
   ])
   const receipt = await runVibeCheck({ targetRoot: root, tier: 'batch', timeoutMs: 100 })
   assert.equal(receipt.timedOut, true); assert.equal(receipt.ok, false)
-  assert.equal(receipt.failureSetComplete, false)
   assert.deepEqual(receipt.checks.map(({ status }) => status), ['failed', 'not-run'])
 })
 
@@ -192,10 +185,8 @@ test('the loop executes one structured round and keeps stable check IDs as failu
   })
   assert.equal(checks, 1, 'one plan invocation must not be followed by duplicate legacy commands')
   assert.equal(result.ok, false)
-  assert.equal(result.gate.evidence, 'checks'); assert.equal(result.gate.failureSetComplete, true)
+  assert.deepEqual([result.gate.attempts, result.gate.failures], [1, 1])
   assert.deepEqual(result.gate.failedCommands.map(({ id }) => id), ['syntax', 'contracts'])
-  const stored = gateCount((await readGates(path.join(root, '.git/gusta/v1'))).entries['tag:plan01'])
-  assert.deepEqual([stored.attempts, stored.failures], [1, 1])
 })
 
 test('a docs-only change still runs the plan check that explicitly consumes it', async (t) => {

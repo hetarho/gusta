@@ -168,7 +168,7 @@ test('the closing window starts no new work and still runs the one gate and push
   assert.equal((await vibeLoop({ ...opts(root), tag: 't063', maxHours: 8, dryRun: true })).reserve.ms, 96 * 60000)
 })
 
-for (const fixed of [true, false]) test(`a failed closing gate queues one repair inside the reserve, then re-runs the gate (fixed=${fixed})`, async (t) => {
+for (const fixed of [true, false]) test(`a failed closing gate queues a repair inside the reserve, then re-runs the gate (fixed=${fixed})`, async (t) => {
   const { root } = await fixture(t)
   let now = Date.now(), checks = 0, pushes = 0
   const jobs = []
@@ -182,15 +182,16 @@ for (const fixed of [true, false]) test(`a failed closing gate queues one repair
     push: async () => { pushes++; return { ok: true, pushed: null } },
   })
   // Units at 0h, 3h, 6h; the window opens at 8h; the repair gets the time left before the deadline.
-  assert.deepEqual(jobs.map((job) => job.task), ['T001', 'T002', 'T003', 'T004'])
+  assert.deepEqual(jobs.slice(0, 4).map((job) => job.task), ['T001', 'T002', 'T003', 'T004'])
   assert.ok(jobs[3].timeoutMs <= 3600000)
   assert.match(await readFile(path.join(root, 'spec/tasks/done/T004.fix-gate.md'), 'utf8'), /FAIL checkout total/)
   if (fixed) {
     assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'final-window'); assert.equal(checks, 2); assert.ok(pushes >= 1)
+    assert.equal(jobs.length, 4)
   } else {
-    // The repair did not help: no third run, no code push, the next repair waits for the next run.
-    assert.equal(result.ok, false); assert.match(result.error, /묶음 검증 실패/); assert.equal(checks, 2)
-    assert.equal(result.priorityTask, 'T005')
+    // The repair did not help: the next repair gets only the time left, and the deadline ends the run unpublished.
+    assert.equal(jobs[4].task, 'T005'); assert.ok(jobs[4].timeoutMs <= 30 * 60000)
+    assert.equal(result.reason, 'max-hours'); assert.equal(checks, 2); assert.equal(pushes, 0)
   }
 })
 
