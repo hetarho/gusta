@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.17.5
+
+Released: 2026-11-17.
 
 - Agent results: a short candidate SHA expands to the full commit in the
   worker's workspace, a format error names the field and its form, and a result
