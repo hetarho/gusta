@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.17.6
+
+Released: 2026-11-18.
+
+- `vibe loop`: whatever a unit leaves uncommitted is kept as its snapshot
+  (`refs/gusta/units/<tag>/…`, never published) whatever its outcome, so a
+  unit ending `blocked` or `completed` with stray changes no longer stops the
+  run on a dirty tree. Only a unit that wrote the host's report still stops it.
+  A restart adopts the uncommitted work an older run left after its last unit
+  (only the run's report committed since) as that unit's snapshot instead of
+  refusing to start.
+- Unit results gain `continue`: the unit made progress and a fresh unit
+  carries on from its snapshot (continue, then split, then park, like a unit
+  cut at its time limit), with its `next` handed to the continuation.
+  `blocked` now needs `blocker.dependency` and `blocker.resume`; a blocked
+  answer without an outside dependency goes back to the same session once to
+  finish the work, and is taken as `continue` if it is still blocked. Host- or
+  integration-owned agent checks are handed over not-run, never a blocker.
+- A task whose unit ended unfinished with no commit and no newly checked
+  acceptance runs its next unit on another tool in SETTINGS `agents` at the
+  same level or a higher tier (route source `escalated`, event
+  `route-escalated`, an inbox `decided` line). A `--provider` pin is kept.
+- `vibe loop --wait-event` counts only the current run's events (or the run
+  named with `--run <runId>`), so a restart of the same tag no longer returns
+  the previous run's `stopped`/`finished` first; `--detach` returns the run's
+  starting `cursor`. Waiting no longer prepares a session workspace.
+- Shared integration: a failed or conflicted gate no longer blocks later
+  integrations and plan-push forever. Past its deadline the next `finish`,
+  `withdraw` or `plan-push` moves it to history as expired, and `vibe
+  integration abandon --token <token>` releases one whose cause the cohort
+  cannot fix. Receipts and cached successes stay.
+- Shared integration: another session's ready work that land already holds is
+  recorded landed outside the gate (unverified) before a cohort forms, so its
+  commands no longer run.
+- Shared integration: `--verify` commands naming a machine-local path (home,
+  temp directory, npx cache, or any absolute path existing only on this
+  machine) are refused on submission, and `vibe integration ready --verify` now
+  records its commands. Such commands an older version stored on another
+  device are reported `notRun` instead of failing the gate. A command whose own
+  script or package is missing (`MODULE_NOT_FOUND`, `ENOENT`, "can't open
+  file") is an environment failure, not an implementation defect.
+- Upgrade with `/gusta-update`; upgrade every device of a project together.
+
 ## 0.17.5
 
 Released: 2026-11-17.
