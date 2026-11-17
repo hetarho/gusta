@@ -845,6 +845,16 @@ export async function submitWork(options) {
   }
 }
 
+// Every lint error blocks, but a warning only when this candidate added it: warnings already on the
+// base are the planning owners' cleanup (returned as a count), not a reason to refuse the unit.
+async function specGate(root, before, message) {
+  const spec = await lintSpec({ targetRoot: root })
+  const known = new Set(before.warnings)
+  const added = spec.warnings.filter((warning) => !known.has(warning))
+  if (!spec.ok || added.length) fail(message, [...spec.errors, ...added])
+  return spec.warnings.length
+}
+
 async function archiveTasks(root, tasks, attempt, integration) {
   const steps = new Map((attempt.steps ?? []).map((step) => [step.taskId, step]))
   const quoted = (entries) => entries.map((entry) => JSON.stringify(entry.command ?? entry)).join('; ')
@@ -903,14 +913,14 @@ export async function integrateWork(options) {
         fail(`${group.remote ?? 'origin'}/${group.push}를 합치다 충돌했습니다. 기획 공간에서 merge해 해결한 뒤 다시 통합하세요.`, [(error.stderr || error.stdout || error.message).slice(-4000)])
       }
     }
+    const specBefore = await lintSpec({ targetRoot: candidate })
     await git(candidate, ['merge', '--no-ff', '--no-commit', attempt.verifiedCommit])
     const tasks = current.tasks.map((entry) => entry.task)
     await archiveTasks(candidate, tasks, attempt, checks)
     const progress = await readRuntime(context.root)
     Object.assign(progress.attempts[attempt.id], { status: 'integrated', reason: null })
     const historyFile = await writeProgress(candidate, group, progress, current.commit)
-    const spec = await lintSpec({ targetRoot: candidate })
-    if (!spec.ok || spec.warnings.length) fail('통합 후보의 spec 검증에 실패했습니다.', [...spec.errors, ...spec.warnings])
+    const specWarnings = await specGate(candidate, specBefore, '통합 후보의 spec 검증에 실패했습니다. 이 단위가 더한 오류·경고만 고치세요.')
     await git(candidate, ['add', '--', 'spec/STATE.md', historyFile, ...tasks.flatMap((task) => [task.file, `spec/tasks/done/${path.basename(task.file)}`])])
     await git(candidate, ['commit', '-m', `Integrate ${attempt.lane ? `lane ${attempt.lane} (${tasks.map((task) => task.id).join(' ')})` : attempt.taskId} into ${group.id}`])
     const candidateCommit = await head(candidate)
@@ -934,7 +944,7 @@ export async function integrateWork(options) {
     const pushed = await pushLanded(context, group, candidateCommit)
     const settled = recorded.error ? {} : await settleIntegrated(group, pushed)
     const coordination = { ...recorded, ...settled, ...(recorded.unlanded ? { unlanded: recorded.unlanded.filter((id) => !(settled.landed ?? []).includes(id)) } : {}) }
-    return { ...integrated, ...(pushed ? { pushed } : {}), coordination }
+    return { ...integrated, ...(pushed ? { pushed } : {}), ...(specWarnings ? { specWarnings } : {}), coordination }
   } catch (error) {
     if (!applied) {
       const latest = (await readRuntime(context.root)).attempts[attempt.id]
@@ -1280,9 +1290,9 @@ export async function syncWork(options) {
       Object.assign(entry.operation, { candidate, sourceCommit: commit })
     })
     await git(context.cwd, ['worktree', 'add', '--detach', candidate, commit])
+    const specBefore = await lintSpec({ targetRoot: candidate })
     const file = await writeProgress(candidate, group, await readRuntime(context.root), commit)
-    const spec = await lintSpec({ targetRoot: candidate })
-    if (!spec.ok || spec.warnings.length) fail('진행 기록 후보의 spec 검증에 실패했습니다.', [...spec.errors, ...spec.warnings])
+    const specWarnings = await specGate(candidate, specBefore, '진행 기록 후보의 spec 검증에 실패했습니다.')
     await git(candidate, ['add', '--', 'spec/STATE.md', file])
     await git(candidate, ['commit', '-m', `Save progress for ${group.id}`])
     const savedCommit = await head(candidate)
@@ -1300,7 +1310,7 @@ export async function syncWork(options) {
     const pushed = await pushLanded(context, group, savedCommit)
     // A push that reached land now (an earlier one may have been refused) lands what was waiting.
     const coordination = pushed && !pushed.error ? await settleIntegrated(group, pushed) : null
-    return { schemaVersion: 1, work: group.id, commit: savedCommit, file, candidate: removed ? null : candidate, ...(pushed ? { pushed } : {}), ...(coordination ? { coordination } : {}) }
+    return { schemaVersion: 1, work: group.id, commit: savedCommit, file, candidate: removed ? null : candidate, ...(pushed ? { pushed } : {}), ...(specWarnings ? { specWarnings } : {}), ...(coordination ? { coordination } : {}) }
   } catch (error) {
     throw new SkillPackageError('진행 기록을 저장하지 못했습니다. 원본과 후보를 보존했습니다.', [candidate ?? '(후보 생성 전)', error.message, ...(error.details ?? [])])
   } finally {
@@ -1317,4 +1327,4 @@ export async function unlockWork(options) {
 }
 
 // Shared protocol primitives; only public lifecycle APIs are re-exported by index.mjs.
-export const workInternals = { repository, groupOf, attemptOf, noOperation, notIntegrating, requireStopped, destination, requireClean, assertWorkspace, checkWorker, head, clean, now, creator, fail, verify, commands, tierChecks, approvalHolds, groupVerification, groupReadiness, storedPolicy, pushLanded, briefFor }
+export const workInternals = { repository, groupOf, attemptOf, noOperation, notIntegrating, requireStopped, destination, requireClean, assertWorkspace, checkWorker, head, clean, now, creator, fail, verify, commands, tierChecks, approvalHolds, groupVerification, groupReadiness, storedPolicy, pushLanded, briefFor, specGate }

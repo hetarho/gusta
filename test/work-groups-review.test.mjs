@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
-import { startWork, claimWork, claimNextWork, inspectWork, updateWork, submitWork, integrateWork, workBoard } from '../src/work-groups.mjs'
+import { startWork, claimWork, claimNextWork, inspectWork, updateWork, submitWork, integrateWork, workBoard, workInternals } from '../src/work-groups.mjs'
 import { nextWork, claimReviewWaiting } from '../src/work-wait.mjs'
 import { claimReview, finishReview, releaseReview, resumeWork } from '../src/work-review.mjs'
 import { execute, cli, commit, checkFile, checks, fixture, implement, approve, ready, expandTasks } from './helpers/work-fixture.mjs'
@@ -178,4 +178,27 @@ test('백그라운드 통합이 실패하면 단위 소유자에게 수정 요�
   const next = await nextWork({ ...setup, work: group.id, owner: 'a' })
   assert.deepEqual([next.action, next.attempt.id, next.attempt.correction.findings[0].where], ['implement', attempt.id, 'integration'])
   assert.match(next.attempt.correction.findings[0].message, /never\.txt/)
+})
+
+test('통합은 기준에 이미 있던 spec 경고로 막히지 않고 그 수를 알린다', async (t) => {
+  const setup = await ready(t)
+  const state = path.join(setup.group.path, 'spec/STATE.md')
+  await writeFile(state, (await readFile(state, 'utf8')).replace('- level: expert', '- level: ?'))
+  await commit(setup.group.path, 'base already carries a lint warning')
+  const integrated = await integrateWork({ ...setup, attempt: setup.attempt.id, verify: checks })
+  assert.equal(integrated.status, 'integrated')
+  assert.equal(integrated.specWarnings, 1)
+})
+
+test('spec 관문은 오류와 후보가 더한 경고만 막는다', async (t) => {
+  const setup = await fixture(t)
+  const state = path.join(setup.root, 'spec/STATE.md')
+  await writeFile(state, (await readFile(state, 'utf8')).replace('- level: expert', '- level: ?'))
+  const { specGate } = workInternals
+  assert.equal(await specGate(setup.root, { warnings: ['cfg level이 ?입니다 — gusta-create-architecture 캘리브레이션 미완.'] }, 'gate'), 1)
+  const added = await specGate(setup.root, { warnings: [] }, 'gate').then(() => null, (error) => error)
+  assert.deepEqual(added?.details, ['cfg level이 ?입니다 — gusta-create-architecture 캘리브레이션 미완.'])
+  await writeFile(state, (await readFile(state, 'utf8')).replace('| T002 | second | ARCH | - | todo |\n', ''))
+  const broken = await specGate(setup.root, { warnings: ['cfg level이 ?입니다 — gusta-create-architecture 캘리브레이션 미완.'] }, 'gate').then(() => null, (error) => error)
+  assert.ok(broken?.details.some((line) => line.includes('T002')), JSON.stringify(broken?.details))
 })
