@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
-import { upgradeContext } from '../src/upgrade-context.mjs'
+import { upgradeContext, saveUpgradeContext } from '../src/upgrade-context.mjs'
 import { readSettings } from '../src/settings.mjs'
 
 const execute = promisify(execFile)
@@ -188,6 +188,26 @@ test('index pages share a deterministic snapshot and reject source drift instead
   for (const options of [{ limit: 0 }, { limit: Number.MAX_SAFE_INTEGER + 1 }, { offset: -1 }, { offset: 99 }]) await assert.rejects(upgradeContext({ targetRoot: root, ...options }, filesOnly))
 })
 
+test('--all hashes the tree once into a single page and --out writes it whole, one entry per line, returning only a summary', async (t) => {
+  const { root, directory, put } = await fixture(t)
+  const out = path.join(directory, 'inventory.json')
+  // An empty tree still gives valid JSON.
+  await saveUpgradeContext({ targetRoot: root, all: true, out }, filesOnly)
+  assert.deepEqual(JSON.parse(await readFile(out, 'utf8')).entries, [])
+  await put('one', 'First.'); await put('docs/two', 'Second.'); await put('three', 'Third.')
+  await put('node_modules/pkg/AGENTS.md', 'Dependency.')
+  let opens = 0
+  const all = await upgradeContext({ targetRoot: root, all: true }, { ...filesOnly, open: (...args) => { opens++; return open(...args) } })
+  assert.deepEqual([all.total, all.entries.length, all.limit, all.nextOffset, all.complete, opens], [4, 4, 4, null, true, 3])
+  const summary = await saveUpgradeContext({ targetRoot: root, all: true, out }, filesOnly)
+  assert.deepEqual(summary, { schemaVersion: 1, ok: true, out, snapshot: all.snapshot, total: 4, offset: 0, entries: 4, nextOffset: null,
+    inventoryComplete: true, dispositions: { candidate: 3, excluded: 1 }, errors: 0 })
+  const text = await readFile(out, 'utf8')
+  assert.deepEqual(JSON.parse(text), all)
+  for (const entry of all.entries) assert.ok(text.includes(`\n    ${JSON.stringify(entry)}`), entry.path)
+  for (const options of [{ limit: 1 }, { offset: 0 }]) await assert.rejects(upgradeContext({ targetRoot: root, all: true, ...options }, filesOnly), /--all/)
+})
+
 test('critical configuration parsing preserves the same UTF-8 bytes and errors as runtime settings', async (t) => {
   const { root, put } = await fixture(t)
   for (const value of ['\ufeff# SETTINGS\n- land: integration\n', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('# SETTINGS\n- land: integration\n', 'utf16le')])]) {
@@ -228,4 +248,9 @@ test('CLI emits read-only JSON inventory, supports paging and snapshot validatio
   await assert.rejects(run('--limit=0'), (error) => error.code === 1 && /--limit/.test(error.stderr))
   await put('new-document', 'More rules.')
   await assert.rejects(run('--snapshot', first.snapshot), (error) => error.code === 1 && /inventory가 바뀌었습니다/.test(error.stderr))
+  const out = path.join(path.dirname(root), 'inventory.json')
+  const summary = JSON.parse((await run('--all', `--out=${out}`)).stdout)
+  assert.deepEqual([summary.out, summary.total, summary.entries, summary.nextOffset], [out, 3, 3, null])
+  assert.equal(JSON.parse(await readFile(out, 'utf8')).snapshot, summary.snapshot)
+  await assert.rejects(run('--all', '--limit', '1'), (error) => error.code === 1 && /--all/.test(error.stderr))
 })

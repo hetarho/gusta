@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, rename, realpath, access } fro
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { execute, git } from './helpers/vibe-fixture.mjs'
+import { execute, git, machines } from './helpers/vibe-fixture.mjs'
 import { vibePlanSync, vibePlanPush } from '../src/vibe-plan.mjs'
 
 const STATE = `# STATE
@@ -152,4 +152,25 @@ test('cfg plan이 -이면 아무것도 하지 않는다', async (t) => {
   await git(one, 'commit', '-qam', 'opt out')
   assert.equal((await vibePlanSync({ targetRoot: one })).reason, 'plan-disabled')
   assert.equal((await vibePlanPush({ targetRoot: one })).reason, 'plan-disabled')
+})
+
+test('vibe task reserve hands each number out once: across devices through the remote, past this clone\'s unpublished tasks', async (t) => {
+  const { a, b } = await machines(t)
+  const { reserveTaskIds } = await import('../src/vibe-plan.mjs')
+  const first = await reserveTaskIds({ targetRoot: a, tag: 'aaaa', count: 2 })
+  assert.deepEqual([first.ids, first.published], [['T003', 'T004'], true])
+  // The other device has not fetched anything: the remote reservations still keep it off those numbers.
+  const second = await reserveTaskIds({ targetRoot: b, tag: 'bbbb' })
+  assert.deepEqual(second.ids, ['T005'])
+  // A task written in a worktree of this clone (not planned or pushed yet) counts too.
+  await writeFile(path.join(b, 'spec/tasks/T009.local.md'), '# T009 local\n')
+  assert.deepEqual((await reserveTaskIds({ targetRoot: b, tag: 'bbbb' })).ids, ['T010'])
+  await assert.rejects(reserveTaskIds({ targetRoot: a, tag: 'x' }), /--tag/)
+  // Once the plan branch has T003, its reservation goes (here and on the remote); T004 stays.
+  await writeFile(path.join(a, 'spec/tasks/T003.planned.md'), '# T003 planned\n'); await git(a, 'add', '-A'); await git(a, 'commit', '-qm', 'plan T003'); await git(a, 'push', '-q', 'origin', 'main')
+  const { pruneReservations } = await import('../src/vibe-plan.mjs')
+  const pruned = await pruneReservations({ targetRoot: a })
+  assert.ok(pruned.pruned.includes('refs/gusta/task-ids/T003') && pruned.pruned.some((ref) => ref.endsWith('/refs/gusta/task-ids/T003')), JSON.stringify(pruned))
+  assert.doesNotMatch(await git(a, 'ls-remote', 'origin', 'refs/gusta/task-ids/*'), /T003/)
+  assert.match(await git(a, 'ls-remote', 'origin', 'refs/gusta/task-ids/*'), /T004/)
 })

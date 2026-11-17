@@ -348,14 +348,14 @@ export async function runWork(options, deps = {}) {
       taskId: attempt.taskId, tasks: attempt.tasks ?? [attempt.taskId], lane: attempt.lane ?? null, workspace: job.workspace, groupBranch: group.branch,
       cliCommand: [process.execPath, fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))],
       boardCommand: ['work', 'board', '--work', group.id, '--json'],
-      verify, taskVerify, review: review ?? null, correction: attempt.correction ?? null,
+      verify, taskVerify, review: review ?? null, correction: attempt.correction ?? null, ...(role === 'worker' && current.agentChecks?.length ? { recordedAgentChecks: current.agentChecks } : {}),
       mode: autopilot ? 'autopilot' : 'pair', resume, directive, sessionFile: job.sessionFile, allowTools: role === 'worker' ? liveGroup.allowTools ?? [] : [], ...(role === 'worker' ? { permissionMode: mode } : {}), headlessMcp: mcp,
       ...(measurementRun ? { usageMeasurement: measurementRun } : {}),
       brief: role === 'worker' ? await briefFor(context, liveGroup, current).catch(() => null) : null, risk: role === 'reviewer' ? current.risk ?? null : null,
       instruction: role === 'worker'
-        ? 'Use gusta-implement-task. Implement only taskId (or fix review findings) in this workspace, run only affected checks, fill result, and commit. Full coverage runs once on the shared final candidate after all participating sessions are ready. Return JSON {"outcome":"completed","summary":"..."} and agentChecks for replaced E2E acceptance; without computer-use, preserve not-run with its reason for a capable host instead of adding E2E. The runner owns submit and dispatches the next lane task; do not submit, integrate, or claim another task. For a blocker return {"outcome":"blocked","summary":"reason"}; a planning decision may add decision with question/options/recommendation and committed partial work.'
+        ? 'Use gusta-implement-task. Implement only taskId (or fix review findings) in this workspace, run only affected checks, fill result, and commit. Full coverage runs once on the shared final candidate after all live participating sessions are ready. Return JSON {"outcome":"completed","summary":"..."} and agentChecks for replaced E2E acceptance (recordedAgentChecks: keep each id and its definition unless the task acceptance changed; update observations only); without computer-use, preserve not-run with its reason for a capable host instead of adding E2E. The runner owns submit and dispatches the next lane task; do not submit, integrate, or claim another task. For a blocker return {"outcome":"blocked","summary":"reason"}; a planning decision may add decision with question/options/recommendation and committed partial work.'
         : 'Use gusta-review-task. Review the pinned commit against baseCommit, every task in tasks, and SSOT. Do not edit or commit. Return JSON {"verdict":"approved|changes_requested","summary":"...","findings":[{"priority":"P1|P2|P3","where":"file:line","message":"..."}]}. The runner owns review-finish.' }
-    if (config.kind === 'builtin' && role === 'worker') payload.instruction = 'Use gusta-implement-task to edit and verify only taskId with affected checks. Shared full coverage runs once after all participating sessions are ready. Do not commit or submit; the host runner owns scope validation, commit, submit and next lane task. Return outcome completed|blocked, summary, decision and agentChecks. Agent checks replace selected E2E; without computer-use return honest not-run with reason and integration-stage host handoff, never an additional automated suite.'
+    if (config.kind === 'builtin' && role === 'worker') payload.instruction = 'Use gusta-implement-task to edit and verify only taskId with affected checks. Shared full coverage runs once after all live participating sessions are ready. Do not commit or submit; the host runner owns scope validation, commit, submit and next lane task. Return outcome completed|blocked, summary, decision and agentChecks (recordedAgentChecks: keep each id and its definition unless the task acceptance changed; update observations only). Agent checks replace selected E2E; without computer-use return honest not-run with reason and integration-stage host handoff, never an additional automated suite.'
     const file = createWriteStream(log, { flags: 'a', mode: 0o600 })
     // A log write failure must not end the dispatch. The record never holds log content (it reaches
     // coordinator output): only the adapter's last plain stderr line, as the failure reason.
@@ -453,13 +453,17 @@ export async function runWork(options, deps = {}) {
       else {
         if (result.outcome !== 'completed' && result.decision?.question) return await fileDecision(job, result)
         if (result.outcome !== 'completed') fail(result.summary || 'worker did not complete')
-        if (config.kind === 'builtin') await commitWorkerWork({ ...options, attempt: job.attempt, expectedHead: job.expectedHead, signal: abort.signal })
-        await submitWork({ ...options, attempt: job.attempt, verify: taskVerify, signal: abort.signal })
+        // Recorded before the submission, so a conflicting ID blocks it with the differing fields
+        // instead of failing after the work was submitted. The attempt's own earlier IDs may be
+        // redefined by its latest report (a planning change to that criterion); another attempt's may not.
         if (result.agentChecks?.length) await transaction(context.root, (state) => {
           const entry = attemptOf(state, job.attempt), current = groupOf(state, entry.group)
-          entry.agentChecks = mergeAgentAcceptance(entry.agentChecks ?? [], result.agentChecks)
-          current.agentChecks = mergeAgentAcceptance(current.agentChecks ?? [], result.agentChecks)
+          const owned = (entry.agentChecks ?? []).map((check) => check.id)
+          entry.agentChecks = mergeAgentAcceptance(entry.agentChecks ?? [], result.agentChecks, { owned })
+          current.agentChecks = mergeAgentAcceptance(current.agentChecks ?? [], result.agentChecks, { owned })
         })
+        if (config.kind === 'builtin') await commitWorkerWork({ ...options, attempt: job.attempt, expectedHead: job.expectedHead, signal: abort.signal })
+        await submitWork({ ...options, attempt: job.attempt, verify: taskVerify, signal: abort.signal })
       }
     } catch (error) {
       job.resultError = error.message

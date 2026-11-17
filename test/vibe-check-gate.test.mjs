@@ -53,3 +53,18 @@ test('the loop host repairs on its own and workers and reviewers stay off the fu
   await assert.rejects(runVibeCheck({ targetRoot: root, tier: 'batch' }, 'node --version'), /조정자\/호스트/)
   await assert.rejects(runVibeCheck({ targetRoot: root, tier: 'group', env: { GUSTA_VIBE_UNIT: '1' } }, 'node --version'), /조정자\/호스트/)
 })
+
+test('vibe check -- keeps each argument whole: sh -c with a cd runs in that directory', async (t) => {
+  const { root } = await fixture(t)
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const { fileURLToPath } = await import('node:url')
+  await mkdir(path.join(root, 'module'), { recursive: true })
+  const cli = fileURLToPath(new URL('../bin/gusta.mjs', import.meta.url))
+  const run = (...words) => promisify(execFile)(process.execPath, [cli, 'vibe', 'check', '--tier', 'task', '--no-cache', '--target', root, '--', ...words], { encoding: 'utf8' })
+  await run('sh', '-c', "cd module && pwd > ../where.txt && echo 'it''s'")
+  assert.equal((await readFile(path.join(root, 'where.txt'), 'utf8')).trim(), await (await import('node:fs/promises')).realpath(path.join(root, 'module')))
+  // One word stays a shell command string, as before.
+  await run('cd module && pwd > ../single.txt')
+  assert.match(await readFile(path.join(root, 'single.txt'), 'utf8'), /module/)
+})

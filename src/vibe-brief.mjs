@@ -37,6 +37,12 @@ const gateLine = (line) => GATE.test(line) && CHECKS.test(line)
 // excluded: verification blocks left out of the guidance and why (open or rejected).
 // decision: the [o] decision that labels the tiers, else the first [o] verification one, else null
 // (what a tier change revises: the lint hint, the loop's slow-check suggestion).
+// What a task pulls into its brief itself: its own text and the decisions it cites, requires or is
+// canonical for (directly or through changes since its base) — the part splitting it can shrink.
+const DIRECT = new Set(['cited', 'root', 'changed', 'canonical', 'requires'])
+const taskChars = (brief) => [...brief.tasks.map((task) => task.content), ...brief.decisions.filter((entry) => entry.via.some((via) => DIRECT.has(via.kind))).map((entry) => entry.text)]
+  .reduce((sum, text) => sum + text.length, 0)
+
 export function verificationTiers(markdown) {
   const lines = sections(markdown).get('decisions') ?? []
   const keyword = scanTiers(lines, false)
@@ -44,7 +50,8 @@ export function verificationTiers(markdown) {
 }
 
 function scanTiers(lines, withGate) {
-  const result = { task: [], batch: [], ci: [], guidance: [], declared: false }
+  // prepare: what a fresh worktree runs once before any check (an offline install); not a tier.
+  const result = { task: [], batch: [], ci: [], prepare: [], guidance: [], declared: false }
   const excluded = []
   const blocks = []
   for (const line of lines) {
@@ -73,10 +80,10 @@ function scanTiers(lines, withGate) {
         continue
       }
       // A gate-only block is prose for the reader: its lines never become tier commands.
-      const label = verification && line.match(/^\s*-\s*(task|batch|CI|태스크|묶음|push 전)(?=[,:\s])/i)
+      const label = verification && line.match(/^\s*-\s*(task|batch|CI|prepare|태스크|묶음|준비|push 전)(?=[,:\s])/i)
       if (label) {
-        tier = /^(task|태스크)$/i.test(label[1]) ? 'task' : /^(ci)$/i.test(label[1]) ? 'ci' : 'batch'
-        labels.add(tier)
+        tier = /^(task|태스크)$/i.test(label[1]) ? 'task' : /^(ci)$/i.test(label[1]) ? 'ci' : /^(prepare|준비)$/i.test(label[1]) ? 'prepare' : 'batch'
+        if (tier !== 'prepare') labels.add(tier)
         if (id) labelled.push(id)
         const colon = line.indexOf(':', label[0].length)
         if (colon >= 0 && tier !== 'ci') {
@@ -94,7 +101,7 @@ function scanTiers(lines, withGate) {
   result.partial = labels.size > 0 && !result.declared
   result.excluded = excluded
   result.decision = labelled[0] ?? decisions[0] ?? null
-  for (const name of ['task', 'batch', 'ci']) result[name] = [...new Set(result[name])]
+  for (const name of ['task', 'batch', 'ci', 'prepare']) result[name] = [...new Set(result[name])]
   return result
 }
 
@@ -178,7 +185,7 @@ export async function vibeBrief(options = {}) {
     reading: 'This brief is the reading scope: whole decision blocks the task cites or needs, global rules, flow·constraints and changes since a stale base. Do not re-read STATE, FORMAT or ARCH in full. Open an original only for what issues, unfollowed or related name and the task needs.',
     ...brief,
     // Planning's one-session size check (gusta-create-task 3): over[] names what to split along.
-    size: { ...brief.size, budget: taskBudget({ briefChars: brief.size.chars, touches: task?.touches ?? [] }) } }
+    size: { ...brief.size, budget: taskBudget({ briefChars: brief.size.chars, taskChars: taskChars(brief), touches: task?.touches ?? [] }) } }
   return view ? briefView(result, options) : result
 }
 

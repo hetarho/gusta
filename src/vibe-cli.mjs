@@ -16,17 +16,25 @@ import { SkillPackageError } from './errors.mjs'
 import { vibeIntegration, openSessionWorkspace } from './integration-run.mjs'
 
 const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
-  vibe session open --kind start|self-improve|self-improve-remote --tag <tag>
-                                                전용 하위 브랜치·worktree를 준비하고 root를 반환. 계획·구현은 그 경로에서만
-  vibe integration status|ready|finish --tag <tag> [--token <token>]
-                                                모든 참여 세션의 준비 뒤 고정 후보에서 전체 검수 한 번. 늦은 세션은 다음 통합
+  vibe session open --kind start|self-improve|self-improve-remote --tag <tag> [--from-head]
+                                                전용 하위 브랜치·worktree를 준비하고 root를 반환. 계획·구현은 그 경로에서만.
+                                                같은 checkout에서 같은 kind·tag로 다시 열면 그 세션을 created:false로 돌려준다.
+                                                원래 checkout에 미커밋 변경이 있으면 거절, --from-head면 HEAD에서 열고 빠진 파일을 excluded로
+  vibe integration status|ready|finish --tag <tag> [--token <token>] [--no-push]
+                                                살아 있는 참여 세션의 준비 뒤 고정 후보에서 전체 검수 한 번. 늦은 세션은 다음 통합.
+                                                finish --no-push: 검수 뒤 로컬 land에만 반영(held). 다음 finish·push가 검증된 그대로 발행
+  vibe integration close --tag <tag> [--reason <text>]
+                                                이 checkout 세션의 참여 닫기(vibe beat --end가 함께 한다): 변경 없으면 withdrawn, 있으면 paused
+  vibe integration withdraw --participant <id> [--reason <text>]
+                                                소유자의 명시적 참여 중단(끝났지만 ready를 내지 않을 세션, 관문 밖에서 반영된 세션). 브랜치·head는 그대로,
+                                                head가 이미 land에 있으면 landed(관문 밖·미검증)로 기록. 그 worktree의 ready가 다시 참여시킨다
   vibe integration accept --file <JSON>       computer-use 호스트의 정확한 후보별 AC 관측·증거 제출; finish는 전체 검수 없이 재개
   vibe integration repair --token <token> --target <candidate worktree>
                                                 실패·영향 범위만 수정해 커밋한 후보. 원래 cohort·마감과 성공 캐시 유지
   vibe loop --tag <tag> [--max-units 100] [--max-hours 8]
     [--deadline <ISO>] [--final-reserve-hours <measured>] [--batch-size 3] [--permission-mode bypass|acceptEdits] [--allow-tool <rule> ...]
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
-    [--tasks 'T001 T002'] [--timeout-ms 3600000] [--provider claude|codex [--model <name>]] [--effort low|medium|high|xhigh|max|ultra]
+    [--tasks 'T001 T002' | --request-file <path>] [--timeout-ms 3600000] [--provider claude|codex [--model <name>]] [--effort low|medium|high|xhigh|max|ultra]
                                                 단위마다 도구·모델·에포트를 CLI가 정한다: 태스크 run:을 SETTINGS agents 안에서(못 쓰면 score가
                                                 가장 가까운 조합, 없으면 agents 첫 도구의 기본 설정), 회복·수정 단위는 그보다 낮추지 않음. dry-run의 routing이
                                                 태스크별 배정. --provider/--model/--effort는 사람이 실행 전체를 고정할 때만. agents 미정이면 needs-init
@@ -34,6 +42,7 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 첫 리셋이 작업 시간 안이면 모델 호출 없이 대기, 아니면 reason usage-limit(hint에 도구·리셋 시각)
                                                 끝 예약(실측 전체 검증+영향 범위 수정 단위+CI)에는 새 단위 없이 공유 통합 관문·수정
                                                 --tasks: 그 태스크(와 이번 실행이 그것을 위해 만든 태스크)만, 끝나면 마감 관문
+                                                --request-file <path>: 그 요청을 첫 단위가 기획(SSOT·태스크·plan-push)하고, 만든 태스크와 그 dep만 실행
                                                 기존 --push-each-unit도 통합 대상 반영은 세션 전체의 공유 마감까지 보류한다
                                                 --timeout-ms: 단위 하나의 상한(explore는 timebox+30분). 넘기면 미커밋 변경을
                                                 스냅샷해 새 단위가 이어받고, 다시 넘기면 쪼개고, 그래도 넘기면 주차. loop는 계속
@@ -42,9 +51,13 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
   vibe loop --tag <tag> --configure [--deadline <ISO>] [--final-reserve-hours <n>] [--push-each-unit|--no-push-each-unit] [--wait-ms <ms>]
                                                 현재 단위 완료 후 같은 호스트에 설정 적용; receipt로 적용 확인
   vibe loop --tag <tag> --status               heartbeat·요청/적용 설정·운영 오류 확인
+  vibe loop --tag <tag> --wait-event unit-finished,needs-judgment,finished [--after <cursor>] [--wait-ms 3300000]
+                                                모델 호출 없이 그 사건(또는 종료·대기 끝)까지 기다려 사건 한 줄과 cursor를 돌려준다.
+                                                진행 보고: 백그라운드로 걸어 두고, 돌아올 때마다 한 줄 보고 후 --after <cursor>로 다시 건다
   vibe loop --tag <tag> --recover-metadata     종료된 호스트의 정확히 소유한 메타데이터만 복구; 작업 재시작 없음
   vibe ci wait [--commit HEAD] [--branch <branch>] [--repo owner/repo]
     [--diff-base <sha>] [--timeout-ms 3600000] [--no-run-ms 120000] [--poll-ms 15000]
+                                                실행이 보이지 않으면 통과가 아니라 unchecked(no-run-within-grace). 공개 페이지로만 읽으면 기본 대기 10분
   vibe brief <T###|ID-n|ID|ID@rev ...> [--ref <commit>] [--deep] [--diff-base <task-start-sha>] [--json]
     [--summary | --section tasks|decisions|sections|history|refs|referrers|inbox|issues|guidance] [--offset <n>] [--limit 20] [--snapshot <sha256>]
                                                 결정 원문 블록·필수 의존·전역 규칙·flow·constraints·stale base 이후 chg.
@@ -64,14 +77,15 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 트리·커밋이 필요 없고 작업 트리는 그대로다. 원격이 있고 coord-push가 켜져 있으면
                                                 바로 올린다 — 다른 기기가 먼저 올렸으면 실패(lost), 원격에 닿지 못하면 로컬 선점은
                                                 유지하고 unpublished:true. --task 없으면 세션 등록만
-  vibe push [--wait-ci] [--diff-base <sha>] [--verified-commit <sha>]
+  vibe push [--tag <tag>] [--wait-ci] [--diff-base <sha>] [--verified-commit <sha>]
                                                 끝난 작업을 spec/SETTINGS.md land로 반영: push true면 sync 후 원격 push,
                                                 false면 로컬 land 브랜치 병합, land-via pr이면 이 브랜치 push+PR. 할 일 없으면 none.
-                                                verified-commit 이후 코드가 바뀌면 재검증 필요
+                                                verified-commit 이후 코드가 바뀌면 재검증 필요. tag 기본값은 이 세션 worktree의 tag
   vibe deploy [--wait-ci]                       '배포해줘': deploy 브랜치를 land로 fast-forward (push true면 원격). 갈라졌으면 거절
                                                 SETTINGS version auto면 운영 브랜치(deploy, 없으면 land)가 전진할 때 push·deploy가
                                                 버전 커밋을 얹고 결과 version에 {from,to,level} 또는 {skipped}를 싣는다
   vibe beat --tag <tag> [--mode pair|autopilot] [--doing <T###|->] [--host <name>] [--end]
+                                                --end는 이 세션의 통합 참여도 닫는다(변경 없으면 withdrawn, 있으면 paused — ready·withdraw 전까지 관문을 잡는다)
                                                 조정 브랜치의 이 세션 행(브랜치·현재 커밋 포함) 쓰기·갱신·삭제 — 커밋할 것 없음.
                                                 세션 시작·끝과 doing·커밋이 바뀐 갱신은 올리고, at만 바뀐 갱신은 커밋하지 않는다(행이 30분 넘게
                                                 묵었을 때만 생존 신호로 남긴다).
@@ -79,6 +93,8 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 없는 git 저장소에서도 조정 브랜치에 쓴다(행의 커밋은 -). git 저장소가 아닌 대상만 STATE에 쓴다
   vibe task start T### --tag <tag>              단독 선점: 태스크·STATE 행을 doing@날짜.tag로(커밋은 호출자). 등록된 세션이면
                                                 조정 브랜치에서 먼저 선점하고 거절되면 쓰지 않는다. todo·dep 완료만
+  vibe task reserve --tag <tag> [--count 1]     다음 태스크 번호를 한 번만 내준다: 기획 브랜치(원격)·이 clone의 모든 worktree·다른 기기의 예약보다 큰 번호.
+                                                예약은 생성 전용 ref(refs/gusta/task-ids/T###)로 원격에도 원자적으로 — 손 채번 대신 쓴다
   vibe task done T### --tag <tag> [--at <sha|ref>] [--force-other]
                                                 done@날짜·tasks/done/ 이동·STATE 행 삭제·next (커밋은 호출자). 조정 브랜치에는
                                                 unlanded 행(land에 들어갈 때까지 다른 세션이 다시 집지 않게)과 log 한 줄.
@@ -138,29 +154,50 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 (probe는 agents 첫 도구의 가장 싼 조합). agents 미정이면 reason needs-init, probe 없음
   vibe awake [--hours <n>] | --stop             macOS caffeinate로 절전 방지
   vibe check [--plan <JSON file>] [--tier task|batch] [--tag <tag>] [--diff-base <task-start-sha>] [--task T###] [--timeout-ms <ms>] [--heavy] [--no-cache] [--allow-final] [-- <command>]
-                                                명령을 생략하면 ARCH plan의 해당 단계를 실행하고 유효한 성공 항목을 재사용
+                                                명령을 생략하면 ARCH plan의 해당 단계를 실행하고 유효한 성공 항목을 재사용.
+                                                -- 뒤 인자 하나는 셸 명령 문자열, 여럿이면 실행 파일과 인자(경계 보존: -- sh -c 'cd mod && go test ./...')
                                                 batch/group은 조정자 전용·자동 heavy 락. --allow-final은 명시적 예외만
 공통: --target <path>, --remote <name>. 출력은 JSON(brief는 기본 마크다운, sketch는 --json 없으면 한 줄). check는 요약·실패 이름·마지막 8줄·전체 로그 경로만 출력.
 `
 
 const allowed = {
-  session: ['kind', 'tag', 'branch', 'base', 'path'], integration: ['tag', 'token', 'file', 'reason', 'remote', 'timeout-ms', 'verify'],
-  loop: ['tag', 'provider', 'model', 'effort', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command'],
+  session: ['kind', 'tag', 'branch', 'base', 'path'], integration: ['tag', 'token', 'file', 'reason', 'remote', 'timeout-ms', 'verify', 'participant'],
+  loop: ['tag', 'provider', 'model', 'effort', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command', 'request-file', 'wait-event', 'after'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref', 'section', 'offset', 'limit', 'snapshot'], format: ['section'],
-  status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote'], 'plan-push': ['remote', 'commit'], push: ['remote', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host', 'remote'],
-  claim: ['tag', 'task', 'mode', 'host', 'remote'], task: ['tag', 'at'], inbox: ['tag', 'kind', 'ref', 'text', 'file', 'line', 'id', 'log', 'remote'], log: ['tag', 'text', 'file', 'remote'],
+  status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote', 'tag'], 'plan-push': ['remote', 'commit', 'tag'], push: ['remote', 'tag', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host', 'remote'],
+  claim: ['tag', 'task', 'mode', 'host', 'remote'], task: ['tag', 'at', 'count', 'remote'], inbox: ['tag', 'kind', 'ref', 'text', 'file', 'line', 'id', 'log', 'remote'], log: ['tag', 'text', 'file', 'remote'],
   checkpoint: ['tag', 'message', 'remote', 'next'], prune: ['tag', 'work', 'remote'], settings: ['set'], usage: ['tag', 'session', 'marker', 'project-dir'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
   awake: ['hours', 'remote'], check: ['plan', 'tier', 'tag', 'diff-base', 'task', 'timeout-ms'], design: ['tag', 'scope', 'verify', 'timeout-ms'],
   ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'reuse', 'from', 'shared-file', 'scaffold-prompt', 'scaffold', 'variant', 'approach', 'prompt-file', 'prompt-dir', 'follow-up-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
   sketch: ['port', 'ttl-ms'],
 }
-const flags = { task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], inbox: ['no-fetch'], log: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'], sketch: ['all'] }
+const flags = { session: ['from-head'], integration: ['no-push'], task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], inbox: ['no-fetch'], log: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'], sketch: ['all'] }
 const actions = { session: (options) => { if (options.step !== 'open') throw new SkillPackageError('vibe session open --kind <kind> --tag <tag>'); return openSessionWorkspace(options) }, integration: vibeIntegration, loop: vibeLoop, ci: vibeCIWait, brief: vibeBrief, format: vibeFormat, status: vibeStatus, sync: vibeSync, 'plan-sync': vibePlanSync, 'plan-push': vibePlanPush, push: vibePush, deploy: vibeDeploy, claim: vibeClaim, beat: vibeBeat, task: vibeTask, inbox: vibeInbox, log: vibeLog, checkpoint: vibeCheckpoint, prune: vibePrune, settings: vibeSettings, usage: vibeUsage, preflight: vibePreflight, awake: vibeAwake, design: vibeDesign,
   ab: (options) => { if (!Object.hasOwn(AB_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe ab <${Object.keys(AB_STEPS).join('|')}> <slug>`); return AB_STEPS[options.step](options) },
   sketch: (options) => { if (!Object.hasOwn(SKETCH_STEPS, options.step ?? '')) throw new SkillPackageError(`vibe sketch <${Object.keys(SKETCH_STEPS).join('|')}>`); return SKETCH_STEPS[options.step](options) } }
 
+// Top-level gusta commands a session may reach for under vibe by mistake.
+const TOP_LEVEL = ['lint', 'board', 'context', 'work', 'agents', 'migrate', 'outdated', 'install', 'agent-block', 'upgrade-context']
+const shellWord = (word) => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`
+
+// `vibe <command> --help`: that command's entries (each `  vibe <command>` line and the lines
+// indented under it) and the common line; the whole help when the command has none.
+export function commandHelp(command) {
+  const blocks = [], lines = HELP.split('\n')
+  for (const line of lines) {
+    if (/^ {2}vibe \S/.test(line)) blocks.push([line])
+    else if (/^ {3,}\S/.test(line) && blocks.length) blocks.at(-1).push(line)
+    else blocks.push(null)
+  }
+  const own = blocks.filter((block) => block && (block[0].startsWith(`  vibe ${command} `) || block[0] === `  vibe ${command}`))
+  return own.length ? `${own.map((block) => block.join('\n')).join('\n')}\n${lines.find((line) => line.startsWith('공통:'))}\n` : HELP
+}
+
 export async function runVibeCLI(args) {
-  if (!args.length || args.includes('--help') || args.includes('-h')) { process.stdout.write(HELP); return }
+  // Words after `--` belong to the checked command (vibe check -- tool --help).
+  const own = args.includes('--') ? args.slice(0, args.indexOf('--')) : args, asked = own.includes('--help') || own.includes('-h')
+  if (!args.length || (asked && (args[0].startsWith('-') || !Object.hasOwn(allowed, args[0])))) { process.stdout.write(HELP); return }
+  if (asked) { process.stdout.write(commandHelp(args[0])); return }
   const action = args.shift()
   // Git calls the merge driver with three file paths and reads the exit code.
   if (action === 'merge-state') {
@@ -168,7 +205,7 @@ export async function runVibeCLI(args) {
     if (result.conflicts.length) { process.stderr.write(`STATE 충돌: ${result.conflicts.join(', ')}\n`); process.exitCode = 1 }
     return
   }
-  if (!Object.hasOwn(allowed, action)) throw new SkillPackageError(`알 수 없는 vibe 명령: ${action}`)
+  if (!Object.hasOwn(allowed, action)) throw new SkillPackageError(TOP_LEVEL.includes(action) ? `${action}은(는) vibe 하위 명령이 아닙니다: gusta ${action} (vibe 없이, 같은 실행 경로로)` : `알 수 없는 vibe 명령: ${action}`)
   if (action === 'ci' && args.shift() !== 'wait') throw new SkillPackageError('vibe ci wait [옵션]')
   const options = {}
   if (action === 'brief') while (args[0] && !args[0].startsWith('--')) (options.roots ??= []).push(args.shift())
@@ -178,7 +215,9 @@ export async function runVibeCLI(args) {
   let command = null
   while (args.length) {
     const argument = args.shift()
-    if (argument === '--') { command = args.splice(0).join(' '); break }
+    // One word after -- is a shell command string; several are one program and its arguments,
+    // each quoted so the shell hands them over with their boundaries (sh -c '<script>' stays one).
+    if (argument === '--') { const words = args.splice(0); command = words.length === 1 ? words[0] : words.map(shellWord).join(' '); break }
     if (argument === '--json') { options.json = true; continue }
     const key = argument.slice(2)
     if (argument.startsWith('--') && flags[action]?.includes(key)) {

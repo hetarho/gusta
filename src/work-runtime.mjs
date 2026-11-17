@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile, rename, rm, realpath, access } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { SkillPackageError } from './errors.mjs'
 import { recordProgress } from './work-progress.mjs'
 
@@ -100,4 +100,11 @@ export async function canonicalDestination(destination) {
   // Do not create the destination itself: git worktree add must own its creation.
   await mkdir(path.dirname(destination), { recursive: true })
   return path.join(await realpath(path.dirname(destination)), path.basename(destination))
+}
+
+// Where the CLI puts a worktree it creates: beside the main checkout, one folder per clone — never
+// inside a checkout or the Git directory (tools such as Vite refuse files under .git).
+export function worktreeHome(workspace, fallback) {
+  const main = workspace.git.worktrees.find((tree) => !tree.bare)?.path ?? fallback ?? workspace.git.root
+  return path.join(path.dirname(main), '.gusta-worktrees', `${path.basename(main)}-${createHash('sha256').update(workspace.git.commonDir).digest('hex').slice(0, 8)}`)
 }

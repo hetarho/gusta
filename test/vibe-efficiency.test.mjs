@@ -41,7 +41,9 @@ test('task size and run: brief --json carries size.budget, status remaining and 
   const six = 'src/a.ts src/b.ts src/c.ts src/d.ts src/e.ts src/f.ts test/a.test.ts'
   await writeFile(file, (await readFile(file, 'utf8')).replace('touches:src/', `touches:${six} | run:claude/sonnet@high`))
   const brief = await vibeBrief({ targetRoot: root, task: 'T001' })
-  assert.deepEqual(brief.size.budget, { briefChars: brief.size.chars, touches: 6, limits: { briefChars: 40000, touches: 5 }, over: ['touches'] })
+  const { taskChars, contextChars, ...budget } = brief.size.budget
+  assert.deepEqual(budget, { briefChars: brief.size.chars, touches: 6, limits: { briefChars: 40000, touches: 5 }, over: ['touches'] })
+  assert.ok(taskChars > 0 && taskChars + contextChars === brief.size.chars)
   assert.deepEqual((await vibeBrief({ targetRoot: root, task: 'T002' })).size.budget.over, [])
   const status = await vibeStatus({ targetRoot: root, fetch: false })
   assert.deepEqual(status.remaining.map((task) => [task.id, task.run]), [['T001', 'claude/sonnet@high'], ['T002', undefined]])
@@ -164,4 +166,11 @@ test('a final check cannot pass on dirty input or code changed while it ran', as
   assert.equal(result.stale, true)
   assert.equal(result.exitCode, 1)
   await assert.rejects(runVibeCheck({ targetRoot: root, tier: 'batch' }, 'node --version'), /커밋하세요/)
+})
+
+test('budget over[] counts only what the task pulls in itself, never the context every task gets', async () => {
+  const { taskBudget } = await import('../src/work-policy.mjs')
+  const context = taskBudget({ briefChars: 178000, taskChars: 9000, touches: ['src/a.ts'] })
+  assert.deepEqual([context.over, context.contextChars], [[], 169000])
+  assert.deepEqual(taskBudget({ briefChars: 90000, taskChars: 41000, touches: [] }).over, ['briefChars'])
 })

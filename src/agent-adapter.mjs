@@ -9,7 +9,8 @@ import { OPTIONAL_FLAGS, STRICT_MCP } from './work-providers.mjs'
 import { AGENT_CONFIG } from './constants.mjs'
 import { usageCollector, persistUsage } from './usage-measurement.mjs'
 import { classifyFailure } from './provider-limits.mjs'
-import { AGENT_CHECK_SCHEMA, validateAgentAcceptance } from './agent-acceptance.mjs'
+import { AGENT_CHECK_SCHEMA, validateAgentAcceptance, expandCandidates, salvageAgentChecks } from './agent-acceptance.mjs'
+import { git } from './workspace.mjs'
 
 const fail = (message) => { throw new SkillPackageError(message) }
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
@@ -121,7 +122,7 @@ const CONFINE = 'Write only inside this workspace, your own git worktree (scratc
 // The owner's inbox and the log are not in the tree: one CLI call writes a line to the coordination
 // branch, with nothing to commit. One command per call (a compound command opens a permission prompt).
 const INBOX = "with one call of cliCommand vibe inbox add --kind decided|parked --ref <T###|ID-n> --text '<one line>' (a line holding quotes, backticks or | goes into a file in the session temp folder, passed with --file instead of --text; nothing to commit)"
-const TASK_CHECKS = 'Run the task-tier checks of the changed scope (added/changed/affected unit tests, the ARCH task commands) once, when the edits are done and before any commit, with vibe check --tier task (a passed tree is cached); never after each edit, and after a failure rerun only what failed. Reuse existing behavioral evidence; add a small deterministic test only for a real gap. Keep automated e2e minimal and browser compatibility in CI for declared supported browsers. Computer-use agent acceptance replaces selected e2e coverage, never adds another suite over it. Return agentChecks with scenario/steps/expected/observed/evidence/status and replacement IDs; a tool-less unit returns integration-stage not-run with reason and host owner, never a fabricated pass or extra e2e fallback. The capable host tests its fixed candidate and reports the checklist for the user to review missing or incorrect criteria. Leave builds, integration and full suites to one shared final gate after participating sessions are ready. Classify tests by their isolation and dependencies, not their script names. Use small fixtures for unit tests; record deferred commands/specs in result limits and never report unrun checks as passed.'
+const TASK_CHECKS = 'Run the task-tier checks of the changed scope (added/changed/affected unit tests, the ARCH task commands) once, when the edits are done and before any commit, with vibe check --tier task (a passed tree is cached); never after each edit, and after a failure rerun only what failed. Reuse existing behavioral evidence; add a small deterministic test only for a real gap. Keep automated e2e minimal and browser compatibility in CI for declared supported browsers. Computer-use agent acceptance replaces selected e2e coverage, never adds another suite over it. Return agentChecks with scenario/steps (at least one)/expected/observed/evidence/status and replacement IDs, candidate null unless you observed an integration candidate (then its full SHA); a tool-less unit returns integration-stage not-run with reason and host owner, never a fabricated pass or extra e2e fallback. The capable host tests its fixed candidate and reports the checklist for the user to review missing or incorrect criteria. Leave builds, integration and full suites to one shared final gate after live participating sessions are ready. Classify tests by their isolation and dependencies, not their script names. Use small fixtures for unit tests; record deferred commands/specs in result limits and never report unrun checks as passed.'
 
 // The brief reaches the model as markdown ahead of the assignment JSON: inside JSON every newline
 // and quote of the decision text would be escaped. The payload adapters receive is unchanged.
@@ -133,8 +134,9 @@ function splitBrief(job) {
 
 // What a recovery unit inherits: the blocker, the unfinished attempt the host kept aside, or the
 // spec close the host's gate rejected.
-export function recoveryText(recovery, tag = '<tag>') {
+export function recoveryText(recovery, tag = '<tag>', root = AGENT_CONFIG.claude.root) {
   if (!recovery) return ''
+  if (recovery.reason === 'request') return `\nRequest planning unit: the owner asked for the request below; the host has shown its reading. Turn it into one planning slice only, by gusta-start references/request.md section 3 (Read ${root}/gusta-start/references/request.md): vibe plan-sync, gusta-update-ssot (or gusta-create-ssot for a new domain), then gusta-create-task, a spec/-only planning commit and vibe plan-push. What the request states is the owner's decision; fill only its gaps with recommendations recorded as inbox decided, and park billing, data deletion, privacy or security gaps. Do not implement: the host runs the tasks you create in the next units. Return kind planning, id the created task IDs separated by spaces, outcome completed (or parked when nothing could be planned).\n\nRequest:\n${recovery.request}`
   const { taskId: id, snapshot } = recovery
   if (recovery.reason === 'spec-gate') return `\nSpec repair unit for ${id}: it was reported completed, but the host's spec check failed: ${(recovery.violations ?? []).join('; ')}. Keep the committed code; do not reimplement it. Repair only the listed evidence. Preserve a valid dated archive and its acceptance/result history: if it is already complete, fix only a stale STATE row, lint or report identity rather than reopening it. Only when archive/lifecycle evidence is missing or invalid, restore the task under spec/tasks/ and its STATE row as todo, run cliCommand vibe task start ${id} --tag ${tag}, check acceptance with [v] and fill the four result lines (outcome, at, verified, limits) from evidence, then close with cliCommand vibe task done ${id} --tag ${tag}. Run spec lint and commit the scoped repair. Return kind task, id ${id}, outcome completed; the host checks again and parks ${id} if it still fails.`
   const kept = snapshot ? ` The previous attempt's uncommitted changes are snapshot ${snapshot.commit} on top of ${snapshot.base}; the tree was reset to HEAD. List them with \`git diff --stat ${snapshot.base} ${snapshot.commit}\` and restore what is worth keeping with \`git checkout ${snapshot.commit} -- <paths>\`.` : ''
@@ -148,7 +150,7 @@ export const skillBody = (text) => text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n+
 
 const bundledSkill = async (name) => skillBody(await readFile(new URL(`../skills/${name}/SKILL.md`, import.meta.url), 'utf8'))
 // A split or blocked recovery rewrites the task as planning; any other unit with a task implements it.
-const PLANNING_RECOVERY = ['split', 'blocked-task']
+const PLANNING_RECOVERY = ['split', 'blocked-task', 'request']
 const unitTask = (job) => PLANNING_RECOVERY.includes(job.recovery?.reason) ? null : job.brief?.taskId ?? job.recovery?.taskId ?? null
 
 // Unit sessions have no Skill tool: gusta-start (and gusta-implement-task for a task unit) ride in the
@@ -171,7 +173,7 @@ export async function agentPrompt(job, provider = 'claude') {
     const skill = await bundledSkill('gusta-start')
     const routed = await unitSkills(job, provider)
     const autonomy = `Autopilot delegates reversible planning and technical decisions to you. Do not wait for a person or park work merely because a decision is needed. Apply the recommended option through gusta-update-ssot and gusta-create-task when needed, record question/choice/alternatives/reason in the owner's inbox ${INBOX}, and leave the task runnable for the next unit. You may reorder unstarted tasks to bring an already-approved prerequisite or CI fix forward after checking real dependencies and touches; update task and STATE deps together. Preserve acceptance criteria and verification gates. Park only the affected work when it needs unavailable access, explicit authorization for irreversible/external effects, or a billing, data-deletion, privacy or security-policy decision (record it the same way with --kind parked); continue other runnable work. Never write sessions, inbox or log lines into STATE: they live on the coordination branch, written only through vibe inbox (and vibe log --text '<one line>' for a log line).`
-    const recovery = recoveryText(job.recovery, job.tag)
+    const recovery = recoveryText(job.recovery, job.tag, AGENT_CONFIG[provider]?.root)
     const limit = job.timeLimit ? ` The host cuts this unit after ${job.timeLimit.minutes} minutes (${job.timeLimit.cutAt}) and hands uncommitted work to a fresh unit; write measurements and findings into the task result as you go.` : ''
     // The skill rides in the prompt; without this note Codex units re-read it from .codex/skills first.
     return `Run /gusta-start 맡김 단위1. The gusta-start skill is included below and already loaded: do not open its SKILL.md or call a Skill tool for it.${routed.note} Exactly one task done (the assigned one), or the one planning slice its recovery asks for (gusta-update-ssot + gusta-create-task together). Never plan untasked SSOT deltas, reviews or ideation: the owner's /gusta-sketch turns them into tasks. No questions, no subagents. ${autonomy}${recovery}${limit} ${TASK_CHECKS} Host owns preflight, the session row and its claims on the coordination branch (vibe beat, vibe claim), report lifecycle, batch checks, push and CI wait. Do not run them again. Use the same tag/report. Commit each completed task, including only its related changes. The host has already registered this tag and claimed your task before dispatch (vibe task start repeats that claim harmlessly); never register or end the session or claim another task (vibe beat --mode, vibe beat --end, vibe claim), and never publish pending code yourself. Never push completed code here: host runs the batch gate first. Do not close the shared report or end the session (vibe beat --end). Use cliCommand to call this installed CLI; do not download a different CLI. Read vibe brief for a task, exact FORMAT sections only for writing, never whole STATE/FORMAT/ARCH or large code files. Read scoped code with rg and ranges. Long checks: one blocking call (Codex) or shell background completion notification (Claude), no model polling. Return only the unit JSON schema.\n\ngusta-start skill (already loaded):\n${skill}${routed.text}\n\n${splitBrief(job).text}Assignment JSON:\n${JSON.stringify(splitBrief(job).data)}`
@@ -256,6 +258,24 @@ export function providerArguments(provider, role, files, model, { allowTools = [
   fail(`지원하지 않는 실행기: ${provider}`)
 }
 
+// A result whose JSON breaks the schema's rules after the work is done goes back to the same
+// session once, with the rejection: the work stays and only the answer is corrected.
+const REPAIR_MS = 10 * 60 * 1000
+const repairPrompt = (error) => `The host rejected your final JSON: ${error.message}${error.details?.length ? ` (${error.details.join('; ')})` : ''}. Your work is already in the workspace: do not edit files or change Git (a read-only command such as git rev-parse HEAD is fine). Return only the corrected final JSON matching the output schema, every other field as before.`
+// salvage: after the repair, a result whose only fault is in agentChecks keeps its valid checks and
+// turns the rest into not-run handoffs (salvageAgentChecks) rather than failing the finished work.
+function checked(role, value, salvage = false) {
+  try { return validateAgentResult(role, value) } catch (error) {
+    if (!(error instanceof SkillPackageError)) throw error
+    error.format = true
+    if (salvage && ['unit', 'worker'].includes(role) && Array.isArray(value?.agentChecks)) {
+      const kept = salvageAgentChecks(value.agentChecks)
+      if (kept.issues.length) try { return { ...validateAgentResult(role, { ...value, agentChecks: kept.checks }), agentCheckIssues: kept.issues } } catch {}
+    }
+    throw error
+  }
+}
+
 // flags: the caller's providerFlags answer; none by default (this never probes the CLI).
 // model·effort: the route the host chose (null: the CLI's own setting).
 export async function executeAgentAdapter({ provider, model, effort = null, job, env = process.env, log = (text) => process.stderr.write(text), flags = [], measurementDeps = {} }) {
@@ -273,84 +293,106 @@ export async function executeAgentAdapter({ provider, model, effort = null, job,
     sessionId = session
     const remember = (id) => job.sessionFile && id ? writeFile(job.sessionFile, id).catch(() => {}) : null
     await remember(session)
-    // job.headlessMcp is the host's SETTINGS value; a job without one is isolated.
-    const args = providerArguments(provider, job.role, files, model, { allowTools: WRITES.includes(job.role) ? job.allowTools ?? [] : [], resume: job.resume ?? null, session: job.resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags, headlessMcp: job.headlessMcp ?? 'isolate', effort })
-    const child = spawn(provider, args, { cwd: job.workspace, env: providerEnvironment(provider, env, effort), shell: false, stdio: ['pipe', 'pipe', 'pipe'] })
-    let partial = '', answer = '', last = '', events = '', errorOutput = '', tooLarge = false, interrupted = false, timedOut = false, forced
-    // Claude keeps only the last result event (or a lone envelope line) in memory; every event
-    // already went to the log as it arrived, so a long session does not grow the buffer. The few
-    // events that say why a run failed (a rejected rate limit, API retries; Codex: turn.failed and
-    // error, which come last) are kept too, for classifyFailure.
-    const failing = []
-    const watch = (line) => {
-      if (!FAILURE_EVENT.test(line)) return
-      try {
-        const event = JSON.parse(line)
-        if (!FAILURE_TYPES.has(event?.type) || (event.type === 'rate_limit_event' && event.rate_limit_info?.status !== 'rejected') || (event.type === 'system' && event.subtype !== 'api_retry')) return
-        failing.push(event)
-        if (failing.length > 8) failing.shift()
-      } catch {}
-    }
-    const keep = (line) => { if (!line.trim()) return; last = line; if (resultEvent(line)) answer = line; else watch(line) }
-    // In work run, both processes share the runner-owned process group. Direct adapter
-    // invocations still forward termination to the provider.
-    const stop = () => {
-      interrupted = true
-      child.kill('SIGTERM')
-      forced ??= setTimeout(() => child.kill('SIGKILL'), 2000)
-      forced.unref()
-    }
-    process.on('SIGTERM', stop); process.on('SIGINT', stop)
-    const limit = job.timeoutMs ? setTimeout(() => { timedOut = true; stop() }, job.timeoutMs) : null
-    let exit
-    try {
-      exit = await new Promise((resolve, reject) => {
-        child.on('error', reject)
-        child.stdout.setEncoding('utf8')
-        child.stdout.on('data', (chunk) => {
-          // Both providers stream events: the log follows the session as it runs.
-          log(chunk)
-          collector?.push(chunk)
-          // Codex: the head of the event stream holds the session ID; the lines are only watched.
-          if (provider === 'codex' && events.length < 64 * 1024) {
-            events += chunk
-            if (!job.resume) remember(codexSession(events))
-          }
-          const lines = (partial + chunk).split('\n')
-          partial = lines.pop()
-          for (const line of lines) provider === 'codex' ? watch(line) : keep(line)
-          if (partial.length > 8 * 1024 * 1024) { tooLarge = true; stop(); partial = '' }
-        })
-        child.stderr.on('data', (chunk) => { errorOutput = (errorOutput + chunk).slice(-16000); log(chunk.toString()) })
-        child.on('close', (code, signal) => resolve({ code, signal }))
-        child.stdin.on('error', () => {})
-        child.stdin.end(prompt)
-      })
-    } finally {
-      clearTimeout(forced); clearTimeout(limit)
-      process.off('SIGTERM', stop); process.off('SIGINT', stop)
-    }
-    provider === 'codex' ? watch(partial) : keep(partial)
-    // A run the host or a limit here cut short is not classified: only what the tool itself reported.
-    const failed = (message, extra = []) => {
-      const error = new SkillPackageError(message, [errorOutput, ...extra].filter(Boolean))
-      if (!tooLarge && !timedOut && !interrupted) {
-        const failure = classifyFailure({ tool: provider, model, events: [...failing, ...(answer ? [resultEvent(answer)] : [])], text: errorOutput })
-        if (failure.kind !== 'other') error.failure = failure
+    // One provider run: the prompt in, the raw answer out (Claude: its result event; Codex: its
+    // event stream, the answer being the result file). resume: the session it continues.
+    const launch = async (input, resume, timeoutMs) => {
+      // job.headlessMcp is the host's SETTINGS value; a job without one is isolated.
+      const args = providerArguments(provider, job.role, files, model, { allowTools: WRITES.includes(job.role) ? job.allowTools ?? [] : [], resume, session: resume ? null : session, permissionMode: job.permissionMode ?? 'acceptEdits', flags, headlessMcp: job.headlessMcp ?? 'isolate', effort })
+      const child = spawn(provider, args, { cwd: job.workspace, env: providerEnvironment(provider, env, effort), shell: false, stdio: ['pipe', 'pipe', 'pipe'] })
+      let partial = '', answer = '', last = '', events = '', errorOutput = '', tooLarge = false, interrupted = false, timedOut = false, forced
+      // Claude keeps only the last result event (or a lone envelope line) in memory; every event
+      // already went to the log as it arrived, so a long session does not grow the buffer. The few
+      // events that say why a run failed (a rejected rate limit, API retries; Codex: turn.failed and
+      // error, which come last) are kept too, for classifyFailure.
+      const failing = []
+      const watch = (line) => {
+        if (!FAILURE_EVENT.test(line)) return
+        try {
+          const event = JSON.parse(line)
+          if (!FAILURE_TYPES.has(event?.type) || (event.type === 'rate_limit_event' && event.rate_limit_info?.status !== 'rejected') || (event.type === 'system' && event.subtype !== 'api_retry')) return
+          failing.push(event)
+          if (failing.length > 8) failing.shift()
+        } catch {}
       }
-      return error
-    }
-    if (exit.code !== 0 || interrupted) throw failed(`${provider} 실행 실패 (${tooLarge ? 'output limit' : timedOut ? 'timeout' : interrupted ? 'interrupted' : exit.code ?? exit.signal})`)
-    if (provider === 'claude') {
+      const keep = (line) => { if (!line.trim()) return; last = line; if (resultEvent(line)) answer = line; else watch(line) }
+      // In work run, both processes share the runner-owned process group. Direct adapter
+      // invocations still forward termination to the provider.
+      const stop = () => {
+        interrupted = true
+        child.kill('SIGTERM')
+        forced ??= setTimeout(() => child.kill('SIGKILL'), 2000)
+        forced.unref()
+      }
+      process.on('SIGTERM', stop); process.on('SIGINT', stop)
+      const limit = timeoutMs ? setTimeout(() => { timedOut = true; stop() }, timeoutMs) : null
+      let exit
+      try {
+        exit = await new Promise((resolve, reject) => {
+          child.on('error', reject)
+          child.stdout.setEncoding('utf8')
+          child.stdout.on('data', (chunk) => {
+            // Both providers stream events: the log follows the session as it runs.
+            log(chunk)
+            collector?.push(chunk)
+            // Codex: the head of the event stream holds the session ID; the lines are only watched.
+            if (provider === 'codex' && events.length < 64 * 1024) {
+              events += chunk
+              if (!resume) remember(codexSession(events))
+            }
+            const lines = (partial + chunk).split('\n')
+            partial = lines.pop()
+            for (const line of lines) provider === 'codex' ? watch(line) : keep(line)
+            if (partial.length > 8 * 1024 * 1024) { tooLarge = true; stop(); partial = '' }
+          })
+          child.stderr.on('data', (chunk) => { errorOutput = (errorOutput + chunk).slice(-16000); log(chunk.toString()) })
+          child.on('close', (code, signal) => resolve({ code, signal }))
+          child.stdin.on('error', () => {})
+          child.stdin.end(input)
+        })
+      } finally {
+        clearTimeout(forced); clearTimeout(limit)
+        process.off('SIGTERM', stop); process.off('SIGINT', stop)
+      }
+      provider === 'codex' ? watch(partial) : keep(partial)
+      // A run the host or a limit here cut short is not classified: only what the tool itself reported.
+      const failed = (message, extra = []) => {
+        const error = new SkillPackageError(message, [errorOutput, ...extra].filter(Boolean))
+        if (!tooLarge && !timedOut && !interrupted) {
+          const failure = classifyFailure({ tool: provider, model, events: [...failing, ...(answer ? [resultEvent(answer)] : [])], text: errorOutput })
+          if (failure.kind !== 'other') error.failure = failure
+        }
+        return error
+      }
+      if (exit.code !== 0 || interrupted) throw failed(`${provider} 실행 실패 (${tooLarge ? 'output limit' : timedOut ? 'timeout' : interrupted ? 'interrupted' : exit.code ?? exit.signal})`)
+      if (provider === 'codex') {
+        sessionId = codexSession(events) ?? resume ?? null
+        try { return { text: await readFile(files.result, 'utf8') } } catch (error) { if (failing.length) throw failed('codex 실행 실패 (no result)'); throw error }
+      }
       const output = answer || last
       const envelope = output ? (() => { try { return claudeEnvelope(output) } catch { return null } })() : null
       if (envelope && (envelope.is_error || envelope.subtype?.startsWith('error'))) throw failed(`Claude 실행 실패: ${envelope.subtype ?? 'error'}`)
-      returned = { ...claudeResult(output, job.role), session, ...(['unit', 'scout', 'variant', 'scaffold'].includes(job.role) ? { usage: envelope?.usage ?? null } : {}) }
-    } else {
-      sessionId = codexSession(events) ?? job.resume ?? null
-      let text
-      try { text = await readFile(files.result, 'utf8') } catch (error) { if (failing.length) throw failed('codex 실행 실패 (no result)'); throw error }
-      returned = { ...validateAgentResult(job.role, JSON.parse(text)), session: sessionId }
+      return { output, envelope }
+    }
+    // A short SHA the model copied is expanded in its workspace before the strict check.
+    const resolve = async (prefix) => (await git(job.workspace, ['rev-parse', '--verify', '--quiet', `${prefix}^{commit}`], [1, 128]))?.trim() || null
+    const expand = async (value) => value && Array.isArray(value.agentChecks) ? { ...value, agentChecks: await expandCandidates(value.agentChecks, resolve) } : value
+    const read = async (run, salvage = false) => {
+      if (provider === 'codex') {
+        let value
+        try { value = JSON.parse(run.text) } catch (error) { throw Object.assign(new SkillPackageError(`codex 결과 JSON을 읽을 수 없습니다: ${error.message}`), { format: true }) }
+        return { ...checked(job.role, await expand(value), salvage), session: sessionId }
+      }
+      const envelope = claudeEnvelope(run.output)
+      if (!envelope.structured_output) fail('Claude 응답에 structured_output이 없습니다. JSON schema를 지원하는 CLI인지 확인하세요.')
+      return { ...checked(job.role, await expand(envelope.structured_output), salvage), session, ...(['unit', 'scout', 'variant', 'scaffold'].includes(job.role) ? { usage: run.envelope?.usage ?? null } : {}) }
+    }
+    const run = await launch(prompt, job.resume ?? null, job.timeoutMs)
+    try { returned = await read(run) } catch (error) {
+      const resume = provider === 'claude' ? session : sessionId
+      if (!error.format || !resume) throw error
+      log(`\n[gusta] result rejected: ${error.message} — asking the same session once for corrected JSON\n`)
+      returned = await read(await launch(repairPrompt(error), resume, Math.min(job.timeoutMs ?? REPAIR_MS, REPAIR_MS)), true)
+      returned.repaired = error.message
     }
     succeeded = true
     return returned

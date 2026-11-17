@@ -32,10 +32,15 @@ test('a dirty original checkout is retained verbatim and cannot be silently omit
   const { root } = await fixture(t)
   await writeFile(path.join(root, 'source.txt'), 'user edit\n'); await writeFile(path.join(root, 'extra.txt'), 'untracked\n')
   const status = await git(root, ['status', '--porcelain=v1'])
-  await assert.rejects(prepareSessionWorkspace({ targetRoot: root, tag: 'bb' }), /미커밋 변경/)
+  await assert.rejects(prepareSessionWorkspace({ targetRoot: root, tag: 'bb' }), /미커밋 변경.*--from-head/)
   assert.equal(await git(root, ['status', '--porcelain=v1']), status)
   assert.equal(await readFile(path.join(root, 'source.txt'), 'utf8'), 'user edit\n')
   assert.equal((await inspectWorkspace({ targetRoot: root })).git.worktrees.length, 1)
+  // Said explicitly: the session starts from HEAD and names what stayed behind; the original is untouched.
+  const opened = await prepareSessionWorkspace({ targetRoot: root, tag: 'bb', fromHead: true })
+  assert.deepEqual([opened.created, opened.excluded.sort(), opened.excludedCount], [true, ['extra.txt', 'source.txt'], 2])
+  assert.equal(await git(opened.root, ['status', '--porcelain=v1']), '')
+  assert.equal(await git(root, ['status', '--porcelain=v1']), status)
 })
 
 test('configured land, deployment, planning and repository default branches are protected by role rather than a fixed name', async (t) => {
@@ -63,4 +68,17 @@ test('Gitless projects receive an actionable preflight instead of an unisolated 
   const root = await mkdtemp(path.join(os.tmpdir(), 'gusta-session-no-git-')); t.after(() => rm(root, { recursive: true, force: true }))
   await assert.rejects(prepareSessionWorkspace({ targetRoot: root, tag: 'gg' }), /커밋이 있는 Git 저장소/)
   assert.equal((await sessionWorkspacePolicy({ targetRoot: root })).reason, 'git-required')
+})
+
+test('opening the same kind and tag again from the source returns the session already opened there', async (t) => {
+  const { root } = await fixture(t)
+  const first = await prepareSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'again1' })
+  const second = await prepareSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'again1' })
+  assert.deepEqual([second.created, second.reused, second.root, second.branch], [false, true, first.root, first.branch])
+  assert.equal((await inspectWorkspace({ targetRoot: root })).git.worktrees.length, 2)
+  // Another tag or kind is another session.
+  assert.notEqual((await prepareSessionWorkspace({ targetRoot: root, kind: 'self-improve', tag: 'again1' })).root, first.root)
+  // Once its worktree is gone, the tag opens a new one.
+  await git(root, ['worktree', 'remove', '--force', first.root])
+  assert.equal((await prepareSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'again1' })).created, true)
 })

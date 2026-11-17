@@ -101,8 +101,12 @@ test('old candidate observations cannot be relabeled as the current candidate ev
 test('active idle display fields cannot impersonate the durable ready participant identity', async (t) => {
   const { root } = await project(t), context = await vibeSession({ targetRoot: root }), store = await openIntegration(context)
   const ready = await store.ready({ tag: 'owner001', host: 'same-host' }), participant = ready.state.participants[ready.value.id]
-  const unknown = { tag: participant.tag, branch: participant.branch, host: participant.host, commit: participant.head, doing: '-' }
-  assert.equal((await store.claim({ tag: 'owner001', active: [unknown] })).reason, 'unregistered-sessions')
+  const unknown = { tag: participant.tag, branch: participant.branch, host: participant.host, commit: participant.head, doing: '-', at: new Date().toISOString().slice(0, 16) + 'Z' }
+  const refused = await store.claim({ tag: 'owner001', active: [unknown] })
+  assert.equal(refused.reason, 'unregistered-sessions')
+  assert.deepEqual(refused.participants, [{ tag: participant.tag, branch: participant.branch, cause: 'no matching participant' }])
+  assert.match(refused.nextAction, /vibe integration ready --tag <tag>/)
+  assert.equal((await store.claim({ tag: 'owner001', active: [{ ...unknown, session: participant.id, doing: 'T001' }] })).participants[0].cause, 'doing T001')
   const claimed = await store.claim({ tag: 'owner001', active: [{ ...unknown, session: participant.id }] })
   assert.equal(claimed.ok, true)
 })
@@ -269,4 +273,162 @@ test('a legacy CI-only command handed off by a group is deferred and remains a v
   await assert.rejects(readFile(marker), { code: 'ENOENT' })
   assert.ok(result.gate.ciCommands.includes(command))
   assert.equal(result.ci.outcome, 'pending')
+})
+
+test('an ended session never holds the gate: no work withdraws it, work defers it to a later integration it rejoins with ready', async (t) => {
+  const { root } = await project(t)
+  const open = (tag) => openSessionWorkspace({ targetRoot: root, kind: 'start', tag })
+  const first = await open('first001'), second = await open('second01'), third = await open('third001')
+  // Ending with nothing changed withdraws the participant (it used to stay working for good).
+  assert.equal((await vibeBeat({ targetRoot: second.root, tag: 'second01', end: true })).integration.status, 'withdrawn')
+  // Ending with work pauses it: it is deferred, not waited for, and keeps its branch.
+  await writeFile(path.join(third.root, 'third.txt'), 'third\n'); await git(third.root, 'add', '.'); await git(third.root, 'commit', '-qm', 'third work')
+  const thirdHead = (await git(third.root, 'rev-parse', 'HEAD')).trim()
+  assert.equal((await vibeBeat({ targetRoot: third.root, tag: 'third001', end: true })).integration.status, 'paused')
+  const landed = await finalizeIntegration({ targetRoot: first.root, tag: 'first001' })
+  assert.equal(landed.ok, true, JSON.stringify(landed))
+  assert.deepEqual(landed.gate.deferred.map((entry) => [entry.tag, entry.reason]), [['third001', 'session-ended']])
+  assert.equal(landed.gate.cohort.some((entry) => entry.tag === 'third001'), false)
+  assert.equal((await git(third.root, 'rev-parse', 'HEAD')).trim(), thirdHead)
+  // The landed session stays live and idle: its row is not an unregistered session for the next gate.
+  await vibeBeat({ targetRoot: first.root, tag: 'first001', mode: 'pair' })
+  const rejoined = await vibeIntegration({ targetRoot: third.root, step: 'ready', tag: 'third001' })
+  assert.equal(rejoined.ok, true, JSON.stringify(rejoined))
+  const next = await finalizeIntegration({ targetRoot: third.root, tag: 'third001' })
+  assert.equal(next.ok, true, JSON.stringify(next))
+  assert.equal((await git(root, 'merge-base', '--is-ancestor', thirdHead, 'delivery').catch(() => 'no')), '')
+})
+
+test('a live working session is waited for; one with no signal for the stale window is deferred, and its owner can still withdraw it', async (t) => {
+  const { root } = await project(t)
+  const first = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'live0001' })
+  const away = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'away0001' })
+  const blocked = await finalizeIntegration({ targetRoot: first.root, tag: 'live0001' })
+  assert.equal(blocked.reason, 'sessions-working')
+  assert.deepEqual(blocked.participants.map((entry) => [entry.tag, entry.status]), [['away0001', 'working']])
+  assert.match(blocked.nextAction, /vibe integration withdraw --participant <id>/)
+  // The other device went to sleep: its record has not moved for longer than the stale window.
+  const store = await openIntegration(await vibeSession({ targetRoot: root }))
+  const id = Object.values((await store.read()).state.participants).find((entry) => entry.tag === 'away0001').id
+  await store.transaction((state) => { state.participants[id].at = new Date(Date.now() - 3 * 3600000).toISOString(); return { id } })
+  const landed = await finalizeIntegration({ targetRoot: first.root, tag: 'live0001' })
+  assert.equal(landed.ok, true, JSON.stringify(landed))
+  assert.deepEqual(landed.gate.deferred.map((entry) => [entry.tag, entry.reason]), [['away0001', 'no-signal']])
+  assert.equal((await store.read()).state.participants[id].status, 'working')
+  // Its recorded head is the shared start, which the landing carried: withdrawing records it landed, unverified.
+  const withdrawn = await vibeIntegration({ targetRoot: root, step: 'withdraw', participant: id })
+  assert.deepEqual([withdrawn.value.status, withdrawn.value.contained], ['landed', true])
+})
+
+test('withdrawing a participant whose head land already holds records it landed outside the gate, unverified', async (t) => {
+  const { root } = await project(t)
+  const session = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'outside1' })
+  const head = (await git(session.root, 'rev-parse', 'HEAD')).trim()
+  // Its work reached land without the gate (a direct fast-forward).
+  await git(root, 'branch', '-f', 'delivery', head)
+  const store = await openIntegration(await vibeSession({ targetRoot: root }))
+  const id = Object.values((await store.read()).state.participants).find((entry) => entry.tag === 'outside1').id
+  const result = await vibeIntegration({ targetRoot: root, step: 'withdraw', participant: id, reason: 'pushed directly' })
+  assert.deepEqual([result.value.status, result.value.contained], ['landed', true])
+  const entry = (await store.read()).state.participants[id]
+  assert.deepEqual([entry.landed, entry.reconciled.verified, entry.reconciled.reason, entry.reconciled.from], [head, false, 'pushed directly', 'working'])
+  assert.equal((await vibeIntegration({ targetRoot: root, step: 'withdraw', participant: 'f'.repeat(24) })).reason, 'participant-unknown')
+})
+
+test('vibe push in a session worktree submits under that session tag, not a second participant', async (t) => {
+  const { root } = await project(t)
+  const session = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'pushtag1' })
+  let seen
+  await vibePush({ targetRoot: session.root }, { integration: async (options) => { seen = options.tag; return { ok: true } }, assertWorkspace: async () => {} })
+  assert.equal(seen, 'pushtag1')
+})
+
+test('the fixed candidate lives outside .git and is prepared (ARCH prepare) before its checks', async (t) => {
+  const { root } = await project(t)
+  await writeFile(path.join(root, '.gitignore'), 'deps/\n')
+  const file = path.join(root, 'spec/ssot/ARCH.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('  - task: `node --version`.\n', '  - prepare: `' + node("require('fs').mkdirSync('deps',{recursive:true});require('fs').writeFileSync('deps/ready','x')") + '`.\n  - task: `node --version`.\n')
+    .replace('batch: `node --version`', 'batch: `' + node("require('fs').accessSync('deps/ready')") + '`'))
+  await git(root, 'add', '.'); await git(root, 'commit', '-qm', 'checks need prepared dependencies')
+  const result = await finalizeIntegration({ targetRoot: root, tag: 'prep0001' })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.match(result.gate.path, /\.gusta-worktrees/); assert.doesNotMatch(result.gate.path, /[\\/]\.git[\\/]/)
+})
+
+test('a candidate that cannot be prepared fails as the environment, with no check run against it', async (t) => {
+  const { root } = await project(t)
+  const counter = path.join(root, '..', 'batch-runs')
+  const file = path.join(root, 'spec/ssot/ARCH.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('  - task: `node --version`.\n', '  - prepare: `' + node('process.exit(4)') + '`.\n  - task: `node --version`.\n')
+    .replace('batch: `node --version`', 'batch: `' + node(`require('fs').appendFileSync(${JSON.stringify(counter)},'X')`) + '`'))
+  await git(root, 'add', '.'); await git(root, 'commit', '-qm', 'broken prepare')
+  const failed = await finalizeIntegration({ targetRoot: root, tag: 'prep0002' })
+  assert.equal(failed.reason, 'integration-failed')
+  assert.deepEqual([failed.gate.checks[0].command, failed.gate.checks[0].environment, failed.gate.checks.length], ['workspace prepare', true, 1])
+  assert.match(failed.nextAction, /ARCH prepare.*not the implementation/)
+  await assert.rejects(readFile(counter), { code: 'ENOENT' })
+})
+
+test('landing through the shared gate clears the unlanded rows it carries and removes its own candidate', async (t) => {
+  const { root } = await project(t, { count: 1 })
+  const { readSessions } = await import('../src/coord-doc.mjs')
+  const session = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'landed01' })
+  await vibeTask({ targetRoot: session.root, tag: 'landed01', task: 'T001', step: 'start' })
+  const file = path.join(session.root, 'spec/tasks/T001.example.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replaceAll('- [ ]', '- [v]').replace(/## result\n*$/, '## result\n- outcome: implemented\n- at: -\n- verified: affected check\n- limits: -\n'))
+  await writeFile(path.join(session.root, 'feature.txt'), 'done\n')
+  await vibeTask({ targetRoot: session.root, tag: 'landed01', task: 'T001', step: 'done' })
+  await git(session.root, 'add', '.'); await git(session.root, 'commit', '-qm', 'T001 done')
+  const unlanded = async () => readSessions(await git(root, 'show', 'session-ledger:SESSIONS.md')).unlanded.map((row) => row.id)
+  assert.deepEqual(await unlanded(), ['T001'])
+  const result = await finalizeIntegration({ targetRoot: session.root, tag: 'landed01' })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.deepEqual(await unlanded(), [])
+  assert.deepEqual(result.coordination.landed, ['T001'])
+  assert.ok(result.cleanup.pruned.includes(result.gate.path), JSON.stringify(result.cleanup))
+  await assert.rejects(readFile(path.join(result.gate.path, 'feature.txt')), { code: 'ENOENT' })
+  assert.equal((await git(root, 'branch', '--list', 'integration/*')).trim(), '')
+  // The landed session's worktree and branch go with the next prune from another checkout; a session
+  // with work land lacks stays, with the reason.
+  const other = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'pending1' })
+  await writeFile(path.join(other.root, 'more.txt'), 'more\n'); await git(other.root, 'add', '.'); await git(other.root, 'commit', '-qm', 'not landed')
+  const { vibePrune } = await import('../src/prune.mjs')
+  assert.ok((await vibePrune({ targetRoot: root })).kept.some((entry) => entry.branch === session.branch && /살아 있는 세션 행/.test(entry.reason)))
+  await vibeBeat({ targetRoot: session.root, tag: 'landed01', end: true })
+  const swept = await vibePrune({ targetRoot: root })
+  assert.ok(swept.pruned.includes(session.root) && swept.pruned.includes(session.branch), JSON.stringify(swept))
+  assert.ok(swept.kept.some((entry) => entry.branch === other.branch && /없는 커밋/.test(entry.reason)), JSON.stringify(swept.kept))
+  await assert.rejects(readFile(path.join(session.root, 'feature.txt')), { code: 'ENOENT' })
+})
+
+test('a gate command the candidate does not have stops the gate as an environment failure', async (t) => {
+  const { root } = await project(t)
+  const counter = path.join(root, '..', 'later-runs')
+  const file = path.join(root, 'spec/ssot/ARCH.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('  - batch: `node --version`.\n', '  - batch:\n    - `gusta-missing-tool-xyz --run`\n    - `' + node(`require('fs').appendFileSync(${JSON.stringify(counter)},'X')`) + '`\n'))
+  await git(root, 'add', '.'); await git(root, 'commit', '-qm', 'tool missing')
+  const failed = await finalizeIntegration({ targetRoot: root, tag: 'missing1' })
+  assert.equal(failed.reason, 'integration-failed', JSON.stringify(failed))
+  assert.deepEqual(failed.gate.checks.map((entry) => [entry.exitCode, entry.environment]), [[127, true]])
+  assert.match(failed.nextAction, /command not found/)
+  await assert.rejects(readFile(counter), { code: 'ENOENT' })
+})
+
+test('finish --no-push lands the verified candidate on the local land only; the next finish publishes it as verified', async (t) => {
+  const { root, temporary } = await project(t), remote = path.join(temporary, 'held-origin.git')
+  await execute('git', ['init', '--bare', '-q', remote]); await git(root, 'remote', 'add', 'origin', remote)
+  await git(root, 'push', '-q', 'origin', 'delivery')
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: delivery\n- push: true\n- coord: session-ledger\n')
+  await git(root, 'add', '.'); await git(root, 'commit', '-qm', 'publish to origin')
+  const session = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'hold0001' })
+  await writeFile(path.join(session.root, 'held.txt'), 'held\n'); await git(session.root, 'add', '.'); await git(session.root, 'commit', '-qm', 'design result')
+  const remoteTip = async () => (await git(root, 'ls-remote', '--heads', 'origin', 'delivery')).split(/\s/)[0]
+  const before = await remoteTip()
+  const held = await finalizeIntegration({ targetRoot: session.root, tag: 'hold0001', noPush: true })
+  assert.equal(held.ok, true, JSON.stringify(held))
+  assert.deepEqual([held.held, held.pushed, await remoteTip()], [true, null, before])
+  assert.equal((await git(root, 'rev-parse', 'delivery')).trim(), held.landed)
+  const published = await finalizeIntegration({ targetRoot: session.root, tag: 'hold0001' })
+  assert.equal(published.ok, true, JSON.stringify(published))
+  assert.equal(await remoteTip(), held.landed)
 })

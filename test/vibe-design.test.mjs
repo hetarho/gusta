@@ -139,3 +139,27 @@ test('vibe CLI: design start·end는 JSON을, 잘못된 단계는 오류 JSON을
   assert.equal(failed.code, 1)
   assert.match(JSON.parse(failed.stdout).error, /vibe design/)
 })
+
+test('design verify with no task command runs nothing and says so instead of passing', async (t) => {
+  const { root } = await fixture(t, 1)
+  const file = path.join(root, 'spec/ssot/ARCH.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace(/^  - task.*\n/m, ''))
+  await git(root, 'add', '-A'); await git(root, 'commit', '-qm', 'no task tier')
+  await vibeDesign({ targetRoot: root, step: 'start', tag: 'k3f9' })
+  await writeFile(path.join(root, 'app.css'), 'h1 { color: teal }\n')
+  const result = await vibeDesign({ targetRoot: root, step: 'verify' })
+  assert.deepEqual([result.ok, result.reason, result.results, result.changed], [false, 'no-task-checks', [], ['app.css']])
+})
+
+test('design start on the land branch moves the checkout to design/<tag>, carrying the edits along', async (t) => {
+  const { root } = await fixture(t, 1)
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: main\n')
+  await git(root, 'add', '-A'); await git(root, 'commit', '-qm', 'land is main')
+  await git(root, 'branch', '-M', 'main')
+  await writeFile(path.join(root, 'app.css'), 'h1 { color: navy }\n')
+  const started = await vibeDesign({ targetRoot: root, step: 'start', tag: 'k3f9' })
+  assert.deepEqual(started.switched, { from: 'main', to: 'design/k3f9' })
+  assert.equal((await git(root, 'branch', '--show-current')).trim(), 'design/k3f9')
+  assert.equal(await readFile(path.join(root, 'app.css'), 'utf8'), 'h1 { color: navy }\n')
+  assert.equal((await vibeDesign({ targetRoot: root, step: 'start', tag: 'k3f9' })).resumed, true)
+})

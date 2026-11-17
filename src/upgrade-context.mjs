@@ -1,4 +1,4 @@
-import { open, readdir, lstat, readlink, realpath } from 'node:fs/promises'
+import { open, readdir, lstat, readlink, realpath, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
@@ -81,7 +81,9 @@ async function describeFile(file, relative, before, deps) {
 // candidates and resolve local references; neither a page nor an empty search proves review.
 export async function upgradeContext(options = {}, injected = {}) {
   const deps = { inspect: inspectWorkspace, git, gitInput, open, readdir, lstat, readlink, realpath, ...injected }
-  const offset = pageNumber(options.offset, 0, '--offset', 0), limit = pageNumber(options.limit, 100, '--limit', 1)
+  // --all: one page holding every entry, so the tree is hashed once instead of once per page.
+  if (options.all && (options.offset !== undefined || options.limit !== undefined)) throw new SkillPackageError('--all은 --offset·--limit과 함께 쓸 수 없습니다.')
+  const offset = options.all ? 0 : pageNumber(options.offset, 0, '--offset', 0), paged = options.all ? null : pageNumber(options.limit, 100, '--limit', 1)
   if (options.snapshot !== undefined && !/^[a-f0-9]{64}$/.test(options.snapshot)) throw new SkillPackageError('--snapshot에는 inventory의 SHA-256 값이 필요합니다.')
   const workspace = await deps.inspect(options), root = workspace.git?.root ?? workspace.targetRoot
   const errors = [], entries = [], contents = new Map(), tracked = new Map(), auditSources = []
@@ -200,10 +202,23 @@ export async function upgradeContext(options = {}, injected = {}) {
   const snapshot = digest(JSON.stringify({ source, entries, errors, settings, testPolicy }))
   if (options.snapshot && options.snapshot !== snapshot) throw new SkillPackageError('inventory가 바뀌었습니다. 첫 페이지부터 다시 확인하세요.', [options.snapshot, snapshot])
   if (offset > entries.length) throw new SkillPackageError('--offset이 inventory 항목 수보다 큽니다.')
+  const limit = paged ?? entries.length
   const nextOffset = offset + limit < entries.length ? offset + limit : null
   return { schemaVersion: 1, ok: !errors.length, targetRoot: root, source, snapshot, total: entries.length, offset, limit, nextOffset,
     complete: nextOffset === null, coverage: { inventoryComplete: !errors.length, policyReviewed: false,
       excluded: entries.filter((entry) => entry.disposition === 'excluded').length,
       note: 'Excluded boundaries are not traversed. Binary or unsupported encodings need separate inspection. History and generated markers are context, not policy verdicts; resolve local references with file tools.' },
     entries: entries.slice(offset, offset + limit), settings, testPolicy, errors }
+}
+
+// --out: the result goes to a file once — entries last, one per line, so native tools read it in
+// line ranges — and stdout gets only what is needed to plan that reading.
+export async function saveUpgradeContext(options, injected = {}) {
+  const result = await upgradeContext(options, injected), out = path.resolve(options.out)
+  const { entries, ...rest } = result
+  await (injected.writeFile ?? writeFile)(out, `${JSON.stringify(rest, null, 2).slice(0, -2)},\n  "entries": [${entries.map((entry) => `\n    ${JSON.stringify(entry)}`).join(',')}\n  ]\n}\n`)
+  const dispositions = {}
+  for (const entry of entries) dispositions[entry.disposition] = (dispositions[entry.disposition] ?? 0) + 1
+  return { schemaVersion: 1, ok: result.ok, out, snapshot: result.snapshot, total: result.total, offset: result.offset, entries: entries.length, nextOffset: result.nextOffset,
+    inventoryComplete: result.coverage.inventoryComplete, dispositions, errors: result.errors.length }
 }

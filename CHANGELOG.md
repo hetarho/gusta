@@ -1,5 +1,73 @@
 # Changelog
 
+## Unreleased
+
+- Agent results: a short candidate SHA expands to the full commit in the
+  worker's workspace, a format error names the field and its form, and a result
+  that breaks a format rule goes back to the same session once for corrected
+  JSON instead of failing finished work. A task's own later report may redefine
+  its acceptance IDs; another task reusing an ID is refused with the differing
+  fields, and reassigned workers receive the recorded definitions.
+- Shared integration: candidates live beside the other CLI worktrees (outside
+  `.git`), new worktrees run the ARCH verification decision's `prepare:`
+  commands before any check, and a prepare failure is reported as the
+  environment's. `vibe beat --end` closes the session's participant,
+  `vibe integration withdraw --participant <id>` lets an owner stop one that
+  will not submit (landed outside the gate is recorded unverified), waits list
+  each blocking session with its cause and next step, and a landing clears the
+  unlanded rows it carries and removes its own candidate.
+- `vibe session open` returns the session already opened with the same kind
+  and tag; session commands report only the participant, not the whole record.
+- `vibe check -- <program> <args...>` keeps argument boundaries; `vibe ci wait`
+  reports a run it never saw as `unchecked`, waiting longer on the public page;
+  `vibe design verify` with no task check is not a pass; `vibe inbox add`
+  accepts a whole FORMAT line in `--file` and a list in `--ref`; `vibe <command>
+  --help` shows that command; `vibe lint` points to `gusta lint`.
+- Work groups: a built-in worker's `[x]` checks are recorded as `[v]`, contract
+  mismatches name the part that moved, a note without a status waits for the
+  next dispatch, a stuck operation names `work recover`, task submissions
+  default to 15 minutes, and stopping the CLI stops its checks.
+- Loop reports keep their headings apart when rewritten, and a run stopped by
+  failing units says so. Task size budgets count only what the task pulls in
+  itself (`taskChars`).
+
+- Sessions on other devices no longer hold the shared gate when they are
+  away: a paused session, one with no signal for 90 minutes or a ready one
+  whose head cannot be fetched is deferred (never withdrawn, landed or taken
+  over). A loop merges what landed into its branch at start and at every unit
+  boundary (never rebasing), stops with `land-conflict` and the files on a
+  conflict, and stops tasks another device took meanwhile, recording them in
+  the inbox.
+- `vibe session open --from-head` opens from HEAD despite uncommitted changes
+  in the original checkout and lists them as `excluded`.
+- `vibe integration finish --no-push` verifies and lands on the local land
+  branch only; the next finish or push publishes that held landing as verified.
+  `vibe design start` on a protected branch moves to `design/<tag>`.
+- `vibe loop --request-file` lets the first unit plan a `/gusta-start
+  <request>` and runs only the tasks it made and their deps, so planning reads
+  leave the host session. `vibe loop --wait-event` waits without model calls
+  for the next unit, judgment or end, for progress reports.
+- `vibe task reserve` hands out task numbers once across worktrees and devices.
+  A revision recording a change already implemented creates no task.
+- `gusta upgrade-context --all --out` computes the inventory once; `gusta
+  migrate` updates FORMAT lines still as the previously installed template
+  had them and reports the rest with their provenance.
+- `vibe prune` also removes landed session worktrees and branches and fulfilled
+  number reservations. Agent checks that stay invalid after the repair become
+  required not-run handoffs instead of failing the unit.
+- Upgrade with `/gusta-update`; upgrade every device of a project together.
+
+## 0.17.4
+
+Released: 2026-11-17.
+
+- Unit integration and sync refuse every spec lint error but only the warnings
+  the unit added; warnings the base already had are reported as
+  `specWarnings` for the starting conversation to clear.
+- Verification-plan inputs in the working tree are fingerprinted with Git's
+  file modes, so a umask such as 0002 no longer stops a committed success from
+  being reused.
+
 ## 0.17.3
 
 Released: 2026-11-16.

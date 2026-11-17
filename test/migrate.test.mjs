@@ -4,7 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { MIGRATIONS, runMigrations, sessionSections, migrateSpec } from '../src/migrate.mjs'
+import { createHash } from 'node:crypto'
+import { MIGRATIONS, runMigrations, sessionSections, migrateSpec, syncFormat, formatDrift, previousTemplate } from '../src/migrate.mjs'
+import { getPackageInfo } from '../src/package-info.mjs'
 import { EMPTY_SESSIONS, SESSIONS_FILE, applyEvent, readSessions } from '../src/coord-doc.mjs'
 import { COORD_BRANCH } from '../src/coord-branch.mjs'
 import { SESSION_ACTIVE_HEADER } from '../src/state-doc.mjs'
@@ -305,4 +307,83 @@ test('gusta migrate: Git 저장소가 아니면 세션 이관을 건너뛰고 �
   assert.equal(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), LEGACY)
   assert.deepEqual(result.sessions, { branch: null, moved: [], commit: null, published: null, skipped: 'not-git',
     note: 'Git checkout이 아니어서 STATE의 active·inbox·log를 옮기지 않았습니다 — 조정 브랜치는 Git 저장소에만 둘 수 있습니다.' })
+})
+
+const PREVIOUS = '# FORMAT\n## A\n- a1\n- a2 old\n- a3\n- a4 dropped\n- a5\n- a6\n- a7\n## B\n- b1\n- b2\n- b3\n- b4\n- b5\n'
+const PACKAGED = '# FORMAT\n## A\n- a1\n- a2 new\n- a3\n- a5\n- a6\n- a7\n- a8 added\n## B\n- b1\n- b2 new\n- b3\n- b4 new\n- b5\n## C\n- c1\n'
+// The project kept a2·a4·b2 as the template had them, deleted a6, added its own lines and rewrote b4.
+const PROJECT = '# FORMAT\n## A\n- a1\n- a2 old\n- a3\n- a4 dropped\n- a5\n- a7\n- mine a\n## B\n- b1\n- mine b\n- b2\n- b3\n- b4 project\n- b5\n'
+const SYNCED = '# FORMAT\n## A\n- a1\n- a2 new\n- a3\n- a5\n- a7\n- a8 added\n- mine a\n## B\n- b1\n- mine b\n- b2 new\n- b3\n- b4 project\n- b5\n## C\n- c1\n'
+
+test('syncFormat: 직전 템플릿 그대로인 줄만 새 템플릿으로 바꾸고, 프로젝트가 쓰거나 고치거나 지운 줄은 그대로이며, 다시 돌려도 같다', () => {
+  assert.equal(syncFormat(PREVIOUS, PROJECT, PACKAGED), SYNCED)
+  assert.equal(syncFormat(PREVIOUS, SYNCED, PACKAGED), SYNCED)
+  assert.equal(syncFormat(PREVIOUS, PREVIOUS, PACKAGED), PACKAGED)
+  // 직전 템플릿이 새 템플릿과 같으면 바꿀 것이 없다.
+  assert.equal(syncFormat(PACKAGED, PROJECT, PACKAGED), PROJECT)
+  // Windows checkout(CRLF)도 줄 단위로 맞추고 줄 끝을 지킨다.
+  const crlf = (text) => text.replaceAll('\n', '\r\n')
+  assert.equal(syncFormat(PREVIOUS, crlf(PROJECT), PACKAGED), crlf(SYNCED))
+  // 줄마다 출처: 직전 템플릿과 바이트가 같으면 previousTemplate, 아니면 projectOwned, 직전 템플릿이 없으면 unknown.
+  const before = formatDrift(PACKAGED, PROJECT, PREVIOUS)
+  assert.deepEqual(before.extra.map(({ line, provenance }) => [line, provenance]), [['- a2 old', 'previousTemplate'], ['- a4 dropped', 'previousTemplate'], ['- mine a', 'projectOwned'], ['- mine b', 'projectOwned'], ['- b2', 'previousTemplate'], ['- b4 project', 'projectOwned']])
+  const after = formatDrift(PACKAGED, SYNCED, PREVIOUS)
+  assert.deepEqual([after.missing.map(({ line }) => line), after.extra.map(({ line, provenance }) => [line, provenance])], [['- a6', '- b4 new'], [['- mine a', 'projectOwned'], ['- mine b', 'projectOwned'], ['- b4 project', 'projectOwned']]])
+  assert.deepEqual(formatDrift(PACKAGED, PROJECT, null).extra.map(({ provenance }) => provenance), Array(6).fill('unknown'))
+})
+
+const COPY = '.claude/skills/gusta-create-architecture/assets/FORMAT.md', CODEX_COPY = '.codex/skills/gusta-create-architecture/assets/FORMAT.md'
+const sha = (text) => createHash('sha256').update(text).digest('hex')
+const lockOf = (version, files) => JSON.stringify({ schemaVersion: 1, packageName: '@haeram/gusta', packageVersion: version, files: Object.fromEntries(Object.entries(files).map(([file, text]) => [file, { sha256: sha(text) }])) })
+
+test('previousTemplate: 커밋된 lock의 해시와 맞는 설치 사본만 직전 템플릿으로 쓰고, 이번 버전 설치가 이미 커밋됐으면 그 전 상태를 본다', async () => {
+  const read = (store) => async (specs) => specs.map((spec) => store[spec] ?? null)
+  const noLog = async () => assert.fail('HEAD holds an older install')
+  assert.deepEqual(await previousTemplate('/p', '0.2.0', { show: read({ 'HEAD:.gusta-lock.json': lockOf('0.1.0', { [COPY]: PREVIOUS }), [`HEAD:${COPY}`]: PREVIOUS }), log: noLog }),
+    { version: '0.1.0', source: `HEAD:${COPY}`, text: PREVIOUS })
+  // 고친 사본은 템플릿이 아니다: 다른 에이전트의 고치지 않은 사본이 있으면 그것을 쓴다.
+  const edited = { 'HEAD:.gusta-lock.json': lockOf('0.1.0', { [COPY]: PREVIOUS, [CODEX_COPY]: PREVIOUS }), [`HEAD:${COPY}`]: `${PREVIOUS}- local edit\n` }
+  assert.deepEqual(await previousTemplate('/p', '0.2.0', { show: read(edited), log: noLog }), { reason: 'no-unmodified-copy', version: '0.1.0' })
+  assert.equal((await previousTemplate('/p', '0.2.0', { show: read({ ...edited, [`HEAD:${CODEX_COPY}`]: PREVIOUS }), log: noLog })).source, `HEAD:${CODEX_COPY}`)
+  // 이번 버전의 설치가 이미 커밋됐다: lock을 바꾼 커밋들 직전 상태에서 다른 버전을 찾는다.
+  const committed = { 'HEAD:.gusta-lock.json': lockOf('0.2.0', { [COPY]: PACKAGED }), [`HEAD:${COPY}`]: PACKAGED,
+    'c2^:.gusta-lock.json': lockOf('0.2.0', { [COPY]: PACKAGED }), [`c2^:${COPY}`]: PACKAGED, 'c1^:.gusta-lock.json': lockOf('0.1.0', { [COPY]: PREVIOUS }), [`c1^:${COPY}`]: PREVIOUS }
+  assert.deepEqual(await previousTemplate('/p', '0.2.0', { show: read(committed), log: async () => 'c2\nc1\n' }), { version: '0.1.0', source: `c1^:${COPY}`, text: PREVIOUS })
+  assert.deepEqual(await previousTemplate('/p', '0.2.0', { show: read(committed), log: async () => 'c2\n' }), { reason: 'no-previous-version' })
+  assert.deepEqual(await previousTemplate('/p', '0.2.0', { show: read({}), log: noLog }), { reason: 'no-lock' })
+})
+
+test('migrateSpec: 커밋된 직전 설치본으로 FORMAT 줄의 출처를 가리고, 그대로인 줄만 새 템플릿으로 바꾼다 — --dry-run은 쓰지 않고, 다시 돌려도 같다', async (t) => {
+  const { root } = await fixture(t, 0)
+  const file = path.join(root, 'spec/FORMAT.md')
+  const packaged = await readFile(new URL('../skills/gusta-create-architecture/assets/FORMAT.md', import.meta.url), 'utf8')
+  // 한 버전 전 템플릿: 규칙 하나는 옛 문구, 하나는 그 뒤 추가, 하나는 그 뒤 삭제.
+  const lines = packaged.split('\n'), bullets = lines.flatMap((line, index) => line.startsWith('- ') ? [index] : [])
+  const older = lines.flatMap((line, index) => index === bullets[0] ? ['- an older wording of the first rule'] : index === bullets[5] ? [] : index === bullets[10] ? [line, '- a rule the package dropped'] : [line]).join('\n')
+  const own = '- PROJECT house rule kept by the owner'
+  await writeFile(file, older.replace('\n## Language\n', `\n## Language\n${own}\n`))
+  const project = await readFile(file, 'utf8')
+  const coord = fakeCoord()
+  // 직전 설치본이 커밋돼 있지 않으면 출처를 모른다(unknown) — 아무것도 바꾸지 않는다.
+  const unknown = await migrateSpec({ targetRoot: root }, { coord: coord.open })
+  assert.deepEqual([unknown.format.previous, unknown.applied, await readFile(file, 'utf8')], [{ reason: 'no-lock' }, [], project])
+  assert.deepEqual([...new Set(unknown.format.extra.map(({ provenance }) => provenance))], ['unknown'])
+  await mkdir(path.join(root, path.dirname(COPY)), { recursive: true })
+  await writeFile(path.join(root, COPY), older)
+  await writeFile(path.join(root, '.gusta-lock.json'), lockOf('0.0.1', { [COPY]: older }))
+  await git(root, 'add', '-A'); await git(root, 'commit', '-qm', 'install 0.0.1')
+  const step = { id: 'format-template', summary: 'spec/FORMAT.md lines as the previous template had them → the bundled template', files: ['spec/FORMAT.md'] }
+  const planned = await migrateSpec({ targetRoot: root, dryRun: true }, { coord: coord.open })
+  assert.deepEqual([planned.applied, planned.format.previous, await readFile(file, 'utf8')], [[step], { version: '0.0.1', source: `HEAD:${COPY}` }, project])
+  // 남는 것은 프로젝트 줄뿐이다 — --dry-run도 쓴 뒤의 모습을 보고한다.
+  assert.deepEqual([planned.format.missing, planned.format.extra], [[], [{ section: 'Language', line: own, provenance: 'projectOwned' }]])
+  const written = await migrateSpec({ targetRoot: root }, { coord: coord.open })
+  assert.deepEqual([written.applied, written.format.extra, await readFile(file, 'utf8')], [[step], planned.format.extra, packaged.replace('\n## Language\n', `\n## Language\n${own}\n`)])
+  assert.deepEqual((await migrateSpec({ targetRoot: root }, { coord: coord.open })).applied, [])
+  // 이번 버전 설치를 커밋한 뒤에도 직전 설치본은 그 커밋 앞에서 찾는다.
+  await writeFile(path.join(root, COPY), packaged)
+  await writeFile(path.join(root, '.gusta-lock.json'), lockOf((await getPackageInfo()).version, { [COPY]: packaged }))
+  await git(root, 'add', '-A'); await git(root, 'commit', '-qm', 'install running')
+  const found = await previousTemplate(root, (await getPackageInfo()).version)
+  assert.deepEqual([found.version, found.source, found.text], ['0.0.1', `${await git(root, 'rev-parse', 'HEAD')}^:${COPY}`, older])
 })

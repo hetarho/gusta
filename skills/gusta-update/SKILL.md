@@ -22,7 +22,7 @@ description: >-
 - `gusta outdated`로 installed(lock 파일), latest, `changes`(installed 이후 CHANGELOG 항목)를 본다. `error`가 있으면 레지스트리 조회 실패를 알리고 멈춘다.
 - 제품 단계·지원 범위도 [제품 지원 정책](../gusta-create-architecture/references/product-support.md)의 현재 승인 ARCH와 대조한다. 미정이면 최초 추천·선택으로 연결하고 기존 지원을 자동 축소하지 않는다.
 - 테스트 감사도 버전과 무관한 필수 단계다. `upgrade-context.testPolicy`의 후보·원시 경로/줄·미확인을 읽고 실제 스크립트 호출망, 테스트 설정과 대표 테스트, ARCH 계획, runtime timings를 대조한다. inventory complete나 후보 없음만으로 의미 검토 완료라 하지 않는다. 결과는 유지/축소/agent 대체/CI 이동/미확인으로 구분하고 중복·지원 밖 브라우저·소스/구현 추종 테스트와 대체 증거·제거될 비용을 남긴다. [감사 기준](references/project-rules.md)을 따른다.
-- 설치·이관 전에 [프로젝트 규칙 대조](references/project-rules.md)를 수행한다. `gusta upgrade-context`의 모든 페이지와 적용 지침·참조를 조사하고, 대조 범위·제외 이유·미확인 항목을 남긴다. 최신 버전이거나 알려진 설정 키가 검색되지 않아도 이 조사를 생략하지 않는다.
+- 설치·이관 전에 [프로젝트 규칙 대조](references/project-rules.md)를 수행한다. `gusta upgrade-context` 목록 전체와 적용 지침·참조를 조사하고, 대조 범위·제외 이유·미확인 항목을 남긴다. 최신 버전이거나 알려진 설정 키가 검색되지 않아도 이 조사를 생략하지 않는다.
 - package.json 의존성에 @haeram/gusta가 있으면 그 패키지 관리자로 올린다(예: `npm i -D @haeram/gusta@latest`, lockfile 포함).
 - `outdated`가 false여도 `gusta migrate --dry-run`과 규칙 대조를 끝낸다. 설치 갱신이 불필요하면 건너뛰되 이관·정합성 확인 전에는 완료로 보고하지 않는다.
 
@@ -31,7 +31,7 @@ description: >-
 - `gusta agent-block`은 SETTINGS `agent-block`이 true일 때만 CLAUDE.md·AGENTS.md의 마커 사이 블록을 새 버전으로 바꾼다(아니면 건너뛴다). broken이면 아무것도 쓰지 않는다 — 보고된 파일·줄을 보여 주고 고칠 방법을 승인받아 마커만 정리한 뒤 다시 실행한다.
 - `gusta migrate --dry-run`으로 적용될 이관(`applied`)을 보여 준다. expert에게는 id와 파일을, novice에게는 무엇이 어디로 옮겨지는지 알려 준다. 그다음 `gusta migrate`를 실행한다. 이관은 여러 번·여러 checkout에서 실행해도 결과가 같다.
 - 이관은 STATE의 active·inbox·log를 조정 브랜치(SETTINGS `coord`, 기본 `gusta`)의 SESSIONS.md로 옮긴다(결과 `sessions`, 커밋·push는 CLI). 같은 이름의 코드 브랜치가 있어 거절되면 `vibe settings --set coord=<다른 이름>` 뒤 다시 실행한다. 옛 버전 기기와는 선점이 서로 보이지 않으니 모든 기기를 함께 올리라고 보고한다.
-- `format.missing`·`format.extra`는 문장 차이이지 정책 변경 승인이나 의도 판정이 아니다. FORMAT도 다른 활성 문서와 대조하고, 동작이 같은 표기 정리만 자동 적용한다. 실제 차이는 원문·범위·변경안·영향을 보여 주며 현재 프레임워크 기본 절차에 맞추길 권유하고 괜찮은지 묻는다. 승인 전에는 의도적인 규칙·범위별 예외를 유지하고, 역사 기록과 FORMAT 전체를 덮어쓰지 않는다.
+- `migrate`는 직전 설치 템플릿과 같은 FORMAT 줄만 새 템플릿으로 바꾸고(`format-template`), 남은 `format.missing`·`format.extra`를 줄별 `provenance`와 함께 돌려준다. 출처를 패키지·Git 이력으로 다시 추적하지 않는다(`unknown`은 프로젝트 줄처럼 다룬다). 남은 차이는 문장 차이이지 정책 변경 승인이나 의도 판정이 아니다. FORMAT도 다른 활성 문서와 대조하고, 동작이 같은 표기 정리만 자동 적용한다. 실제 차이는 원문·범위·변경안·영향을 보여 주며 현재 프레임워크 기본 절차에 맞추길 권유하고 괜찮은지 묻는다. 승인 전에는 의도적인 규칙·범위별 예외를 유지하고, 역사 기록과 FORMAT 전체를 덮어쓰지 않는다.
 - `unset`이 있으면 gusta-init으로 정한다.
 - 선택받은 일치화는 SETTINGS와 영향을 받는 모든 활성 문서에 함께 반영한다(SSOT 정책 변경은 gusta-update-ssot). 설정값의 실행 정본이라는 이유로 SETTINGS가 프로젝트 정책 변경을 승인한 것으로 보지 않는다. 조사·반영 뒤 `upgrade-context`를 다시 받아 변경·참조·검토 범위를 확인한다.
 - `gusta lint`로 이관이 더한 오류를 고친다. 원래 있던 오류는 보고하며, 구조 검사와 프로젝트 정책 대조 결과를 따로 확인한다.

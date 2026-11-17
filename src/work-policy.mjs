@@ -52,10 +52,13 @@ export const isTestPath = (file) => TEST_FILE.some((pattern) => pattern.test(fil
 // One task should fit one fresh session with room to spare (gusta-create-task 3): its full brief
 // stays near 40k chars and it touches at most 5 non-test paths. Advisory — planning splits over it.
 export const TASK_BUDGET = { briefChars: 40000, touches: 5 }
-export function taskBudget({ briefChars, touches = [] }) {
+// over[] names only what splitting the task can shrink: its own text and the decisions it pulls in
+// directly (taskChars). Context every task of the domain gets (always, the domain scope, referrers)
+// is contextChars: reported, never a reason to split.
+export function taskBudget({ briefChars, taskChars = briefChars, touches = [] }) {
   const code = touches.filter((item) => !isTestPath(item)).length
-  const over = [...(briefChars > TASK_BUDGET.briefChars ? ['briefChars'] : []), ...(code > TASK_BUDGET.touches ? ['touches'] : [])]
-  return { briefChars, touches: code, limits: { ...TASK_BUDGET }, over }
+  const over = [...(taskChars > TASK_BUDGET.briefChars ? ['briefChars'] : []), ...(code > TASK_BUDGET.touches ? ['touches'] : [])]
+  return { briefChars, taskChars, contextChars: briefChars - taskChars, touches: code, limits: { ...TASK_BUDGET }, over }
 }
 export function overlaps(left = [], right = []) {
   return left.some((a) => right.some((b) => {

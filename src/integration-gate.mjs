@@ -11,6 +11,8 @@ import { remoteEnv, REMOTE_TIMEOUT_MS } from './coord-branch.mjs'
 import { stateMergeArgs } from './git-merge.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { validateAgentAcceptance, summarizeAgentAcceptance, mergeAgentAcceptance } from './agent-acceptance.mjs'
+import { canonicalDestination, worktreeHome } from './work-runtime.mjs'
+import { STALE_MINUTES } from './coord-doc.mjs'
 
 const execute = promisify(execFile)
 const FILE = 'INTEGRATION.json'
@@ -22,7 +24,19 @@ const detail = (error) => String(error?.stderr || error?.message || error).slice
 const validRef = (name) => typeof name === 'string' && /^[A-Za-z0-9][\w./-]*$/.test(name) && !/\.\.|\/\/|\.lock$|[./]$/.test(name)
 const validHead = (head) => /^[0-9a-f]{40,64}$/.test(head ?? '')
 const wait = (reason, extra = {}) => ({ ok: false, waiting: true, reason, ...extra })
+// What a waiting session (or its owner) does about the sessions it waits for.
+const WAIT_NEXT = `Each listed live session submits from its own worktree with vibe integration ready --tag <tag> (a session doing a task finishes or releases it first). Sessions that ended with work or sent no signal for ${STALE_MINUTES} minutes are already deferred to a later integration (deferred), not waited for. Whose work reached land outside the gate (landed: true) or will never submit is closed by its owner with vibe integration withdraw --participant <id>: its branch stays, and ready rejoins it.`
 const participantKey = ({ owner, tag, branch }) => createHash('sha256').update(`${owner}\n${tag}\n${branch}`).digest('hex').slice(0, 24)
+
+// What a session command reports about its participant: never the whole shared record (its gate
+// receipts carry check output), only who it is, where it stands and why not.
+export function participantSummary(result) {
+  if (!result || typeof result !== 'object' || !('ok' in result)) return result
+  const id = result.participant ?? result.value?.id ?? null
+  const status = result.value?.status ?? (id ? result.state?.participants?.[id]?.status : undefined)
+  return { ok: result.ok, ...(id ? { participant: id } : {}), ...(result.scope ? { scope: result.scope } : {}), ...(status ? { status } : {}),
+    ...(result.value?.alreadyLanded ? { alreadyLanded: true } : {}), ...(result.value?.unchanged ? { unchanged: true } : {}), ...(result.ok ? {} : { reason: result.reason, ...(result.error ? { error: result.error } : {}) }) }
+}
 
 function parse(text) {
   let value
@@ -167,22 +181,59 @@ export async function openIntegration(context, injected = {}) {
     const id = participantKey({ owner: await ownerId(), tag, branch: context.branch })
     return transaction((state, at) => {
       const entry = state.participants[id]
-      if (!entry || state.gate?.cohort.some((participant) => participant.id === id) || ['ready', 'landed'].includes(entry.status)) return { id, unchanged: true }
+      if (!entry || state.gate?.cohort.some((participant) => participant.id === id) || ['ready', 'landed'].includes(entry.status) || entry.status === (noWork ? 'withdrawn' : 'paused')) return { id, unchanged: true }
       entry.status = noWork ? 'withdrawn' : 'paused'; entry.reason = reason; entry.at = at.now
       return { id, status: entry.status }
+    })
+  }
+  // A session of this checkout ends: nothing changed since it opened (committed or not) withdraws
+  // it, anything else pauses it — paused still holds the gate until it is ready or withdrawn. Its
+  // head is recorded first, so the participant names the work it leaves.
+  async function end({ tag, reason = 'session-ended' }) {
+    const id = participantKey({ owner: await ownerId(), tag, branch: context.branch }), seen = await read()
+    // Only a participant that exists: ending never creates one that would then hold the gate.
+    if (seen.ok && seen.state.participants[id]) await register({ tag })
+    const marker = context.workspace?.git?.gitDir ? await readFile(path.join(context.workspace.git.gitDir, 'gusta-session.json'), 'utf8').then(JSON.parse).catch(() => null) : null
+    const changed = marker?.root === root && marker.tag === tag ? (await git(root, ['diff', '--name-only', marker.sourceHead, 'HEAD'])).trim() : 'unknown'
+    return close({ tag, empty: !changed && !(await git(root, ['status', '--porcelain', '--untracked-files=all'])).trim(), reason })
+  }
+  // The owner's explicit stop for a participant that will not submit ready (its session ended on
+  // another device, or its work reached land outside the gate); never inferred from age. Its branch
+  // and head stay; ready from its worktree joins again. A head land already holds is recorded
+  // landed outside the gate, unverified.
+  async function withdraw({ participant, tag, reason = 'withdrawn-by-owner' } = {}) {
+    const id = participant ?? (tag ? participantKey({ owner: await ownerId(), tag, branch: context.branch }) : null)
+    if (!id) return wait('participant-required')
+    const land = context.branches.land ?? context.branches.landTarget
+    let base = null
+    try {
+      base = land ? await remoteLand(land) : null
+      if (base && !await sha(base) && shared) await remoteGit(['fetch', '--quiet', '--no-tags', remote, `refs/heads/${land}`])
+    } catch { base = null }
+    return transaction(async (state, at) => {
+      const entry = state.participants[id]
+      if (!entry) return wait('participant-unknown', { participant: id })
+      if (state.gate?.cohort.some((member) => member.id === id)) return wait('candidate-frozen', { token: state.gate.token })
+      if (terminal.has(entry.status)) return { id, status: entry.status, unchanged: true }
+      if (!await sha(entry.head) && shared) await remoteGit(['fetch', '--quiet', '--no-tags', remote, `refs/heads/${entry.branch}`]).catch(() => {})
+      const contained = Boolean(base && entry.land === land && await sha(base) && await sha(entry.head) && await ancestor(entry.head, base))
+      const previous = entry.status
+      Object.assign(entry, contained ? { status: 'landed', landed: base, reconciled: { at: at.now, from: previous, reason, verified: false } } : { status: 'withdrawn', reason, withdrawn: { at: at.now, from: previous } }, { at: at.now })
+      return { id, tag: entry.tag, branch: entry.branch, head: entry.head, status: entry.status, contained, rejoin: `vibe integration ready --tag ${entry.tag} (from ${entry.branch})` }
     })
   }
   async function claim({ tag, active = [], deadline = null } = {}) {
     const seen = await read()
     if (!seen.ok) return seen
     const pending = Object.values(seen.state.participants).filter((entry) => !terminal.has(entry.status))
-    // Fetch each explicitly ready head before taking a lease. An unpublished head is not a
-    // reason to hold ownership while somebody else has all candidate objects locally.
+    // Fetch each explicitly ready head before taking a lease. A head that cannot be fetched (a device
+    // that readied without publishing, then went away) is deferred below, not waited for.
+    const unavailable = new Set()
     for (const entry of pending.filter((entry) => entry.status === 'ready')) {
       if (!await sha(entry.head) && shared) {
         try { await remoteGit(['fetch', '--quiet', '--no-tags', remote, `refs/heads/${entry.branch}`]) } catch {}
       }
-      if (!await sha(entry.head)) return wait('session-head-unavailable', { participant: entry.id, branch: entry.branch, head: entry.head })
+      if (!await sha(entry.head)) unavailable.add(entry.id)
     }
     const land = context.branches.land ?? context.branches.landTarget
     if (!land) return wait('land-unset')
@@ -195,20 +246,45 @@ export async function openIntegration(context, injected = {}) {
     return transaction(async (state, at) => {
       if (state.gate) return wait('integration-owned', { gate: state.gate, automaticRecheck: false })
       if (state.planning?.phase === 'publishing') return wait('planning-in-progress', { planning: state.planning })
-      const cohort = Object.values(state.participants).filter((entry) => !terminal.has(entry.status) && entry.land === land)
+      // Only live sessions are waited for. A session that ended with work (paused), one with no
+      // signal (participant record or session row) for STALE_MINUTES, or a ready one whose head
+      // cannot be fetched is deferred: left out of this cohort with its status, branch and claims
+      // untouched, to join a later integration once it syncs. Never withdrawn, landed or taken over.
+      const now = Date.parse(at.now), recent = (time) => Boolean(time) && now - Date.parse(time) < STALE_MINUTES * 60000
+      const rowFor = (entry) => active.find((row) => row.session === entry.id && row.tag === entry.tag && row.branch === entry.branch)
+      const deferred = [], cohort = []
+      for (const entry of Object.values(state.participants).filter((item) => !terminal.has(item.status) && item.land === land)) {
+        const reason = entry.status === 'ready' && unavailable.has(entry.id) ? 'head-unavailable' : entry.status === 'paused' ? 'session-ended'
+          : entry.status === 'working' && !recent(entry.at) && !recent(rowFor(entry)?.at) ? 'no-signal' : null
+        if (reason) deferred.push({ id: entry.id, tag: entry.tag, host: entry.host, branch: entry.branch, status: entry.status, at: rowFor(entry)?.at && recent(rowFor(entry).at) ? rowFor(entry).at : entry.at, reason })
+        else cohort.push(entry)
+      }
       const unregistered = []
       for (const row of active) {
-        const matches = cohort.filter((entry) => entry.id === row.session && entry.tag === row.tag && entry.branch === row.branch && entry.host === row.host)
+        // A row that went quiet is a session away, not one to wait for; a deferred participant's row goes with it.
+        if (!recent(row.at)) { if (!deferred.some((entry) => entry.id === row.session)) deferred.push({ tag: row.tag, host: row.host, branch: row.branch, ...(row.session ? { id: row.session } : {}), at: row.at, reason: 'no-signal' }); continue }
+        if (deferred.some((entry) => entry.id && entry.id === row.session)) continue
+        const same = (entry) => entry.id === row.session && entry.tag === row.tag && entry.branch === row.branch && entry.host === row.host
+        const matches = cohort.filter(same)
         const commit = typeof row.commit === 'string' && row.commit !== '-' ? await sha(row.commit) : null
-        if (matches.length !== 1 || row.doing && row.doing !== '-' || !commit || !await ancestor(commit, matches[0].head)) unregistered.push(row)
+        const doing = row.doing && row.doing !== '-'
+        if (matches.length === 1 && !doing && commit && await ancestor(commit, matches[0].head)) continue
+        // A live session whose participant already landed or withdrew, idle and with nothing newer
+        // than that record, has nothing to integrate now; its next beat registers new work.
+        const settled = Object.values(state.participants).find((entry) => terminal.has(entry.status) && same(entry))
+        if (!matches.length && settled && !doing && commit && await ancestor(commit, settled.head)) continue
+        unregistered.push({ tag: row.tag, branch: row.branch, ...(row.session ? { participant: row.session } : {}),
+          cause: doing ? `doing ${row.doing}` : !commit ? 'commit unavailable here' : matches.length === 1 || settled ? 'commits not submitted ready' : 'no matching participant' })
       }
-      if (unregistered.length) return wait('unregistered-sessions', { participants: unregistered.map(({ tag, branch }) => ({ tag, branch })) })
+      const away = deferred.length ? { deferred } : {}
+      if (unregistered.length) return wait('unregistered-sessions', { participants: unregistered, ...away, nextAction: WAIT_NEXT })
       const working = cohort.filter((entry) => entry.status !== 'ready')
-      if (working.length) return wait('sessions-working', { participants: working.map(({ id, tag, branch, at }) => ({ id, tag, branch, at })) })
-      if (!cohort.length) return wait('no-ready-sessions')
+      if (working.length) return wait('sessions-working', { participants: await Promise.all(working.map(async ({ id, tag, branch, host, status, head, reason, at }) => ({ id, tag, branch, host, status, ...(reason ? { reason } : {}), at,
+        landed: await sha(head) ? await ancestor(head, base) : null }))), ...away, nextAction: WAIT_NEXT })
+      if (!cohort.length) return wait('no-ready-sessions', away)
       if (cohort.some((entry) => !pending.some((known) => known.id === entry.id && known.head === entry.head))) return wait('participants-changed')
       if (await remoteLand(land) !== base) return wait('land-base-moved', { automaticRecheck: false })
-      state.gate = { token: uuid(), owner: tag, via: context.branches.via === 'pr' || cohort.some((entry) => entry.publication === 'pr') ? 'pr' : 'merge', executor: { host: os.hostname(), pid: process.pid }, phase: 'preparing', land, base, cohort: cohort.map(({ id, tag, branch, head, agentChecks, verificationCommands, publication }) => ({ id, tag, branch, head, agentChecks, verificationCommands, publication })), at: at.now, deadline, candidate: null, checks: [], agentChecks: [], rounds: [] }
+      state.gate = { token: uuid(), owner: tag, via: context.branches.via === 'pr' || cohort.some((entry) => entry.publication === 'pr') ? 'pr' : 'merge', executor: { host: os.hostname(), pid: process.pid }, phase: 'preparing', land, base, cohort: cohort.map(({ id, tag, branch, head, agentChecks, verificationCommands, publication }) => ({ id, tag, branch, head, agentChecks, verificationCommands, publication })), ...away, at: at.now, deadline, candidate: null, checks: [], agentChecks: [], rounds: [] }
       return { gate: state.gate }
     })
   }
@@ -223,9 +299,9 @@ export async function openIntegration(context, injected = {}) {
     const gate = own(current.state, token)
     if (gate.ok === false) return gate
     if (gate.candidate) return { ok: true, gate, root: gate.path }
-    const common = path.resolve(root, (await git(root, ['rev-parse', '--git-common-dir'])).trim())
-    const directory = path.join(common, 'gusta', 'integration-worktrees', token)
-    await mkdir(path.dirname(directory), { recursive: true })
+    // Beside the other CLI worktrees, outside .git: a candidate under the Git directory breaks
+    // tools that ignore or refuse paths there (Vite's fs.deny), failing checks that pass elsewhere.
+    const directory = await canonicalDestination(path.join(worktreeHome(context.workspace, root), `integration-${token}`))
     const candidateBranch = `integration/${token}`
     await git(root, ['worktree', 'add', '--quiet', '-b', candidateBranch, directory, gate.base])
     try {
@@ -280,7 +356,9 @@ export async function openIntegration(context, injected = {}) {
       return { gate }
     })
   }
-  async function complete({ token, candidate: expected }, { localLand } = {}) {
+  // hold (--no-push): the verified candidate lands on the local land branch only; the shared record
+  // keeps it as a held landing that a later finish publishes (publishHeld).
+  async function complete({ token, candidate: expected }, { localLand, hold = false } = {}) {
     const current = await read()
     if (!current.ok) return current
     const gate = own(current.state, token)
@@ -291,20 +369,46 @@ export async function openIntegration(context, injected = {}) {
     const actual = await remoteLand(gate.land).catch(() => null)
     if (actual !== gate.base) return wait('land-moved', { expected: gate.base, actual, candidate: expected, automaticRecheck: false })
     if (!await ancestor(gate.base, expected)) return wait('candidate-not-fast-forward')
-    if (!shared || !context.branches.push || context.branches.via === 'pr') {
+    const publishes = shared && context.branches.push && context.branches.via !== 'pr'
+    if (!publishes || hold) {
       if (!localLand) return wait(context.branches.via === 'pr' ? 'pr-required' : 'local-land-required', { gate })
       const landed = await localLand(gate)
       if (landed?.ok === false) return landed
     }
+    const held = publishes && hold
     return transaction((state) => {
       const owned = own(state, token)
       if (owned.ok === false) return owned
       if (owned.phase !== 'verified' || owned.candidate !== expected) return wait('candidate-not-verified')
       for (const entry of owned.cohort) if (state.participants[entry.id]?.head === entry.head) { state.participants[entry.id].status = 'landed'; state.participants[entry.id].landed = expected }
-      state.history = [{ ...owned, phase: 'landed', at: now() }, ...state.history].slice(0, 20)
+      state.history = [{ ...owned, phase: 'landed', ...(held ? { held: true } : {}), at: now() }, ...state.history].slice(0, 20)
       state.gate = null
-      return { gate: { ...owned, phase: 'landed' }, landed: expected }
-    }, { publication: shared && context.branches.push && context.branches.via !== 'pr' ? { land: gate.land, base: gate.base, candidate: expected } : null })
+      return { gate: { ...owned, phase: 'landed' }, landed: expected, ...(held ? { held: true } : {}) }
+    }, { publication: publishes && !hold ? { land: gate.land, base: gate.base, candidate: expected } : null })
+  }
+  // A landing held with --no-push goes out as it was verified, and only as a fast-forward of the
+  // remote land to exactly that candidate. A remote land that moved past it is reported, never merged.
+  async function publishHeld(localTip) {
+    if (!shared || !context.branches.push || context.branches.via === 'pr' || !localTip) return { ok: true, value: { none: true } }
+    const current = await read()
+    if (!current.ok) return current
+    const held = current.state.history.find((entry) => entry.held && !entry.published && entry.candidate === localTip)
+    if (!held) return { ok: true, value: { none: true } }
+    let base
+    try {
+      base = await remoteLand(held.land)
+      if (base && !await sha(base)) await remoteGit(['fetch', '--quiet', '--no-tags', remote, `refs/heads/${held.land}`])
+    } catch (error) { return wait('coordination-unknown', { error: detail(error) }) }
+    const mark = (published) => transaction((state, at) => {
+      const entry = state.history.find((item) => item.token === held.token)
+      if (!entry || entry.published) return { published: null }
+      entry.published = at.now
+      return { published }
+    }, published && base !== held.candidate ? { publication: { land: held.land, base, candidate: held.candidate } } : {})
+    if (base === held.candidate) return mark(held.candidate)
+    if (!base || !await sha(base) || !await ancestor(base, held.candidate)) return wait('held-land-diverged', { candidate: held.candidate, remote: base, land: held.land, automaticRecheck: false,
+      nextAction: `The landing held with --no-push (${held.candidate}) is no longer a fast-forward of the remote ${held.land}. Merge the remote ${held.land} into a session branch that contains it and submit that with vibe integration ready; do not force-push.` })
+    return mark(held.candidate)
   }
   async function settleMergedPR(token) {
     const current = await read()
@@ -372,7 +476,7 @@ export async function openIntegration(context, injected = {}) {
       return { published: next, publication }
     })
   }
-  return { branch, ref, scope: shared ? 'remote' : 'clone', read, transaction, register, ready, close, claim, candidate, checked, repair, accept, complete, settleMergedPR, publishPlanning, remoteLand }
+  return { branch, ref, scope: shared ? 'remote' : 'clone', read, transaction, register, ready, close, end, withdraw, claim, candidate, checked, repair, accept, complete, publishHeld, settleMergedPR, publishPlanning, remoteLand }
 }
 
 export async function assertIntegrationCandidate(context, options = {}, injected = {}) {

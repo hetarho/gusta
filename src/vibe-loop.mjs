@@ -1,10 +1,10 @@
 import { readFile, writeFile, mkdir, rm, open, access, readdir } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import path from 'node:path'
-import { vibeStatus, vibeSession, vibePreflight, vibePush, vibeAwake, vibeCheckpoint, vibeSync, vibeClaim, vibeBeat, specCloseIssues } from './vibe.mjs'
+import { vibeStatus, vibeSession, vibePreflight, vibePush, vibeAwake, vibeCheckpoint, vibeSync, syncLand, vibeClaim, vibeBeat, specCloseIssues } from './vibe.mjs'
 import { vibeInbox } from './vibe-inbox.mjs'
 import { coordView } from './vibe-coord.mjs'
 import { inboxEntries, ClaimError, REFRESH_MINUTES } from './coord-doc.mjs'
@@ -29,7 +29,7 @@ import { permissionMode, readSettings, SETTINGS, agentList } from './settings.mj
 import { agentCatalog } from './agent-catalog.mjs'
 import { routeAgent, routeRecord, routeLabel, runLabel } from './agent-route.mjs'
 import { usageRun, finishUsageRun } from './usage-measurement.mjs'
-import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive, notificationCapability, loopDeadline, requestedLoopConfig, loopHint } from './loop-control.mjs'
+import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, waitLoopEvent, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive, notificationCapability, loopDeadline, requestedLoopConfig, loopHint } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine, taskCheckLine } from './loop-time.mjs'
 import { parseFailure, LIMIT_KINDS, BLOCKING, OVERLOAD_RETRY_MS, LIMIT_POLL_MS, readLimits, recordLimit, activeLimits, limitBlocks, earliestReset, limitHint, fallbackNote, limitTarget } from './provider-limits.mjs'
@@ -96,6 +96,27 @@ export function unitStatus(status, selected, recovery) {
 // with done@date, its STATE row gone, and no lint error the unit added (baseline: errors before it).
 // Lint warnings never block (they are drift, not structure).
 const SPEC_GATE_LINT = 8
+// The agent acceptance block sits right before `## next`. Insert and removal are exact inverses:
+// the block and its own line end go, the blank line before `## next` stays, so rewriting the report
+// any number of times never glues a heading onto the line above it.
+const AGENT_BLOCK = /<!-- gusta:agent-acceptance -->\n[\s\S]*?<!-- gusta:agent-acceptance:end -->\n/g
+export function withAgentTable(text, table) {
+  // An older writer could leave `## checks## next` or `## checks` right above `## next`: split them.
+  const cleared = text.replace(AGENT_BLOCK, '').replace(/^(#{2} [^\n#]+?)(#{2} )/gm, '$1\n\n$2').replace(/([^\n])\n## next/, '$1\n\n## next')
+  return table ? cleared.replace(/\n*## next/, `\n<!-- gusta:agent-acceptance -->\n${table}\n<!-- gusta:agent-acceptance:end -->\n\n## next`) : cleared
+}
+
+// A task's later unit (a retry or repair) restates that task's checks: its definitions may change
+// with the task's acceptance. Another task reusing an ID is still refused (mergeAgentAcceptance).
+function unitChecks(dispatches) {
+  const byTask = new Map()
+  return dispatches.reduce((items, entry) => {
+    const incoming = entry.result?.agentChecks ?? [], owned = byTask.get(entry.task) ?? []
+    byTask.set(entry.task, [...owned, ...incoming.map((check) => check.id)])
+    return mergeAgentAcceptance(items, incoming, { owned })
+  }, [])
+}
+
 export async function specGate(root, id, { lint = lintSpec, baseline = [] } = {}) {
   const violations = []
   const archived = (await readdir(path.join(root, 'spec/tasks/done')).catch(() => [])).find((name) => name.startsWith(`${id}.`) && name.endsWith('.md'))
@@ -188,7 +209,12 @@ export async function executeVibeUnit(options, job, directory, limits = {}) {
         limits.signal?.removeEventListener('abort', abort)
         let result = null, usage = null
         if (code === 0 && !stopped) {
-          try { const parsed = JSON.parse(output.trim().split('\n').at(-1)); result = validateAgentResult('unit', parsed); usage = compactUsage(parsed.usage) }
+          try {
+            const parsed = JSON.parse(output.trim().split('\n').at(-1)); result = validateAgentResult('unit', parsed); usage = compactUsage(parsed.usage)
+            // What the adapter repaired or converted stays visible in the receipt and report.
+            if (Array.isArray(parsed.agentCheckIssues) && parsed.agentCheckIssues.length) result.agentCheckIssues = parsed.agentCheckIssues
+            if (typeof parsed.repaired === 'string') result.repaired = parsed.repaired
+          }
           catch (parseError) { error = parseError.message }
         }
         const session = await readFile(sessionFile, 'utf8').catch(() => null)
@@ -229,6 +255,13 @@ export async function vibeLoop(options = {}, injected = {}) {
   const batchSize = positive(options.batchSize, 3, 'batch-size', true), timeoutMs = positive(options.timeoutMs, 3600000, 'timeout-ms')
   let optionHours = options.finalReserveHours === undefined ? undefined : Number(options.finalReserveHours)
   const scopeIds = options.tasks === undefined ? null : approvedTasks(Array.isArray(options.tasks) ? options.tasks : String(options.tasks).replaceAll(',', ' '))
+  // --request-file (gusta-start request.md): the request this run plans first, in one planning unit,
+  // so the reading that planning needs leaves with that unit instead of growing the host session.
+  // The run's scope is then the tasks that unit created and the unfinished tasks they wait on.
+  const requestText = options.requestFile ? (await readFile(path.resolve(options.requestFile), 'utf8')).trim() : null
+  if (requestText !== null && !requestText) throw new SkillPackageError('--request-file이 비어 있습니다.')
+  if (requestText && scopeIds) throw new SkillPackageError('--request-file과 --tasks는 함께 쓰지 않습니다. 요청이 만든 태스크가 범위입니다.')
+  const requestDigest = requestText ? createHash('sha256').update(requestText).digest('hex').slice(0, 16) : null
   let sessionWorkspace = null
   if (!control.length && !options.dryRun) {
     if (await designOf(await inspectWorkspace(options))) throw new SkillPackageError('이 checkout은 디자인 중입니다. 디자인을 마친 뒤 별도 세션을 시작하세요.')
@@ -246,7 +279,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   if (!control.length && !agents && !options.provider && !options.adapter) return { schemaVersion: 1, ok: false, tag: options.tag, ...(options.dryRun ? { dryRun: true } : {}), reason: 'needs-init', hint: loopHint('needs-init'), unset: ['agents'], modelRequests: 0 }
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'gusta-vibe-loop.lock')
-  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, claim: vibeClaim, beat: vibeBeat, inbox: vibeInbox, view: coordView, push: vibePush, integration: finalizeIntegration, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {},
+  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, syncLand, claim: vibeClaim, beat: vibeBeat, inbox: vibeInbox, view: coordView, push: vibePush, integration: finalizeIntegration, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {},
     sleep: (ms, signal) => new Promise((resolve) => { const timer = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true }) }),
     catalog: () => agentCatalog({ targetRoot: root, env: { ...process.env, ...options.env } }, { agents: settings.agents }), ...injected }
   // What each installed tool can run, read once per run (no model call) and only when agents is set:
@@ -270,6 +303,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   }
   if (previous && previous.cwd !== root) throw new SkillPackageError('이 tag는 다른 checkout 소유입니다.', [previous.cwd])
   if (options.stop) { await bindLoopDirectory(directory, root); await writeFile(stopFile, 'stop\n'); return { schemaVersion: 1, ok: true, stopFile, action: 'cancel' } }
+  if (options.waitEvent) return waitLoopEvent(directory, root, options)
   if (options.status || options.configure || options.stopAfterUnit) return requestControl(directory, root, options)
   if (options.recoverMetadata) {
     const owner = { pid: process.pid, host: os.hostname(), tag: options.tag, runId: randomUUID() }
@@ -387,6 +421,9 @@ export async function vibeLoop(options = {}, injected = {}) {
   await acquireLoop(lock, { pid: process.pid, host: os.hostname(), tag: options.tag, runId })
   const report = `spec/reports/${new Date(start).toISOString().slice(2, 10).replaceAll('-', '')}-${options.tag}.md`
   const reportPath = path.join(root, report)
+  // since: where this run's own changes start — the session's start, or the land commit last merged in.
+  let since = context.workspace.git.head, landConflict = null
+  const lostSeen = new Set()
   let initialized = false, awake = false, stopped = false, reason = null, error = null, base = context.workspace.git.head, pending = [], failureStreak = 0, noProgress = 0, count = 0, codePushed = false, pruned = null, publication = null, integrationState = null
   let lastBatchPlan = batchIdentity()
   let lastBatchInputs = await batchInputs()
@@ -396,7 +433,10 @@ export async function vibeLoop(options = {}, injected = {}) {
   let limitWait = null, limitStop = null
   const hintFor = (why) => why === 'usage-limit' && limitStop?.length ? limitHint(limitStop, deps.now()) : loopHint(why)
   // scope grows with the tasks this run creates for scoped work (a split, a prerequisite, a repair).
-  const scope = scopeIds ? new Set(scopeIds) : null
+  // A restarted run of the same request keeps what its planning unit already made.
+  const plannedBefore = requestDigest && previous?.request?.digest === requestDigest && previous.request.planned
+  const scope = scopeIds ? new Set(scopeIds) : requestText ? new Set(plannedBefore ? previous.scope ?? [] : []) : null
+  let requestPlanned = Boolean(plannedBefore)
   const inScope = (id) => !scope || scope.has(id)
   // A task that did not exist when the run started joins the scope when it depends on a scoped task
   // or a scoped task depends on it. Tasks other sessions planned meanwhile stay out.
@@ -491,7 +531,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const snapshot = () => ({ ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, pruned, publication, integration: integrationState, sessionWorkspace, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), refused: [...refused].map(([task, held]) => ({ task, ...held })), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, snapshots, usageLimits: limitHits, ...(limitWait ? { limitWait } : {}), reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, publication, integration: integrationState, sessionWorkspace, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), refused: [...refused].map(([task, held]) => ({ task, ...held })), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, ...(requestDigest ? { request: { digest: requestDigest, planned: requestPlanned } } : {}), snapshots, usageLimits: limitHits, ...(limitWait ? { limitWait } : {}), reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), ...(landConflict ? { landConflict } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -554,10 +594,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       : entry.errors ? `- ${entry.command}: fail (${entry.errorCount} errors; first: ${entry.errors[0]})` : `- ${entry.command}: ${entry.cancelled ? 'cancelled' : entry.ok ? 'pass' : 'fail'} (${entry.log ?? '-'})`)
       .filter((line) => !text.includes(line))
     if (checks.length) text = text.replace('\n## next', `${checks.join('\n')}\n\n## next`)
-    const agentChecks = dispatches.reduce((items, entry) => mergeAgentAcceptance(items, entry.result?.agentChecks ?? []), [])
-    const agentTable = renderAgentAcceptance(agentChecks)
-    text = text.replace(/<!-- gusta:agent-acceptance -->[\s\S]*?<!-- gusta:agent-acceptance:end -->\n*/g, '')
-    if (agentTable) text = text.replace('\n## next', `<!-- gusta:agent-acceptance -->\n${agentTable}\n<!-- gusta:agent-acceptance:end -->\n\n## next`)
+    const agentChecks = unitChecks(dispatches)
+    text = withAgentTable(text, renderAgentAcceptance(agentChecks))
     if (integrationState) text = text.replace(/^- shared integration: .*\n/m, '').replace('\n## next', `- shared integration: ${integrationState.ok ? 'landed' : integrationState.reason} (${integrationState.gate?.candidate ?? '-'}); full verification is not repeated automatically.\n\n## next`)
     // Where the run's time went, once, when the run closes (a reopened report gets a fresh line).
     if (closing) text = text.replace(/^- time: .*\n/m, '').replace('\n## next', `${timeLine(timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }))}\n\n## next`)
@@ -735,16 +773,17 @@ export async function vibeLoop(options = {}, injected = {}) {
       // also submit only at the settled session boundary, so another session cannot invalidate
       // a long gate by landing the next unit while it is still checking.
       if (!closing) { pending = []; await save(); return true }
-      const changed = (await git(root, ['diff', '--name-only', context.workspace.git.head, 'HEAD'])).split('\n').filter((file) => file && file !== report)
+      const changed = (await git(root, ['diff', '--name-only', since, 'HEAD'])).split('\n').filter((file) => file && file !== report)
       if (!changed.length) {
         await (await openIntegration(context)).close({ tag: options.tag, empty: true, reason: reason ?? 'no-work' })
         pending = []; await save(); return true
       }
-      const agentChecks = dispatches.reduce((items, entry) => mergeAgentAcceptance(items, entry.result?.agentChecks ?? []), [])
+      const agentChecks = unitChecks(dispatches)
       integrationState = await deps.integration({ ...options, targetRoot: root, agentChecks, signal: controller.signal, timeoutMs: Math.max(1, deadline - deps.now()) }, { check: deps.check, view: deps.view })
       await event('shared-integration', { reason: integrationState.reason ?? 'landed', candidate: integrationState.gate?.candidate ?? null })
       if (!integrationState.ok && !integrationState.waiting && !integrationState.pending) throw new SkillPackageError('공유 통합 검증에 실패했습니다.', [integrationState.reason ?? 'unknown'])
-      if (integrationState.waiting || integrationState.pending) reason = 'integration-waiting'
+      // A run stopped by failing units says so; a waiting gate is reported beside it, not instead.
+      if ((integrationState.waiting || integrationState.pending) && reason !== 'session-failures') reason = 'integration-waiting'
       if (integrationState.ok && integrationState.landed && !integrationState.pushed) {
         await metadata.assertClean()
         await git(root, ['merge', '--ff-only', '--quiet', integrationState.landed])
@@ -905,10 +944,36 @@ export async function vibeLoop(options = {}, injected = {}) {
       await refreshVerification()
       await applyRequests()
       if (reason) break
+      // What landed while this session was away (a device that slept, another session's gate) comes
+      // in before the next unit builds on the old base. A conflict stops the run: the session resolves
+      // that merge first (loop-control.md), then starts the loop again.
+      const prior = (await git(root, ['rev-parse', 'HEAD'])).trim()
+      const landed = await deps.syncLand({ ...options, targetRoot: root }).catch((caught) => ({ ok: false, reason: 'error', error: caught.message }))
+      if (landed.ok && landed.action !== 'none') {
+        since = landed.merged
+        if (prior === base) base = (await git(root, ['rev-parse', 'HEAD'])).trim()
+        await event('land-synced', { action: landed.action, land: landed.land, merged: landed.merged })
+      } else if (!landed.ok && landed.reason === 'conflict') {
+        landConflict = { land: landed.land, behind: landed.behind, conflicts: landed.conflicts }
+        await event('land-conflict', landConflict)
+        reason = 'land-conflict'; break
+      } else if (!landed.ok) await event('land-sync-error', { reason: landed.reason, error: landed.error ?? null })
       const status = await deps.status({ ...options, targetRoot: root, tag: options.tag })
       if (status.git?.fetchError) throw new SkillPackageError('원격 판정 실패', [status.git.fetchError])
       // A design opened in this checkout meanwhile: its edits wait for the user, not for units.
       if (status.route === 'design') { reason = 'design'; break }
+      // A task another device took while this session was away (its claim reached the remote first):
+      // this session stops it and follows that result; what it already did stays in its history or wip.
+      for (const lost of status.coordination?.lost ?? []) {
+        if (lostSeen.has(lost.task)) continue
+        lostSeen.add(lost.task)
+        refused.set(lost.task, { owner: lost.owner ?? null, reason: 'lost' })
+        if (priorityTask === lost.task) priorityTask = null
+        if (recovery?.taskId === lost.task) recovery = null
+        await event('claim-lost', { task: lost.task, owner: lost.owner ?? null })
+        await deps.inbox({ targetRoot: root, step: 'add', tag: options.tag, kind: 'decided', ref: [lost.task], text: `${lost.task} was taken by ${lost.owner ?? 'another session'} while this session was away: stopped here, following that result (this attempt stays in this branch history or wip/${options.tag})` })
+          .catch((caught) => event('inbox-error', { error: caught.message }))
+      }
       if (priorityTask && status.remaining && !status.remaining.some((task) => task.id === priorityTask)) priorityTask = null
       if (repairTask && status.remaining && !status.remaining.some((task) => task.id === repairTask)) repairTask = null
       await reconcileSpecRejected()
@@ -949,6 +1014,8 @@ export async function vibeLoop(options = {}, injected = {}) {
         repairMs = deadline - deps.now() - (reserve.gateMs ?? (failedGate?.ms > 0 ? failedGate.ms : 0)) - (reserve.ciMs ?? 0)
         if (!repairTask || refused.has(repairTask) || !status.runnable?.includes(repairTask) || repairMs <= 0) { reason = 'final-window'; break }
       }
+      if (requestText && !requestPlanned && !recovery) recovery = { reason: 'request', request: requestText }
+      const planning = recovery?.reason === 'request'
       const runnable = (status.runnable ?? []).filter((id) => inScope(id) && !refused.has(id))
       const scoped = scope && !runnable.length ? ((status.remaining ?? []).some((task) => scope.has(task.id)) ? 'scope-blocked' : 'scope-done') : null
       // A unit only executes an existing task: with nothing runnable (and no repair to try below)
@@ -969,12 +1036,12 @@ export async function vibeLoop(options = {}, injected = {}) {
       const unitLimit = (id) => exploreMs.has(id) ? Math.max(timeoutMs, exploreMs.get(id) + EXPLORE_EXIT_MS) : timeoutMs
       const nextTask = status.next?.[0]?.match(/^- gusta-implement-task (T\d+)\b/)?.[1]
       const queued = [priorityTask, ...(status.implementation?.resume ?? []), nextTask, ...runnable].filter((id) => id && runnable.includes(id))
-      const selected = repairMs !== null ? repairTask : recovery?.taskId ?? queued.find((id) => !exploreMs.has(id) || unitLimit(id) <= workLeft) ?? null
-      if (selected === null && queued.length) { reason = 'explore-no-time'; break }
+      const selected = planning ? null : repairMs !== null ? repairTask : recovery?.taskId ?? queued.find((id) => !exploreMs.has(id) || unitLimit(id) <= workLeft) ?? null
+      if (selected === null && queued.length && !planning) { reason = 'explore-no-time'; break }
       // Do not turn an unavailable repair into an unscoped planning unit that could take it anyway.
       if (selected === null && status.route === 'repair' && !recovery) { reason = 'spec-repair-unavailable'; break }
-      // Every unit has its task: no unit plans untasked work on its own.
-      if (selected === null) { reason = untasked ? 'needs-sketch' : 'no-work'; break }
+      // Every unit has its task (or the request it plans): no unit plans untasked work on its own.
+      if (selected === null && !planning) { reason = untasked ? 'needs-sketch' : 'no-work'; break }
       let limitMs = repairMs !== null ? Math.min(timeoutMs, Math.max(1, repairMs)) : Math.min(unitLimit(selected), Math.max(1, workLeft))
       // A unit starts no later than this: a repair inside the closing window, else before the window.
       const repairBy = repairMs !== null ? deps.now() + repairMs : null
@@ -1115,6 +1182,19 @@ export async function vibeLoop(options = {}, injected = {}) {
       // A real unit's duration sizes the repair buffer of the closing reserve.
       if (!failed) await recordTiming(context.runtime, timingKey('unit'), deps.now() - unitStart)
       const kept = (snapshot) => snapshot && { ref: snapshot.ref, commit: snapshot.commit, base: snapshot.base, files: snapshot.files, fileCount: snapshot.fileCount }
+      if (!failed && dispatched?.reason === 'request') {
+        // The request is planned (or parked): its scope is the tasks that unit added to STATE and the
+        // unfinished tasks they wait on. A blocked planning unit is a failed attempt at the same request.
+        if (receipt.result.outcome !== 'blocked') {
+          requestPlanned = true
+          const rows = (text) => tableRows(sections(text).get('tasks') ?? []).filter((row) => TASK_ID.test(row[0] ?? ''))
+          const known = new Set(rows(before.state).map((row) => row[0])), current = rows(after.state)
+          for (const row of current) if (!known.has(row[0])) scope.add(row[0])
+          const deps = new Map(current.map((row) => [row[0], depIds(row[3])]))
+          for (let grew = true; grew;) { grew = false; for (const id of [...scope]) for (const dep of deps.get(id) ?? []) if (deps.has(dep) && !scope.has(dep)) { scope.add(dep); grew = true } }
+          await event('request-planned', { unit: count, tasks: [...scope] })
+        }
+      }
       if (!failed) {
         // A unit owns planning as well as implementation. Give a blocked task a
         // fresh planning unit even if its STATE row is no longer runnable.
@@ -1169,6 +1249,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       // At most one notice per unit, only when it left the owner something to judge (after any park).
       const judged = judgmentItems(before, { state: after.state, inbox: entry.parked ? await inboxLines() : after.inbox }, receipt.result)
       if (judged.length) notify(() => loopEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, 'needs-judgment', judgmentNotice(count, taskId, judged)))
+      // One line a waiting host reports (vibe loop --wait-event unit-finished).
+      await event('unit-finished', { unit: count, task: taskId, kind: receipt.result?.kind ?? null, outcome: entry.specGate?.ok === false ? 'rejected by spec gate' : receipt.result?.outcome ?? (cut ? `cut (${receipt.stopped})` : 'failed'), route: runLabel(route), ms: entry.ms, ...(entry.parked ? { parked: true } : {}) })
       if (cut) await event('unit-cut', { unit: count, task: taskId, cause: receipt.stopped, ms: entry.ms, snapshot: leftover?.ref ?? null, next: recovery?.taskId === taskId ? recovery.reason : entry.parked ? 'parked' : null })
       else if (receipt.stopped) {
         reason = receipt.stopped
@@ -1226,7 +1308,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (beating) await beating
       await metadataStep('active-end', () => metadata.beat(true)).catch(() => {})
       if (deps.integration) {
-        const changed = (await git(root, ['diff', '--name-only', context.workspace.git.head, 'HEAD'])).split('\n').filter((file) => file && file !== report)
+        const changed = (await git(root, ['diff', '--name-only', since, 'HEAD'])).split('\n').filter((file) => file && file !== report)
         await (await openIntegration(context)).close({ tag: options.tag, empty: !changed.length, reason: reason ?? 'session-stopped' }).catch((caught) => event('integration-close-error', { error: caught.message }))
       }
     }
@@ -1264,6 +1346,6 @@ export async function vibeLoop(options = {}, injected = {}) {
     await notify(async () => finishedEvent(directory, { runId, tag: options.tag, cwd: root, notifyCommand: options.notifyCommand }, finishedSummary(closed, waiting)))
   }
   const terminalEvent = await readJSON(plan.notification.terminalEvent).catch(() => null)
-  return { ...plan, verify, batchVerify, requiredVerificationTiers, sessionWorkspace, integration: integrationState, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
+  return { ...plan, verify, batchVerify, requiredVerificationTiers, sessionWorkspace, integration: integrationState, limits: { ...plan.limits, maxHours: hours }, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, gate: gateState(), objectiveComplete: false, continuation: continuation(), notification: { ...plan.notification, ...(terminalEvent?.runId === runId ? { delivery: terminalEvent.delivery, deliveredToHook: terminalEvent.deliveredToHook, receipt: terminalEvent.receipt } : {}) }, runId, ok: !error && !operationalErrors.length && reason !== 'session-failures', reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), ...(landConflict ? { landConflict } : {}), stopReason, error, operationalErrors, appliedConfig, configHistory, units: count, report, pruned, codePushed, priorityTask, recovery, manifest,
     time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(taskChecks().runs ? { taskChecks: taskChecks() } : {}), ...(measurement ? { measurement } : {}), ...(limitHits.length ? { usageLimits: limitHits } : {}) }
 }

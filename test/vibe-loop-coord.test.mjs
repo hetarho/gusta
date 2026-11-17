@@ -207,3 +207,90 @@ test('a project that has not moved its STATE sections yet still runs: the old ro
   assert.match(report, /## parked\n- 261112 parked T002: needs production credentials\n/)
   assert.equal(await git(root, 'status', '--porcelain'), '')
 })
+
+// A session whose land moved while it was away (another device's integration landed meanwhile).
+async function awaySession(t, landed) {
+  const { root } = await fixture(t)
+  await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- land: delivery\n- push: false\n')
+  await git(root, 'add', '-A'); await git(root, 'commit', '-qm', 'settings')
+  await git(root, 'branch', 'delivery'); await git(root, 'switch', '-qc', 'session-work')
+  await writeFile(path.join(root, 'shared.txt'), 'session side\n'); await git(root, 'add', '-A'); await git(root, 'commit', '-qm', 'session work before sleeping')
+  await git(root, 'switch', '-q', 'delivery')
+  await writeFile(path.join(root, landed.file), landed.text); await git(root, 'add', '-A'); await git(root, 'commit', '-qm', 'landed elsewhere')
+  await git(root, 'switch', '-q', 'session-work')
+  return root
+}
+const integrationStub = async () => ({ ok: true, verified: true, landed: null, pushed: null })
+
+test('a session coming back merges what landed meanwhile before its next unit, never rebasing its own commits', async (t) => {
+  const root = await awaySession(t, { file: 'elsewhere.txt', text: 'from another device\n' })
+  const own = (await git(root, 'rev-parse', 'HEAD')).trim()
+  const seen = []
+  const result = await vibeLoop({ ...opts(root), maxUnits: 1 }, { preflight: passed, check: async () => ({ ok: true }), integration: integrationStub,
+    execute: async (options, job) => { seen.push(await readFile(path.join(root, 'elsewhere.txt'), 'utf8')); return completeTask(root, job.brief.taskId) } })
+  assert.deepEqual(seen, ['from another device\n'], result.error)
+  assert.equal((await git(root, 'merge-base', '--is-ancestor', own, 'HEAD').then(() => 'kept')), 'kept')
+  assert.ok((await events(result)).some((event) => event.type === 'land-synced'))
+})
+
+test('a conflict with what landed meanwhile stops the run with the files to resolve, before any unit', async (t) => {
+  const root = await awaySession(t, { file: 'shared.txt', text: 'landed side\n' })
+  let units = 0
+  const result = await vibeLoop({ ...opts(root), maxUnits: 1 }, { preflight: passed, check: async () => ({ ok: true }), integration: integrationStub,
+    execute: async (options, job) => { units++; return completeTask(root, job.brief.taskId) } })
+  assert.deepEqual([result.reason, units, result.landConflict.conflicts], ['land-conflict', 0, ['shared.txt']])
+  assert.match(result.hint, /merge해 충돌을 풀고 커밋/)
+  assert.equal(await git(root, 'status', '--porcelain'), '')
+})
+
+test('a task another device took while this session was away is stopped here and recorded in the inbox', async (t) => {
+  const { root } = await fixture(t)
+  const units = []
+  let reads = 0
+  const result = await vibeLoop(opts(root), { preflight: passed, check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: null }),
+    status: async (options) => {
+      const status = await vibeStatus(options)
+      if (++reads === 2) status.coordination = { ...status.coordination, lost: [{ task: 'T001', owner: 'bbbb', reason: 'claimed' }] }
+      return status
+    },
+    execute: async (options, job) => { units.push(job.brief.taskId); return completeTask(root, job.brief.taskId) } })
+  assert.equal(units.includes('T001'), false, JSON.stringify(units))
+  assert.ok((await events(result)).some((event) => event.type === 'claim-lost' && event.task === 'T001'))
+  assert.match((await sessions(root)).inbox.join('\n'), /decided T001: T001 was taken by bbbb while this session was away/)
+})
+
+test('--request-file: the first unit plans the request, then only the tasks it made and their unfinished deps run', async (t) => {
+  const { root, temporary } = await fixture(t)
+  const request = path.join(temporary, 'request.md')
+  await writeFile(request, 'Show the export button on the report screen.\nReading: REPORT domain, gap: button label (recommend "Export").\n')
+  const units = []
+  const result = await vibeLoop({ ...opts(root), maxUnits: 5, requestFile: request }, { preflight: passed, check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: null }),
+    execute: async (options, job) => {
+      if (job.recovery?.reason === 'request') {
+        units.push('plan'); assert.equal(job.brief, null); assert.match(job.recovery.request, /export button/)
+        await writeFile(path.join(root, 'spec/tasks/T009.export.md'), '# T009 Export\n> st:todo | ssot:ARCH-1 | base:ARCH@1 | dep:T001 | touches:src/\n\n## goal\nExport.\n\n## acceptance\n- [ ] Works.\n\n## impl notes\n- -\n\n## result\n')
+        const state = path.join(root, 'spec/STATE.md')
+        await writeFile(state, (await readFile(state, 'utf8')).replace(/(\| T001 \|[^\n]*\n)/, '$1| T009 | export | ARCH | T001 | todo |\n'))
+        await git(root, 'add', '-A'); await git(root, 'commit', '-qm', 'plan the request')
+        return { exitCode: 0, result: { kind: 'planning', id: 'T009', outcome: 'completed', pushed: false, next: '' } }
+      }
+      units.push(job.brief.taskId)
+      return completeTask(root, job.brief.taskId)
+    } })
+  assert.deepEqual(units, ['plan', 'T001', 'T009'], result.error)
+  assert.equal(result.reason, 'scope-done')
+  assert.match(await readFile(path.join(root, 'spec/STATE.md'), 'utf8'), /^\| T002 \|.*\| todo \|$/m)
+})
+
+test('--wait-event returns the next unit-finished line with a cursor, and ended once the run is over', async (t) => {
+  const { root } = await fixture(t)
+  const result = await vibeLoop({ ...opts(root), maxUnits: 1 }, { preflight: passed, check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: null }),
+    execute: async (options, job) => completeTask(root, job.brief.taskId) })
+  const first = await vibeLoop({ ...opts(root), waitEvent: 'unit-finished', after: '0', waitMs: '0' })
+  assert.deepEqual([first.event.type, first.event.unit, first.event.task, first.event.outcome], ['unit-finished', 1, 'T001', 'completed'], JSON.stringify(first))
+  assert.ok(first.cursor > 0)
+  const next = await vibeLoop({ ...opts(root), waitEvent: 'unit-finished,needs-judgment', after: String(first.cursor), waitMs: '0' })
+  assert.deepEqual([next.event, next.ended, next.running], [null, true, false])
+  await assert.rejects(vibeLoop({ ...opts(root), waitEvent: 'everything' }), /--wait-event는/)
+  assert.equal(result.units, 1)
+})

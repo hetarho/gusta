@@ -16,7 +16,7 @@ import { delegatedCheckout } from './work-policy.mjs'
 import { activeRows, taskRow } from './state-doc.mjs'
 import { quoteLine, quoteFields, TASK_ID } from './spec-format.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { openIntegration } from './integration-gate.mjs'
+import { openIntegration, participantSummary } from './integration-gate.mjs'
 import { sessionWorkspacePolicy } from './session-workspace.mjs'
 
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
@@ -33,6 +33,12 @@ async function registerIntegration(context, options, injected) {
   if (!policy.allowed) return { registered: false, reason: policy.reason }
   const store = await openIntegration(context, injected.integration)
   return store.register({ tag: options.tag, ...(options.host ? { host: options.host } : {}) })
+}
+
+async function endIntegration(context, tag, injected) {
+  const policy = await sessionWorkspacePolicy({ targetRoot: context.root, workspace: context.workspace })
+  if (!policy.allowed) return { closed: false, reason: policy.reason }
+  return (await openIntegration(context, injected.integration)).end({ tag, reason: 'session-ended' })
 }
 
 // Tags no session may take: `work` names the unlanded rows a work group leaves.
@@ -148,7 +154,9 @@ export async function beatSession(context, options, injected = {}) {
   if (options.end) {
     const ended = await coordWrite(context, (text, { now }) => applyEvent(text, { type: 'release', tag, now }), { tag, message: `gusta ${tag}: session end`, injected, coord })
     await remember(coord, { session: { tag, forget: true } })
-    return { schemaVersion: 1, tag, removed: ended.changed, coordination: ended.coordination }
+    // The shared participant ends with the session, or it would hold every later gate as working.
+    const integration = participantSummary(await endIntegration(context, tag, injected).catch((error) => ({ ok: false, reason: 'integration-error', error: error.message })))
+    return { schemaVersion: 1, tag, removed: ended.changed, coordination: ended.coordination, integration }
   }
   const task = TASK_ID.test(options.doing ?? '') ? options.doing : null
   const known = await registration(coord, tag)
@@ -163,7 +171,7 @@ export async function beatSession(context, options, injected = {}) {
   }, { tag, message: `gusta ${tag}: ${task ? `claim ${task}` : 'beat'}`, injected, coord })
   if (task) lostClaim(written.coordination, task)
   return { schemaVersion: 1, row: rowOf((await written.store.read()).text, tag), changed: written.changed, coordination: written.coordination,
-    integration }
+    integration: participantSummary(integration) }
 }
 
 // The task's own st — this checkout's row and file, and the land branch's row as last fetched: a
@@ -217,7 +225,7 @@ export async function claimSession(context, options, { landState = null, check =
   if (task) lostClaim(written.coordination, task)
   return { schemaVersion: 1, ok: true, tag, task: task ?? null, claimed: Boolean(task), released: written.value.released ?? [],
     row: rowOf((await written.store.read()).text, tag), unpublished: written.coordination.unpublished, coordination: written.coordination,
-    integration }
+    integration: participantSummary(integration) }
 }
 
 // vibe task done: the finished task waits in unlanded until the land branch holds it (so no other

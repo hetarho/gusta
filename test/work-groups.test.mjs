@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, access } from 'node:fs/promise
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { startWork, claimWork, inspectWork, updateWork, releaseWork, submitWork, integrateWork, cleanupWork, recoverWork, workBoard, workHistory, syncWork, runCheckCommand } from '../src/work-groups.mjs'
+import { startWork, claimWork, inspectWork, updateWork, releaseWork, submitWork, integrateWork, cleanupWork, recoverWork, workBoard, workHistory, syncWork, runCheckCommand, commitWorkerWork } from '../src/work-groups.mjs'
 import { inspectWorkspace } from '../src/workspace.mjs'
 import { pruneWork } from '../src/prune.mjs'
 import { runtimeRoot, transaction, readRuntime, unlockRuntime } from '../src/work-runtime.mjs'
@@ -449,4 +449,70 @@ test('검사 명령의 중단·시간 초과는 셸이 fork한 명령까지 프�
 
   assert.deepEqual(await runCheckCommand('echo out; echo err >&2', { cwd: dir }), { stdout: 'out\n', stderr: 'err\n' })
   await assert.rejects(runCheckCommand('echo bad >&2; exit 3', { cwd: dir }), (error) => /exit 3/.test(error.message) && error.stderr === 'bad\n')
+})
+
+test('a worker [x] check is named with the [v] fix, and the host rewrites it before committing a built-in worker', async (t) => {
+  const setup = await fixture(t)
+  await startWork({ ...setup, name: 'marks' })
+  const attempt = await claimWork({ ...setup, work: 'marks', task: 'T001' })
+  const taskFile = path.join(attempt.workspace, 'spec/tasks/T001.first.md')
+  const original = await readFile(taskFile, 'utf8')
+  const done = original.replace('- [ ]', '- [x]') + '- outcome: implemented\n- at: -\n- verified: pending submit\n- limits: -\n'
+  await writeFile(taskFile, done); await writeFile(path.join(attempt.workspace, 'one.txt'), 'result\n')
+  // Uncommitted (a built-in worker's edits): the host checks them as [v] and commits.
+  const head = (await git(attempt.workspace, 'rev-parse', 'HEAD')).stdout.trim()
+  await commitWorkerWork({ ...setup, attempt: attempt.id, expectedHead: head })
+  const committed = (await git(attempt.workspace, 'show', 'HEAD:spec/tasks/T001.first.md')).stdout
+  assert.match(committed, /^- \[v\] /m); assert.doesNotMatch(committed, /^- \[x\] /m)
+  // Committed by the worker itself: refused with the line and the fix, not a bare contract error.
+  await writeFile(taskFile, committed.replace('- [v]', '- [x]'))
+  await commit(attempt.workspace)
+  await assert.rejects(submitWork({ ...setup, attempt: attempt.id, verify: checks }), /\[x\]로 표시했습니다.*\[v\]로 바꾸세요: - \[x\] /)
+  // Any other contract change says which part moved.
+  await writeFile(taskFile, committed.replace('## goal\n', '## goal\nwider goal\n'))
+  await commit(attempt.workspace)
+  await assert.rejects(submitWork({ ...setup, attempt: attempt.id, verify: checks }), /태스크 계약\(goal\)이 상위 브랜치와 다릅니다/)
+})
+
+test('a note without a status waits for the next worker dispatch; a blocked note is refused', async (t) => {
+  const setup = await fixture(t)
+  await startWork({ ...setup, name: 'notes' })
+  const attempt = await claimWork({ ...setup, work: 'notes', task: 'T001' })
+  const queued = await updateWork({ ...setup, attempt: attempt.id, note: 'T001-AC1 moved to coordinator measurement' })
+  assert.equal(queued.status, attempt.status); assert.equal(queued.directive.note, 'T001-AC1 moved to coordinator measurement')
+  await assert.rejects(updateWork({ ...setup, attempt: attempt.id, status: 'blocked', reason: 'x', note: 'y' }), /--note는 워커에게 전달할 지시/)
+})
+
+test('a unit candidate that cannot be prepared stays approved for a person, never a worker correction, and is not retried at the same target', async (t) => {
+  const setup = await fixture(t)
+  const file = path.join(setup.root, 'spec/ssot/ARCH.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('- ARCH-1 [o] runtime: node\n', '- ARCH-1 [o] runtime: node; verification\n  - prepare: `node -e "process.exit(4)"`\n'))
+  await commit(setup.root, 'prepare that fails')
+  const group = await startWork({ ...setup, name: 'prepare', verify: checks })
+  const attempt = await claimWork({ ...setup, work: group.id, task: 'T001' })
+  assert.equal(attempt.prepare.ok, false)
+  await implement(attempt)
+  await submitWork({ ...setup, attempt: attempt.id, verify: checks })
+  await approve(setup, attempt)
+  await assert.rejects(integrateWork({ ...setup, attempt: attempt.id, verify: checks, autoCorrect: true }), (error) => error.details.some((line) => /ARCH prepare\). 구현 결함이 아니라 환경·준비 명령 문제/.test(line)))
+  const after = (await inspectWork(setup)).attempts.find((entry) => entry.id === attempt.id)
+  assert.equal(after.status, 'approved')
+  assert.equal(after.prepareFailure.commit, (await git(group.path, 'rev-parse', 'HEAD')).stdout.trim())
+  assert.notEqual(after.review?.verdict, 'changes_requested')
+  // The background gate does not start the same failing integration again at this target.
+  const { nextWork } = await import('../src/work-wait.mjs')
+  await nextWork({ ...setup, work: group.id, owner: 'other' })
+  assert.equal((await readRuntime(runtimeRoot(await inspectWorkspace(setup)))).groups[group.id].gate, undefined)
+})
+
+test('an attempt left verifying by a command that died says so and names work recover', async (t) => {
+  const setup = await fixture(t)
+  await startWork({ ...setup, name: 'stuck' })
+  const attempt = await claimWork({ ...setup, work: 'stuck', task: 'T001' })
+  const { execFileSync } = await import('node:child_process')
+  const dead = Number(execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }))
+  await transaction(runtimeRoot(await inspectWorkspace(setup)), (state) => {
+    Object.assign(state.attempts[attempt.id], { status: 'verifying', operation: { token: 'gone', attempt: attempt.id, kind: 'verifying', pid: dead, host: os.hostname(), at: new Date().toISOString() } })
+  })
+  await assert.rejects(submitWork({ ...setup, attempt: attempt.id, verify: checks }), new RegExp(`verifying할 수 없는 상태입니다: verifying. 이전 verifying 명령\\(pid ${dead}\\)은 이미 끝났습니다: work recover --attempt ${attempt.id}`))
 })

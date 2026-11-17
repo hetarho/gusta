@@ -94,7 +94,8 @@ npx @haeram/gusta vibe plan-push                # spec/만 담은 기획 커밋�
 npx @haeram/gusta vibe push                     # 끝난 작업을 SETTINGS land로 반영(push면 원격을 합친 뒤 push, 아니면 로컬 병합, pr이면 PR)
 npx @haeram/gusta vibe deploy                   # '배포해줘': deploy 브랜치를 land로 fast-forward
                                                 # 둘 다 결과에 version을 싣는다: SETTINGS version이 auto면 운영 브랜치가 전진할 때 올린 {from,to,level}, 아니면 {skipped: 이유}
-npx @haeram/gusta vibe beat --tag k3f9 --mode autopilot  # 조정 브랜치에 이 세션 행 쓰기·갱신 (--doing T012|-, --end로 삭제) — 커밋할 것 없음
+npx @haeram/gusta vibe beat --tag k3f9 --mode autopilot  # 조정 브랜치에 이 세션 행 쓰기·갱신 (--doing T012|-, --end로 삭제하고 통합 참여도 닫음) — 커밋할 것 없음
+npx @haeram/gusta vibe task reserve --tag k3f9 --count 2  # 다음 태스크 번호 예약: 기획 브랜치·이 clone의 worktree·다른 기기 예약보다 큰 번호를 한 번만
 npx @haeram/gusta vibe task start T012 --tag k3f9  # 단독 선점: 조정 브랜치에서 먼저 잡고 태스크·STATE 행을 doing으로 (todo·dep 완료만, 남이 잡았으면 거절)
 npx @haeram/gusta vibe task done T012 --tag k3f9   # done@날짜·tasks/done 이동·STATE 행·next, 조정 브랜치에 log·unlanded (미체크·빈 result면 거절, 커밋은 호출자)
 npx @haeram/gusta vibe claim --tag a1b2 --task T001 # 조정 브랜치에서 선점만 (push 대상·깨끗한 트리 불필요). 거절이면 exit 1과 claim.owner·reason(claimed|unlanded)
@@ -107,7 +108,7 @@ npx @haeram/gusta vibe checkpoint --tag k3f9 --handoff --next 'continue pending 
 npx @haeram/gusta vibe design start --tag d7 --scope "landing hero"  # 이 checkout만 디자인 중으로 (STATE·다른 worktree는 그대로)
 npx @haeram/gusta vibe design verify            # 디자인 마감: ARCH task 검사를 미커밋 트리에서 (batch·CI는 공동 통합으로 미룸)
 npx @haeram/gusta vibe design end               # 디자인 중 표시 해제 — 이어서 커밋 하나
-npx @haeram/gusta vibe check --tier task -- pnpm exec vitest related --run src/a.ts   # 태스크 커밋 직전 한 번: 명령별 시간을 timings.json에 남긴다
+npx @haeram/gusta vibe check --tier task -- pnpm exec vitest related --run src/a.ts   # 태스크 커밋 직전 한 번: 명령별 시간을 timings.json에 남긴다 (-- 뒤 여러 인자는 경계 보존, 한 인자는 셸 문자열)
 npx @haeram/gusta vibe check --tier batch --tag k3f9 -- pnpm run test:e2e   # 같은 트리에서 통과한 검사는 생략, 무거운 검사는 하나씩
 npx @haeram/gusta vibe preflight --probe-workspace current --probe 'pnpm run test' --allow-tool 'Bash(pnpm run *)'
 ```
@@ -153,9 +154,9 @@ batch/group 관문(`vibe check --tier batch|group`)이 실패하면 결과의 `n
 
 `/gusta-update`는 새 버전 확인 → 프로젝트 규칙 조사 → 설치·구조 이관 → 문서·설정·실제 실행 대조 → lint → 커밋을 수행합니다. 최신 버전이어도 조사를 생략하지 않습니다. 실제 정책 차이는 프레임워크 기본 절차에 맞추는 안과 원문·범위·영향을 보여 주고 괜찮은지 확인한 뒤 반영합니다.
 
-`npx @haeram/gusta@latest upgrade-context --limit 1`은 항상 JSON으로 문서·지침·구현 후보 목록과 설정 출처를 돌려줍니다. 정책 일치 판정이나 본문 읽기를 대신하지 않습니다. 첫 결과의 snapshot·total로 `upgrade-context --snapshot <snapshot> --limit <total>`을 실행해 전체 JSON을 대상 프로젝트 밖 임시 파일에 저장하고, 네이티브 도구로 나눠 읽으면 큰 트리의 반복 스캔을 줄일 수 있습니다(total이 0이면 limit 1). 목록의 complete는 정책 검토 완료가 아닙니다. 실제 원문·참조·적용 범위와 소유권은 [프로젝트 규칙 대조](../skills/gusta-update/references/project-rules.md)대로 확인합니다. 직접 이관할 때는:
+`npx @haeram/gusta@latest upgrade-context --all --out <대상 프로젝트 밖 임시 파일>`은 문서·지침·구현 후보 목록과 설정 출처를 한 번만 계산해 파일에 쓰고(한 줄에 항목 하나), 표준 출력에는 snapshot·total 요약만 냅니다. 파일을 나눠 읽고, snapshot을 확인하려고 다시 실행하지 않습니다. 정책 일치 판정이나 본문 읽기를 대신하지 않습니다. 목록의 complete는 정책 검토 완료가 아닙니다. 실제 원문·참조·적용 범위와 소유권은 [프로젝트 규칙 대조](../skills/gusta-update/references/project-rules.md)대로 확인합니다. 직접 이관할 때는:
 
 1. `npx @haeram/gusta@latest outdated`로 설치 버전·최신 버전·그 사이 변경(`changes`)을 봅니다. 그다음 `npx @haeram/gusta@latest install --dry-run` → `install` → `check`. 설치는 `.claude/skills`·`.codex/skills`만 바꾸고, 로컬에서 고친 스킬 파일은 충돌로 보고하며 `--force` 없이 덮어쓰지 않습니다. `spec/`은 건드리지 않습니다. SETTINGS `agent-block`이 true인 프로젝트는 `install` 뒤 `agent-block`으로 지침 파일의 gusta 블록도 갱신해야 `check`가 통과합니다.
 2. `lint`로 기존 문서를 검사합니다. 새 검사는 기존 문서를 오류로 만들지 않고 경고·검토 후보로 알립니다.
-3. `npx @haeram/gusta@latest migrate --dry-run` → `migrate`로 구조 변경을 이관합니다(예: STATE cfg push·plan → `spec/SETTINGS.md`, STATE의 `active`·`inbox`·`log` → 조정 브랜치의 `SESSIONS.md` — 결과 `sessions`에 옮긴 섹션과 커밋). 여러 번, 여러 checkout에서 실행해도 결과가 같습니다 — 조정 브랜치 히스토리에 한 번이라도 있던 inbox·log 줄은 다시 옮기지 않고(그 뒤 해소된 줄이 되살아나지 않게), 조정 브랜치가 이미 있으면 옛 active 행은 버립니다(세션이 다시 등록합니다. 결과 `sessions.dropped`). `coord` 이름(기본 `gusta`)의 코드 브랜치가 이미 있으면 거절하므로 `vibe settings --set coord=<다른 이름>` 뒤 다시 실행합니다. 옛 버전 CLI와 새 버전은 서로의 선점을 보지 못하니 한 프로젝트의 모든 기기를 함께 올립니다. 의미 판단이 필요한 `spec/FORMAT.md`는 자동으로 덮어쓰지 않습니다. 결과의 `format.missing`(새 패키지 줄)과 `format.extra`(프로젝트에만 있는 줄)를 보고, 새 줄은 옮기고 프로젝트가 고친 규칙은 남깁니다. `unset`이 있으면 `/gusta-init`으로 정합니다. FORMAT에 옮기기 전까지 스킬은 프로젝트 FORMAT에 없는 표기(예: `→!`·`→=`·`→~`)를 쓰지 않습니다.
+3. `npx @haeram/gusta@latest migrate --dry-run` → `migrate`로 구조 변경을 이관합니다(예: STATE cfg push·plan → `spec/SETTINGS.md`, STATE의 `active`·`inbox`·`log` → 조정 브랜치의 `SESSIONS.md` — 결과 `sessions`에 옮긴 섹션과 커밋). 여러 번, 여러 checkout에서 실행해도 결과가 같습니다 — 조정 브랜치 히스토리에 한 번이라도 있던 inbox·log 줄은 다시 옮기지 않고(그 뒤 해소된 줄이 되살아나지 않게), 조정 브랜치가 이미 있으면 옛 active 행은 버립니다(세션이 다시 등록합니다. 결과 `sessions.dropped`). `coord` 이름(기본 `gusta`)의 코드 브랜치가 이미 있으면 거절하므로 `vibe settings --set coord=<다른 이름>` 뒤 다시 실행합니다. 옛 버전 CLI와 새 버전은 서로의 선점을 보지 못하니 한 프로젝트의 모든 기기를 함께 올립니다. `spec/FORMAT.md`는 이전에 설치된 템플릿(커밋된 lock·설치 사본, Git에서 읽음)과 줄 단위로 대조해, 이전 템플릿 그대로인 줄만 새 템플릿으로 바꾸고 프로젝트가 쓰거나 고친 줄은 두지 않고 남깁니다(결과 `applied`의 `format-template`). 남은 차이는 `format.missing`(새 패키지 줄)과 `format.extra`(줄마다 `provenance`: `previousTemplate`·`projectOwned`·`unknown`)로 보고하며, 이전 템플릿을 알 수 없으면(`unknown`) 아무것도 바꾸지 않습니다. 새 줄은 옮기고 프로젝트가 고친 규칙은 남깁니다. `unset`이 있으면 `/gusta-init`으로 정합니다. FORMAT에 옮기기 전까지 스킬은 프로젝트 FORMAT에 없는 표기(예: `→!`·`→=`·`→~`)를 쓰지 않습니다.
 4. 버전별 이관 항목은 [CHANGELOG](../CHANGELOG.md)에 있습니다.

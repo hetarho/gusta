@@ -59,10 +59,10 @@ test('public HTML failure extracts a failed step without reading authenticated l
   assert.equal(result.outcome, 'failure'); assert.ok(result.jobs[0].failedSteps.includes('Unit tests'))
 })
 
-test('no run is skipped within grace; a stale run for another SHA is not success', async (t) => {
+test('no run within the grace is unchecked, not a pass; a stale run for another SHA is not success', async (t) => {
   const { root } = await fixture(t); const time = clock()
   const result = await vibeCIWait(options(root), { ...time, git: fakeGit, execute: async () => { throw new Error('missing') }, fetch: async (url) => response(url.endsWith('/runs/1') ? `${'b'.repeat(40)}` : '<a href="/owner/project/actions/runs/1">old</a>') })
-  assert.equal(result.outcome, 'skipped'); assert.equal(result.reason, 'no-run-within-grace')
+  assert.equal(result.outcome, 'unchecked'); assert.equal(result.reason, 'no-run-within-grace'); assert.equal(result.ok, true)
   assert.equal(result.polls, 2); assert.deepEqual(time.sleeps, [60000])
 })
 
@@ -133,4 +133,16 @@ test('github.com job pages carry the job result only in header text', async () =
   assert.equal(failed.conclusion, 'failure'); assert.deepEqual(failed.failedSteps, ['Run tests'])
   assert.equal(publicJobResult(page('started', 'success').replace('"completed"', '"in_progress"'), {}).conclusion, null)
   assert.equal(publicJobs('<a href="/owner/project/actions/runs/1/job/2" class="x">\n  check\n</a>', 'owner/project')[0].name, 'check')
+})
+
+test('read through the public page, a run that appears minutes late is still waited for by default', async (t) => {
+  const { root } = await fixture(t); const time = clock()
+  const { noRunMs, ...defaults } = options(root)
+  const result = await vibeCIWait({ ...defaults, timeoutMs: 3600000 }, { ...time, git: fakeGit, execute: async () => { throw new Error('missing') }, fetch: async (url) => {
+    if (time.now() < 5 * 60000) return response('<p>no runs yet</p>')
+    if (url.includes('/job/')) return response('<div data-job-status="completed" data-conclusion="success"></div>')
+    if (url.endsWith('/runs/7')) return response(`${sha}<a href="/owner/project/actions/runs/7/job/8">checks</a>`)
+    return response('<a href="/owner/project/actions/runs/7">run</a>')
+  } })
+  assert.equal(result.outcome, 'success'); assert.equal(result.transport, 'public-html')
 })

@@ -462,3 +462,51 @@ test('한도 실패는 분류된 failure로 남고 bin은 failure 한 줄과 종
   const other = await ordinary.then(() => assert.fail('exit 0'), (error) => error)
   assert.deepEqual([other.code, parseFailure(other.stdout)], [1, null])
 })
+
+const unitCheck = (extra = {}) => ({ id: 'T001-AC1', scenario: 'Open the page', steps: ['Open the page'], expected: 'It renders', observed: 'Rendered', evidence: ['shot.png'], status: 'pass', reason: '', replaces: [], stage: 'unit', required: true, owner: 'host', candidate: null, duplicationReason: '', ...extra })
+
+test('a short candidate SHA the model copied resolves to the full commit in its workspace', async (t) => {
+  const { execFileSync } = await import('node:child_process')
+  const fixture = await stub(t, 'claude', `let text='';process.stdin.on('data',c=>text+=c);process.stdin.on('end',()=>{const head=require('node:child_process').execFileSync('git',['rev-parse','--short=9','HEAD'],{encoding:'utf8'}).trim();console.log(JSON.stringify({type:'result',is_error:false,structured_output:{outcome:'completed',summary:'done',decision:{question:'',options:[],recommendation:''},agentChecks:[${JSON.stringify(unitCheck()).replace('"candidate":null', '"candidate":head')}]}}));});`)
+  const run = (...args) => execFileSync('git', ['-C', fixture.root, ...args], { encoding: 'utf8' })
+  run('init', '-q'); run('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'base')
+  const result = await executeAgentAdapter({ provider: 'claude', job: job(fixture.root), env: { ...fixture.env, PATH: `${fixture.root}${path.delimiter}${process.env.PATH}` }, log: () => {} })
+  assert.equal(result.agentChecks[0].candidate, run('rev-parse', 'HEAD').trim())
+})
+
+test('a result that breaks a format rule goes back to the same session once, naming the field and its form', async (t) => {
+  const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',c=>text+=c);process.stdin.on('end',()=>{const args=process.argv.slice(2);fs.appendFileSync('calls.jsonl',JSON.stringify({args,text})+'\\n');const resumed=args.includes('--resume');console.log(JSON.stringify({type:'result',is_error:false,structured_output:{outcome:'completed',summary:'done',decision:{question:'',options:[],recommendation:''},agentChecks:[{...${JSON.stringify(unitCheck())},candidate:resumed?'${'c'.repeat(40)}':'not-a-sha'}]}}));});`)
+  const result = await executeAgentAdapter({ provider: 'claude', job: job(fixture.root), env: fixture.env, log: () => {} })
+  assert.equal(result.agentChecks[0].candidate, 'c'.repeat(40))
+  assert.match(result.repaired, /T001-AC1의 candidate 형식/)
+  const calls = (await readFile(path.join(fixture.root, 'calls.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+  assert.equal(calls.length, 2)
+  assert.equal(flag(calls[1].args, '--resume'), flag(calls[0].args, '--session-id'))
+  assert.match(calls[1].text, /host rejected your final JSON.*candidate.*40- or 64-character/s)
+  assert.match(calls[1].text, /do not edit files/)
+})
+
+test('after one repair an invalid check becomes a required not-run handoff; valid checks and the finished work stay', async (t) => {
+  const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',c=>text+=c);process.stdin.on('end',()=>{fs.appendFileSync('calls.txt','x');console.log(JSON.stringify({type:'result',is_error:false,structured_output:{outcome:'completed',summary:'done',decision:{question:'',options:[],recommendation:''},agentChecks:[{...${JSON.stringify(unitCheck())},evidence:[]},${JSON.stringify(unitCheck({ id: 'T001-AC2' }))}]}}));});`)
+  const result = await executeAgentAdapter({ provider: 'claude', job: job(fixture.root), env: fixture.env, log: () => {} })
+  assert.equal(await readFile(path.join(fixture.root, 'calls.txt'), 'utf8'), 'xx')
+  assert.equal(result.outcome, 'completed')
+  assert.deepEqual(result.agentChecks.map((entry) => [entry.id, entry.status, entry.required]), [['T001-AC1', 'not-run', true], ['T001-AC2', 'pass', true]])
+  assert.match(result.agentChecks[0].reason, /관측과 증거가 필요합니다/)
+  assert.deepEqual(result.agentCheckIssues.map((entry) => entry.id), ['T001-AC1'])
+})
+
+test('a second rejected result outside agentChecks is final: the unit fails with the error instead of looping', async (t) => {
+  const fixture = await stub(t, 'claude', `const fs=require('node:fs');let text='';process.stdin.on('data',c=>text+=c);process.stdin.on('end',()=>{fs.appendFileSync('calls.txt','x');console.log(JSON.stringify({type:'result',is_error:false,structured_output:{outcome:'completed',summary:'',decision:{question:'',options:[],recommendation:''},agentChecks:[]}}));});`)
+  await assert.rejects(executeAgentAdapter({ provider: 'claude', job: job(fixture.root), env: fixture.env, log: () => {} }), /summary/)
+  assert.equal(await readFile(path.join(fixture.root, 'calls.txt'), 'utf8'), 'xx')
+})
+
+test('a request planning unit carries the request and points at request.md under its own tool root, without a task skill', async () => {
+  const { agentPrompt } = await import('../src/agent-adapter.mjs')
+  const { AGENT_CONFIG } = await import('../src/constants.mjs')
+  const prompt = await agentPrompt({ role: 'unit', workspace: '/tmp/work', tag: 'rq01', recovery: { reason: 'request', request: 'Add an export button.' } }, 'codex')
+  assert.match(prompt, /Request planning unit/); assert.match(prompt, /Add an export button\./)
+  assert.ok(prompt.includes(`${AGENT_CONFIG.codex.root}/gusta-start/references/request.md`))
+  assert.doesNotMatch(prompt, /gusta-implement-task skill \(already loaded\)/)
+})

@@ -178,6 +178,31 @@ export async function vibeSync(options = {}) {
   return { schemaVersion: 1, ok: true, action, head: await sha(root, 'HEAD'), target }
 }
 
+// What landed while this session was away (another device's integration) comes into its branch
+// before more work is built on the old base: the land branch as the remote has it, else the local
+// one. Always a merge — task results, unlanded rows, participant heads and wip snapshots name this
+// branch's commits, so they are never rewritten. A conflict aborts the merge and names the files.
+export async function syncLand(options = {}) {
+  const context = await vibeSession(options)
+  const { root, remote } = context
+  const land = context.branches.land ?? context.branches.landTarget
+  if (!land || land === context.branch) return { schemaVersion: 1, ok: true, action: 'none', reason: land ? 'on-land' : 'land-unset' }
+  let ref = `refs/heads/${land}`
+  if (remote && await fetchBranch(root, remote, `refs/heads/${land}`, `refs/remotes/${remote}/${land}`)) ref = `refs/remotes/${remote}/${land}`
+  if (!(await exists(root, ref))) return { schemaVersion: 1, ok: true, action: 'none', reason: 'land-missing', land }
+  const head = await sha(root, 'HEAD'), theirs = await sha(root, ref)
+  if (await ancestor(root, theirs, head)) return { schemaVersion: 1, ok: true, action: 'none', head, land: ref }
+  if ((await git(root, ['status', '--porcelain', '--untracked-files=no'])).trim()) return { schemaVersion: 1, ok: false, reason: 'dirty', land: ref, behind: theirs }
+  try {
+    await git(root, [...await stateMergeArgs(root, context.runtime), 'merge', '--no-edit', '--quiet', ref])
+  } catch (error) {
+    const conflicts = await unmerged(root)
+    await git(root, ['merge', '--abort'], [1, 128])
+    return { schemaVersion: 1, ok: false, reason: 'conflict', land: ref, behind: theirs, conflicts: conflicts.length ? conflicts : [(error.stderr || error.message).trim().slice(-400)] }
+  }
+  return { schemaVersion: 1, ok: true, action: (await ancestor(root, head, theirs)) && (await sha(root, 'HEAD')) === theirs ? 'ff' : 'merge', head: await sha(root, 'HEAD'), land: ref, merged: theirs }
+}
+
 // Final integration uses the candidate after sync/merge. A project without spec/ stays supported;
 // an existing but incomplete spec is an error. WIP checkpoint/handoff does not call this gate.
 async function assertSpecClose(root, commit) {
@@ -224,7 +249,11 @@ export async function vibePush(options = {}, injected = {}) {
   const integration = Object.hasOwn(injected, 'integration') ? injected.integration : finalizeIntegration
   if (integration && branches.land) {
     await (injected.assertWorkspace ?? assertImplementationWorkspace)({ ...options, workspace: context.workspace })
-    const result = await integration({ ...options, tag: options.tag ?? createHash('sha256').update(context.branch).digest('hex').slice(0, 8) })
+    // The session's own tag (its worktree marker): another tag would register a second participant
+    // for the same branch while the session's own stays working and holds the gate.
+    const marker = await readFile(path.join(context.workspace.git.gitDir, 'gusta-session.json'), 'utf8').then(JSON.parse).catch(() => null)
+    const tag = options.tag ?? (marker?.root === context.root ? marker.tag : null) ?? createHash('sha256').update(context.branch).digest('hex').slice(0, 8)
+    const result = await integration({ ...options, tag })
     const landed = result.pushed ?? result.landed
     if (result.ok && landed && !(await git(context.root, ['status', '--porcelain', '--untracked-files=all'])).trim() && await ancestor(context.root, 'HEAD', landed)) await git(context.root, ['merge', '--ff-only', '--quiet', landed])
     if (options.waitCi && result.pushed) {

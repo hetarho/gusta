@@ -32,7 +32,7 @@ brief의 stale-base와 history(base 이후 chg 줄)가 델타다 — chg를 따�
 - 새 함수·타입·상수를 쓰기 전에 `rg`로 같은 일을 하는 것이 이미 있는지 찾아 재사용한다 — 같은 판단(대상 여부, 검증, 정규화)을 파일마다 다시 정의하지 않는다. impl notes가 가리킨 공용 위치가 있으면 거기에 둔다.
 - 공용으로 옮겨야 할 helper를 찾으면 단독은 touches 밖의 공용 파일로 옮기고 result limits에 적는다. 묶음 워커는 touches 밖을 고치지 않고 있는 것을 재사용하거나 limits에 남긴다(다른 줄기와 충돌한다).
 - 조정 가능한 수치는 정의된 설정을 이름으로 읽는다. impl notes에 숫자로 적혀 있어도 같은 값의 설정이 있으면 그 설정을 쓰고, 새로 만든 설정은 실제로 읽히게 연결한다. 명령 출력은 요약·tail만 보고 전체 로그는 파일 경로로 남긴다. 완료 태스크는 회귀 근거가 필요한 특정 파일만 조회한다.
-기획 공백은 gusta-update-ssot, 기술 결정 누락은 gusta-create-task로 올린다. 맡김은 추천안+inbox decided, 금지 정책·되돌리기 어려운 일은 parked. 새 문맥은 바깥 반복기가 만든다. 단독 구현을 서브에이전트에 분할하지 않는다. 범위 밖 발견은 result limits나 `vibe log` 한 줄로 남긴다.
+기획 공백은 gusta-update-ssot, 기술 결정 누락은 gusta-create-task로 올린다. 맡김은 추천안+inbox decided, 금지 정책·되돌리기 어려운 일은 parked. 새 문맥은 바깥 반복기가 만든다. 단독 구현을 서브에이전트에 분할하지 않는다. 범위 밖 발견은 result limits나 `vibe log` 한 줄로 남기고, 결정이 적용돼야 하는데 어느 태스크에도 없는 대상이면 inbox `suggest`로 올린다(touches 밖이라 고칠 수 없는 준수 항목을 `[v]`로 체크하지 않는다).
 explore는 시작 시각·timebox를 기록하고 측정값을 result에 보존한다. 시간이 다 되면 acceptance의 exit대로 끝낸다(직접 호출은 한 번 확인, 맡김은 inbox decided).
 
 ## 4. 검증
@@ -45,5 +45,5 @@ explore는 시작 시각·timebox를 기록하고 측정값을 result에 보존�
 - `lint` 오류·경고는 고친다. reviewHints는 의미 검토 후보라 자동 수정하지 않고 next의 gusta-doc-review 또는 result limits로 넘긴다.
 
 ## 5. 마감
-단독 태스크는 acceptance 체크와 result `- outcome:` / `- at:` 검증 SHA / `- verified:` 실제 검사 / `- limits:` 한계 또는 `-` 네 줄과 agent acceptance 증거/미실행 인계를 쓰고 `vibe task done T### --tag <tag> [--at <sha>]`로 마감한다(아카이브·STATE·next·log·unlanded는 CLI, 미체크·빈 result·다른 tag는 거절). 이후에도 지킬 계약은 result에 묻지 말고 gusta-update-ssot로 올린다. 태스크마다 출력 files와 관련 파일만 커밋하며 push·보고서는 gusta-start/호스트의 묶음 경계를 따른다. gusta-start 밖 커밋은 요청받았을 때만 한다.
+단독 태스크는 acceptance 체크(충족은 `[v]`; `[x]`는 SSOT 기각 표기라 쓰지 않는다)와 result `- outcome:` / `- at:` 검증 SHA / `- verified:` 실제 검사 / `- limits:` 한계 또는 `-` 네 줄과 agent acceptance 증거/미실행 인계를 쓰고 `vibe task done T### --tag <tag> [--at <sha>]`로 마감한다(아카이브·STATE·next·log·unlanded는 CLI, 미체크·빈 result·다른 tag는 거절). 이후에도 지킬 계약은 result에 묻지 말고 gusta-update-ssot로 올린다. 태스크마다 출력 files와 관련 파일만 커밋하며 push·보고서는 gusta-start/호스트의 묶음 경계를 따른다. gusta-start 밖 커밋은 요청받았을 때만 한다.
 작업 묶음 워커는 acceptance 체크·result·코드만 갱신하고 제출한다. STATE·SSOT·st·아카이브는 CLI/기획 공간이 소유한다.

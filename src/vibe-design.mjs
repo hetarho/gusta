@@ -1,10 +1,11 @@
-import { inspectWorkspace } from './workspace.mjs'
+import { inspectWorkspace, git } from './workspace.mjs'
 import { readInteractive, writeInteractive } from './interactive-state.mjs'
 import { SESSION_TAG } from './spec-format.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { minuteNow } from './vibe.mjs'
 import { SkillPackageError } from './errors.mjs'
+import { sessionWorkspacePolicy } from './session-workspace.mjs'
 
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
 
@@ -33,9 +34,19 @@ export async function vibeDesign(options = {}) {
     if (resumed.scope !== design.scope) await writeInteractive(workspace, { ...state, design: resumed })
     return { schemaVersion: 1, ok: true, resumed: true, design: resumed }
   }
+  // Design edits never sit on land, deploy, plan or the default branch: a checkout there moves to
+  // design/<tag> first (git switch carries the uncommitted edits along; the dev server keeps its path).
+  const policy = await sessionWorkspacePolicy({ targetRoot: root, workspace })
+  let switched = null
+  if (policy.reason === 'protected-branch') {
+    const branch = `design/${options.tag}`
+    if ((await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], [1]))?.trim()) fail(`${branch} 브랜치가 이미 있습니다. 그 브랜치로 전환해 이어 하거나 다른 tag를 쓰세요.`, [workspace.git.branch])
+    await git(root, ['switch', '--quiet', '-c', branch])
+    switched = { from: workspace.git.branch, to: branch }
+  }
   const entry = { since: minuteNow(), tag: options.tag, scope: scope ?? '-' }
   await writeInteractive(workspace, { ...state, design: entry })
-  return { schemaVersion: 1, ok: true, resumed: false, design: entry }
+  return { schemaVersion: 1, ok: true, resumed: false, design: entry, ...(switched ? { switched } : {}) }
 }
 
 // Design edits stay uncommitted here. Only their task checks run locally; final commands
@@ -48,6 +59,12 @@ async function verifyDesign(options, root, design) {
   ]
   const base = { schemaVersion: 1, design, scope: 'local-design', finalVerified: false, tree: null, deferred }
   if (!verify.task.length && !deferred.length) return { ...base, ok: false, results: [], skipped: [], error: 'ARCH와 package.json에서 검증 명령을 찾지 못했습니다. 변경 영향 task 검사를 정하고 전체 검수는 커밋 후 공동 통합으로 제출하세요.' }
+  // No task check ran: not a pass. The changed files say what a scoped check has to cover.
+  if (!verify.task.length) {
+    const changed = (await git(root, ['status', '--porcelain', '--untracked-files=all'])).split('\n').filter(Boolean).map((line) => line.slice(3))
+    return { ...base, ok: false, reason: 'no-task-checks', results: [], skipped: [], changed: changed.slice(0, 50), changedCount: changed.length, guidance: verify.guidance,
+      next: 'ARCH에 task 단계 명령이 없어 아무 검사도 돌지 않았다(통과 아님). 바뀐 파일의 영향 검사(관련 테스트·변경 파일 lint)를 vibe check --tier task -- <command>로 한 번 돌리고, 전체 스위트는 로컬에서 돌리지 않는다. 반복되면 ARCH 검증 결정에 task 명령을 두는 개정을 제안한다.' }
+  }
   const results = []
   for (const command of verify.task) {
     const result = await runVibeCheck({ targetRoot: root, tier: 'task', uncommitted: true, timeoutMs: options.timeoutMs, signal: options.signal, env: options.env }, command)

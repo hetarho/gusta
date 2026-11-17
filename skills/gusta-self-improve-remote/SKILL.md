@@ -58,7 +58,7 @@ SETTINGS `usage-measurement`가 true인 시작 대화는 [사용량 절차](../g
 - gusta-create-task는 채택 finding을 기존 리뷰 태스크로 만든다. 불확실한 프로파일·시뮬레이션 탐색은 wall-clock 제한과 exit가 있는 explore 태스크로 분리하고 메인 세션에서 실행한다. 후속 구현은 실험 결과로 범위가 정해진 뒤 만든다.
 - 기획·구현 전에 `vibe session open --kind self-improve-remote --tag <tag> --json`으로 전용 linked worktree/세션 브랜치를 확보하고 반환 targetRoot만 쓴다. 원래 checkout과 보호 브랜치는 그대로 두고 배정 공간만 재사용한다.
 - 코드/테스트/워크플로 수정은 조정자가 직접 하지 않는다 — 개선용 브랜치나 배정된 worktree의 하위 세션(작업 묶음 `work run --review all` 또는 네이티브 하위 세션)이 gusta-implement-task로 수행한다. 사용자 진행 영역을 덮어쓰지 않는다.
-- 워커는 영향 결정론적 검사·빠른 검사만 한다. 전체 검수는 모든 참여 세션이 ready인 고정 통합 후보의 한 소유자가 한 번 수행한다. 최소 E2E·지원 브라우저 호환은 CI, agent acceptance는 선택한 자동 시나리오를 대체하며 실제 관찰·증거·미실행을 보고한다. 도구가 없으면 capable host에 인계하고 중복 자동 fallback을 더하지 않는다. 캐시 재사용은 검증용이고 성능 비교의 새 표본이 아니다.
+- 워커는 영향 결정론적 검사·빠른 검사만 한다. 전체 검수는 살아 있는 참여 세션이 모두 ready인 고정 통합 후보의 한 소유자가 한 번 수행한다. 최소 E2E·지원 브라우저 호환은 CI, agent acceptance는 선택한 자동 시나리오를 대체하며 실제 관찰·증거·미실행을 보고한다. 도구가 없으면 capable host에 인계하고 중복 자동 fallback을 더하지 않는다. 캐시 재사용은 검증용이고 성능 비교의 새 표본이 아니다.
 - 예산 부족·무진행·기준 미달이면 측정과 진행분을 보존하고 끝낸다. 미완료 검증을 pass로 기록하거나 자동 채택하지 않는다.
 
 ## 5. 독립 검토·PR

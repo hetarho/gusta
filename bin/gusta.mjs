@@ -6,7 +6,7 @@ import { runWorkCLI } from '../src/work-cli.mjs'
 import { runVibeCLI } from '../src/vibe-cli.mjs'
 import { inspectWork } from '../src/work-groups.mjs'
 import { migrateSpec, packageVersions } from '../src/migrate.mjs'
-import { upgradeContext } from '../src/upgrade-context.mjs'
+import { upgradeContext, saveUpgradeContext } from '../src/upgrade-context.mjs'
 import { agentCatalog } from '../src/agent-catalog.mjs'
 
 const HELP = `GUSTA — Gustum usque sere, tuum aperi.
@@ -23,11 +23,12 @@ A Spec-Driven Development (SDD) framework for code curators.
                                  설치된 AI 도구별 로그인·모델·에포트와 조합별 능력 점수·비용 순서, SETTINGS agents 허용 여부 (모델 호출 없음)
   gusta lint [--target <path>] [--hints]
   gusta outdated [--target <path>]   설치 버전(lock)·실행 버전·npm 최신 버전 (JSON)
-  gusta upgrade-context [--target <path>] [--offset <n>] [--limit <n>] [--snapshot <sha256>]
+  gusta upgrade-context [--target <path>] [--offset <n>] [--limit <n> | --all] [--snapshot <sha256>] [--out <file>]
                                  업데이트 전 전체 문서·지침·설정 inventory (읽기 전용 JSON, 의미 판단은 별도)
+                                 --all: 한 번에 전체 · --out: 결과를 파일에 쓰고 요약만 출력
   gusta migrate [--target <path>] [--dry-run]
-                                 spec/ 구조 변경 이관(STATE cfg push/plan → SETTINGS.md, STATE active·inbox·log → 조정 브랜치 SESSIONS.md)
-                                 뒤 FORMAT 차이·미정 설정·lint 보고 (JSON)
+                                 spec/ 구조 변경 이관(STATE cfg push/plan → SETTINGS.md, STATE active·inbox·log → 조정 브랜치 SESSIONS.md),
+                                 직전 설치 템플릿 그대로인 FORMAT 줄 교체 뒤 남은 FORMAT 차이(줄별 출처)·미정 설정·lint 보고 (JSON)
   gusta context [--target <path>] [--json]
   gusta board [--target <path>] [--json]
   gusta work <start|claim|status|board|update|submit|integrate|release|cleanup|recover|unlock> ...
@@ -71,7 +72,8 @@ function parseOptions(args, command) {
     else if (argument === '--hints') options.hints = true
     else if (argument === '--json') options.json = true
     else if (command === 'agent-block' && ['--check', '--remove'].includes(argument)) options[argument.slice(2)] = true
-    else if (command === 'upgrade-context' && /^(--offset|--limit|--snapshot)(=|$)/.test(argument)) {
+    else if (command === 'upgrade-context' && argument === '--all') options.all = true
+    else if (command === 'upgrade-context' && /^(--offset|--limit|--snapshot|--out)(=|$)/.test(argument)) {
       const option = argument.split('=')[0]
       const { value, consumed } = takeValue(args, index, option)
       options[option.slice(2)] = value
@@ -145,7 +147,7 @@ async function main() {
     return
   }
   if (command === 'upgrade-context') {
-    const result = await upgradeContext(options)
+    const result = options.out ? await saveUpgradeContext(options) : await upgradeContext(options)
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
     if (!result.ok) process.exitCode = 1
     return

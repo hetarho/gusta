@@ -2,14 +2,13 @@ import { readFile, mkdir, writeFile, access } from 'node:fs/promises'
 import { randomUUID, createHash } from 'node:crypto'
 import path from 'node:path'
 import os from 'node:os'
-import { spawn } from 'node:child_process'
 import { inspectWorkspace, git, batchShow, gitOperation } from './workspace.mjs'
 import { readTaskBoard } from './task-board.mjs'
 import { quoteLine, quoteFields, sections, splitRefs, TASK_ID, INBOX_LINE, yymmdd } from './spec-format.mjs'
 import { closeTasks } from './state-doc.mjs'
 import { withSt, archiveTaskFile } from './task-doc.mjs'
 import { assembleBrief, commitSource } from './spec-context.mjs'
-import { runtimeRoot, readRuntime, transaction, readLock, unlockRuntime, canonicalDestination } from './work-runtime.mjs'
+import { runtimeRoot, readRuntime, transaction, readLock, unlockRuntime, canonicalDestination, worktreeHome } from './work-runtime.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { lintSpec } from './spec-lint.mjs'
 import { readSetting } from './settings.mjs'
@@ -24,38 +23,10 @@ import { openIntegration } from './integration-gate.mjs'
 import { finalizeIntegration } from './integration-run.mjs'
 import { assertImplementationWorkspace, sessionWorkspacePolicy } from './session-workspace.mjs'
 import { mergeAgentAcceptance } from './agent-acceptance.mjs'
+import { runCheckCommand, prepareWorkspace, prepareFailure } from './workspace-prepare.mjs'
 
-// A check runs as its own process group, so a stop or timeout ends everything it started
-// (`npm test` → node workers), not only the shell: exec signals /bin/sh alone, and a shell that
-// forks its command (dash does) leaves that command running. Settles once every output holder
-// has exited; only bounded tails stay in memory.
-export function runCheckCommand(command, { cwd, env, timeout = 0, signal } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, { cwd, env, shell: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] })
-    const out = { stdout: '', stderr: '' }
-    const keep = (name) => (chunk) => { out[name] = (out[name] + chunk).slice(-16000) }
-    child.stdout.setEncoding('utf8').on('data', keep('stdout'))
-    child.stderr.setEncoding('utf8').on('data', keep('stderr'))
-    let reason = null, forced = null, settled = false
-    const kill = (sig) => { try { process.platform === 'win32' ? child.kill(sig) : process.kill(-child.pid, sig) } catch {} }
-    const stop = (why) => { if (reason) return; reason = why; kill('SIGTERM'); forced = setTimeout(() => kill('SIGKILL'), 2000) }
-    const onAbort = () => stop('aborted')
-    const timer = timeout ? setTimeout(() => stop('timed out'), timeout) : null
-    signal?.addEventListener('abort', onAbort, { once: true })
-    if (signal?.aborted) onAbort()
-    const settle = (code, error = null) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer); clearTimeout(forced); signal?.removeEventListener('abort', onAbort)
-      if (reason) kill('SIGKILL')
-      if (!error && !reason && code === 0) return resolve(out)
-      reject(Object.assign(new Error(error?.message ?? (reason ? `Command ${reason}: ${command}` : `Command failed (exit ${code}): ${command}`)), out))
-    }
-    child.on('error', (error) => settle(null, error))
-    child.on('close', (code) => settle(code))
-  })
-}
 import { activeAttempt as active, workerBusy, pendingReview, workLimits, invalidateReview, overlaps, rankedUnits, unitTasks, touchesErrors, approvedTasks, scopedBoard, isTestPath } from './work-policy.mjs'
+export { runCheckCommand }
 const now = () => new Date().toISOString()
 const date = () => yymmdd()
 const creator = () => ({ pid: process.pid, host: os.hostname() })
@@ -104,6 +75,17 @@ function notIntegrating(group, attempt) {
   if (group.operation?.attempt === attempt.id) fail('이 실행을 통합하는 명령이 진행 중입니다.', [JSON.stringify(group.operation)])
 }
 
+// An attempt left in an operation's state: whether the command that holds it still runs, and how
+// to get it back (recover proves the exit; nothing is taken over by age).
+function operationHint(attempt) {
+  const running = attempt.operation
+  if (!running?.pid) return ''
+  let gone = false
+  if (running.host === os.hostname()) try { process.kill(running.pid, 0) } catch (error) { gone = error.code === 'ESRCH' }
+  return gone ? `. 이전 ${running.kind} 명령(pid ${running.pid})은 이미 끝났습니다: work recover --attempt ${attempt.id}로 되돌린 뒤 다시 실행하세요.`
+    : `. ${running.host}의 pid ${running.pid}가 ${running.kind} 중입니다: 끝나기를 기다리거나, 멈춘 것을 확인한 뒤 work recover --attempt ${attempt.id}.`
+}
+
 function requireStopped(processInfo) {
   if (!processInfo || processInfo.host !== os.hostname()) fail('이 호스트에서 중단 여부를 확인할 수 없는 명령입니다.')
   try { process.kill(processInfo.pid, 0); fail('명령 프로세스가 아직 실행 중입니다.') } catch (error) { if (error.code !== 'ESRCH') throw error }
@@ -119,9 +101,7 @@ function assertFreeWorkspace(state, destination, except) {
 }
 
 async function destination(context, name, requested) {
-  const main = context.workspace.git.worktrees.find((tree) => !tree.bare)?.path ?? context.cwd
-  const identity = `${path.basename(main)}-${digest(context.workspace.git.commonDir).slice(0, 8)}`
-  return canonicalDestination(path.resolve(requested ?? path.join(path.dirname(main), '.gusta-worktrees', identity, name)))
+  return canonicalDestination(path.resolve(requested ?? path.join(worktreeHome(context.workspace, context.cwd), name)))
 }
 
 async function requireClean(root) {
@@ -142,10 +122,37 @@ async function assertWorkspace(context, entry) {
   return workspace
 }
 
-function taskContract(content) {
+const contractParts = (content) => {
   const map = sections(content)
-  return digest(JSON.stringify({ title: content.match(/^# .+$/m)?.[0], quote: quoteLine(content), goal: map.get('goal'), notes: map.get('impl notes'),
-    acceptance: map.get('acceptance')?.map((row) => row.replace(/^- \[v\]/, '- [ ]')) }))
+  return { title: content.match(/^# .+$/m)?.[0], quote: quoteLine(content), goal: map.get('goal'), notes: map.get('impl notes'),
+    acceptance: map.get('acceptance')?.map((row) => row.replace(/^- \[v\]/, '- [ ]')) }
+}
+const taskContract = (content) => digest(JSON.stringify(contractParts(content)))
+
+// A worker checks a met criterion as [x] out of Markdown habit. In FORMAT [x] is an SSOT rejection,
+// which only planning writes, so an [x] on a criterion still open (or met) upstream means [v].
+// Returns the content with those lines as [v], and the lines it changed.
+function markMet(content, upstream) {
+  const open = new Set((sections(upstream).get('acceptance') ?? []).filter((row) => /^- \[[ v]\] /.test(row)).map((row) => row.slice(6)))
+  const changed = []
+  let section = null
+  const lines = content.split('\n').map((line) => {
+    const heading = line.match(/^## (.+?)\s*$/)
+    if (heading) section = heading[1].trim().toLowerCase()
+    else if (section === 'acceptance' && /^- \[x\] /.test(line) && open.has(line.slice(6))) { changed.push(line); return `- [v] ${line.slice(6)}` }
+    return line
+  })
+  return { content: lines.join('\n'), changed }
+}
+
+// Which part of the task contract a worker's copy changed, with what to do about it.
+function contractError(task, content, upstream) {
+  if (!content) return `${task.id}: 워커 공간에 태스크 파일이 없습니다. 기획 변경을 확인하고 작업을 동기화하세요.`
+  const marked = markMet(content, upstream)
+  if (marked.changed.length && taskContract(marked.content) === taskContract(upstream)) return `${task.id}: acceptance를 [x]로 표시했습니다. [x]는 SSOT 기각 표기이므로 충족한 기준은 [v]로 바꾸세요: ${marked.changed.join(' / ')}`
+  const mine = contractParts(content), theirs = contractParts(upstream)
+  const parts = Object.keys(mine).filter((key) => JSON.stringify(mine[key]) !== JSON.stringify(theirs[key]))
+  return `${task.id}: 태스크 계약(${parts.join('·')})이 상위 브랜치와 다릅니다. 워커는 acceptance 체크([v])·result만 바꿉니다. 기획 변경이면 작업을 동기화하세요.`
 }
 
 // A unit starts only when every dep outside it is integrated. Deps inside a lane are
@@ -182,7 +189,9 @@ function incomplete(task, content) {
 // Tasks before and including the attempt's current task must be complete; later lane
 // tasks only have to keep their contract. reach is the last task of the unbroken run of
 // completed tasks, so one submit after the last task covers the whole lane.
-async function checkWorker(context, group, attempt, workingTree = false) {
+// markMet (working tree only, before the host commits a built-in worker's edits): rewrite the
+// worker's [x] checks as [v] (see markMet) instead of refusing them.
+async function checkWorker(context, group, attempt, workingTree = false, { markMet: mark = false } = {}) {
   const workspace = await assertWorkspace(context, attempt)
   if (workingTree) await requireNoGitOperation(attempt.workspace)
   else await requireClean(attempt.workspace)
@@ -195,8 +204,15 @@ async function checkWorker(context, group, attempt, workingTree = false) {
     : await blobsAt(context.cwd, workspace.git.head, [...current.tasks.map(({ task }) => task.file), ...domains.map((domain) => `spec/ssot/${domain}.md`)])
   let reach = position
   for (const [index, { task, content: upstream }] of current.tasks.entries()) {
-    const content = await read(task.file)
-    if (!content || taskContract(content) !== taskContract(upstream)) fail(`${task.id}: 태스크 계약이 상위 브랜치와 다릅니다. 기획 변경을 확인하고 작업을 동기화하세요.`)
+    let content = await read(task.file)
+    if (mark && workingTree && content && taskContract(content) !== taskContract(upstream)) {
+      const marked = markMet(content, upstream)
+      if (marked.changed.length && taskContract(marked.content) === taskContract(upstream)) {
+        await writeFile(path.join(attempt.workspace, task.file), marked.content)
+        content = marked.content
+      }
+    }
+    if (!content || taskContract(content) !== taskContract(upstream)) fail(contractError(task, content, upstream))
     const problem = incomplete(task, content)
     if (index <= position && problem) fail(problem)
     if (index === reach + 1 && !problem) reach = index
@@ -274,8 +290,11 @@ function tierChecks(options, group, tier) {
 }
 
 // Unit checks are fast by default; the coordinator's final group gate may be long.
-function verifyTimeout(options) {
-  const value = Number(options.verifyTimeoutMs ?? 60 * 60 * 1000)
+// Task checks are the changed scope's small checks: a submission defaults to 15 minutes, unit and
+// group gates to an hour.
+const TASK_VERIFY_MS = 15 * 60 * 1000
+function verifyTimeout(options, fallback = 60 * 60 * 1000) {
+  const value = Number(options.verifyTimeoutMs ?? fallback)
   if (!Number.isSafeInteger(value) || value < 1) fail('verify-timeout-ms: 양의 정수가 필요합니다.')
   return value
 }
@@ -305,7 +324,8 @@ async function verify(root, checks, commit, signal, timeout = 60 * 60 * 1000, sc
         results.push({ command, startedAt, finishedAt: now(), stdout: stdout.slice(-16000), stderr: stderr.slice(-16000) })
       } catch (error) {
         await measure()
-        fail(`검증 실패: ${command}`, [(error.stderr || error.stdout || error.message).slice(-16000)])
+        const late = /timed out/.test(error.message) ? ` (시간 초과 ${Math.round(timeout / 60000)}분${scope.TIER === 'task' ? ' — task 단계는 바뀐 범위의 작은 검사만 돌린다: 선택을 좁히고 전체 스위트는 공동 통합에 둔다' : ''})` : ''
+        fail(`검증 실패: ${command}${late}`, [(error.stderr || error.stdout || error.message).slice(-16000)])
       }
       await measure()
       if (await head(root) !== commit) fail('검증 명령 실행 중 HEAD가 변경됐습니다. 새 커밋을 다시 검증하세요.')
@@ -540,8 +560,10 @@ export async function startWork(options, injected = {}) {
     const created = await inspectWorkspace({ targetRoot: target })
     if (!adopted) await writeFile(path.join(created.git.gitDir, 'gusta-session.json'), JSON.stringify({ schemaVersion: 1, kind: 'start', tag: group.integrationTag, branch, root: target, sourceRoot: context.cwd, sourceHead: baseCommit }), { flag: 'wx' })
     await (injected.assertWorkspace ?? assertImplementationWorkspace)({ targetRoot: target, workspace: created })
+    // A new worktree has no ignored dependencies: ARCH prepare runs once here (reported, not fatal).
+    const prepared = adopted ? null : await prepareWorkspace(target)
     const activeGroup = await transaction(context.root, (state) => {
-      Object.assign(state.groups[group.id], { gitDir: created.git.gitDir, status: 'active' })
+      Object.assign(state.groups[group.id], { gitDir: created.git.gitDir, status: 'active', ...(prepared?.steps.length ? { prepare: prepared } : {}) })
       return state.groups[group.id]
     })
     if (!ownerSession) {
@@ -671,9 +693,10 @@ async function claimTask(options, next = false, given = null) {
     const created = await inspectWorkspace({ targetRoot: selected.workspace })
     if (!adopted) await writeFile(path.join(created.git.gitDir, 'gusta-session.json'), JSON.stringify({ schemaVersion: 1, kind: 'start', tag: id.slice(0, 8), branch: selected.branch, root: selected.workspace, sourceRoot: context.cwd, sourceHead: selected.startCommit }), { flag: 'wx' })
     await assertImplementationWorkspace({ targetRoot: selected.workspace, workspace: created })
+    const prepared = adopted ? null : await prepareWorkspace(selected.workspace)
     return await transaction(context.root, (state) => {
       if (attemptOf(state, id).status !== 'preparing') fail('작업 공간 준비 중 배정 상태가 변경됐습니다.')
-      Object.assign(attemptOf(state, id), { gitDir: created.git.gitDir, status: 'doing' })
+      Object.assign(attemptOf(state, id), { gitDir: created.git.gitDir, status: 'doing', ...(prepared?.steps.length ? { prepare: prepared } : {}) })
       return state.attempts[id]
     })
   } catch (error) {
@@ -707,7 +730,8 @@ export async function updateWork(options) {
     if (options.status && !['doing', 'blocked'].includes(options.status)) fail('상태는 doing 또는 blocked만 지정할 수 있습니다. ready는 submit으로 검증합니다.')
     if (options.status === 'blocked' && !options.reason?.trim()) fail('blocked에는 --reason이 필요합니다.')
     if (decision && options.status !== 'blocked') fail('결정 요청은 --status blocked와 함께 남깁니다.')
-    if (options.note !== undefined && options.status !== 'doing') fail('--note는 --status doing으로 재개할 때 전달합니다.')
+    // A note alone waits for the attempt's next worker dispatch (a correction, a resume).
+    if (options.note !== undefined && options.status === 'blocked') fail('--note는 워커에게 전달할 지시입니다. --status doing으로 재개하거나 --status 없이 다음 배정에 남기세요.')
     if (options.status) {
       if (options.status === 'doing' && !workerBusy(attempt) && Object.values(state.attempts).filter((entry) => entry.group === attempt.group && workerBusy(entry)).length >= workLimits(groupOf(state, attempt.group).limits).workers) fail('worker-capacity')
       invalidateReview(attempt, 'worker resumed or blocked')
@@ -718,7 +742,7 @@ export async function updateWork(options) {
     if (decision) attempt.decision = { ...decision, at: now() }
     if (options.note !== undefined) {
       attempt.directive = { note: options.note, at: now() }
-      if (attempt.decision && !attempt.decision.answeredAt) Object.assign(attempt.decision, { answeredAt: now(), answer: options.note })
+      if (options.status === 'doing' && attempt.decision && !attempt.decision.answeredAt) Object.assign(attempt.decision, { answeredAt: now(), answer: options.note })
     }
     attempt.heartbeatAt = now()
     return attempt
@@ -747,7 +771,7 @@ async function reserve(context, attemptId, operation, allowed) {
     const group = groupOf(state, attempt.group)
     if (operation === 'integrating') noOperation(group)
     else notIntegrating(group, attempt)
-    if (!allowed.includes(attempt.status)) fail(`${operation}할 수 없는 상태입니다: ${attempt.status}`)
+    if (!allowed.includes(attempt.status)) fail(`${operation}할 수 없는 상태입니다: ${attempt.status}${operationHint(attempt)}`)
     if (operation === 'integrating' && (attempt.review?.status !== 'approved' || attempt.review.commit !== attempt.verifiedCommit)) fail('현재 제출 커밋에 대한 리뷰 승인이 필요합니다.')
     if (operation === 'verifying' && !workerBusy(attempt) && Object.values(state.attempts).filter((entry) => entry.group === attempt.group && workerBusy(entry)).length >= workLimits(group.limits).workers) fail('worker-capacity')
     if (operation === 'verifying') { invalidateReview(attempt, 'new submission'); delete attempt.verifiedCommit }
@@ -774,7 +798,7 @@ export async function commitWorkerWork(options) {
   const context = await repository(options)
   const reservation = await reserve(context, options.attempt, 'committing', ['doing'])
   try {
-    const current = await checkWorker(context, reservation.group, reservation.attempt, true)
+    const current = await checkWorker(context, reservation.group, reservation.attempt, true, { markMet: true })
     if (!options.expectedHead || current.workerCommit !== options.expectedHead) fail('에이전트 실행 중 HEAD가 변경됐습니다. 자동 커밋 전에 확인하세요.')
     options.signal?.throwIfAborted()
     if (!(await clean(reservation.attempt.workspace))) {
@@ -794,7 +818,7 @@ export async function commitWorkerWork(options) {
 // full suites belong to unit integration and group finish.
 export async function submitWork(options) {
   if (options.verify !== undefined) commands(options, 'verify', true)
-  const timeout = verifyTimeout(options)
+  const timeout = verifyTimeout(options, TASK_VERIFY_MS)
   const context = await repository(options)
   const reservation = await reserve(context, options.attempt, 'verifying', ['doing', 'blocked', 'ready', 'approved', 'changes_requested'])
   try {
@@ -924,6 +948,11 @@ export async function integrateWork(options) {
     await git(candidate, ['add', '--', 'spec/STATE.md', historyFile, ...tasks.flatMap((task) => [task.file, `spec/tasks/done/${path.basename(task.file)}`])])
     await git(candidate, ['commit', '-m', `Integrate ${attempt.lane ? `lane ${attempt.lane} (${tasks.map((task) => task.id).join(' ')})` : attempt.taskId} into ${group.id}`])
     const candidateCommit = await head(candidate)
+    // The candidate is a new worktree: its dependencies first. A failure is the environment's, not
+    // the unit's, so it never goes back to the worker as a correction.
+    const prepared = await prepareWorkspace(candidate, undefined, { signal: options.signal })
+    if (!prepared.ok || !(await clean(candidate))) throw Object.assign(new SkillPackageError(prepared.ok ? '작업 공간 준비(ARCH prepare)가 후보의 추적·비무시 파일을 바꿨습니다. 준비 명령은 트리를 바꾸지 않아야 합니다.'
+      : '통합 후보 작업 공간을 준비하지 못했습니다(ARCH prepare). 구현 결함이 아니라 환경·준비 명령 문제입니다. 환경을 고친 뒤 work integrate를 다시 실행하세요.', prepared.ok ? [] : prepareFailure(prepared)), { environment: true })
     const verification = await verify(candidate, checks, candidateCommit, options.signal, timeout,
       { TIER: 'unit', DIFF_BASE: current.commit, TASKS: tasks.map((task) => task.id).join(' ') }, { runtime: context.root, heavy: true })
     await assertWorkspace(context, group)
@@ -938,9 +967,9 @@ export async function integrateWork(options) {
     // Before the operation lets go: `complete` is not reported, and nothing lands, until the
     // finished tasks are held against other sessions.
     const recorded = await recordIntegrated(group, tasks.map((task) => task.id), candidateCommit)
-    const integrated = await finishOperation(context, reservation, (entry) => Object.assign(entry, {
+    const integrated = await finishOperation(context, reservation, (entry) => { delete entry.prepareFailure; return Object.assign(entry, {
       status: 'integrated', integratedCommit: candidateCommit, integratedAt: now(), reason: null,
-    }))
+    }) })
     const pushed = await pushLanded(context, group, candidateCommit)
     const settled = recorded.error ? {} : await settleIntegrated(group, pushed)
     const coordination = { ...recorded, ...settled, ...(recorded.unlanded ? { unlanded: recorded.unlanded.filter((id) => !(settled.landed ?? []).includes(id)) } : {}) }
@@ -955,7 +984,10 @@ export async function integrateWork(options) {
         await finishOperation(context, reservation, (entry) => {
           if (!sameWorker || !sameBase) invalidateReview(entry, 'review snapshot changed')
           // The background gate hands a failed merge or check back to the unit's owner as a correction.
-          if (options.autoCorrect && sameWorker && candidate) {
+          // An unprepared candidate is not the unit's: it stays approved and the gate skips it until
+          // the group branch moves or someone integrates it by hand (work-wait kickGate).
+          if (error.environment) Object.assign(entry, { status: sameWorker && sameBase ? 'approved' : !sameWorker ? 'blocked' : 'ready', reason: error.message, prepareFailure: { commit: target, at: now(), error: [error.message, ...(error.details ?? [])].join('\n').slice(-2000) } })
+          else if (options.autoCorrect && sameWorker && candidate) {
             invalidateReview(entry, 'integration failed')
             entry.review = { id: randomUUID(), status: 'changes_requested', verdict: 'changes_requested', owner: 'integration', commit: attempt.verifiedCommit, baseCommit: target,
               summary: 'Integration failed on the merged candidate.', findings: [{ priority: 'P1', where: 'integration',

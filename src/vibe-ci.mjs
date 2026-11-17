@@ -14,6 +14,7 @@ const pause = (ms, signal) => new Promise((resolve) => {
 })
 const terminal = new Set(['success', 'failure', 'cancelled', 'skipped', 'neutral', 'timed_out', 'action_required', 'stale', 'startup_failure'])
 const success = new Set(['success', 'skipped', 'neutral'])
+const PUBLIC_NO_RUN_MS = 10 * 60 * 1000
 const decode = (text) => text.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
 
 export function githubRepository(url) {
@@ -206,7 +207,9 @@ export async function vibeCIWait(options = {}, injected = {}) {
       if (runs.length && runs.every((run) => run.status === 'completed' && terminal.has(run.conclusion))) {
         return result(runs.every((run) => success.has(run.conclusion)) ? 'success' : 'failure', 'completed')
       }
-      if (!discovered && deps.now() - started >= grace) return result('skipped', 'no-run-within-grace')
+      // No run seen is not a pass: reported unchecked (check later) like CI nobody can read. The public
+      // page lists a run minutes late and is polled a minute apart, so its default wait is longer.
+      if (!discovered && deps.now() - started >= (options.noRunMs === undefined && transport === 'public-html' ? Math.max(grace, PUBLIC_NO_RUN_MS) : grace)) return result('unchecked', 'no-run-within-grace')
     } catch (error) {
       lastError = error.message
       // Never read within the grace: retrying until the deadline would hold the work for nothing.

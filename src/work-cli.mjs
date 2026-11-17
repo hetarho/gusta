@@ -59,10 +59,11 @@ explore 태스크와 그 후속은 배정하지 않습니다 — 메인 세션�
   --task-verify/--verify/--group-verify를 기본값으로 쓰며, 명령에는 GUSTA_TIER·GUSTA_DIFF_BASE·GUSTA_TASK(S)가 전달됩니다.
 next: 세션 루프. 자기 단위 → 수정 요청 → 리뷰 → 다음 단위 순으로 action(implement|review|blocked|wait|complete|stalled)을
   반환하고, 승인된 단위의 통합과 묶음 완료 검증은 백그라운드 CLI로 시작합니다. --start는 활성 묶음이 없으면 새로 만듭니다.
-submit/integrate/finish: 지정한 검증 명령을 셸로 실행합니다(--verify-timeout-ms, 기본 1시간). 워커 변경은 먼저 커밋하세요.
+submit/integrate/finish: 지정한 검증 명령을 셸로 실행합니다(--verify-timeout-ms, 기본 submit 15분·integrate/finish 1시간). 이 CLI가 멈추면 검사도 함께 멈춥니다. 워커 변경은 먼저 커밋하세요.
 next/review-claim --wait: 배정이 생길 때까지 모델 호출 없이 기다립니다. complete·stalled·timeout이면 반환합니다.
 맡김(--autopilot): 기획 결정이 필요한 워커는 결정 요청을 남기고(update --decision-file) 다음 일로 갑니다. 조정자(next --coordinator)가
   decide를 받아 잠정 결정한 뒤 update --status doing --note로 재개하면, 실행기는 기획 브랜치를 합치고 같은 세션을 이어 실행합니다.
+  --status 없는 --note는 그 attempt의 다음 워커 배정(수정·재개) 때 같은 방식으로 전달됩니다.
 release/recover: 기존 작업자·명령이 종료됐음을 확인한 뒤 실행하세요. TTL 자동 회수는 없습니다.
 `
 
@@ -118,7 +119,12 @@ async function dispatch(args) {
     if (LISTS.includes(key)) (options[field] ??= []).push(value)
     else options[field] = value
   }
-  const result = await actions[action](options)
+  // A check command runs as its own process group: a stop or hang-up of this CLI ends it too, so a
+  // submission or gate never leaves orphaned checks holding the attempt.
+  const stop = new AbortController(), signals = ['SIGTERM', 'SIGHUP', 'SIGINT'], abort = () => stop.abort()
+  if (['submit', 'integrate', 'finish'].includes(action)) { options.signal = stop.signal; for (const name of signals) process.once(name, abort) }
+  let result
+  try { result = await actions[action](options) } finally { for (const name of signals) process.off(name, abort) }
   process.stdout.write(`${JSON.stringify(result, withoutLogs, 2)}\n`)
   if (result.ok === false) process.exitCode = 1
 }

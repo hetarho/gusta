@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, realpath } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, realpath, readdir } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { inspectWorkspace, git } from './workspace.mjs'
@@ -54,6 +54,20 @@ async function readOwnership(directory, read) {
   return value
 }
 
+// A live linked worktree this source checkout opened with the same kind and tag (its marker).
+async function openedFrom(source, kind, tag, deps) {
+  const home = path.join(source.commonDir, 'worktrees')
+  for (const name of await readdir(home).catch(() => [])) {
+    const owner = await readOwnership(path.join(home, name), deps.readFile).catch(() => null)
+    if (owner?.kind !== kind || owner.tag !== tag || owner.sourceRoot !== source.root) continue
+    for (const entry of source.worktrees) {
+      if (!entry.path || entry.branch !== owner.branch) continue
+      if (await deps.realpath(entry.path).catch(() => null) === owner.root) return owner
+    }
+  }
+  return null
+}
+
 // The original checkout is never switched, staged, reset or copied. A writing session begins
 // from an explicit committed source and owns only its new linked checkout.
 export async function prepareSessionWorkspace(options = {}, injected = {}) {
@@ -66,8 +80,18 @@ export async function prepareSessionWorkspace(options = {}, injected = {}) {
   if (ownership && source.isLinkedWorktree && policy.allowed && ownership.kind === kind && ownership.tag === tag && ownership.branch === source.branch && ownership.root === source.root) {
     return { created: false, targetRoot: source.root, root: source.root, branch: source.branch, kind, tag, sourceRoot: ownership.sourceRoot, sourceHead: ownership.sourceHead, ownership }
   }
+  // Opening again from the source checkout (a caller that lost the root) returns the session it
+  // already opened there with this kind and tag, never a second worktree and participant.
+  if (!options.path && !options.branch) {
+    const opened = await openedFrom(source, kind, tag, deps)
+    if (opened) return { created: false, reused: true, targetRoot: opened.root, root: opened.root, branch: opened.branch, kind, tag, sourceRoot: opened.sourceRoot, sourceHead: opened.sourceHead, ownership: opened }
+  }
+  // Uncommitted changes of the original checkout never reach the new worktree. They are refused
+  // unless the caller says so (--from-head): then the session starts from HEAD and names what it
+  // left behind, so nothing is omitted silently.
   const dirty = await deps.git(source.root, ['status', '--porcelain=v1', '--untracked-files=all'])
-  if (dirty) fail('원래 checkout에 미커밋 변경이 있어 세션을 옮기지 않았습니다. 변경을 보존한 채 먼저 정리하거나 명시적으로 인계하세요.', [source.root])
+  if (dirty && !options.fromHead) fail('원래 checkout에 미커밋 변경이 있어 세션을 옮기지 않았습니다. 변경을 보존한 채 먼저 정리하거나, 커밋된 HEAD에서 시작하려면 --from-head로 다시 여세요(빠진 파일 목록을 돌려줍니다). 이미 연 세션은 같은 --kind·--tag로 다시 열면 그대로 돌려받습니다.', [source.root])
+  const excluded = dirty ? dirty.split('\n').filter(Boolean).map((line) => line.slice(3)) : []
   const primary = source.worktrees.find((entry) => !entry.bare)?.path ?? source.root
   const identity = createHash('sha256').update(source.commonDir).digest('hex').slice(0, 8)
   const suffix = deps.uuid().replaceAll('-', '').slice(0, 8)
@@ -85,5 +109,6 @@ export async function prepareSessionWorkspace(options = {}, injected = {}) {
   const prepared = await deps.inspect({ targetRoot: target })
   const marker = { schemaVersion: 1, kind, tag, branch, root: prepared.git.root, sourceRoot: source.root, sourceHead }
   await deps.writeFile(path.join(prepared.git.gitDir, MARKER), `${JSON.stringify(marker, null, 2)}\n`, { flag: 'wx' })
-  return { created: true, targetRoot: prepared.git.root, root: prepared.git.root, branch, kind, tag, sourceRoot: source.root, sourceHead, ownership: marker }
+  return { created: true, targetRoot: prepared.git.root, root: prepared.git.root, branch, kind, tag, sourceRoot: source.root, sourceHead, ownership: marker,
+    ...(excluded.length ? { excluded: excluded.slice(0, 50), excludedCount: excluded.length } : {}) }
 }

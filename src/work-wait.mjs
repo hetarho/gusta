@@ -67,11 +67,12 @@ async function kickGate(context, options, id) {
   const busy = (entry) => entry.operation || entry.runner || (local(entry.gate) && (entry.gate.pid ? alive(entry.gate.pid) : Date.now() - Date.parse(entry.gate.at) < 60000))
   if (busy(group)) return
   const attempts = Object.values(state.attempts).filter((entry) => entry.group === group.id)
-  const approved = attempts.filter((entry) => entry.status === 'approved').sort((a, b) => (a.review?.finishedAt ?? '').localeCompare(b.review?.finishedAt ?? ''))[0]
+  const target = await head(context.cwd, `refs/heads/${group.branch}`)
+  // A candidate that could not be prepared at this target is not retried until the target moves.
+  const approved = attempts.filter((entry) => entry.status === 'approved' && entry.prepareFailure?.commit !== target).sort((a, b) => (a.review?.finishedAt ?? '').localeCompare(b.review?.finishedAt ?? ''))[0]
   let args = null
   if (approved && group.verify?.unit?.length) args = ['integrate', '--attempt', approved.id, '--auto-correct']
   else if (!attempts.some(activeAttempt) && group.verify?.group?.length) {
-    const target = await head(context.cwd, `refs/heads/${group.branch}`)
     const board = scopedBoard(await readTaskBoard({ targetRoot: context.cwd, inspection: context.workspace, ref: target }), group)
     const deferred = mainSessionTasks(board.tasks)
     if (board.ok && !board.warnings.length && board.tasks.every((task) => task.st?.startsWith('blocked@') || deferred.has(task.id)) &&
@@ -111,11 +112,13 @@ async function outlook(context, id, owner) {
   // Explore tasks and their dependents belong to the main session, never to this group.
   const deferred = mainSessionTasks(board.tasks)
   const open = board.tasks.filter((task) => task.st === 'todo' && !owned.has(task.id) && !deferred.has(task.id))
-  const moving = live.filter((entry) => entry.status !== 'blocked')
+  // An approved unit whose candidate could not be prepared at this target waits for a person.
+  const unprepared = (entry) => entry.status === 'approved' && entry.prepareFailure?.commit === target
+  const moving = live.filter((entry) => entry.status !== 'blocked' && !unprepared(entry))
   // A filed decision is the coordinator's to answer: the group is waiting on it, not stalled.
   const deciding = live.filter((entry) => entry.status === 'blocked' && entry.decision && !entry.decision.answeredAt)
   if (!moving.length && deciding.length && group.coordinator) return { state: 'waiting', reason: 'decision', deciding: deciding.map((entry) => ({ attempt: entry.id, tasks: unitTasks(entry), question: entry.decision.question })) }
-  const blocked = live.filter((entry) => entry.status === 'blocked').map((entry) => ({ attempt: entry.id, tasks: unitTasks(entry), owner: entry.owner, reason: entry.reason ?? null }))
+  const blocked = live.filter((entry) => entry.status === 'blocked' || unprepared(entry)).map((entry) => ({ attempt: entry.id, tasks: unitTasks(entry), owner: entry.owner, reason: entry.reason ?? null, ...(unprepared(entry) ? { prepareFailure: entry.prepareFailure } : {}) }))
   if (!open.length && !live.length) {
     const verified = await groupVerification(context, group)
     const ready = await groupReadiness(context, group)

@@ -2,7 +2,7 @@
 
 시작 때 묻지 않는다 — 1절의 실행 정보를 보여 주고 바로 시작한다. 결정함은 실행 중에 쌓이고, 사용자는 돌아와 `/gusta-start inbox 정리`로 승인 항목을 지우거나(`vibe inbox resolve --log`) 결정을 바꾸려면 /gusta-sketch로 간다. 열린 보고서는 to를 채운다.
 
-이 대화가 목표·마감·총 회복 예산을 소유한다. 기획·구현 전 `vibe session open --kind start --tag <tag> --json`으로 받은 전용 worktree의 targetRoot/branch에서 실행한다. 배정된 hostManaged 단위는 기존 격리 공간을 검증해 잇는다. 직렬 loop가 실제 checkout에서 preflight·active·보고서·절전 방지를 준비하므로 동일 점검을 앞에서 반복하지 않는다. 독립 probe가 필요하면 `vibe preflight --probe-workspace current --probe '<태스크 단계 명령>' --json`으로 실제 실행 공간을 확인한다. 의존성 부재·네트워크 제한·권한 거부를 구분하고, 네트워크 실패만으로 별도 worktree 의존성 설치를 반복하지 않는다. 작업 묶음 조정자는 실제 워커 공간에 맞는 probe를 쓰며 이 세션에서 세션 등록(`vibe beat --tag <tag> --mode autopilot`)·보고서·awake를 준비한다.
+이 대화가 목표·마감·총 회복 예산을 소유한다. 기획·구현 전 `vibe session open --kind start --tag <tag> --json`으로 받은 전용 worktree의 targetRoot/branch에서 실행한다(같은 kind·tag로 다시 열면 그 세션을 돌려준다). 원래 checkout의 미커밋 변경으로 거절되면 `--from-head`로 열고 결과의 `excluded`(새 worktree에 없는 파일)를 실행 정보에 보여 준다 — 맡김에서 그 파일이 맡길 태스크의 touches와 겹치면 그 태스크는 parked로 두고 나머지를 진행한다. 배정된 hostManaged 단위는 기존 격리 공간을 검증해 잇는다. 직렬 loop가 실제 checkout에서 preflight·active·보고서·절전 방지를 준비하므로 동일 점검을 앞에서 반복하지 않는다. 독립 probe가 필요하면 `vibe preflight --probe-workspace current --probe '<태스크 단계 명령>' --json`으로 실제 실행 공간을 확인한다. 의존성 부재·네트워크 제한·권한 거부를 구분하고, 네트워크 실패만으로 별도 worktree 의존성 설치를 반복하지 않는다. 작업 묶음 조정자는 실제 워커 공간에 맞는 probe를 쓰며 이 세션에서 세션 등록(`vibe beat --tag <tag> --mode autopilot`)·보고서·awake를 준비한다.
 
 ## loop 옵션
 
@@ -11,7 +11,7 @@
 
 실행 중에는 `vibe loop --tag <tag> --configure --deadline '<ISO with Z or offset>' --final-reserve-hours <hours> --wait-ms 30000 --json`으로 같은 호스트의 마감·예약을 바꾼다. `--push-each-unit|--no-push-each-unit`는 의도를 설정하되 단위 중 발행을 유예하고 공동 마감으로 모은다. land의 단위별 반영·전체 검수·마감 변경을 대신하지 않는다. applied receipt는 설정 적용만 증명하므로 실제 발행은 push 영수증으로 확인한다. 즉시 취소와 단위 완료 후 정지는 별개다. [실행 중 제어·복구 계약](loop-control.md)을 따른다.
 
-보통 foreground loop를 도구/하네스 완료 대기로 기다리고 종료 영수증을 받아 이어간다. 모델의 sleep→status 반복은 하지 않는다. detach는 상위 대화의 실제 후속 실행 연결이 있을 때만 쓴다. 시작 때 알림 연결 여부를 보고하며, 훅 미설정/상위 연결 부재면 자동 채팅 통지가 안 된다고 밝힌다. CLI가 끝나도 회복 가능한 문제가 남으면 새 하위 단위나 일반 스킬로 목표를 이어서 처리한다(원래 마감·총 한도 유지). CLI 결함은 보고서에 남기고 현재 프로젝트에서 패키지를 고치지 않는다.
+보통 foreground loop를 도구/하네스 완료 대기로 기다리고 종료 영수증을 받아 이어간다. 모델의 sleep→status 반복은 하지 않는다. 진행 보고는 재촉을 기다리지 않는다: loop를 백그라운드로 띄웠으면 `vibe loop --tag <tag> --wait-event unit-finished,needs-judgment,finished --json`을 백그라운드로 걸어 두고, 돌아올 때마다 사건 한 줄(단위·태스크·결과, 판단 필요 항목)을 보고한 뒤 받은 `cursor`로 `--after <cursor>`를 붙여 다시 건다. `ended`·finished면 종료 영수증으로 이어간다. detach는 상위 대화의 실제 후속 실행 연결이 있을 때만 쓴다. 시작 때 알림 연결 여부를 보고하며, 훅 미설정/상위 연결 부재면 자동 채팅 통지가 안 된다고 밝힌다. CLI가 끝나도 회복 가능한 문제가 남으면 새 하위 단위나 일반 스킬로 목표를 이어서 처리한다(원래 마감·총 한도 유지). CLI 결함은 보고서에 남기고 현재 프로젝트에서 패키지를 고치지 않는다.
 
 ## 배포와 선점
 

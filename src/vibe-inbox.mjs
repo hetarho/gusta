@@ -101,11 +101,16 @@ export async function vibeInbox(options = {}, injected = {}) {
     return { schemaVersion: 1, ok: true, count: inbox.length, inbox, coordination }
   }
   if (options.step === 'add') {
-    const whole = options.line?.trim()
-    if (whole !== undefined && (options.kind !== undefined || options.ref !== undefined || options.text !== undefined || options.file !== undefined)) fail('--line은 완성된 한 줄입니다 — --kind·--ref·--text·--file과 함께 쓰지 않습니다.')
-    const text = whole === undefined ? oneLine(await body(options), 'inbox') : null
-    const refs = whole === undefined ? [options.ref ?? []].flat() : (whole.match(INBOX_LINE)?.[3] ?? '').split(/\s+/).filter((ref) => ref && ref !== '-')
-    if (whole === undefined && !KINDS.includes(options.kind)) fail(`--kind는 ${KINDS.join('|')}입니다.`, [USAGE])
+    if (options.line !== undefined && (options.kind !== undefined || options.ref !== undefined || options.text !== undefined || options.file !== undefined)) fail('--line은 완성된 한 줄입니다 — --kind·--ref·--text·--file과 함께 쓰지 않습니다.')
+    const given = options.line === undefined ? oneLine(await body(options), 'inbox') : null
+    // A body that already is a whole FORMAT line (often a file written for its quotes) is that line.
+    const complete = given !== null && INBOX_LINE.test(given)
+    if (complete && (options.kind !== undefined || options.ref !== undefined)) fail('본문이 이미 완성된 inbox 줄입니다 — --kind·--ref 없이 그 줄만 넘기세요.', [given])
+    const whole = options.line?.trim() ?? (complete ? given : undefined)
+    const text = whole === undefined ? given : null
+    // --ref takes one reference or a list (spaces or commas), like a task header's ssot: field.
+    const refs = whole === undefined ? [options.ref ?? []].flat().flatMap((ref) => `${ref}`.split(/[\s,]+/)).filter(Boolean) : (whole.match(INBOX_LINE)?.[3] ?? '').split(/\s+/).filter((ref) => ref && ref !== '-')
+    if (whole === undefined && !KINDS.includes(options.kind)) fail(`--kind는 ${KINDS.join('|')}입니다. 완성된 줄(- YYMMDD kind refs: text)은 --line이나 그 한 줄만 담은 --file로 넘깁니다.`, [USAGE])
     if (refs.some((ref) => /[\s:|]/.test(ref) || ref === '-')) fail('--ref에는 참조 하나씩 씁니다(없으면 생략).', refs)
     const problems = await missingRefs(target.root, refs)
     if (problems.length) fail('inbox 참조가 이 checkout에 없습니다. 기록하지 않았습니다.', problems)

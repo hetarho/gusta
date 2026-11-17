@@ -58,7 +58,7 @@
 ## 검증과 push
 
 - **태스크마다**: 변경 영향 단위 테스트와 1분 안에 끝나는 빠른 검사만, 커밋 직전에 한 번 돌립니다(같은 트리는 캐시). 테스트는 스크립트 이름이 아니라 격리 범위·의존성으로 분류하고, 실행하지 않은 통합/e2e는 result limits에 남겨 마감 관문에 넘깁니다. `vibe check --tier task`는 ARCH batch 단계에만 있는 명령(전체 스위트)을 거절하고, 5분 넘는 태스크 검사에는 `slow`·`hint`를 붙입니다(사용자가 별도 실행을 명시하면 `--allow-final`). 명령별 시간은 runtime `timings.json`에 남아, 평균 60초가 넘는 명령은 `vibe status`의 `taskChecks.slow`와 loop 보고서에 나오고 loop가 끝날 때 batch로 옮기자는 inbox `suggest`가 한 번 남습니다 — 옮길지는 사람이 정합니다.
-- **마감 관문**: 등록된 참여 세션이 모두 ready이면 한 소유자가 참여자·제출 SHA·land 기준·격리 후보를 고정해 전체 결정론적 검수를 한 번 합니다. 새 세션은 다음 묶음으로 갑니다. 실패 뒤에는 실패·영향·미실행을 확인하고 유효한 성공은 재사용합니다. clone 락은 원격 공유 소유권의 대체물이 아니며, 원격을 확인할 수 없으면 조용히 로컬 마감으로 바꾸지 않습니다. 기존 마감은 유지합니다.
+- **마감 관문**: 살아 있는 참여 세션이 모두 ready이면 한 소유자가 참여자·제출 SHA·land 기준·격리 후보를 고정해 전체 결정론적 검수를 한 번 합니다. 새 세션은 다음 묶음으로 갑니다. 끝난 세션(paused)·90분 동안 신호가 없는 세션(절전·네트워크 단절)·head를 가져올 수 없는 세션은 기다리지 않고 `deferred`로 보류합니다 — 철회·반영·선점 이전이 아니며, 그 세션은 돌아와 land를 merge한 뒤(충돌하면 `land-conflict`로 멈춤) 다음 통합에 참여합니다. 관문 밖에서 반영됐거나 다시 제출하지 않을 참여자는 소유자가 `vibe integration withdraw --participant <id>`로 닫습니다. 후보는 다른 CLI worktree처럼 `.git` 밖(`.gusta-worktrees/`)에 만들고, ARCH 검증 결정의 `prepare:` 명령(예: frozen·offline 설치)을 검사 전에 실행합니다. 준비 실패·명령 없음(127)은 환경 실패로 분류해 남은 검사를 건너뜁니다. 실패 뒤에는 실패·영향·미실행을 확인하고 유효한 성공은 재사용합니다. clone 락은 원격 공유 소유권의 대체물이 아니며, 원격을 확인할 수 없으면 조용히 로컬 마감으로 바꾸지 않습니다. 기존 마감은 유지합니다.
 - **반영**: 공유 소유자가 검증된 고정 후보만 SETTINGS대로 반영합니다. 필수 integration-stage agent AC가 남으면 waiting-agent로 후보·기존 검수 증거를 보존하고, 도구가 있는 host가 실제 관찰을 기록한 뒤 전체 검수를 반복하지 않고 재개합니다. 같은 후보의 CI는 한 번 기다리고, 조회할 수 없으면 unchecked와 확인할 SHA/URL을 남깁니다. 세션 종료가 각자의 전체 검사·push를 뜻하지 않습니다.
 - 단계는 ARCH의 task/batch/CI와 실제 의존성으로 정합니다. task는 작은 영향 검사, batch는 공동 고정 후보의 전체 결정론적 검수, 최소 자동 브라우저 E2E·선언한 지원 호환 검사는 CI입니다. computer-use agent AC로 대체한 자동 범위를 제거·축소하고, worker가 적은 중복 이유로 두 방법을 함께 실행하지 않습니다. `/gusta-update`는 실제 테스트·스크립트·설정·시간과 중복 비용을 필수 감사합니다. 세부 절차는 [공유 검증 계약](../skills/gusta-start/references/verification.md)에 있습니다.
 
@@ -66,4 +66,6 @@
 npx @haeram/gusta vibe check --tier task --diff-base <task-start-sha> -- pnpm run typecheck
 npx @haeram/gusta vibe integration ready --tag <tag>
 npx @haeram/gusta vibe integration finish --tag <tag>
+npx @haeram/gusta vibe integration finish --tag <tag> --no-push   # 검수 뒤 로컬 land에만 반영(held), 다음 finish·push가 검증된 그대로 발행
+npx @haeram/gusta vibe integration withdraw --participant <id>   # 소유자의 명시적 참여 종료(브랜치 보존, ready로 다시 참여)
 ```

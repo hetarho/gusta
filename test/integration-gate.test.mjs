@@ -58,11 +58,16 @@ test('same tag, hostname and branch in separate clones cannot overwrite particip
   assert.notEqual(participants[0].owner, participants[1].owner)
 })
 
-test('old working presence and unavailable remote never become proof of all-ready', async (t) => {
+test('old working presence is deferred, never counted ready or landed; an unavailable remote is never proof of all-ready', async (t) => {
   const { contexts: [context], stores: [store] } = await setup(t)
   const old = await openIntegration(context, { now: () => '2000-01-01T00:00:00Z' })
-  await old.register({ tag: 'old' })
-  assert.equal((await store.claim({ tag: 'later', active: [] })).reason, 'sessions-working')
+  const registered = await old.register({ tag: 'old' })
+  const idle = await store.claim({ tag: 'later', active: [] })
+  assert.deepEqual([idle.reason, idle.deferred.map((entry) => [entry.tag, entry.reason])], ['no-ready-sessions', [['old', 'no-signal']]])
+  await store.ready({ tag: 'later' })
+  const claimed = await store.claim({ tag: 'later', active: [] })
+  assert.deepEqual(claimed.value.gate.cohort.map((entry) => entry.tag), ['later'])
+  assert.equal((await store.read()).state.participants[registered.participant].status, 'working')
   const unavailable = await openIntegration(context, { remote: async () => { throw new Error('network unavailable') } })
   const state = await unavailable.read()
   assert.equal(state.reason, 'coordination-unknown')

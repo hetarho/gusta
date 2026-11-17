@@ -1,4 +1,4 @@
-import { access, rm } from 'node:fs/promises'
+import { access, rm, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { git } from './workspace.mjs'
 import { readRuntime, transaction } from './work-runtime.mjs'
@@ -9,6 +9,8 @@ import { activeAttempt, scopedBoard } from './work-policy.mjs'
 import { cleanupWork, pruneCleanedAttempt, workInternals } from './work-groups.mjs'
 import { vibeSession, fetchBranch } from './vibe.mjs'
 import { coordView } from './vibe-coord.mjs'
+import { isStale } from './coord-doc.mjs'
+import { pruneReservations } from './vibe-plan.mjs'
 
 // prune-branches (spec/SETTINGS.md): once work ends, the CLI deletes what it created and nothing
 // still needs — worktrees, branches, checkpoint refs and wip/* snapshots. Anything holding commits
@@ -140,6 +142,39 @@ async function pruneWip(context, tag) {
   return { pruned, kept }
 }
 
+// Session worktrees (vibe session open: branch gusta-session-*) whose work already landed: the
+// worktree, its branch and that branch's remote copy go. One that is this checkout, has changes,
+// holds commits land lacks, still has a live session row or a running loop stays, with the reason.
+async function pruneSessions(context) {
+  const { root, remote } = context
+  const pruned = [], kept = []
+  const land = context.branches.land ?? context.branches.landTarget
+  if (!land) return { pruned, kept }
+  const tracking = remote ? `refs/remotes/${remote}/${land}` : null
+  const fetched = tracking ? await fetchBranch(root, remote, `refs/heads/${land}`, tracking).catch(() => false) : false
+  const landRef = fetched ? tracking : `refs/heads/${land}`
+  if (!(await commitOf(root, landRef))) return { pruned, kept }
+  const view = await coordView(context, { fetch: false }).catch(() => null)
+  const now = new Date().toISOString()
+  for (const tree of context.workspace.git.worktrees) {
+    if (!tree.path || !tree.branch?.startsWith('gusta-session-') || path.resolve(tree.path) === path.resolve(root)) continue
+    const gitDir = (await git(tree.path, ['rev-parse', '--absolute-git-dir'], [128]).catch(() => null))?.trim()
+    const tag = gitDir ? JSON.parse(await readFile(path.join(gitDir, 'gusta-session.json'), 'utf8').catch(() => '{}')).tag ?? null : null
+    const reason = !(await exists(tree.path)) ? null
+      : (await git(tree.path, ['status', '--porcelain', '--untracked-files=all'], [128]))?.trim() ? '미커밋 변경이 있습니다.'
+      : !(await contains(root, `refs/heads/${tree.branch}`, landRef)) ? `${land}에 없는 커밋이 있습니다.`
+      : view?.doc.active.some((row) => row.branch === tree.branch && !isStale(row, now)) ? '살아 있는 세션 행이 있습니다.'
+      : tag && JSON.parse(await readFile(path.join(context.workspace.git.commonDir, 'gusta', 'v1', 'loops', tag, 'loop.json'), 'utf8').catch(() => '{}')).running ? '이 tag의 loop가 실행 중입니다.'
+      : null
+    if (reason) { kept.push({ path: tree.path, branch: tree.branch, reason }); continue }
+    if (await exists(tree.path)) await git(root, ['worktree', 'remove', '--force', tree.path])
+    else await git(root, ['worktree', 'prune'])
+    await git(root, ['branch', '-D', tree.branch]); pruned.push(tree.path, tree.branch)
+    if (remote && (await git(root, ['ls-remote', '--heads', remote, `refs/heads/${tree.branch}`], [2, 128]))?.trim() && await git(root, ['push', '--quiet', remote, '--delete', tree.branch], [1, 128]) !== null) pruned.push(`${remote}/${tree.branch}`)
+  }
+  return { pruned, kept }
+}
+
 // vibe prune [--tag <tag>] [--work <slug>]: the end-of-session sweep. Reads prune-branches itself,
 // so skills call it unconditionally as the last step.
 export async function vibePrune(options = {}) {
@@ -147,6 +182,8 @@ export async function vibePrune(options = {}) {
   if (!(await readSetting({ root: context.root }, 'prune-branches'))) return { schemaVersion: 1, ok: true, skipped: 'prune-branches: false' }
   const wip = options.tag ? await pruneWip(context, options.tag) : { pruned: [], kept: [] }
   const work = await pruneWork({ targetRoot: context.root, work: options.work, groups: true })
-  const kept = [...wip.kept, ...work.kept]
-  return { schemaVersion: 1, ok: true, pruned: [...wip.pruned, ...work.pruned], cleaned: work.cleaned, kept: kept.slice(0, 20), keptCount: kept.length }
+  const reservations = await pruneReservations({ targetRoot: context.root }).catch((error) => ({ pruned: [], kept: [{ ref: 'refs/gusta/task-ids/*', reason: error.message }] }))
+  const sessions = await pruneSessions(context).catch((error) => ({ pruned: [], kept: [{ path: 'session worktrees', reason: error.message }] }))
+  const kept = [...wip.kept, ...work.kept, ...reservations.kept, ...sessions.kept]
+  return { schemaVersion: 1, ok: true, pruned: [...wip.pruned, ...work.pruned, ...reservations.pruned, ...sessions.pruned], cleaned: work.cleaned, kept: kept.slice(0, 20), keptCount: kept.length }
 }

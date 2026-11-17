@@ -21,7 +21,7 @@ description: >-
 CLI는 `npx @haeram/gusta` 뒤에 붙인다. 디자인 모드 규칙의 정본은 `vibe format --section state`의 Design mode 항목이다.
 
 ## 1. 시작
-- `vibe status --json`의 `design`이 있으면 그 tag·scope로 이어서 한다 — "디자인 이어서 합니다: <scope>"만 알린다. 없으면 세션 tag(영숫자 2-4자)를 정하고 `vibe design start --tag <tag> --scope "<무엇을 디자인하는지 한 줄>"`로 이 checkout을 디자인 중으로 표시한다. 이 상태는 checkout의 Git 디렉터리에만 있다 — STATE에 쓰지 않으므로 기획 커밋·plan-push로 다른 worktree에 퍼지지 않는다.
+- `vibe status --json`의 `design`이 있으면 그 tag·scope로 이어서 한다 — "디자인 이어서 합니다: <scope>"만 알린다. 없으면 세션 tag(영숫자 2-4자)를 정하고 `vibe design start --tag <tag> --scope "<무엇을 디자인하는지 한 줄>"`로 이 checkout을 디자인 중으로 표시한다(land 같은 보호 브랜치면 미커밋 변경을 가진 채 `design/<tag>`로 전환한다 — 결과 `switched`). 이 상태는 checkout의 Git 디렉터리에만 있다 — STATE에 쓰지 않으므로 기획 커밋·plan-push로 다른 worktree에 퍼지지 않는다.
 - 새로 시작할 때 미커밋 변경이 있으면(`git status --porcelain`, STATE 제외) 한 번만 묻는다: 지금 따로 커밋 / 디자인에 포함. 포함하면 마감 검증·커밋에 함께 들어간다.
 - 화면: 개발 서버(hot reload)가 떠 있으면 재사용하고, 없으면 ARCH·package.json의 dev/start 명령을 백그라운드로 한 번 띄워 주소를 알린다. 띄울 수 없으면 사용자가 실행할 명령만 알려 준다. 디자인 중 서버를 다시 시작하지 않는다.
 
@@ -42,5 +42,5 @@ CLI는 `npx @haeram/gusta` 뒤에 붙인다. 디자인 모드 규칙의 정본�
 1. **영향 검사**: `vibe design verify --json`은 미커밋 트리에서 ARCH task의 영향 검사·빠른 검사만 실행한다. batch(`--verify` 포함)·CI는 `deferred`에 남기고 `finalVerified:false`를 반환한다. 로컬 검사가 없으면 ARCH에 필요한 영향 검사를 정한다. package.json의 전체 테스트 fallback도 로컬에서 돌리지 않는다. 전체 검수는 커밋 후 공동 고정 후보에서 한 번 수행한다.
 2. **실패 처리**: 확정된 디자인 때문에 바뀐 기대값(문구·스냅샷·시각 기준·선택자)은 테스트를 디자인에 맞춘다. 기능이 깨졌으면 디자인을 유지한 채 코드를 고친다. 디자인을 바꿔야만 고칠 수 있으면 사용자에게 묻는다. 고친 뒤 ok가 될 때까지 verify를 다시 돌린다(같은 트리의 통과는 캐시로 건너뛴다).
 3. **커밋**: `vibe design end` → 디자인 변경·테스트 수정을 커밋 하나로 → `vibe log --text 'design <area>: <what>'`. verify 통과 뒤 파일이 바뀌었으면 커밋 전에 verify부터 다시 돌린다.
-4. **공동 마감**: 소유 세션의 작업이 모두 끝났으면 `vibe integration finish --tag <tag> --json`으로 제출한다(`--verify`로 선택한 최종 명령은 여기에도 전달). 모든 참여 세션이 준비된 고정 후보에서 전체 검수·필수 agent acceptance·CI를 수행하고 SETTINGS land·land-via·push에 따라 반영한다. 로컬 task 통과를 전체 검증 커밋으로 주장하지 않는다. 다른 작업·세션이나 도구를 기다리는 상태면 후보·보류 이유를 보고한다.
+4. **공동 마감**: 소유 세션의 작업이 모두 끝났으면 `vibe integration finish --tag <tag> --json`으로 제출한다(`--verify`로 선택한 최종 명령은 여기에도 전달). 살아 있는 참여 세션이 모두 준비된 고정 후보에서 전체 검수·필수 agent acceptance·CI를 수행하고 SETTINGS land·land-via·push에 따라 반영한다. 사용자가 push 없이 병합만 원하면 `--no-push`(검수 뒤 로컬 land에만 반영, 다음 finish·push가 발행)를 쓰고, land에 직접 merge하지 않는다. 로컬 task 통과를 전체 검증 커밋으로 주장하지 않는다. 다른 작업·세션이나 도구를 기다리는 상태면 후보·보류 이유를 보고한다.
 5. **보고**: 바꾼 것·돌린 검사·커밋 SHA·push 여부, 개발 서버를 띄운 채 둔다는 것. "SSOT 반영 필요"가 있으면 gusta-update-ssot로 넘긴다(기획 커밋은 spec/만 담아 `vibe plan-push`).

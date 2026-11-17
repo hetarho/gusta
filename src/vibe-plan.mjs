@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import path from 'node:path'
+import { readdir } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { git } from './workspace.mjs'
 import { vibeSession, fetchBranch, exists, sha, ancestor, advanceBranch } from './vibe.mjs'
@@ -200,4 +201,78 @@ export async function vibePlanPush(options = {}) {
   }
   if (lastPending) return pendingPlanning(context, lastPending)
   return fail('기획 브랜치에 올리지 못했습니다.', [last ?? '다른 checkout이 계속 먼저 반영했습니다.'])
+}
+
+// vibe task reserve [--count n] --tag <tag>: the next free task IDs, handed out once. Free means
+// above every ID the plan branch (as the remote has it), any worktree of this clone (committed or
+// not) and any outstanding reservation knows. A reservation is a create-only ref
+// refs/gusta/task-ids/T### (a tiny commit naming the tag): created atomically here and, with a
+// remote and coord-push, pushed create-only too — of two devices exactly one gets a number.
+// prune drops the refs once the plan branch has those tasks.
+export const RESERVATION_PREFIX = 'refs/gusta/task-ids/'
+const idNumber = (name) => Number(name.match(/^T(\d+)/)?.[1] ?? NaN)
+export async function reserveTaskIds(options = {}) {
+  const context = await planContext(options)
+  const { root, remote } = context
+  const count = Number(options.count ?? 1)
+  if (!Number.isSafeInteger(count) || count < 1 || count > 50) fail('--count에는 1~50이 필요합니다.')
+  if (!/^[A-Za-z0-9]{2,8}$/.test(options.tag ?? '')) fail('--tag에는 영숫자 2-8자의 세션 tag가 필요합니다.')
+  const shared = Boolean(remote) && context.branches.coordPush
+  const width = (ids) => Math.max(3, ...ids.map((id) => String(id).length))
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const tip = await planTip(context)
+    const used = []
+    const names = (await git(root, ['ls-tree', '-r', '--name-only', tip.commit, '--', 'spec/tasks'])).split('\n').map((file) => path.basename(file))
+    used.push(...names.map(idNumber))
+    for (const tree of context.workspace.git.worktrees.filter((entry) => entry.path && !entry.bare)) {
+      for (const directory of ['spec/tasks', 'spec/tasks/done']) used.push(...(await readdir(path.join(tree.path, directory)).catch(() => [])).map(idNumber))
+      if (tree.branch) used.push(...(await git(root, ['ls-tree', '-r', '--name-only', `refs/heads/${tree.branch}`, '--', 'spec/tasks'], [128]) ?? '').split('\n').map((file) => idNumber(path.basename(file))))
+    }
+    const local = (await git(root, ['for-each-ref', '--format=%(refname)', RESERVATION_PREFIX])).split('\n').filter(Boolean)
+    const remoteRefs = shared ? (await execute('git', ['-C', root, 'ls-remote', remote, `${RESERVATION_PREFIX}*`], { encoding: 'utf8' }).then(({ stdout }) => stdout, () => '')).split('\n').map((line) => line.split('\t')[1]).filter(Boolean) : []
+    used.push(...[...local, ...remoteRefs].map((ref) => idNumber(ref.slice(RESERVATION_PREFIX.length))))
+    const max = Math.max(0, ...used.filter(Number.isSafeInteger))
+    const digits = width([max + count])
+    const ids = Array.from({ length: count }, (_, index) => `T${String(max + 1 + index).padStart(digits, '0')}`)
+    // The empty tree, written from a file argument (mktree and --stdin would wait on stdin).
+    const tree = (await execute('git', ['-C', root, 'hash-object', '-w', '-t', 'tree', '/dev/null'], { encoding: 'utf8' })).stdout.trim()
+    const commit = (await git(root, ['-c', 'commit.gpgsign=false', 'commit-tree', tree, '-m', `gusta: reserve ${ids.join(' ')} for ${options.tag} at ${new Date().toISOString()}`])).trim()
+    const created = []
+    try {
+      for (const id of ids) { await git(root, ['update-ref', `${RESERVATION_PREFIX}${id}`, commit, '0'.repeat(commit.length)]); created.push(id) }
+    } catch {
+      for (const id of created) await git(root, ['update-ref', '-d', `${RESERVATION_PREFIX}${id}`], [1]).catch(() => {})
+      continue
+    }
+    if (!shared) return { schemaVersion: 1, ok: true, ids, plan: tip.label, published: false }
+    try {
+      await execute('git', ['-C', root, 'push', '--quiet', '--atomic', ...ids.map((id) => `--force-with-lease=${RESERVATION_PREFIX}${id}:`), remote, ...ids.map((id) => `${commit}:${RESERVATION_PREFIX}${id}`)], { encoding: 'utf8' })
+      return { schemaVersion: 1, ok: true, ids, plan: tip.label, published: true }
+    } catch (error) {
+      for (const id of ids) await git(root, ['update-ref', '-d', `${RESERVATION_PREFIX}${id}`], [1]).catch(() => {})
+      if (!/rejected|stale info|already exists|fetch first/i.test(error.stderr ?? error.message)) return { schemaVersion: 1, ok: true, ids: [], published: false, error: (error.stderr || error.message).trim().slice(-400) }
+    }
+  }
+  return fail('태스크 번호를 예약하지 못했습니다(다른 기기가 계속 먼저 예약). 잠시 뒤 다시 실행하세요.')
+}
+
+// prune: a reservation goes once the plan branch has that task (planned and published) or after a
+// week (a session that never planned it leaves only a gap in the numbering). Local and remote refs.
+export async function pruneReservations(options = {}) {
+  const context = await planContext(options)
+  const { root, remote } = context
+  const shared = Boolean(remote) && context.branches.coordPush
+  const local = (await git(root, ['for-each-ref', '--format=%(refname) %(committerdate:unix)', RESERVATION_PREFIX])).split('\n').filter(Boolean).map((line) => line.split(' '))
+  const remoteRefs = shared ? (await execute('git', ['-C', root, 'ls-remote', remote, `${RESERVATION_PREFIX}*`], { encoding: 'utf8' }).then(({ stdout }) => stdout, () => '')).split('\n').map((line) => line.split('\t')[1]).filter(Boolean) : []
+  if (!local.length && !remoteRefs.length) return { pruned: [], kept: [] }
+  const tip = await planTip(context).catch(() => null)
+  const planned = new Set(tip ? (await git(root, ['ls-tree', '-r', '--name-only', tip.commit, '--', 'spec/tasks'])).split('\n').map((file) => path.basename(file).match(/^(T\d+)\./)?.[1]).filter(Boolean) : [])
+  const weekAgo = Date.now() / 1000 - 7 * 24 * 3600
+  const gone = new Set([...local.filter(([ref, time]) => planned.has(ref.slice(RESERVATION_PREFIX.length)) || Number(time) < weekAgo).map(([ref]) => ref),
+    ...remoteRefs.filter((ref) => planned.has(ref.slice(RESERVATION_PREFIX.length)))])
+  const pruned = []
+  for (const ref of gone) if (local.some(([name]) => name === ref)) { await git(root, ['update-ref', '-d', ref], [1]); pruned.push(ref) }
+  const remoteGone = remoteRefs.filter((ref) => gone.has(ref))
+  if (remoteGone.length) await execute('git', ['-C', root, 'push', '--quiet', remote, ...remoteGone.map((ref) => `:${ref}`)], { encoding: 'utf8' }).then(() => pruned.push(...remoteGone.map((ref) => `${remote}/${ref}`)), () => {})
+  return { pruned, kept: [] }
 }

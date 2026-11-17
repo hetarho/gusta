@@ -703,3 +703,29 @@ test('vibe CLI: inbox·log·claim은 JSON을 출력하고 거절된 선점은 �
   const help = (await execute(process.execPath, [cli, 'vibe', '--help'], { encoding: 'utf8' })).stdout
   for (const usage of ['vibe inbox add --kind decided|parked|suggest', 'vibe inbox resolve (--id <id> ... | --line <line> | --file <lines>)', 'vibe inbox list', 'vibe log [--text <text> | --file <path>]', 'vibe claim --tag <tag> [--task T###] [--mode pair|autopilot]']) assert.ok(help.includes(usage), usage)
 })
+
+test('vibe inbox add --file takes a whole FORMAT line as that line; --kind with a whole line is refused', async (t) => {
+  const { root, temporary } = await fixture(t)
+  const at = clock(NOW)
+  const file = path.join(temporary, 'line.txt')
+  await writeFile(file, '- 261012 suggest T001: split "the" fixture | later\n')
+  const added = await vibeInbox({ targetRoot: root, step: 'add', file }, at)
+  assert.deepEqual([added.ok, added.line], [true, '- 261012 suggest T001: split "the" fixture | later'])
+  await assert.rejects(vibeInbox({ targetRoot: root, step: 'add', kind: 'suggest', file }, at), /이미 완성된 inbox 줄/)
+  await writeFile(file, 'just a body\n')
+  await assert.rejects(vibeInbox({ targetRoot: root, step: 'add', file }, at), /--kind는 decided\|parked\|suggest입니다. 완성된 줄/)
+  const cliRun = await execute(process.execPath, [cli, 'vibe', 'lint', '--target', root], { encoding: 'utf8' }).catch((error) => error)
+  assert.equal(cliRun.code, 1); assert.match(cliRun.stderr, /lint은\(는\) vibe 하위 명령이 아닙니다: gusta lint/)
+})
+
+test('vibe inbox --ref takes a list; vibe <command> --help shows that command; plan-sync accepts the session tag', async (t) => {
+  const { root } = await fixture(t)
+  const at = clock(NOW)
+  const added = await vibeInbox({ targetRoot: root, step: 'add', kind: 'decided', ref: ['ARCH-1 T001,T002'], text: 'listed refs' }, at)
+  assert.equal(added.line, '- 261013 decided ARCH-1 T001 T002: listed refs')
+  const run = (...args) => execute(process.execPath, [cli, 'vibe', ...args], { encoding: 'utf8' }).catch((error) => error)
+  const help = (await run('inbox', '--help')).stdout
+  assert.match(help, /vibe inbox add/); assert.doesNotMatch(help, /vibe loop/); assert.match(help, /^공통:/m)
+  assert.match((await run('--help')).stdout, /vibe loop/)
+  assert.doesNotMatch((await run('plan-sync', '--tag', 'aaaa', '--target', root)).stdout ?? '', /지원하지 않는 옵션/)
+})

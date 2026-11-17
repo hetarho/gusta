@@ -4,6 +4,7 @@
 // The model still writes acceptance checks and result; the caller commits the working tree.
 // What other sessions coordinate on — who holds the task, the finished task waiting to land, the
 // log — goes to the coordination branch (src/vibe-coord.mjs); a target without Git keeps it in STATE.
+import { reserveTaskIds } from './vibe-plan.mjs'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { readTaskBoard } from './task-board.mjs'
@@ -27,7 +28,8 @@ const GENERATED_NEXT = /^- (gusta-implement-task T\d{3,}( T\d{3,})*|no runnable 
 const UNFILLED = /^- (outcome|at|verified|limits): <[^>]*>$/
 
 export async function vibeTask(options = {}, { now = () => new Date(), coord, assertImplementationWorkspace = assertTaskWorkspace } = {}) {
-  if (!['start', 'done'].includes(options.step) || !TASK_ID.test(options.task ?? '')) fail('vibe task start T### --tag <tag> | vibe task done T### --tag <tag> [--at <sha>] [--force-other]')
+  if (options.step === 'reserve') return reserveTaskIds(options)
+  if (!['start', 'done'].includes(options.step) || !TASK_ID.test(options.task ?? '')) fail('vibe task start T### --tag <tag> | vibe task done T### --tag <tag> [--at <sha>] [--force-other] | vibe task reserve --tag <tag> [--count n]')
   const inspection = await inspectWorkspace({ targetRoot: options.targetRoot })
   if (options.step === 'start') await assertImplementationWorkspace({ ...options, workspace: inspection })
   const board = await readTaskBoard({ targetRoot: options.targetRoot, inspection })

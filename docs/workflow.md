@@ -151,10 +151,10 @@ SSOT·계약·저장 형식·결정이 바뀌지 않는 작은 버그/문구/스
 
 화면을 띄워 두고 말하는 대로 바로 코드만 고치는 흐름입니다. 사람이 화면을 봐야 하므로 사용자가 직접 부를 때만 쓰고, `/gusta-start`의 실행 단위·작업 묶음 워커에서는 시작하지 않습니다.
 
-1. `vibe design start`로 이 checkout이 디자인 중임을 표시합니다. 이 상태는 checkout의 Git 디렉터리에만 저장되고 STATE에는 쓰지 않으므로, 기획 커밋·plan-push를 타고 다른 worktree로 퍼지지 않습니다. 개발 서버(hot reload)를 띄워 두고 결과를 실시간으로 봅니다.
+1. `vibe design start`로 이 checkout이 디자인 중임을 표시합니다. land 같은 보호 브랜치에 있으면 미커밋 변경을 가진 채 `design/<tag>`로 옮겨 갑니다. 이 상태는 checkout의 Git 디렉터리에만 저장되고 STATE에는 쓰지 않으므로, 기획 커밋·plan-push를 타고 다른 worktree로 퍼지지 않습니다. 개발 서버(hot reload)를 띄워 두고 결과를 실시간으로 봅니다.
 2. 디자인하는 동안에는 테스트·e2e·typecheck·커밋·push를 하지 않습니다. 그 checkout에서는 `vibe push`가 거절되고, `/gusta-start`의 preflight는 실패하며 `vibe loop`는 멈춥니다. 다른 worktree의 작업은 영향을 받지 않습니다. 중간 저장이 필요하면 `vibe checkpoint`로 `wip/<tag>`에만 스냅샷합니다.
 3. 커밋·push가 필요해지면(직접 요청, 다른 스킬로 전환, 마감) 어떤 스킬이든 먼저 **"디자인 끝났나요?"** 를 묻습니다.
-4. 디자인이 끝나면 `vibe design verify`로 ARCH task의 영향 검사·빠른 검사를 미커밋 작업 트리에서 돌립니다(batch·CI는 디자인 커밋 뒤 공동 통합과 CI로 미룸, 같은 트리는 캐시). 디자인 때문에 바뀐 기대값은 테스트를 고치고, 깨진 기능은 코드를 고칩니다. 통과하면 `vibe design end` 후 디자인·테스트 수정을 커밋 하나로 남기고 `vibe log`에 `design <area>: <what>` 한 줄을 씁니다. 반영(`vibe push`)은 요청했거나 SETTINGS land·push가 반영을 정해 둔 경우에만 합니다.
+4. 디자인이 끝나면 `vibe design verify`로 ARCH task의 영향 검사·빠른 검사를 미커밋 작업 트리에서 돌립니다(batch·CI는 디자인 커밋 뒤 공동 통합과 CI로 미룸, 같은 트리는 캐시). 디자인 때문에 바뀐 기대값은 테스트를 고치고, 깨진 기능은 코드를 고칩니다. 검사가 하나도 돌지 않았으면 통과가 아닙니다(`no-task-checks`와 바뀐 파일 목록). 통과하면 `vibe design end` 후 디자인·테스트 수정을 커밋 하나로 남기고 `vibe log`에 `design <area>: <what>` 한 줄을 씁니다. 반영은 `vibe integration finish`로 하고(요청했거나 SETTINGS land·push가 정해 둔 경우), push 없이 병합만 원하면 `--no-push`로 검수 뒤 로컬 land에만 반영합니다 — land에 직접 merge하지 않습니다.
 
 ## 여러 안을 띄워 고르기 — `/gusta-showcase`
 

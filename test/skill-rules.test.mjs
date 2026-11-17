@@ -126,7 +126,7 @@ test('gusta-start: 인자 없으면 STATE·태스크로 실행하고, 기획 변
   assert.match(start, /인자가 없으면 STATE·태스크대로 실행한다/)
   assert.match(start, /\[요청 실행\]\(references\/request\.md\)/)
   assert.match(start, /기획 변경 요청 인자 없이 실행할 태스크가 없으면\(route `sketch-first`\)/)
-  for (const pattern of [/시작 대화만 읽는다/, /요청문이 직접 정한 것은 사용자 결정이다/, /`vibe plan-sync`/, /`vibe plan-push`/, /gusta-update-ssot/, /gusta-create-task/, /`vibe loop --tasks '<범위>'`/, /다른 기존 태스크는 하지 않는다/, /`\[\?\]`/]) assert.match(request, pattern)
+  for (const pattern of [/3절은 그 요청을 기획하는 첫 loop 단위가 따른다/, /요청문이 직접 정한 것은 사용자 결정이다/, /`vibe plan-sync`/, /`vibe plan-push`/, /gusta-update-ssot/, /gusta-create-task/, /`vibe loop --tag <tag> --request-file <path> --json`/, /기획 스킬·코드는 이 대화에서 읽지 않는다/, /다른 기존 태스크는 하지 않는다/, /`\[\?\]`/]) assert.match(request, pattern)
   for (const name of ['gusta-update-ssot', 'gusta-create-ssot']) assert.match(await readFile(new URL(`${name}/SKILL.md`, skillsRoot), 'utf8'), /gusta-start 요청 실행이면 요청문이/, name)
 })
 
@@ -154,7 +154,7 @@ test('검증 단계 계약: 태스크 영향 검사·공동 후보 전체 검수
   assert.match(await read('gusta-implement-task/SKILL.md'), /바뀐 범위의 작은 결정론적 검사와 빠른 ARCH task 명령을 커밋 직전 한 번[^\n]*`vibe check --tier task`[^\n]*편집마다 반복하지 않/)
   assert.match(await read('gusta-create-task/SKILL.md'), /acceptance·검증 줄에는 태스크 단계 영향 검사만[^\n]*전체 검수는 공동 고정 후보[^\n]*지원 브라우저 호환 검사는 CI/)
   assert.match(await read('gusta-create-task/assets/task.md'), /behavioral evidence and owner\/stage:[^\n]*existing affected checks[^\n]*integration-stage agent AC[^\n]*E2E replacement scope/)
-  assert.match(await read('gusta-create-architecture/SKILL.md'), /task\(변경 영향의 작은 결정론적 검사[^\n]*batch\(모든 참여 세션이 ready인 고정 통합 후보[^\n]*CI\(최소 자동 E2E와 선언한 지원 브라우저 호환 검사\)/)
+  assert.match(await read('gusta-create-architecture/SKILL.md'), /task\(변경 영향의 작은 결정론적 검사[^\n]*batch\(살아 있는 참여 세션이 모두 ready인 고정 통합 후보[^\n]*CI\(최소 자동 E2E와 선언한 지원 브라우저 호환 검사\)/)
   const format = await read('gusta-create-architecture/assets/FORMAT.md')
   for (const pattern of [/Each AC names one primary method \(deterministic or computer-use\), owner\/stage,[^\n]*affected evidence or explicit integration handoff[^\n]*not-run never means observed\/pass/, /task = affected compact deterministic invariant checks[^\n]*batch = one full deterministic gate on the fixed shared integration candidate[^\n]*CI = minimal durable browser E2E and compatibility for explicitly supported browsers only/, /Computer-use agent acceptance replaces named E2E scope after removing\/narrowing that automatic execution/]) assert.match(format, pattern)
   assert.match(await read('gusta-update/references/project-rules.md'), /단계 선언이 없거나\(lint 검토 후보\) 태스크 단계에 느린 명령이 있으면\(`vibe status`의 `taskChecks\.slow`/)

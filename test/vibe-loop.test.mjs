@@ -582,3 +582,14 @@ test('a unit session records its vibe check runs and token usage for the breakdo
   // Its task-tier runs per command: what the closing report's task checks line and slow suggestions read.
   assert.deepEqual(r.checks.task.map(({ command, runs }) => [command, runs]), [['node -e "setTimeout(()=>{},50)"', 1]])
 })
+
+test('rewriting the report agent acceptance block any number of times keeps its headings apart', async () => {
+  const { withAgentTable } = await import('../src/vibe-loop.mjs')
+  const start = '# report\n\n## checks\n\n## next\n- continue\n'
+  let text = start
+  for (let round = 0; round < 5; round++) text = withAgentTable(withAgentTable(text, '| T001-AC1 |'), round % 2 ? '' : '| T001-AC1 | pass |')
+  assert.match(text, /## checks\n(<!-- gusta:agent-acceptance -->\n[\s\S]*?<!-- gusta:agent-acceptance:end -->\n)?\n## next\n/)
+  assert.equal(withAgentTable(text, ''), start)
+  // A report an older writer glued together is split again.
+  assert.equal(withAgentTable('# report\n\n## checks## next\n- continue\n', ''), start)
+})

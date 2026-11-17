@@ -50,5 +50,6 @@ gusta-start 요청 실행이면 요청문이 출발점이다 — 요청문이 �
 
 ## 4. 마감
 - STATE: ssot rev 갱신 + pending에 델타 추가(`AUTH-2✎ AUTH-5+` — 단 tasked=0이면 `all` 유지) + [?] 수 갱신, next에 `gusta-create-task <ID>`. `vibe log` 1줄(영향권에 doing 태스크가 있으면 경고 1줄 더).
+- 이미 구현된 변경(gusta-design-mode·gusta-showcase 마감처럼 코드가 먼저 바뀐 것)을 문서에 맞추는 개정이면 태스크를 만들지 않는다: pending에 넣지 않고 tasked=rev로 두며, `vibe log`에 구현 커밋 SHA를 남긴다(검증 근거는 그 마감의 검사).
 - ideation 문서에서 시작했다면 [전환 마감 절차](../gusta-create-ssot/references/ideation.md)를 수행한다.
 - 보고(level별): 바뀐 결정, 파급 범위, 다음 단계.

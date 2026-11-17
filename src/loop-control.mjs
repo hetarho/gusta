@@ -86,7 +86,8 @@ export const NOTIFY_CAP = 10
 // usage-limit: every allowed tool is at a usage limit past the work window (the run names tools and
 // reset times in its own hint). needs-login: the tools left failed sign-in.
 export const LOOP_HINTS = { 'needs-sketch': '/gusta-sketch로 태스크까지 만든 뒤 다시 실행하세요', 'needs-init': '/gusta-init으로 쓸 AI 목록(SETTINGS agents)을 정한 뒤 다시 실행하세요',
-  'usage-limit': 'AI 도구 사용량 한도 — 리셋 시각 뒤 다시 실행하세요', 'needs-login': 'agents의 도구에 로그인한 뒤(gusta agents로 확인) 다시 실행하세요' }
+  'usage-limit': 'AI 도구 사용량 한도 — 리셋 시각 뒤 다시 실행하세요', 'needs-login': 'agents의 도구에 로그인한 뒤(gusta agents로 확인) 다시 실행하세요',
+  'land-conflict': '그사이 land에 반영된 변경과 충돌합니다 — 이 세션 worktree에서 landConflict.land를 merge해 충돌을 풀고 커밋한 뒤(rebase 금지) 다시 실행하세요' }
 export const loopHint = (reason) => LOOP_HINTS[reason] ?? null
 
 // A hook is a bridge candidate, not proof that a person (or the parent chat) received anything.
@@ -230,6 +231,42 @@ export async function readRequests(directory, runId) {
   return requests
 }
 export const requestPath = (directory, request) => path.join(directory, 'requests', `${request.id}.json`)
+
+// vibe loop --tag <tag> --wait-event unit-finished,needs-judgment,finished [--after <cursor>] [--wait-ms]:
+// the CLI (not a model) blocks until the run records one of these events after the cursor, ends, or
+// the wait runs out. A host leaves it in the background and reports one line each time it returns,
+// then waits again from the returned cursor.
+export const WAIT_EVENTS = { 'unit-finished': ['unit-finished'], 'needs-judgment': ['needs-judgment'], finished: ['finished', 'stopped'], failed: ['failed'] }
+export async function waitLoopEvent(directory, root, options, { sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), pollMs = 1000 } = {}) {
+  const wanted = String(options.waitEvent).split(/[\s,|]+/).filter(Boolean)
+  const unknown = wanted.filter((name) => !Object.hasOwn(WAIT_EVENTS, name))
+  if (!wanted.length || unknown.length) throw new SkillPackageError(`--wait-event는 ${Object.keys(WAIT_EVENTS).join('|')} 중에서 쉼표로 고릅니다.`, unknown)
+  const types = new Set(wanted.flatMap((name) => WAIT_EVENTS[name]))
+  const waitMs = Number(options.waitMs ?? 3300000)
+  if (!Number.isFinite(waitMs) || waitMs < 0) throw new SkillPackageError('--wait-ms에는 0 이상의 값이 필요합니다.')
+  const file = path.join(directory, 'events.jsonl')
+  const lines = async () => (await readFile(file, 'utf8').catch(() => '')).split('\n').filter(Boolean)
+  let cursor = options.after === undefined ? (await lines()).length : Number(options.after)
+  if (!Number.isSafeInteger(cursor) || cursor < 0) throw new SkillPackageError('--after에는 이전 응답의 cursor가 필요합니다.')
+  const until = Date.now() + waitMs
+  const view = (state, extra) => ({ schemaVersion: 1, ok: true, cursor, running: Boolean(state.running), phase: state.phase ?? null, units: state.units ?? 0, reason: state.reason ?? null, report: state.report ?? null, ...extra })
+  for (;;) {
+    const all = await lines()
+    for (let index = cursor; index < all.length; index++) {
+      let event
+      try { event = JSON.parse(all[index]) } catch { continue }
+      if (!types.has(event.type)) continue
+      cursor = index + 1
+      const { schemaVersion, id, runId, tag, ...detail } = event
+      return view(await inspectLoop(directory, root), { event: detail })
+    }
+    cursor = all.length
+    const state = await inspectLoop(directory, root)
+    if (!state.running) return view(state, { event: null, ended: true })
+    if (Date.now() >= until) return view(state, { event: null, timedOut: true })
+    await sleep(Math.min(pollMs, Math.max(1, until - Date.now())))
+  }
+}
 
 export async function requestControl(directory, root, options) {
   const waitMs = Number(options.waitMs ?? 0)
