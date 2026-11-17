@@ -74,6 +74,10 @@ export async function readVerificationPlan(root, file, deps = {}) {
   }
 }
 
+// Git keeps only the executable bit (and no directory mode), so the working tree is seen the
+// same way: a umask such as 0002 must not make today's bytes differ from the committed ones.
+const gitMode = (mode) => mode & 0o111 ? 0o755 : 0o644
+
 // Git stores the symlink text. Include an internal file's referent too: a check may
 // follow the link even when its target is outside the declared pathspec. Unsupported
 // external/directory links fail instead of returning an unsound reusable pass.
@@ -91,7 +95,7 @@ async function linkInputs(root, files, deps) {
     if (outside(root, target) || controlPath(path.relative(root, target))) fail(`symlink input ${file.path} escapes the project input boundary`)
     const info = await inspect(target)
     if (!info.isFile()) fail(`directory symlink input ${file.path} is unsupported; declare concrete project inputs`)
-    links.push({ path: file.path, target: path.relative(root, target), mode: info.mode & 0o777, hash: digest(await read(target)) })
+    links.push({ path: file.path, target: path.relative(root, target), mode: gitMode(info.mode), hash: digest(await read(target)) })
   }
   return links
 }
@@ -122,11 +126,11 @@ async function literalInputs(root, inputs, deps) {
       if (filename !== target) fail(`directory symlink input ${input} is unsupported; declare concrete project inputs`)
       if (literal) {
         if (await (deps.ignoredInput ?? ignoredInput)(root, input)) fail(`ignored directory input ${input} is unsupported; declare concrete input files`)
-        literals.push({ path: input, directory: true, mode: info.mode & 0o777 })
+        literals.push({ path: input, directory: true, mode: 0o755 })
       }
     } else if (literal) {
       if (!info.isFile()) fail(`input ${input} must be a regular file or project directory`)
-      literals.push({ path: input, target: path.relative(root, target), mode: info.mode & 0o777, hash: digest(await read(target)) })
+      literals.push({ path: input, target: path.relative(root, target), mode: gitMode(info.mode), hash: digest(await read(target)) })
     }
   }
   return literals
