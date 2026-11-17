@@ -61,7 +61,7 @@ hostManaged 실행기에서는 초기화·active·보고서 생성/종료·묶�
 
 ## 3. 맡김 규칙
 실행 중 질문은 0회이며 **되돌릴 수 있는 기획·기술 판단도 위임받은 것**이다. "사용자 의사결정 필요"만으로 blocked·parked·마감하지 않는다. 스킬이 만든 질문은 해당 스킬에서 추천안으로 결정하고 inbox decided에 질문·선택·대안·이유를 남긴다(`vibe inbox add --kind decided|parked --ref <ID> --text '<줄>'` 한 번 호출, 따옴표·`|`가 섞이면 `--file`). SSOT에는 일반 [o]만 쓴다. 공백·모순은 gusta-update-ssot+gusta-create-task 한 조각으로 해소하고 태스크·STATE의 base·dep·st를 맞춰 다음 단위에서 재개한다.
-- 문서 마감·결과 수정·커밋 잔여·단위 시간 소진은 외부 의존성이 아니다. 시작 대화/호스트의 기존 이어받기 경로로 같은 tag·원래 마감 안에서 끝내며, `blocked`에는 실제 외부 의존성과 재개 조건을 적는다. 전체 예산 소진은 그 한도로 보고한다.
+- 문서 마감·결과 수정·커밋 잔여·재검사·단위 시간 소진은 외부 의존성이 아니다. 단위는 남은 일을 `continue`(next에 남은 일)로 넘기고 호스트가 같은 tag·원래 마감 안에서 이어받는다. `blocked`는 실제 외부 의존성과 재개 조건(`blocker`)이 있을 때만이다. 전체 예산 소진은 그 한도로 보고한다.
 - 사용자가 중단·먼저 반영·보고 등 새 지시를 주면 기본 계획을 재평가한다. [제어 계약](references/loop-control.md)으로 소유한 실행을 취소하고 하위 검사 정리를 확인한 뒤 지시를 처리한다. 남은 검사를 자동 재개하지 않으며, 명시한 검증 예외·미완료 검사를 정확히 보고하고 하드 관문·권한은 우회하지 않는다.
 - 이미 승인된 후속 작업이 CI를 막으면 실제 선행 결과·touches·진행 중 소유권을 확인하고 미착수 태스크의 순서를 조정한다. 태스크와 STATE의 dep을 함께 갱신한다. 완료기준을 낮추거나 검사를 빼서 통과시키지 않는다.
 - 과금·데이터 삭제·개인정보·보안 정책은 [?]+parked. 배포·게시·force push·브랜치 삭제·전역 설정·외부 메시지·공유 데이터 변경 등 되돌리기 어려운 일, 실제 권한·인증 부재도 해당 작업만 parked로 남기고 다른 실행 가능한 태스크로 간다.
@@ -85,5 +85,5 @@ hostManaged 실행기에서는 초기화·active·보고서 생성/종료·묶�
 ## 5. 마감
 측정을 시작한 최상위 대화는 [사용량 보고](references/usage.md)로 Markdown 파일을 저장하고 최종 **채팅**에 summary·reportFile 링크를 전달한다(할 일 없음·실패·주차도 동일, JSON artifact만으로 끝내지 않음).
 단위1은 다음 단위로 넘어가지 않고 JSON 한 줄(호스트가 요구하면 스키마 결과):
-`{"kind":"task","id":"T001","outcome":"completed","pushed":false,"next":"implementation","agentChecks":[]}`
-kind=task|planning|inbox|fix|none, outcome=completed|parked|blocked|no_work. agentChecks는 실제 AC 목록이며 없으면 빈 배열이다. stage unit|integration·owner·required·정확한 candidate SHA와 관찰/미실행 근거는 [검증 계약](references/verification.md)을 따른다. pushed는 실제 여부. 시작 대화는 종료 영수증의 agent acceptance를 기존 보고서 checks에 모으고 최종 채팅에 수행/실패/미실행을 요약한다. 기준에서 빠진 시나리오나 잘못된 기대가 있는지 사용자에게 확인을 요청하되 수동 QA를 떠넘기거나 답을 기다리며 맡김을 멈추지 않는다. 종료 영수증을 받아 사용자 목표의 완료 또는 실제 중단 사유를 확인한 뒤 보고한다: 검증 실패/시도 횟수·남은 수정 태스크·push 여부·원격 SHA·보고서. 자동 통지 연결 여부도 실행 전에 밝힌다. 종료 뒤 돌아오는 사용자는 새 대화에서 `/gusta-start`로 이어갈 수 있다 — 상태는 보고서·결정함·loop.json에 남긴다.
+`{"kind":"task","id":"T001","outcome":"completed","pushed":false,"next":"implementation","blocker":{"dependency":"","resume":""},"agentChecks":[]}`
+kind=task|planning|inbox|fix|none, outcome=completed|continue|parked|blocked|no_work. continue는 다음 단위가 이어받고, blocker는 blocked일 때만 채운다(없으면 호스트가 같은 세션에 되돌린다). agentChecks는 실제 AC 목록이며 없으면 빈 배열이다. stage unit|integration·owner·required·정확한 candidate SHA와 관찰/미실행 근거는 [검증 계약](references/verification.md)을 따른다. pushed는 실제 여부. 시작 대화는 종료 영수증의 agent acceptance를 기존 보고서 checks에 모으고 최종 채팅에 수행/실패/미실행을 요약한다. 기준에서 빠진 시나리오나 잘못된 기대가 있는지 사용자에게 확인을 요청하되 수동 QA를 떠넘기거나 답을 기다리며 맡김을 멈추지 않는다. 종료 영수증을 받아 사용자 목표의 완료 또는 실제 중단 사유를 확인한 뒤 보고한다: 검증 실패/시도 횟수·남은 수정 태스크·push 여부·원격 SHA·보고서. 자동 통지 연결 여부도 실행 전에 밝힌다. 종료 뒤 돌아오는 사용자는 새 대화에서 `/gusta-start`로 이어갈 수 있다 — 상태는 보고서·결정함·loop.json에 남긴다.

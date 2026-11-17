@@ -270,3 +270,59 @@ test('a hand-closed task from before the run gets one repair unit first; a corre
   assert.deepEqual(jobs, [['T002', 'spec-gate'], ['T001', null], ['T003', null]])
   assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'no-work')
 })
+
+// A unit that ended blocked with uncommitted work used to stop the run (and every restart) on a dirty
+// tree. Whatever a unit leaves is now its snapshot; continue hands the rest to a fresh unit.
+test('units that end continue or blocked with uncommitted work hand it on as a snapshot; the run never stops on it', async (t) => {
+  const { root } = await fixture(t)
+  const jobs = []
+  const result = await vibeLoop({ ...opts(root), maxUnits: 10 }, { preflight: passed, ...published(),
+    execute: async (options, job) => {
+      const id = job.brief?.taskId
+      jobs.push({ id, recovery: job.recovery, clean: await git(root, 'status', '--porcelain') === '' })
+      if (jobs.length === 1) {
+        await writeFile(path.join(root, 'app.js'), '// T001 implemented, typecheck to rerun\n')
+        return { exitCode: 0, result: { kind: 'task', id, outcome: 'continue', pushed: false, next: 'rerun the typecheck, then close' } }
+      }
+      if (jobs.length === 3) {
+        await mkdir(path.join(root, 'notes'), { recursive: true }); await writeFile(path.join(root, 'notes/T002.txt'), 'measured\n')
+        return { exitCode: 0, result: { kind: 'task', id, outcome: 'blocked', pushed: false, next: 'wait for access', blocker: { dependency: 'staging credentials', resume: 'the owner grants access' } } }
+      }
+      return completeTask(root, id)
+    },
+  })
+  assert.equal(result.ok, true, result.error); assert.equal(result.reason, 'no-work')
+  assert.deepEqual(jobs.map(({ id, recovery }) => `${id}:${recovery?.reason ?? '-'}`), ['T001:-', 'T001:interrupted', 'T002:-', 'T002:blocked-task', 'T003:-'])
+  assert.ok(jobs.every((job) => job.clean), 'every unit starts from a clean tree')
+  assert.deepEqual([jobs[1].recovery.cause, jobs[1].recovery.next, jobs[1].recovery.snapshot.files], ['continue', 'rerun the typecheck, then close', ['app.js']])
+  assert.match(recoveryText(jobs[1].recovery), /It said what remains: rerun the typecheck, then close/)
+  assert.deepEqual(jobs[3].recovery.snapshot.files, ['notes/T002.txt'])
+  assert.match(recoveryText(jobs[3].recovery), /The blocked unit named: staging credentials; resume when the owner grants access\./)
+  const events = await readFile(path.join(path.dirname(result.manifest), 'events.jsonl'), 'utf8')
+  assert.doesNotMatch(events, /"type":"failed"/); assert.match(events, /"type":"unit-leftover"/)
+  assert.match(await readFile(path.join(root, result.report), 'utf8'), /T001: continue · uncommitted work → refs\/gusta\/units\/t060\//)
+  assert.equal(await git(root, 'status', '--porcelain'), '')
+})
+
+test('a dirty tree the previous run of the tag left after its last unit is adopted as that unit\'s snapshot; other changes are refused', async (t) => {
+  const { root } = await fixture(t)
+  const idle = async (options, job) => ({ exitCode: 0, result: { kind: 'task', id: job.brief.taskId, outcome: 'continue', pushed: false, next: 'implement it' } })
+  const first = await vibeLoop({ ...opts(root), maxUnits: 1 }, { preflight: passed, ...published(), execute: idle })
+  assert.equal(first.reason, 'max-units')
+  // What an older host left behind: the unit's work, still uncommitted after the run closed its report.
+  await writeFile(path.join(root, 'app.js'), '// half of T001\n')
+  const seen = []
+  const second = await vibeLoop({ ...opts(root), maxUnits: 1 }, { preflight: passed, ...published(),
+    execute: async (options, job) => { seen.push({ recovery: job.recovery, clean: await git(root, 'status', '--porcelain') === '' }); return completeTask(root, job.brief.taskId) },
+  })
+  assert.equal(second.ok, true, second.error)
+  assert.deepEqual([seen.length, seen[0].clean, seen[0].recovery.taskId, seen[0].recovery.snapshot.files], [1, true, 'T001', ['app.js']])
+  assert.match(seen[0].recovery.snapshot.ref, /^refs\/gusta\/units\/t060\/\S+-adopted$/)
+  assert.match(await readFile(path.join(path.dirname(second.manifest), 'events.jsonl'), 'utf8'), /"type":"leftover-adopted"/)
+  // A commit since that unit (not the run's report) means the changes may be anyone's: still refused.
+  await writeFile(path.join(root, 'README.md'), 'moved on\n'); await git(root, 'add', 'README.md'); await git(root, 'commit', '-q', '-m', 'outside change')
+  await writeFile(path.join(root, 'app.js'), '// someone else\n')
+  const third = await vibeLoop({ ...opts(root), maxUnits: 1 }, { preflight: passed, ...published(), execute: () => assert.fail('no unit') })
+  assert.equal(third.ok, false); assert.match(third.error, /미커밋 변경을 보존/)
+  assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), '// someone else\n')
+})

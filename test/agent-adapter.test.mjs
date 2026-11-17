@@ -510,3 +510,35 @@ test('a request planning unit carries the request and points at request.md under
   assert.ok(prompt.includes(`${AGENT_CONFIG.codex.root}/gusta-start/references/request.md`))
   assert.doesNotMatch(prompt, /gusta-implement-task skill \(already loaded\)/)
 })
+
+// A unit once ended "blocked" on its own unfinished work (a check to rerun, a host-owned review):
+// blocked now names an outside dependency and when to resume, and continue hands work on.
+test('unit results: continue is an outcome, blocked needs blocker.dependency and blocker.resume', async () => {
+  const { validateAgentResult, RESULT_SCHEMAS } = await import('../src/agent-adapter.mjs')
+  const unit = { kind: 'task', id: 'T001', pushed: false, next: 'rerun the typecheck' }
+  assert.ok(RESULT_SCHEMAS.unit.properties.outcome.enum.includes('continue'))
+  assert.ok(RESULT_SCHEMAS.unit.required.includes('blocker'))
+  assert.equal(validateAgentResult('unit', { ...unit, outcome: 'continue', blocker: { dependency: '', resume: '' } }).outcome, 'continue')
+  assert.equal(validateAgentResult('unit', { ...unit, outcome: 'completed', blocker: { dependency: '', resume: '' } }).blocker, undefined)
+  for (const blocker of [undefined, { dependency: '', resume: '' }, { dependency: 'staging access', resume: ' ' }]) {
+    assert.throws(() => validateAgentResult('unit', { ...unit, outcome: 'blocked', blocker }), (error) => error.work === true && /외부 의존성과 재개 조건/.test(error.message) && /integration stage is never one/.test(error.message))
+  }
+  assert.deepEqual(validateAgentResult('unit', { ...unit, outcome: 'blocked', blocker: { dependency: ' staging access ', resume: 'the owner grants it' } }).blocker, { dependency: 'staging access', resume: 'the owner grants it' })
+})
+
+test('a blocked unit with no outside dependency goes back to the same session to work; still blocked, it continues', async (t) => {
+  // First answer: blocked with nothing outside. Resumed: completed (or, second fixture, blocked again).
+  const body = (resumed) => `const fs=require('node:fs');let text='';process.stdin.on('data',c=>text+=c);process.stdin.on('end',()=>{const args=process.argv.slice(2);fs.appendFileSync('calls.jsonl',JSON.stringify({args,text})+'\\n');const again=args.includes('--resume');console.log(JSON.stringify({type:'result',is_error:false,structured_output:{kind:'task',id:'T001',outcome:again?'${resumed}':'blocked',pushed:false,next:'rerun the typecheck',blocker:{dependency:'',resume:''},agentChecks:[]}}));});`
+  const fixture = await stub(t, 'claude', body('completed'))
+  const result = await executeAgentAdapter({ provider: 'claude', job: { role: 'unit', workspace: fixture.root, tag: 't062' }, env: fixture.env, log: () => {} })
+  assert.equal(result.outcome, 'completed'); assert.match(result.repaired, /외부 의존성과 재개 조건/)
+  const calls = (await readFile(path.join(fixture.root, 'calls.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+  assert.equal(calls.length, 2)
+  assert.equal(flag(calls[1].args, '--resume'), flag(calls[0].args, '--session-id'))
+  assert.match(calls[1].text, /host rejected outcome blocked.*Carry on in this workspace/s)
+  assert.doesNotMatch(calls[1].text, /do not edit files/)
+  assert.match(calls[0].text, /continue when you stop with work left/)
+  const stuck = await stub(t, 'claude', body('blocked'))
+  const kept = await executeAgentAdapter({ provider: 'claude', job: { role: 'unit', workspace: stuck.root, tag: 't062' }, env: stuck.env, log: () => {} })
+  assert.deepEqual([kept.outcome, kept.next], ['continue', 'rerun the typecheck'])
+})

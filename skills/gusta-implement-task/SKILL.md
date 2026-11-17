@@ -45,5 +45,5 @@ explore는 시작 시각·timebox를 기록하고 측정값을 result에 보존�
 - `lint` 오류·경고는 고친다. reviewHints는 의미 검토 후보라 자동 수정하지 않고 next의 gusta-doc-review 또는 result limits로 넘긴다.
 
 ## 5. 마감
-단독 태스크는 acceptance 체크(충족은 `[v]`; `[x]`는 SSOT 기각 표기라 쓰지 않는다)와 result `- outcome:` / `- at:` 검증 SHA / `- verified:` 실제 검사 / `- limits:` 한계 또는 `-` 네 줄과 agent acceptance 증거/미실행 인계를 쓰고 `vibe task done T### --tag <tag> [--at <sha>]`로 마감한다(아카이브·STATE·next·log·unlanded는 CLI, 미체크·빈 result·다른 tag는 거절). 이후에도 지킬 계약은 result에 묻지 말고 gusta-update-ssot로 올린다. 태스크마다 출력 files와 관련 파일만 커밋하며 push·보고서는 gusta-start/호스트의 묶음 경계를 따른다. gusta-start 밖 커밋은 요청받았을 때만 한다.
+단독 태스크는 acceptance 체크(충족은 `[v]`; `[x]`는 SSOT 기각 표기라 쓰지 않는다)와 result `- outcome:` / `- at:` 검증 SHA / `- verified:` 실제 검사 / `- limits:` 한계 또는 `-` 네 줄과 agent acceptance 증거/미실행 인계를 쓰고 `vibe task done T### --tag <tag> [--at <sha>]`로 마감한다(아카이브·STATE·next·log·unlanded는 CLI, 미체크·빈 result·다른 tag는 거절). owner가 host이거나 stage가 integration인 AC는 단위가 끝낼 일이 아니다 — not-run·이유·담당자로 인계하고 마감하며 그것으로 blocked하지 않는다(관찰 pass를 done 조건으로 쓴 acceptance는 맡김이면 gusta-create-task로 인계 기준으로 고치고 inbox decided). 이후에도 지킬 계약은 result에 묻지 말고 gusta-update-ssot로 올린다. 태스크마다 출력 files와 관련 파일만 커밋하며 push·보고서는 gusta-start/호스트의 묶음 경계를 따른다. gusta-start 밖 커밋은 요청받았을 때만 한다.
 작업 묶음 워커는 acceptance 체크·result·코드만 갱신하고 제출한다. STATE·SSOT·st·아카이브는 CLI/기획 공간이 소유한다.

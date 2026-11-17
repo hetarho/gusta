@@ -210,7 +210,12 @@ export async function executeVibeUnit(options, job, directory, limits = {}) {
         let result = null, usage = null
         if (code === 0 && !stopped) {
           try {
-            const parsed = JSON.parse(output.trim().split('\n').at(-1)); result = validateAgentResult('unit', parsed); usage = compactUsage(parsed.usage)
+            const parsed = JSON.parse(output.trim().split('\n').at(-1)); usage = compactUsage(parsed.usage)
+            // A command adapter's blocked with no outside dependency cannot be sent back: it is unfinished work.
+            try { result = validateAgentResult('unit', parsed) } catch (rejected) {
+              if (!rejected.work) throw rejected
+              result = { ...validateAgentResult('unit', { ...parsed, outcome: 'continue' }), repaired: rejected.message }
+            }
             // What the adapter repaired or converted stays visible in the receipt and report.
             if (Array.isArray(parsed.agentCheckIssues) && parsed.agentCheckIssues.length) result.agentCheckIssues = parsed.agentCheckIssues
             if (typeof parsed.repaired === 'string') result.repaired = parsed.repaired
@@ -240,7 +245,8 @@ export async function executeVibeUnit(options, job, directory, limits = {}) {
 
 export async function vibeLoop(options = {}, injected = {}) {
   if (!SESSION_TAG.test(options.tag ?? '')) throw new SkillPackageError('--tag에는 영숫자 2-8자가 필요합니다.')
-  const control = ['stop', 'stopAfterUnit', 'configure', 'status', 'recoverMetadata'].filter((name) => options[name])
+  // A wait is a read like --status: no session workspace, design check or agents needed.
+  const control = ['stop', 'stopAfterUnit', 'configure', 'status', 'recoverMetadata', 'waitEvent'].filter((name) => options[name])
   if (control.length > 1) throw new SkillPackageError('loop 제어 동작은 하나만 지정하세요.')
   if (control.length && (options.dryRun || options.detach)) throw new SkillPackageError('실행 중 제어에는 --dry-run 또는 --detach를 함께 쓰지 않습니다.')
   // Without --provider the CLI routes each unit by its task's run: within SETTINGS agents; an explicit
@@ -294,8 +300,12 @@ export async function vibeLoop(options = {}, injected = {}) {
   const signedOut = []
   const heldLimits = async () => activeLimits(await readLimits(context.runtime), deps.now())
   const routeFor = async (status, id, recovering = false, { blocked = null, extra = [] } = {}) => routeAgent({ role: 'worker', recommended: runOf(status, id), recovery: recovering, agents, catalog: await loadCatalog(), explicit,
-    blocked: [...(blocked ?? [...limitBlocks(await heldLimits()), ...signedOut]), ...extra] })
+    blocked: [...(blocked ?? [...limitBlocks(await heldLimits()), ...signedOut]), ...extra], avoid: stalled.get(id) ?? [] })
   const previous = await readJSON(manifest)
+  // Per task, the routes whose units ended it unfinished with nothing to show (no commit, no newly
+  // checked acceptance): its next unit runs elsewhere. A restart of the same tag keeps them.
+  const stalled = new Map(Object.entries(previous?.stalled ?? {}).filter(([id, routes]) => TASK_ID.test(id) && Array.isArray(routes) && routes.every((route) => typeof route?.tool === 'string')))
+  const escalations = new Map()
   if (control.length && previous?.cwd !== root && context.workspace.git.worktrees.some((entry) => entry.path === previous?.cwd)) {
     const holder = await inspectWorkspace({ targetRoot: previous.cwd })
     const owner = await readJSON(path.join(holder.git.gitDir, 'gusta-session.json'))
@@ -401,6 +411,8 @@ export async function vibeLoop(options = {}, injected = {}) {
     const config = path.join(directory, `config-${randomUUID()}.json`)
     await writeFile(config, JSON.stringify({ ...options, targetRoot: root, detach: false, runId }), { mode: 0o600 })
     const logPath = path.join(directory, 'host.log'), log = await open(logPath, 'a')
+    // Where this run's events start: a host waits with --run <runId> --after <cursor>.
+    const cursor = (await readFile(path.join(directory, 'events.jsonl'), 'utf8').catch(() => '')).split('\n').filter(Boolean).length
     try {
       const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/gusta-vibe-loop.mjs', import.meta.url)), config], { cwd: root, detached: true, stdio: ['ignore', log.fd, log.fd], env: options.env ?? process.env })
       await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
@@ -408,7 +420,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       const readyUntil = Date.now() + 10000
       while (Date.now() < readyUntil) {
         const ready = await readJSON(manifest)
-        if (ready?.runId === runId) return { ...plan, limits: ready.limits, deadline: ready.deadline, workDeadline: ready.workDeadline, reserve: ready.reserve, ok: true, detached: true, runId, pid: child.pid, ready: true, status: ready.status, log: logPath }
+        if (ready?.runId === runId) return { ...plan, limits: ready.limits, deadline: ready.deadline, workDeadline: ready.workDeadline, reserve: ready.reserve, ok: true, detached: true, runId, cursor, pid: child.pid, ready: true, status: ready.status, log: logPath }
         if (child.exitCode !== null) throw new SkillPackageError('loop host failed before ownership acknowledgement', [logPath])
         await new Promise((resolve) => setTimeout(resolve, 50))
       }
@@ -531,7 +543,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const snapshot = () => ({ ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, pruned, publication, integration: integrationState, sessionWorkspace, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), refused: [...refused].map(([task, held]) => ({ task, ...held })), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, ...(requestDigest ? { request: { digest: requestDigest, planned: requestPlanned } } : {}), snapshots, usageLimits: limitHits, ...(limitWait ? { limitWait } : {}), reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), ...(landConflict ? { landConflict } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, publication, integration: integrationState, sessionWorkspace, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, stalled: Object.fromEntries(stalled), specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), refused: [...refused].map(([task, held]) => ({ task, ...held })), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, ...(requestDigest ? { request: { digest: requestDigest, planned: requestPlanned } } : {}), snapshots, usageLimits: limitHits, ...(limitWait ? { limitWait } : {}), reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), ...(landConflict ? { landConflict } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -724,6 +736,39 @@ export async function vibeLoop(options = {}, injected = {}) {
     await event('unit-leftover', { unit: count, task, cause, ref, files: files.length })
     return snapshot
   }
+  // Checked acceptance of a task file (open or archived) in the working tree: a unit's progress on it.
+  const acceptedOf = async (id) => {
+    if (!TASK_ID.test(id ?? '')) return 0
+    for (const folder of ['spec/tasks', 'spec/tasks/done']) {
+      const name = (await readdir(path.join(root, folder)).catch(() => [])).find((file) => file.startsWith(`${id}.`) && file.endsWith('.md'))
+      if (name) return ((await readFile(path.join(root, folder, name), 'utf8').catch(() => '')).match(/^\s*- \[v\]/gm) ?? []).length
+    }
+    return 0
+  }
+  // A dirty tree at start is never adopted, except what this tag's previous run left from its last
+  // unit (a host from before unit snapshots, or one stopped at that boundary): HEAD still matches that
+  // unit's end apart from the run's report. The work becomes that unit's snapshot for a continuation.
+  const adoptLeftover = async () => {
+    const last = previous?.dispatches?.findLast?.((entry) => entry.head)
+    if (!last?.head || !TASK_ID.test(last.task ?? '') || !inScope(last.task) || typeof previous.report !== 'string') return null
+    const dirty = (await git(root, ['status', '--porcelain', '-z', '--untracked-files=all'])).split('\0').filter(Boolean).map((entry) => entry.slice(3))
+    if (dirty.includes(previous.report)) return null
+    const moved = await git(root, ['diff', '--name-only', last.head, 'HEAD']).catch(() => null)
+    if (moved === null || moved.split('\n').some((file) => file && file !== previous.report)) return null
+    const leftover = await keepLeftover(last.task, 'previous-run', '-adopted')
+    if (!leftover) return null
+    const snapshot = { ref: leftover.ref, commit: leftover.commit, base: leftover.base, files: leftover.files, fileCount: leftover.fileCount }
+    if (recovery?.taskId === last.task) recovery = { ...recovery, snapshot }
+    else {
+      const rung = { ...(ladder.get(last.task) ?? { cuts: 0, split: false }) }
+      rung.cuts++
+      ladder.set(last.task, rung)
+      recovery = { reason: nextRung(rung) === 'park' ? 'interrupted' : nextRung(rung), cause: 'previous-run', taskId: last.task, cuts: rung.cuts, split: rung.split, snapshot }
+    }
+    priorityTask = last.task
+    await event('leftover-adopted', { task: last.task, ref: leftover.ref, files: leftover.fileCount, from: previous.runId ?? null })
+    return leftover
+  }
   // The last rung: a task still unfinished after a continuation and a split waits for the owner.
   // why replaces that reason for other repeated failures (a spec close that failed its repair).
   const parkTask = async (id, snapshot, why = null) => {
@@ -913,7 +958,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     await event('started', { notification: plan.notification, deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString() })
     if (!options.notifyCommand) process.stderr.write(`vibe loop ${options.tag}: user notification unavailable; parent must await this run or read ${plan.notification.terminalEvent}\n`)
     // Never adopt pre-existing source, SSOT, STATE, report or index changes.
-    if ((await git(root, ['status', '--porcelain'])).trim()) throw new SkillPackageError('loop 시작 전 미커밋 변경을 보존합니다. 먼저 정리하세요.')
+    if ((await git(root, ['status', '--porcelain'])).trim() && !await adoptLeftover()) throw new SkillPackageError('loop 시작 전 미커밋 변경을 보존합니다. 먼저 정리하세요.')
     const allowTool = [...new Set(['Bash(git *)', `Bash(${process.execPath} ${cli} *)`, ...(options.allowTool ?? [])])]
     const probe = options.probe ?? `git status --porcelain${context.target ? ` && git push --dry-run ${quote(context.remote)} ${quote(`HEAD:refs/heads/${context.target}`)}` : ''}`
     const preflight = await deps.preflight({ ...options, permissionMode: mode, targetRoot: root, signal: controller.signal, probe, allowTool, probeWorkspace: 'current', probeTimeoutMs: Math.min(Number(options.probeTimeoutMs ?? 900000), Math.max(1, deadline - deps.now())) }, { catalog: loadCatalog, blocked: async () => limitBlocks(await heldLimits()) })
@@ -1084,10 +1129,18 @@ export async function vibeLoop(options = {}, injected = {}) {
         await save()
         continue
       }
+      // A unit moved off the routes that stalled on this task: the owner sees the choice once as decided.
+      const from = routed.source === 'escalated' ? (stalled.get(selected) ?? []).map(runLabel).join(', ') : null
+      if (from && escalations.get(selected) !== `${from} → ${runLabel(route)}`) {
+        escalations.set(selected, `${from} → ${runLabel(route)}`)
+        await event('route-escalated', { unit: count + 1, task: selected, from, to: runLabel(route) })
+        await deps.inbox({ targetRoot: root, step: 'add', tag: options.tag, kind: 'decided', ref: [selected], text: `${selected} runs on ${runLabel(route)} instead of ${from}: the last unit there ended it unfinished with no commit or newly checked acceptance (alt: the same route again)` })
+          .catch((caught) => event('inbox-error', { error: caught.message }))
+      }
       const inboxLines = async () => (await inboxNow()).map((entry) => entry.line)
       // One read of the coordination branch serves the unit's "before" and its brief's inbox.
       const seen = await coordNow()
-      const before = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(stateFile, 'utf8'), inbox: inboxEntries(seen.doc.inbox).map((entry) => entry.line) }
+      const before = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(stateFile, 'utf8'), inbox: inboxEntries(seen.doc.inbox).map((entry) => entry.line), accepted: await acceptedOf(selected) }
       await metadata.assertClean()
       const coordination = { branch: seen.branch, commit: seen.commit, inbox: seen.sessions.inbox, ...(seen.error ? { error: seen.error } : {}) }
       // A hand-closed task may have no file left to brief; its repair works from the violations.
@@ -1166,14 +1219,27 @@ export async function vibeLoop(options = {}, injected = {}) {
       }
       if (requeue) { await save(); continue }
       count++
-      const after = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(stateFile, 'utf8'), inbox: await inboxLines() }
+      const after = { head: (await git(root, ['rev-parse', 'HEAD'])).trim(), state: await readFile(stateFile, 'utf8'), inbox: await inboxLines(), accepted: await acceptedOf(selected) }
       const cut = CUT.has(receipt.stopped)
       const failed = receipt.exitCode !== 0 || !receipt.result
       const taskId = selected || receipt.result?.id || null
-      // Only an unfinished unit's changes are presumed its own attempt and kept aside. A user stop
-      // leaves the tree for the user; changes after a unit that reported success may be the owner's,
-      // so they stay in place and stop the run (the boundary's assertClean).
-      const leftover = failed && (cut || !receipt.stopped) ? await keepLeftover(taskId, receipt.stopped ?? 'failed') : null
+      // continue: the unit worked and left the rest to a fresh unit, like a cut (not a blocker).
+      const continuing = !failed && receipt.result.outcome === 'continue'
+      // What a unit leaves uncommitted is its own attempt, whatever its outcome: it is kept aside as a
+      // snapshot (a local ref, nothing lost, never published) so the next unit starts clean and a
+      // continuation can restore it. A stop (the user's, the deadline's) leaves the tree as it is, and so
+      // does a unit that wrote the host's report: that breaks metadata ownership and stops the run.
+      const ownReport = Boolean((await git(root, ['status', '--porcelain', '--', report])).trim())
+      const leftover = !ownReport && (!receipt.stopped || cut) ? await keepLeftover(taskId, receipt.stopped ?? (failed ? 'failed' : receipt.result.outcome)) : null
+      // A unit that ended its task unfinished with no commit and no newly checked acceptance made no
+      // progress on it: the next unit for that task runs on another tool or a higher tier (routeFor avoid).
+      const unfinished = failed || ['blocked', 'continue'].includes(receipt.result.outcome)
+      // Only checked acceptance or the task's close clears that: a planning recovery's commit does not
+      // show the implementation route works, and a unit that commits but is unfinished keeps its route.
+      if (TASK_ID.test(selected ?? '')) {
+        if (unfinished && before.head === after.head && after.accepted <= before.accepted) stalled.set(selected, [...(stalled.get(selected) ?? []).filter((entry) => runLabel(entry) !== runLabel(route)), route])
+        else if (after.accepted > before.accepted || (!failed && receipt.result.outcome === 'completed' && ['task', 'fix'].includes(receipt.result.kind))) stalled.delete(selected)
+      }
       const moved = limitNotes.get(selected)
       limitNotes.delete(selected)
       const entry = { ...receipt, unit: count, task: taskId, route, head: after.head, at: new Date(deps.now()).toISOString(), ms: deps.now() - unitStart, ...(leftover ? { leftover: { ref: leftover.ref, files: leftover.fileCount } } : {}), ...(moved ? { fallback: moved } : {}) }
@@ -1185,7 +1251,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (!failed && dispatched?.reason === 'request') {
         // The request is planned (or parked): its scope is the tasks that unit added to STATE and the
         // unfinished tasks they wait on. A blocked planning unit is a failed attempt at the same request.
-        if (receipt.result.outcome !== 'blocked') {
+        if (!['blocked', 'continue'].includes(receipt.result.outcome)) {
           requestPlanned = true
           const rows = (text) => tableRows(sections(text).get('tasks') ?? []).filter((row) => TASK_ID.test(row[0] ?? ''))
           const known = new Set(rows(before.state).map((row) => row[0])), current = rows(after.state)
@@ -1195,11 +1261,11 @@ export async function vibeLoop(options = {}, injected = {}) {
           await event('request-planned', { unit: count, tasks: [...scope] })
         }
       }
-      if (!failed) {
+      if (!failed && !continuing) {
         // A unit owns planning as well as implementation. Give a blocked task a
         // fresh planning unit even if its STATE row is no longer runnable.
         recovery = receipt.result.outcome === 'blocked' && /^T\d+$/.test(taskId ?? '')
-          ? { reason: 'blocked-task', taskId, previousResult: receipt.result } : null
+          ? { reason: 'blocked-task', taskId, previousResult: receipt.result, ...(leftover ? { snapshot: kept(leftover) } : {}) } : null
         if (recovery) priorityTask = taskId
         if (receipt.result.outcome === 'parked' && taskId === priorityTask) priorityTask = null
         // A completed split narrows the task: its count restarts, and it is not split again.
@@ -1219,12 +1285,13 @@ export async function vibeLoop(options = {}, injected = {}) {
             specRejected.set(id, entry.specGate.violations)
             recovery = await specFailed(id, entry.specGate.violations)
             if (!recovery) entry.parked = true
+            else if (leftover) recovery.snapshot = kept(leftover)
           } else {
             specRejected.delete(id)
             for (const snapshot of snapshots) if (snapshot.task === id && snapshot.handed && !snapshot.dropped) { await git(root, ['update-ref', '-d', snapshot.ref]); snapshot.dropped = true }
           }
         }
-      } else if ((cut || leftover) && /^T\d+$/.test(taskId ?? '')) {
+      } else if ((cut || leftover || continuing) && /^T\d+$/.test(taskId ?? '')) {
         // An unfinished unit is work for the next fresh unit, not the end of the run.
         const rung = { ...(ladder.get(taskId) ?? { cuts: 0, split: false }) }
         rung.cuts++
@@ -1236,7 +1303,7 @@ export async function vibeLoop(options = {}, injected = {}) {
           entry.parked = true; recovery = null
           if (priorityTask === taskId) priorityTask = null
         } else {
-          recovery = { reason: step, cause: receipt.stopped ?? 'failed', taskId, cuts: rung.cuts, split: rung.split, ...(snapshot ? { snapshot } : {}) }
+          recovery = { reason: step, cause: receipt.stopped ?? (continuing ? 'continue' : 'failed'), taskId, cuts: rung.cuts, split: rung.split, ...(snapshot ? { snapshot } : {}), ...(continuing && receipt.result.next ? { next: receipt.result.next } : {}) }
           priorityTask = taskId
         }
       }

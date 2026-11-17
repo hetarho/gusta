@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, open } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
@@ -7,7 +8,7 @@ import { git } from './workspace.mjs'
 import { vibeSession } from './vibe-session.mjs'
 import { coordView, recordLanded } from './vibe-coord.mjs'
 import { readSetting } from './settings.mjs'
-import { openIntegration, participantSummary } from './integration-gate.mjs'
+import { openIntegration, participantSummary, gateExpired, hostName } from './integration-gate.mjs'
 import { readVerification } from './vibe-brief.mjs'
 import { runVibeCheck } from './vibe-check.mjs'
 import { bumpGate, versionBump } from './version-bump.mjs'
@@ -19,11 +20,45 @@ import { prepareSessionWorkspace } from './session-workspace.mjs'
 import { prepareWorkspace } from './workspace-prepare.mjs'
 
 const execute = promisify(execFile)
-// A failed gate's next step: an environment failure is fixed in the environment, not in code.
-const failedNext = (gate) => (gate.checks ?? []).some((entry) => entry.environment)
-  ? 'The candidate environment failed (ARCH prepare, or a command not found): fix the environment or the prepare command there — not the implementation — commit (an empty commit when no file changed keeps every cached success), then vibe integration repair --token <token> --target <candidate worktree>. The same deadline and cohort remain.'
-  : 'Repair only failed/affected inputs in the candidate worktree, commit, then vibe integration repair --token <token> --target <candidate worktree>. The same deadline and cohort remain.'
+// A failed gate's next step: an environment failure is fixed in the environment, not in code. A cause
+// the cohort cannot fix releases the gate instead of holding every later integration.
+const failedNext = (gate) => {
+  const failed = (gate.checks ?? []).filter((entry) => !entry.ok), environment = failed.some((entry) => entry.environment)
+  const repair = `then vibe integration repair --token ${gate.token} --target ${gate.path ?? '<candidate worktree>'}. The same deadline and cohort remain.`
+  return `${environment ? `The candidate environment failed (ARCH prepare, a command not found, or a missing script/package a command names): fix the environment or the prepare command there — not the implementation — commit (an empty commit when no file changed keeps every cached success), ${repair}${failed.every((entry) => entry.environment) ? '' : ' Repair other failed checks only in failed/affected inputs.'}`
+    : `Repair only failed/affected inputs in the candidate worktree, commit, ${repair}`} If this cohort cannot fix it (a participant command that runs only on its own device): vibe integration abandon --token ${gate.token} moves the gate to history (finish does so after the deadline), withdraw that participant, then finish again.`
+}
 const pending = (reason, gate, extra = {}) => ({ schemaVersion: 1, ok: false, waiting: true, reason, gate, automaticRecheck: false, ...extra })
+
+// A participant's --verify runs wherever the shared candidate is checked, on any device and in another
+// worktree. A path in one machine's home, temp directory or checkout (an npx cache, /tmp/<script>) is not
+// there: such a command is refused at submission and, recorded by an older version on another device, not run.
+// A slash-led word elsewhere (a pattern such as --grep=/api/) is a machine path only where it exists.
+const SYSTEM_PATH = /^\/(?:dev|usr|bin|sbin|etc|proc|sys)(?:\/|$)/
+const LOCAL_ROOT = /^(?:~|\$HOME|\$\{HOME\})(?:\/|$)|^\/(?:home|Users|root|tmp|private|var\/folders|var\/tmp)(?:\/|$)|^[A-Za-z]:[\\/]/
+export function machinePaths(command, { exists = () => false } = {}) {
+  const found = new Set()
+  for (const [, value] of String(command).matchAll(/(?:^|[\s'"=(<>|;&,])((?:~|\$HOME|\$\{HOME\})(?=[/\s'"]|$)[^\s'"`;|&<>()]*|\/(?!\/)[^\s'"`;|&<>()]+|[A-Za-z]:[\\/][^\s'"`;|&<>()]*)/g)) if (!SYSTEM_PATH.test(value) && (LOCAL_ROOT.test(value) || exists(value))) found.add(value)
+  return [...found]
+}
+
+// A command whose own script or named package is absent (Node's MODULE_NOT_FOUND for its entry, ENOENT
+// or "can't open file" for a file it names) failed for the environment, not the candidate's code. A module
+// missing inside the code it runs (an import in a test) is not this: that path is not in the command.
+export function targetMissing(command, output, root) {
+  const named = new Set(String(command).split(/[\s'"=]+/).filter(Boolean).flatMap((word) => [word, path.resolve(root, word.replace(/^~(?=\/|$)/, os.homedir()))]))
+  for (const [, missing] of String(output).matchAll(/(?:Cannot find (?:module|package) |ENOENT[^'\n]*|can't open file )'([^'\n]+)'/g)) if (named.has(missing) || named.has(path.resolve(root, missing))) return missing
+  return null
+}
+// The start of a failed check's log (where a missing entry is reported) and its last lines.
+async function failureOutput({ log, tail = [] }) {
+  let head = ''
+  if (log) {
+    const file = await open(log).catch(() => null)
+    if (file) try { const { buffer, bytesRead } = await file.read(Buffer.alloc(65536), 0, 65536, 0); head = buffer.toString('utf8', 0, bytesRead) } finally { await file.close() }
+  }
+  return `${head}\n${tail.join('\n')}`
+}
 
 export async function openSessionWorkspace(options = {}, injected = {}) {
   const prepared = await (injected.prepare ?? prepareSessionWorkspace)(options)
@@ -94,10 +129,12 @@ export async function finalizeIntegration(options = {}, injected = {}) {
   const status = await store.read()
   if (!status.ok) return { schemaVersion: 1, ...status }
   let gate = status.state.gate, created = false, repaired = false
+  // A failed gate past its deadline cannot be repaired: the claim below moves it to history (expired).
+  if (gate && !options.repair && gateExpired(gate)) gate = null
   if (!gate) {
     const ready = await store.ready({ tag: options.tag, ...(options.agentChecks === undefined ? {} : { agentChecks: validateAgentAcceptance(options.agentChecks) }), ...(options.verify === undefined ? {} : { verificationCommands: options.verify }) })
     if (!ready.ok) return { schemaVersion: 1, ...ready }
-    if (ready.value.alreadyLanded) return { schemaVersion: 1, ok: true, verified: true, alreadyLanded: true, landed: ready.value.landed, scope: ready.scope, pushed: null }
+    if (ready.value.alreadyLanded) return { schemaVersion: 1, ok: true, verified: !ready.value.reconciled, alreadyLanded: true, landed: ready.value.landed, scope: ready.scope, pushed: null }
     const peers = await (injected.view ?? coordView)(context, { tag: options.tag })
     if (peers.error || peers.sync?.error || peers.push?.backoff || context.remote && (peers.push?.unpublished || peers.push?.enabled === false)) return pending('coordination-unknown', null, { coordination: peers })
     const claimed = await store.claim({ tag: options.tag, active: peers.doc?.active ?? peers.active ?? [], deadline: options.deadline ?? new Date(Date.now() + Number(options.timeoutMs ?? 3600000)).toISOString() })
@@ -131,11 +168,16 @@ export async function finalizeIntegration(options = {}, injected = {}) {
     const close = await (injected.closeIssues ?? (async (root) => (await import('./vibe.mjs')).specCloseIssues(root)))(prepared.root)
     if (lint.errors.length || close.length) results.push({ ok: false, command: 'spec close', errors: [...lint.errors, ...close.map((entry) => `${entry.id}: ${entry.reason ?? entry.st}`)] })
     const commands = verification.plan ? verification.plan.checks.some((entry) => entry.tier === 'batch') ? [{ plan: verification.plan.source }] : [] : verification.batch.map((command) => ({ command }))
-    const ciCommands = [...verification.ci], normalize = (command) => command.trim().replace(/\s+/g, ' ')
+    const ciCommands = [...verification.ci], normalize = (command) => command.trim().replace(/\s+/g, ' '), notRun = [], here = hostName()
     for (const command of new Set(gate.cohort.flatMap((entry) => entry.verificationCommands ?? []))) {
       const inBatch = verification.batch.some((entry) => normalize(entry) === normalize(command))
       if (verification.ci.some((entry) => normalize(entry) === normalize(command)) && !inBatch) { if (!ciCommands.includes(command)) ciCommands.push(command); continue }
-      if (!inBatch) commands.push({ command })
+      if (inBatch) continue
+      // Recorded on other devices with their own paths: not run here, and reported as not run. Records
+      // from older versions carry only the host label.
+      const owners = gate.cohort.filter((entry) => entry.verificationCommands?.includes(command)), paths = machinePaths(command)
+      if (paths.length && owners.every((entry) => (entry.device ?? entry.host) && (entry.device ?? entry.host) !== here)) notRun.push({ command, reason: 'not-portable', paths, participants: owners.map(({ id, tag, host, device }) => ({ id, tag, device: device ?? host })) })
+      else commands.push({ command })
     }
     if (!commands.length && (!verification.declared || verification.partial)) results.push({ ok: false, command: 'verification policy', error: 'No declared batch coverage or explicit exclusion.' })
     const check = injected.check ?? runVibeCheck
@@ -147,13 +189,21 @@ export async function finalizeIntegration(options = {}, injected = {}) {
         // A tool the candidate does not have (the shell's 127) is the environment's: the rest of a
         // long gate would only fail the same way, so it stops here.
         const missing = receipt.exitCode === 127 || (receipt.checks ?? []).some((entry) => entry.exitCode === 127)
-        results.push({ command: command.command ?? `verification-plan:${command.plan}`, ...receipt, ...(missing ? { environment: true } : {}) })
+        // A script or package the command itself names is absent here: the environment's too, but the
+        // other commands still run.
+        let absent = null
+        if (!missing && !receipt.ok && !receipt.timedOut && !receipt.cancelled && !receipt.stale) {
+          for (const entry of receipt.checks ? receipt.checks.filter((item) => item.status === 'failed' && !item.timedOut && !item.stale) : [{ command: command.command, log: receipt.log, tail: receipt.tail }]) {
+            absent ??= entry.command ? targetMissing(entry.command, await failureOutput(entry), prepared.root) : null
+          }
+        }
+        results.push({ command: command.command ?? `verification-plan:${command.plan}`, ...receipt, ...(missing || absent ? { environment: true } : {}), ...(absent ? { missingTarget: absent } : {}) })
         if (missing) break
       } catch (error) { results.push({ ok: false, command: command.command ?? command.plan, error: error.message }) }
     }
     const actual = (await git(prepared.root, ['rev-parse', 'HEAD'])).trim()
     if (actual !== gate.candidate || (await git(prepared.root, ['status', '--porcelain', '--untracked-files=all'])).trim()) results.push({ ok: false, stale: true, command: 'immutable candidate', error: 'Candidate changed during verification.' })
-    const saved = await store.checked(gate.token, results, agentChecks, { ciCommands })
+    const saved = await store.checked(gate.token, results, agentChecks, { ciCommands, notRun })
     if (!saved.ok) return { schemaVersion: 1, ...saved }
     gate = saved.value.gate
     } catch (error) {
@@ -185,10 +235,13 @@ export async function finalizeIntegration(options = {}, injected = {}) {
   const held = Boolean(completed.value.held)
   return { schemaVersion: 1, ok: true, verified: true, gate: completed.value.gate, version: gate.version, landed: gate.candidate, pushed: context.remote && context.branches.push && !options.noPush ? gate.candidate : null, target: gate.land, scope: completed.scope, acceptance, ...settled,
     ...(held ? { held: true, nextAction: `Landed on the local ${gate.land} only (--no-push). The next vibe integration finish or vibe push publishes it as verified.` } : {}),
+    ...(gate.notRun?.length ? { notRun: gate.notRun } : {}),
     ...(gate.ciCommands?.length ? { ci: { ok: false, outcome: 'pending', commands: gate.ciCommands } } : {}) }
 }
 
 export async function vibeIntegration(options = {}, injected = {}) {
+  const machine = (options.verify ?? []).flatMap((command) => machinePaths(command, { exists: existsSync }))
+  if (machine.length) throw new SkillPackageError('--verify 명령에 이 기기에만 있는 경로가 있습니다. 공유 통합 후보는 다른 기기·worktree에서 검사하므로 저장소 기준 상대 경로나 PATH의 설치된 명령(예: gusta lint)으로 바꾸세요.', machine)
   const context = await vibeSession(options), store = await openIntegration(context, injected.store)
   if (options.step === 'status') return { schemaVersion: 1, ...await store.read() }
   if (options.step === 'close') return { schemaVersion: 1, ...await store.end({ tag: options.tag, reason: options.reason ?? 'session-closed' }) }
@@ -198,7 +251,15 @@ export async function vibeIntegration(options = {}, injected = {}) {
   }
   if (options.step === 'ready') {
     const value = options.file ? JSON.parse(await readFile(path.resolve(options.file), 'utf8')) : options.agentChecks
-    return { schemaVersion: 1, ...await store.ready({ tag: options.tag, ...(value === undefined ? {} : { agentChecks: validateAgentAcceptance(Array.isArray(value) ? value : value.checks) }) }) }
+    return { schemaVersion: 1, ...await store.ready({ tag: options.tag, ...(value === undefined ? {} : { agentChecks: validateAgentAcceptance(Array.isArray(value) ? value : value.checks) }), ...(options.verify === undefined ? {} : { verificationCommands: options.verify }) }) }
+  }
+  if (options.step === 'abandon') {
+    if (!options.token) throw new SkillPackageError('vibe integration abandon --token <token> (vibe integration status의 gate.token) [--reason <text>]')
+    const released = await store.abandon({ token: options.token, ...(options.reason ? { reason: options.reason } : {}) })
+    if (!released.ok) return { schemaVersion: 1, ...released }
+    const { token, phase, from, candidate, cohort = [] } = released.value.gate
+    return { schemaVersion: 1, ok: true, gate: { token, phase, from, candidate, cohort: cohort.map(({ id, tag, host }) => ({ id, tag, host })) }, ...(released.value.unchanged ? { unchanged: true } : {}), scope: released.scope,
+      nextAction: 'The gate and its receipts are in history; cached successes stay reusable. Withdraw a participant that cannot pass here (vibe integration withdraw --participant <id>), then vibe integration finish claims a fresh candidate.' }
   }
   if (options.step === 'accept') {
     const receipt = JSON.parse(await readFile(path.resolve(options.file ?? ''), 'utf8'))
@@ -211,5 +272,5 @@ export async function vibeIntegration(options = {}, injected = {}) {
     return { schemaVersion: 1, ...await store.accept({ ...receipt, checks }) }
   }
   if (options.step === 'finish' || options.step === 'repair') return finalizeIntegration({ ...options, ...(options.step === 'repair' ? { repair: true } : {}) }, injected)
-  throw new SkillPackageError('vibe integration status|ready|finish|close --tag <tag>, withdraw --participant <id>, repair --token <token>, 또는 accept --file <JSON>')
+  throw new SkillPackageError('vibe integration status|ready|finish|close --tag <tag>, withdraw --participant <id>, repair|abandon --token <token>, 또는 accept --file <JSON>')
 }

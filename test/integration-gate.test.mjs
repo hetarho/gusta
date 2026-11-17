@@ -5,8 +5,8 @@ import path from 'node:path'
 import { machines, git } from './helpers/vibe-fixture.mjs'
 import { inspectWorkspace } from '../src/workspace.mjs'
 import { runtimeRoot } from '../src/work-runtime.mjs'
-import { openIntegration } from '../src/integration-gate.mjs'
-import { finalizeIntegration, vibeIntegration } from '../src/integration-run.mjs'
+import { openIntegration, gateExpired } from '../src/integration-gate.mjs'
+import { finalizeIntegration, vibeIntegration, machinePaths, targetMissing } from '../src/integration-run.mjs'
 import { runVibeCheck } from '../src/vibe-check.mjs'
 
 async function setup(t, { push = true } = {}) {
@@ -140,4 +140,33 @@ test('full deterministic coverage is retained while exact-candidate computer-use
   const completed = await finalizeIntegration({ targetRoot: a, tag: 'agent001' }, { check })
   assert.equal(completed.ok, true)
   assert.equal(runs, 1)
+})
+
+test('machine paths and a missing command target are told apart from portable commands and code defects', () => {
+  assert.deepEqual(machinePaths('node /home/someone/.npm/_npx/0a1b/node_modules/@haeram/gusta/bin/gusta.mjs lint'), ['/home/someone/.npm/_npx/0a1b/node_modules/@haeram/gusta/bin/gusta.mjs'])
+  assert.deepEqual(machinePaths('node --import tsx /tmp/check.mjs .'), ['/tmp/check.mjs'])
+  assert.deepEqual(machinePaths('cd ~/work && $HOME/bin/tool --config=/var/folders/x/c.json'), ['~/work', '$HOME/bin/tool', '/var/folders/x/c.json'])
+  for (const portable of ['npm test 2>/dev/null', 'node scripts/check.mjs', '/usr/bin/env node x.mjs', 'gusta lint', 'curl https://example.invalid/a/b', 'node --test --test-name-pattern=/integration/ test', 'grep -rn /api/v1/ src']) assert.deepEqual(machinePaths(portable), [], portable)
+  // Any other absolute path counts where it exists on this machine (a checkout, /opt).
+  assert.deepEqual(machinePaths('node /opt/tools/check.mjs', { exists: (value) => value === '/opt/tools/check.mjs' }), ['/opt/tools/check.mjs'])
+  const root = '/work/candidate'
+  assert.equal(targetMissing('node /tmp/check.mjs lint', "Error: Cannot find module '/tmp/check.mjs'\n  code: 'MODULE_NOT_FOUND'", root), '/tmp/check.mjs')
+  assert.equal(targetMissing('node scripts/check.mjs', "Error: Cannot find module '/work/candidate/scripts/check.mjs'", root), '/work/candidate/scripts/check.mjs')
+  assert.equal(targetMissing('node --import tsx scripts/a.mjs', "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'tsx' imported from /work/candidate/", root), 'tsx')
+  assert.equal(targetMissing('python3 tools/a.py', "python3: can't open file '/work/candidate/tools/a.py': [Errno 2] No such file or directory", root), '/work/candidate/tools/a.py')
+  // A module or file missing inside the code a command runs is the candidate's, not the environment's.
+  assert.equal(targetMissing('node --test test/a.test.mjs', "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/work/candidate/src/gone.mjs' imported from /work/candidate/test/a.test.mjs", root), null)
+  assert.equal(targetMissing('npm test', "Error: ENOENT: no such file or directory, open '/work/candidate/fixtures/a.json'", root), null)
+})
+
+test('only a failed or conflicted gate is released; one still preparing or checking never expires', async (t) => {
+  const { stores: [store] } = await setup(t)
+  await store.ready({ tag: 'aaaa' })
+  const gate = (await store.claim({ tag: 'aaaa', deadline: '2000-01-01T00:00:00Z' })).value.gate
+  assert.equal(gateExpired(gate), false)
+  assert.equal((await store.abandon({ token: gate.token })).reason, 'integration-not-releasable')
+  assert.equal((await store.claim({ tag: 'aaaa' })).reason, 'integration-owned')
+  assert.equal(gateExpired({ ...gate, phase: 'failed' }), true)
+  assert.equal(gateExpired({ ...gate, phase: 'failed', deadline: null }), false)
+  assert.equal((await store.abandon({ token: 'f'.repeat(36) })).reason, 'integration-owner-changed')
 })

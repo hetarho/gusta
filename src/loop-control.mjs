@@ -232,10 +232,11 @@ export async function readRequests(directory, runId) {
 }
 export const requestPath = (directory, request) => path.join(directory, 'requests', `${request.id}.json`)
 
-// vibe loop --tag <tag> --wait-event unit-finished,needs-judgment,finished [--after <cursor>] [--wait-ms]:
+// vibe loop --tag <tag> --wait-event unit-finished,needs-judgment,finished [--after <cursor>] [--run <runId>] [--wait-ms]:
 // the CLI (not a model) blocks until the run records one of these events after the cursor, ends, or
 // the wait runs out. A host leaves it in the background and reports one line each time it returns,
-// then waits again from the returned cursor.
+// then waits again from the returned cursor. Only one run's events count: --run, else the run
+// loop.json names now; an earlier run of the same tag is passed over (a restart waits for its own).
 export const WAIT_EVENTS = { 'unit-finished': ['unit-finished'], 'needs-judgment': ['needs-judgment'], finished: ['finished', 'stopped'], failed: ['failed'] }
 export async function waitLoopEvent(directory, root, options, { sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), pollMs = 1000 } = {}) {
   const wanted = String(options.waitEvent).split(/[\s,|]+/).filter(Boolean)
@@ -248,22 +249,27 @@ export async function waitLoopEvent(directory, root, options, { sleep = (ms) => 
   const lines = async () => (await readFile(file, 'utf8').catch(() => '')).split('\n').filter(Boolean)
   let cursor = options.after === undefined ? (await lines()).length : Number(options.after)
   if (!Number.isSafeInteger(cursor) || cursor < 0) throw new SkillPackageError('--after에는 이전 응답의 cursor가 필요합니다.')
+  if (options.run !== undefined && (typeof options.run !== 'string' || !options.run.trim())) throw new SkillPackageError('--run에는 loop 시작 출력의 runId가 필요합니다.')
   const until = Date.now() + waitMs
-  const view = (state, extra) => ({ schemaVersion: 1, ok: true, cursor, running: Boolean(state.running), phase: state.phase ?? null, units: state.units ?? 0, reason: state.reason ?? null, report: state.report ?? null, ...extra })
+  const view = (state, run, extra) => ({ schemaVersion: 1, ok: true, cursor, runId: run, running: state.runId === run && Boolean(state.running), phase: state.runId === run ? state.phase ?? null : null, units: state.runId === run ? state.units ?? 0 : 0, reason: state.runId === run ? state.reason ?? null : null, report: state.report ?? null, ...extra })
   for (;;) {
+    const state = await inspectLoop(directory, root)
+    const run = options.run ?? state.runId
     const all = await lines()
     for (let index = cursor; index < all.length; index++) {
       let event
       try { event = JSON.parse(all[index]) } catch { continue }
-      if (!types.has(event.type)) continue
+      if (event.runId !== run || !types.has(event.type)) continue
       cursor = index + 1
       const { schemaVersion, id, runId, tag, ...detail } = event
-      return view(await inspectLoop(directory, root), { event: detail })
+      return view(state.runId === run ? await inspectLoop(directory, root) : state, run, { event: detail })
     }
     cursor = all.length
-    const state = await inspectLoop(directory, root)
-    if (!state.running) return view(state, { event: null, ended: true })
-    if (Date.now() >= until) return view(state, { event: null, timedOut: true })
+    // A named run loop.json does not name has ended when it recorded its stop; until then it has not
+    // started yet (loop.json still names the run before it), and is waited for.
+    const ended = state.runId === run ? !state.running : all.some((line) => line.includes(`"runId":${JSON.stringify(run)}`) && line.includes('"type":"stopped"'))
+    if (ended) return view(state, run, { event: null, ended: true })
+    if (Date.now() >= until) return view(state, run, { event: null, timedOut: true })
     await sleep(Math.min(pollMs, Math.max(1, until - Date.now())))
   }
 }

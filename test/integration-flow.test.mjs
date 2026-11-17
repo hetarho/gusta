@@ -432,3 +432,110 @@ test('finish --no-push lands the verified candidate on the local land only; the 
   assert.equal(published.ok, true, JSON.stringify(published))
   assert.equal(await remoteTip(), held.landed)
 })
+
+// Field report: an unattended run stuck behind a failed gate that the cohort could not fix.
+const commitIn = async (root, file) => { await writeFile(path.join(root, file), `${file}\n`); await git(root, 'add', '.'); await git(root, 'commit', '-qm', file); return git(root, 'rev-parse', 'HEAD') }
+const sessionStore = async (root) => openIntegration(await vibeSession({ targetRoot: root }))
+
+test('a --verify command naming one device\'s paths is refused; one an older version recorded on another device is reported not run', async (t) => {
+  const { root } = await project(t)
+  const npx = 'node /home/someone/.npm/_npx/0a1b2c/node_modules/@haeram/gusta/bin/gusta.mjs lint'
+  await assert.rejects(vibeIntegration({ targetRoot: root, step: 'ready', tag: 'local001', verify: [npx] }), (error) => /이 기기에만 있는 경로/.test(error.message) && error.details.includes('/home/someone/.npm/_npx/0a1b2c/node_modules/@haeram/gusta/bin/gusta.mjs'))
+  await assert.rejects(vibeIntegration({ targetRoot: root, step: 'finish', tag: 'local001', verify: ['node --import tsx /tmp/check-script.mjs .'] }), /이 기기에만 있는 경로/)
+  const away = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'away0001' }), local = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'local001' })
+  await commitIn(away.root, 'away.txt'); await commitIn(local.root, 'local.txt')
+  // ready --verify records a portable command.
+  const recorded = await vibeIntegration({ targetRoot: local.root, step: 'ready', tag: 'local001', verify: ['node --version 2>/dev/null'] })
+  assert.ok(recorded.state.participants[recorded.value.id].verificationCommands.includes('node --version 2>/dev/null'))
+  // A display label (--host) on this device is not another device: its participant names this machine.
+  const awayStore = await sessionStore(away.root), awayId = (await awayStore.ready({ tag: 'away0001', host: 'label-only' })).value.id
+  assert.equal((await awayStore.read()).state.participants[awayId].host, 'label-only')
+  // An older version on another device stored its own absolute path (its record has no device field).
+  await awayStore.transaction((state) => { Object.assign(state.participants[awayId], { host: 'other-device', verificationCommands: [npx] }); delete state.participants[awayId].device; return {} })
+  const landed = await finalizeIntegration({ targetRoot: local.root, tag: 'local001' })
+  assert.equal(landed.ok, true, JSON.stringify(landed))
+  assert.deepEqual(landed.notRun.map((entry) => [entry.command, entry.reason, entry.participants.map((owner) => [owner.tag, owner.device])]), [[npx, 'not-portable', [['away0001', 'other-device']]]])
+  assert.deepEqual(landed.gate.cohort.map((entry) => entry.tag).sort(), ['away0001', 'local001'])
+})
+
+test('another ready session whose head land already holds is recorded landed before the cohort forms, and its commands do not run', async (t) => {
+  const { root, temporary } = await project(t), counter = path.join(temporary, 'contained-runs')
+  const done = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'done0001' })
+  const doneHead = await commitIn(done.root, 'done.txt')
+  await (await sessionStore(done.root)).ready({ tag: 'done0001', verificationCommands: [node(`require('node:fs').appendFileSync(${JSON.stringify(counter)},'X')`)] })
+  // Its work reached land outside the gate (fast-forwarded by hand).
+  await git(root, 'branch', '-f', 'delivery', doneHead)
+  const next = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'next0001' })
+  await commitIn(next.root, 'next.txt')
+  const landed = await finalizeIntegration({ targetRoot: next.root, tag: 'next0001' })
+  assert.equal(landed.ok, true, JSON.stringify(landed))
+  assert.deepEqual(landed.gate.cohort.map((entry) => entry.tag), ['next0001'])
+  assert.deepEqual(landed.gate.reconciled.map((entry) => [entry.tag, entry.head, entry.landed]), [['done0001', doneHead, doneHead]])
+  await assert.rejects(readFile(counter), { code: 'ENOENT' })
+  const entry = Object.values((await sessionStore(root).then((store) => store.read())).state.participants).find((item) => item.tag === 'done0001')
+  assert.deepEqual([entry.status, entry.reconciled.reason, entry.reconciled.verified, entry.reconciled.from], ['landed', 'head-in-land', false, 'ready'])
+  // Its own finish reports it landed, not verified by a gate.
+  const own = await finalizeIntegration({ targetRoot: done.root, tag: 'done0001' })
+  assert.deepEqual([own.ok, own.alreadyLanded, own.verified], [true, true, false])
+})
+
+test('a participant command whose own script is missing on the candidate fails as the environment, not the implementation', async (t) => {
+  const { root } = await project(t)
+  const failed = await finalizeIntegration({ targetRoot: root, tag: 'absent01', verify: ['node scripts/absent-check.mjs'] })
+  assert.equal(failed.reason, 'integration-failed', JSON.stringify(failed))
+  const entry = failed.gate.checks.find((check) => check.command === 'node scripts/absent-check.mjs')
+  assert.deepEqual([entry.environment, entry.missingTarget], [true, path.join(failed.gate.path, 'scripts/absent-check.mjs')])
+  assert.match(failed.nextAction, /missing script\/package.*not the implementation/)
+  assert.match(failed.nextAction, new RegExp(`vibe integration abandon --token ${failed.gate.token}`))
+})
+
+async function failedCohort(t) {
+  const { root } = await project(t)
+  const away = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'away0002' }), owner = await openSessionWorkspace({ targetRoot: root, kind: 'start', tag: 'owner002' })
+  await commitIn(away.root, 'away.txt'); await commitIn(owner.root, 'owner.txt')
+  const awayStore = await sessionStore(away.root)
+  const id = (await awayStore.ready({ tag: 'away0002', verificationCommands: [node('process.exit(3)')] })).value.id
+  const failed = await finalizeIntegration({ targetRoot: owner.root, tag: 'owner002' })
+  assert.equal(failed.reason, 'integration-failed', JSON.stringify(failed))
+  const frozen = await vibeIntegration({ targetRoot: root, step: 'withdraw', participant: id })
+  assert.equal(frozen.reason, 'candidate-frozen'); assert.match(frozen.nextAction, /vibe integration abandon --token/)
+  return { root, owner, id, failed, store: awayStore }
+}
+
+test('the owner abandons a failed gate its cohort cannot fix; withdrawing the participant lets the next finish land', async (t) => {
+  const { root, owner, id, failed, store } = await failedCohort(t)
+  const released = await vibeIntegration({ targetRoot: root, step: 'abandon', token: failed.gate.token, reason: 'participant command fails here' })
+  assert.deepEqual([released.ok, released.gate.phase, released.gate.from], [true, 'abandoned', 'failed'])
+  assert.match(released.nextAction, /withdraw --participant/)
+  assert.equal((await vibeIntegration({ targetRoot: root, step: 'abandon', token: failed.gate.token })).unchanged, true)
+  const history = (await store.read()).state.history[0]
+  assert.deepEqual([history.token, history.phase, history.checks.length], [failed.gate.token, 'abandoned', failed.gate.checks.length])
+  assert.equal((await vibeIntegration({ targetRoot: root, step: 'withdraw', participant: id })).value.status, 'withdrawn')
+  const landed = await finalizeIntegration({ targetRoot: owner.root, tag: 'owner002' })
+  assert.equal(landed.ok, true, JSON.stringify(landed))
+  assert.deepEqual(landed.gate.cohort.map((entry) => entry.tag), ['owner002'])
+})
+
+test('a failed gate past its deadline no longer freezes withdraw or finish: it moves to history as expired', async (t) => {
+  const { root, owner, id, failed, store } = await failedCohort(t)
+  await store.transaction((state) => { state.gate.deadline = new Date(Date.now() - 60000).toISOString(); return {} })
+  const late = await finalizeIntegration({ targetRoot: owner.root, tag: 'owner002', token: failed.gate.token, repair: true })
+  assert.equal(late.reason, 'integration-deadline'); assert.match(late.nextAction, /vibe integration finish moves this gate to history/)
+  const withdrawn = await vibeIntegration({ targetRoot: root, step: 'withdraw', participant: id })
+  assert.deepEqual([withdrawn.ok, withdrawn.value.status, withdrawn.value.expired], [true, 'withdrawn', failed.gate.token])
+  const expired = (await store.read()).state.history[0]
+  assert.deepEqual([expired.token, expired.phase, expired.from, expired.checks.length], [failed.gate.token, 'expired', 'failed', failed.gate.checks.length])
+  const landed = await finalizeIntegration({ targetRoot: owner.root, tag: 'owner002' })
+  assert.equal(landed.ok, true, JSON.stringify(landed))
+  assert.notEqual(landed.gate.token, failed.gate.token)
+})
+
+test('finish itself moves an expired failed gate to history and claims a fresh candidate', async (t) => {
+  const { owner, failed, store } = await failedCohort(t)
+  await store.transaction((state) => { state.gate.deadline = new Date(Date.now() - 60000).toISOString(); return {} })
+  // The participant's command still fails: a fresh gate with a new deadline, not the stuck one.
+  const again = await finalizeIntegration({ targetRoot: owner.root, tag: 'owner002' })
+  assert.equal(again.reason, 'integration-failed', JSON.stringify(again))
+  assert.notEqual(again.gate.token, failed.gate.token)
+  assert.deepEqual((await store.read()).state.history.map((entry) => [entry.token, entry.phase]), [[failed.gate.token, 'expired']])
+})

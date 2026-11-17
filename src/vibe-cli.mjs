@@ -20,9 +20,12 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 전용 하위 브랜치·worktree를 준비하고 root를 반환. 계획·구현은 그 경로에서만.
                                                 같은 checkout에서 같은 kind·tag로 다시 열면 그 세션을 created:false로 돌려준다.
                                                 원래 checkout에 미커밋 변경이 있으면 거절, --from-head면 HEAD에서 열고 빠진 파일을 excluded로
-  vibe integration status|ready|finish --tag <tag> [--token <token>] [--no-push]
+  vibe integration status|ready|finish --tag <tag> [--token <token>] [--no-push] [--verify <command> ...]
                                                 살아 있는 참여 세션의 준비 뒤 고정 후보에서 전체 검수 한 번. 늦은 세션은 다음 통합.
+                                                head가 이미 land에 있는 다른 ready 세션은 landed(관문 밖·미검증)로 기록하고 검수에서 뺀다.
                                                 finish --no-push: 검수 뒤 로컬 land에만 반영(held). 다음 finish·push가 검증된 그대로 발행
+                                                --verify: 후보에서 함께 돌릴 이 세션의 명령. 이 기기에만 있는 경로(홈·임시·npx 캐시)는 거절,
+                                                저장소 기준 상대 경로나 설치된 명령으로. 대상 스크립트·패키지가 없으면 환경 실패
   vibe integration close --tag <tag> [--reason <text>]
                                                 이 checkout 세션의 참여 닫기(vibe beat --end가 함께 한다): 변경 없으면 withdrawn, 있으면 paused
   vibe integration withdraw --participant <id> [--reason <text>]
@@ -31,6 +34,9 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
   vibe integration accept --file <JSON>       computer-use 호스트의 정확한 후보별 AC 관측·증거 제출; finish는 전체 검수 없이 재개
   vibe integration repair --token <token> --target <candidate worktree>
                                                 실패·영향 범위만 수정해 커밋한 후보. 원래 cohort·마감과 성공 캐시 유지
+  vibe integration abandon --token <token> [--reason <text>]
+                                                이 cohort로 고칠 수 없는 실패·충돌 관문을 기록(history)으로 옮겨 새 통합을 연다. 영수증·성공 캐시 유지.
+                                                마감이 지난 실패 관문은 다음 finish·withdraw·plan-push가 expired로 옮긴다
   vibe loop --tag <tag> [--max-units 100] [--max-hours 8]
     [--deadline <ISO>] [--final-reserve-hours <measured>] [--batch-size 3] [--permission-mode bypass|acceptEdits] [--allow-tool <rule> ...]
     [--verify <batch command> ...] [--push-each-unit] [--detach] [--dry-run] [--adapter <json-file>] [--notify-command <command>] [--json]
@@ -44,16 +50,18 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 --tasks: 그 태스크(와 이번 실행이 그것을 위해 만든 태스크)만, 끝나면 마감 관문
                                                 --request-file <path>: 그 요청을 첫 단위가 기획(SSOT·태스크·plan-push)하고, 만든 태스크와 그 dep만 실행
                                                 기존 --push-each-unit도 통합 대상 반영은 세션 전체의 공유 마감까지 보류한다
-                                                --timeout-ms: 단위 하나의 상한(explore는 timebox+30분). 넘기면 미커밋 변경을
-                                                스냅샷해 새 단위가 이어받고, 다시 넘기면 쪼개고, 그래도 넘기면 주차. loop는 계속
+                                                --timeout-ms: 단위 하나의 상한(explore는 timebox+30분). 넘기거나 단위가 continue로
+                                                끝나면 새 단위가 이어받고, 다시 그러면 쪼개고, 그래도 안 끝나면 주차. loop는 계속
+                                                단위가 남긴 미커밋 변경은 결과와 무관하게 스냅샷(refs/gusta/units)으로 넘긴다
   vibe loop --tag <tag> --stop                  정지 파일 기록; 실행 중인 단위도 종료
   vibe loop --tag <tag> --stop-after-unit       현재 단위·마감 검증 완료 후 정지
   vibe loop --tag <tag> --configure [--deadline <ISO>] [--final-reserve-hours <n>] [--push-each-unit|--no-push-each-unit] [--wait-ms <ms>]
                                                 현재 단위 완료 후 같은 호스트에 설정 적용; receipt로 적용 확인
   vibe loop --tag <tag> --status               heartbeat·요청/적용 설정·운영 오류 확인
-  vibe loop --tag <tag> --wait-event unit-finished,needs-judgment,finished [--after <cursor>] [--wait-ms 3300000]
+  vibe loop --tag <tag> --wait-event unit-finished,needs-judgment,finished [--after <cursor>] [--run <runId>] [--wait-ms 3300000]
                                                 모델 호출 없이 그 사건(또는 종료·대기 끝)까지 기다려 사건 한 줄과 cursor를 돌려준다.
                                                 진행 보고: 백그라운드로 걸어 두고, 돌아올 때마다 한 줄 보고 후 --after <cursor>로 다시 건다
+                                                현재 run(--run: detach 출력의 runId, 없으면 loop.json의 run)의 사건만 센다
   vibe loop --tag <tag> --recover-metadata     종료된 호스트의 정확히 소유한 메타데이터만 복구; 작업 재시작 없음
   vibe ci wait [--commit HEAD] [--branch <branch>] [--repo owner/repo]
     [--diff-base <sha>] [--timeout-ms 3600000] [--no-run-ms 120000] [--poll-ms 15000]
@@ -162,7 +170,7 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
 
 const allowed = {
   session: ['kind', 'tag', 'branch', 'base', 'path'], integration: ['tag', 'token', 'file', 'reason', 'remote', 'timeout-ms', 'verify', 'participant'],
-  loop: ['tag', 'provider', 'model', 'effort', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command', 'request-file', 'wait-event', 'after'],
+  loop: ['tag', 'provider', 'model', 'effort', 'max-units', 'max-hours', 'deadline', 'final-reserve-hours', 'batch-size', 'permission-mode', 'allow-tool', 'verify', 'adapter', 'probe', 'probe-timeout-ms', 'timeout-ms', 'tasks', 'remote', 'wait-ms', 'notify-command', 'request-file', 'wait-event', 'after', 'run'],
   ci: ['commit', 'branch', 'repo', 'diff-base', 'timeout-ms', 'no-run-ms', 'poll-ms', 'remote'], brief: ['task', 'diff-base', 'ref', 'section', 'offset', 'limit', 'snapshot'], format: ['section'],
   status: ['tag', 'remote', 'section'], sync: ['remote'], 'plan-sync': ['remote', 'tag'], 'plan-push': ['remote', 'commit', 'tag'], push: ['remote', 'tag', 'diff-base', 'timeout-ms', 'no-run-ms', 'verified-commit'], deploy: ['remote', 'timeout-ms', 'no-run-ms'], beat: ['tag', 'mode', 'doing', 'host', 'remote'],
   claim: ['tag', 'task', 'mode', 'host', 'remote'], task: ['tag', 'at', 'count', 'remote'], inbox: ['tag', 'kind', 'ref', 'text', 'file', 'line', 'id', 'log', 'remote'], log: ['tag', 'text', 'file', 'remote'],

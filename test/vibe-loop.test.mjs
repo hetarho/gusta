@@ -454,7 +454,7 @@ test('detached host survives parent return and writes its final manifest with on
   await writeFile(hook, `let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>require('node:fs').appendFileSync(process.argv[2],input));`)
   const notifyCommand = [process.execPath, hook, notified].map((value) => `'${value.replaceAll("'", "'\\''")}'`).join(' ')
   const result = await vibeLoop({ ...opts(root), adapter, provider: undefined, detach: true, notifyCommand, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } })
-  assert.equal(result.detached, true); assert.ok(result.pid)
+  assert.equal(result.detached, true); assert.ok(result.pid); assert.equal(result.cursor, 0)
   t.after(() => { try { process.kill(-result.pid, 'SIGTERM') } catch {} })
   let state
   for (let i = 0; i < 150; i++) {
@@ -471,6 +471,9 @@ test('detached host survives parent return and writes its final manifest with on
   for (let i = 0; i < 200 && [result.pid, state.supervisor?.pid].some((pid) => pid && alive(pid)); i++) await new Promise((resolve) => setTimeout(resolve, 50))
   const notices = (await readFile(notified, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
   assert.deepEqual(notices.map(({ type, level, reason, units, report }) => ({ type, level, reason, units, report })), [{ type: 'finished', level: 'info', reason: 'no-progress', units: 2, report: state.report }])
+  // The start output's runId and cursor are where a host waits from.
+  const waited = await vibeLoop({ ...opts(root), waitEvent: 'unit-finished', run: result.runId, after: String(result.cursor), waitMs: '0' })
+  assert.deepEqual([waited.runId, waited.event.unit], [result.runId, 1])
 })
 
 for (const pushEachUnit of [false, true]) test(`strict concurrency runs one final gate by default; per-unit push=${pushEachUnit}`, async (t) => {

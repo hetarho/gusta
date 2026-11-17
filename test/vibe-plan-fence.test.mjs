@@ -131,3 +131,19 @@ test('a dirty local land preserves user files, releases its reservation and can 
   assert.deepEqual([result.ok, result.local, result.published], [true, 'ff', planned])
   assert.equal(await git(root, 'rev-parse', 'HEAD'), planned)
 })
+
+test('a failed gate past its deadline no longer freezes land: the planning publication moves it to history', async (t) => {
+  const { a, remote, authority } = await remoteProject(t)
+  await authority.ready({ tag: 'worker01' })
+  const claimed = await authority.claim({ tag: 'worker01' })
+  await authority.transaction((state) => { Object.assign(state.gate, { phase: 'failed', deadline: new Date(Date.now() + 3600000).toISOString() }); return {} })
+  const planning = await addPlanning(a)
+  assert.equal((await vibePlanPush({ targetRoot: a })).reason, 'integration-frozen')
+  await authority.transaction((state) => { state.gate.deadline = new Date(Date.now() - 60000).toISOString(); return {} })
+  const result = await vibePlanPush({ targetRoot: a })
+  assert.deepEqual([result.ok, result.published], [true, planning], JSON.stringify(result))
+  assert.equal(await git(remote, 'rev-parse', 'delivery'), planning)
+  const state = (await authority.read()).state
+  assert.equal(state.gate, null)
+  assert.deepEqual([state.history[0].token, state.history[0].phase, state.history[0].from], [claimed.value.gate.token, 'expired', 'failed'])
+})

@@ -108,3 +108,28 @@ test('내장 어댑터 단위는 route의 도구·모델·에포트로 실행된
   const flag = (key) => call.args[call.args.indexOf(key) + 1]
   assert.deepEqual([flag('--model'), flag('--effort'), call.effort], ['opus', 'max', 'max'])
 })
+
+// The same route kept failing one task with nothing to show while another tool could have run it.
+test('a task left unfinished with no commit or newly checked acceptance runs its next unit on another tool or a higher tier, recorded as decided', async (t) => {
+  const { root } = await fixture(t, 1)
+  await plan(root, { T001: 'codex/terra@high' }, 'claude,codex')
+  const seen = []
+  // Each stalled unit leaves only an uncommitted note (kept as its snapshot), as in the field.
+  const blocked = { exitCode: 0, result: { kind: 'task', id: 'T001', outcome: 'blocked', pushed: false, next: 'wait', blocker: { dependency: 'an independent reviewer', resume: 'a review exists' } } }
+  const result = await vibeLoop({ targetRoot: root, tag: 'route5', maxUnits: 4 }, { catalog: catalog(['claude', 'codex']), preflight: passed,
+    execute: async (options, job) => {
+      seen.push(job.route)
+      if (seen.length === 3) return complete(root, [])(options, job)
+      await writeFile(path.join(root, 'notes.txt'), `attempt ${seen.length}\n`)
+      return blocked
+    },
+  })
+  assert.equal(result.ok, true, result.error)
+  assert.deepEqual(seen.map((route) => `${route.tool}/${route.model}@${route.effort} ${route.source}`), ['codex/terra@high task', 'claude/sonnet@high escalated', 'claude/sonnet@xhigh escalated'])
+  const events = (await readFile(path.join(path.dirname(result.manifest), 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).filter((event) => event.type === 'route-escalated')
+  assert.deepEqual(events.map(({ from, to }) => [from, to]), [['codex/terra@high', 'claude/sonnet@high'], ['codex/terra@high, claude/sonnet@high', 'claude/sonnet@xhigh']])
+  assert.match(await readFile(path.join(root, result.report), 'utf8'), /^- \d{6} decided T001: T001 runs on claude\/sonnet@high instead of codex\/terra@high: the last unit there ended it unfinished/m)
+  // A person's --provider pin is never moved.
+  const pinned = (await import('../src/agent-route.mjs')).routeAgent({ recommended: 'codex/terra@high', recovery: true, agents: ['claude', 'codex'], catalog: catalog(['claude', 'codex'])(), explicit: { tool: 'codex' }, avoid: [{ tool: 'codex', model: 'terra', effort: 'high' }] })
+  assert.deepEqual([pinned.chosen.tool, pinned.source], ['codex', 'explicit'])
+})

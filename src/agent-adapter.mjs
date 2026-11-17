@@ -15,9 +15,16 @@ import { git } from './workspace.mjs'
 const fail = (message) => { throw new SkillPackageError(message) }
 const object = (properties) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false })
 const string = { type: 'string' }
+// continue: the unit made progress and the next fresh unit carries on from its snapshot (not a blocker).
+export const UNIT_OUTCOMES = ['completed', 'continue', 'parked', 'blocked', 'no_work']
+// A blocked unit names what outside it the task waits on and when to resume; without both it is
+// unfinished work, and the same session is sent back to it (executeAgentAdapter).
+const BLOCKER_RULE = 'outcome blocked needs blocker.dependency (what outside this unit the task waits on: access, an authorization, another session\'s work) and blocker.resume (the condition to resume). Unfinished work, a check to rerun or a document to close is not a blocker, and an agent check owned by the host or the integration stage is never one: record it not-run and close the task'
 export const RESULT_SCHEMAS = {
+  // blocker is always present so strict structured output accepts it; empty fields unless blocked.
   unit: object({ kind: { type: 'string', enum: ['task', 'planning', 'inbox', 'fix', 'none'] }, id: string,
-    outcome: { type: 'string', enum: ['completed', 'parked', 'blocked', 'no_work'] }, pushed: { type: 'boolean' }, next: string, agentChecks: AGENT_CHECK_SCHEMA }),
+    outcome: { type: 'string', enum: UNIT_OUTCOMES }, pushed: { type: 'boolean' }, next: string,
+    blocker: object({ dependency: string, resume: string }), agentChecks: AGENT_CHECK_SCHEMA }),
   // decision is always present so strict structured output accepts it; an empty question means none.
   worker: object({ outcome: { type: 'string', enum: ['completed', 'blocked'] }, summary: string,
     decision: object({ question: string, options: { type: 'array', items: string }, recommendation: string }), agentChecks: AGENT_CHECK_SCHEMA }),
@@ -37,8 +44,10 @@ const PROPOSAL = ['title', 'where', 'problem', 'evidence', 'change', 'preserves'
 
 export function validateAgentResult(role, result) {
   if (role === 'unit') {
-    if (!result || !['task', 'planning', 'inbox', 'fix', 'none'].includes(result.kind) || !['completed', 'parked', 'blocked', 'no_work'].includes(result.outcome) || typeof result.id !== 'string' || typeof result.pushed !== 'boolean' || typeof result.next !== 'string') fail('단위 결과의 kind/id/outcome/pushed/next가 올바르지 않습니다.')
-    return { kind: result.kind, id: result.id, outcome: result.outcome, pushed: result.pushed, next: result.next,
+    if (!result || !['task', 'planning', 'inbox', 'fix', 'none'].includes(result.kind) || !UNIT_OUTCOMES.includes(result.outcome) || typeof result.id !== 'string' || typeof result.pushed !== 'boolean' || typeof result.next !== 'string') fail('단위 결과의 kind/id/outcome/pushed/next가 올바르지 않습니다.')
+    const blocker = result.outcome === 'blocked' ? { dependency: String(result.blocker?.dependency ?? '').trim(), resume: String(result.blocker?.resume ?? '').trim() } : null
+    if (blocker && (!blocker.dependency || !blocker.resume)) throw Object.assign(new SkillPackageError(`단위 결과 blocked에 외부 의존성과 재개 조건이 없습니다: ${BLOCKER_RULE}.`), { work: true })
+    return { kind: result.kind, id: result.id, outcome: result.outcome, pushed: result.pushed, next: result.next, ...(blocker ? { blocker } : {}),
       ...(result.agentChecks !== undefined ? { agentChecks: validateAgentAcceptance(result.agentChecks) } : {}) }
   }
   if (!result || typeof result !== 'object' || Array.isArray(result) || typeof result.summary !== 'string' || !result.summary.trim()) fail('에이전트 결과에 summary가 없습니다.')
@@ -138,11 +147,13 @@ export function recoveryText(recovery, tag = '<tag>', root = AGENT_CONFIG.claude
   if (!recovery) return ''
   if (recovery.reason === 'request') return `\nRequest planning unit: the owner asked for the request below; the host has shown its reading. Turn it into one planning slice only, by gusta-start references/request.md section 3 (Read ${root}/gusta-start/references/request.md): vibe plan-sync, gusta-update-ssot (or gusta-create-ssot for a new domain), then gusta-create-task, a spec/-only planning commit and vibe plan-push. What the request states is the owner's decision; fill only its gaps with recommendations recorded as inbox decided, and park billing, data deletion, privacy or security gaps. Do not implement: the host runs the tasks you create in the next units. Return kind planning, id the created task IDs separated by spaces, outcome completed (or parked when nothing could be planned).\n\nRequest:\n${recovery.request}`
   const { taskId: id, snapshot } = recovery
-  if (recovery.reason === 'spec-gate') return `\nSpec repair unit for ${id}: it was reported completed, but the host's spec check failed: ${(recovery.violations ?? []).join('; ')}. Keep the committed code; do not reimplement it. Repair only the listed evidence. Preserve a valid dated archive and its acceptance/result history: if it is already complete, fix only a stale STATE row, lint or report identity rather than reopening it. Only when archive/lifecycle evidence is missing or invalid, restore the task under spec/tasks/ and its STATE row as todo, run cliCommand vibe task start ${id} --tag ${tag}, check acceptance with [v] and fill the four result lines (outcome, at, verified, limits) from evidence, then close with cliCommand vibe task done ${id} --tag ${tag}. Run spec lint and commit the scoped repair. Return kind task, id ${id}, outcome completed; the host checks again and parks ${id} if it still fails.`
   const kept = snapshot ? ` The previous attempt's uncommitted changes are snapshot ${snapshot.commit} on top of ${snapshot.base}; the tree was reset to HEAD. List them with \`git diff --stat ${snapshot.base} ${snapshot.commit}\` and restore what is worth keeping with \`git checkout ${snapshot.commit} -- <paths>\`.` : ''
-  if (recovery.reason === 'interrupted') return `\nContinuation unit for ${id}: the previous unit ended before finishing it (${recovery.cause}).${kept} Continue from there rather than starting over.`
+  if (recovery.reason === 'spec-gate') return `\nSpec repair unit for ${id}: it was reported completed, but the host's spec check failed: ${(recovery.violations ?? []).join('; ')}. Keep the committed code; do not reimplement it. Repair only the listed evidence. Preserve a valid dated archive and its acceptance/result history: if it is already complete, fix only a stale STATE row, lint or report identity rather than reopening it. Only when archive/lifecycle evidence is missing or invalid, restore the task under spec/tasks/ and its STATE row as todo, run cliCommand vibe task start ${id} --tag ${tag}, check acceptance with [v] and fill the four result lines (outcome, at, verified, limits) from evidence, then close with cliCommand vibe task done ${id} --tag ${tag}. Run spec lint and commit the scoped repair. Return kind task, id ${id}, outcome completed; the host checks again and parks ${id} if it still fails.${kept}`
+  const left = recovery.next ? ` It said what remains: ${recovery.next}` : ''
+  if (recovery.reason === 'interrupted') return `\nContinuation unit for ${id}: the previous unit ended before finishing it (${recovery.cause}).${left}${kept} Continue from there rather than starting over.`
   if (recovery.reason === 'split') return `\nSplit unit for ${id}: units keep ending before finishing it. Do not implement it now. As one planning slice, narrow ${id} to a first part that fits one unit and move the rest of its acceptance into new todo tasks that depend on it (gusta-create-task, consistent deps/base in task files and STATE)${snapshot ? `; note snapshot ${snapshot.commit} (on ${snapshot.base}) in ${id}'s impl notes as reusable work` : ''}. Return kind planning.`
-  return `\nRecovery unit for ${id}: read the blocker in its task result and the inbox lines about it (cliCommand vibe inbox list --ref ${id}). Resolve reversible planning/technical gaps as one planning slice, record the decision (--kind decided) and restore todo with consistent deps/base in the task and STATE. If it is an implementation failure, make the scoped fix. If it truly needs the reserved authorization above, record it for this task (--kind parked --ref ${id}) and return outcome parked. Do not repeat the same blocked implementation or wait for a user.${kept}`
+  const named = recovery.previousResult?.blocker ? ` The blocked unit named: ${recovery.previousResult.blocker.dependency}; resume when ${recovery.previousResult.blocker.resume}.` : ''
+  return `\nRecovery unit for ${id}: read the blocker in its task result and the inbox lines about it (cliCommand vibe inbox list --ref ${id}).${named} Resolve reversible planning/technical gaps as one planning slice, record the decision (--kind decided) and restore todo with consistent deps/base in the task and STATE. If it is an implementation failure, make the scoped fix. If it truly needs the reserved authorization above, record it for this task (--kind parked --ref ${id}) and return outcome parked. Do not repeat the same blocked implementation or wait for a user.${kept}`
 }
 
 // The frontmatter only triggers a skill; a unit is already inside it. No frontmatter: unchanged.
@@ -176,7 +187,7 @@ export async function agentPrompt(job, provider = 'claude') {
     const recovery = recoveryText(job.recovery, job.tag, AGENT_CONFIG[provider]?.root)
     const limit = job.timeLimit ? ` The host cuts this unit after ${job.timeLimit.minutes} minutes (${job.timeLimit.cutAt}) and hands uncommitted work to a fresh unit; write measurements and findings into the task result as you go.` : ''
     // The skill rides in the prompt; without this note Codex units re-read it from .codex/skills first.
-    return `Run /gusta-start 맡김 단위1. The gusta-start skill is included below and already loaded: do not open its SKILL.md or call a Skill tool for it.${routed.note} Exactly one task done (the assigned one), or the one planning slice its recovery asks for (gusta-update-ssot + gusta-create-task together). Never plan untasked SSOT deltas, reviews or ideation: the owner's /gusta-sketch turns them into tasks. No questions, no subagents. ${autonomy}${recovery}${limit} ${TASK_CHECKS} Host owns preflight, the session row and its claims on the coordination branch (vibe beat, vibe claim), report lifecycle, batch checks, push and CI wait. Do not run them again. Use the same tag/report. Commit each completed task, including only its related changes. The host has already registered this tag and claimed your task before dispatch (vibe task start repeats that claim harmlessly); never register or end the session or claim another task (vibe beat --mode, vibe beat --end, vibe claim), and never publish pending code yourself. Never push completed code here: host runs the batch gate first. Do not close the shared report or end the session (vibe beat --end). Use cliCommand to call this installed CLI; do not download a different CLI. Read vibe brief for a task, exact FORMAT sections only for writing, never whole STATE/FORMAT/ARCH or large code files. Read scoped code with rg and ranges. Long checks: one blocking call (Codex) or shell background completion notification (Claude), no model polling. Return only the unit JSON schema.\n\ngusta-start skill (already loaded):\n${skill}${routed.text}\n\n${splitBrief(job).text}Assignment JSON:\n${JSON.stringify(splitBrief(job).data)}`
+    return `Run /gusta-start 맡김 단위1. The gusta-start skill is included below and already loaded: do not open its SKILL.md or call a Skill tool for it.${routed.note} Exactly one task done (the assigned one), or the one planning slice its recovery asks for (gusta-update-ssot + gusta-create-task together). Return outcome completed once it is closed; continue when you stop with work left (commit what is done, next names what remains, a fresh unit carries on); blocked only for an outside dependency named in blocker.dependency and blocker.resume, never for unfinished work or a host- or integration-owned agent check (hand that over not-run and close); leave blocker fields empty otherwise. Never plan untasked SSOT deltas, reviews or ideation: the owner's /gusta-sketch turns them into tasks. No questions, no subagents. ${autonomy}${recovery}${limit} ${TASK_CHECKS} Host owns preflight, the session row and its claims on the coordination branch (vibe beat, vibe claim), report lifecycle, batch checks, push and CI wait. Do not run them again. Use the same tag/report. Commit each completed task, including only its related changes. The host has already registered this tag and claimed your task before dispatch (vibe task start repeats that claim harmlessly); never register or end the session or claim another task (vibe beat --mode, vibe beat --end, vibe claim), and never publish pending code yourself. Never push completed code here: host runs the batch gate first. Do not close the shared report or end the session (vibe beat --end). Use cliCommand to call this installed CLI; do not download a different CLI. Read vibe brief for a task, exact FORMAT sections only for writing, never whole STATE/FORMAT/ARCH or large code files. Read scoped code with rg and ranges. Long checks: one blocking call (Codex) or shell background completion notification (Claude), no model polling. Return only the unit JSON schema.\n\ngusta-start skill (already loaded):\n${skill}${routed.text}\n\n${splitBrief(job).text}Assignment JSON:\n${JSON.stringify(splitBrief(job).data)}`
   }
   if (job.role === 'scout') {
     if (!job.workspace || typeof job.prompt !== 'string' || !job.prompt.trim() || job.resume) fail('탐색은 workspace·prompt와 새 세션이 필요합니다.')
@@ -262,12 +273,16 @@ export function providerArguments(provider, role, files, model, { allowTools = [
 // session once, with the rejection: the work stays and only the answer is corrected.
 const REPAIR_MS = 10 * 60 * 1000
 const repairPrompt = (error) => `The host rejected your final JSON: ${error.message}${error.details?.length ? ` (${error.details.join('; ')})` : ''}. Your work is already in the workspace: do not edit files or change Git (a read-only command such as git rev-parse HEAD is fine). Return only the corrected final JSON matching the output schema, every other field as before.`
+// A blocked answer with no outside dependency is unfinished work: the same session goes back to it.
+const resumePrompt = () => `The host rejected outcome blocked: ${BLOCKER_RULE}. Carry on in this workspace: finish the task as the skill says (handing host- or integration-owned agent checks over as not-run) and return completed; if work still remains when you stop, commit what is done and return continue with next naming what remains. Return blocked again only with a real blocker.dependency and blocker.resume.`
 // salvage: after the repair, a result whose only fault is in agentChecks keeps its valid checks and
 // turns the rest into not-run handoffs (salvageAgentChecks) rather than failing the finished work.
 function checked(role, value, salvage = false) {
   try { return validateAgentResult(role, value) } catch (error) {
     if (!(error instanceof SkillPackageError)) throw error
     error.format = true
+    // Sent back once and still blocked on nothing outside it: the next fresh unit continues it.
+    if (salvage && error.work) return checked(role, { ...value, outcome: 'continue' }, true)
     if (salvage && ['unit', 'worker'].includes(role) && Array.isArray(value?.agentChecks)) {
       const kept = salvageAgentChecks(value.agentChecks)
       if (kept.issues.length) try { return { ...validateAgentResult(role, { ...value, agentChecks: kept.checks }), agentCheckIssues: kept.issues } } catch {}
@@ -390,8 +405,8 @@ export async function executeAgentAdapter({ provider, model, effort = null, job,
     try { returned = await read(run) } catch (error) {
       const resume = provider === 'claude' ? session : sessionId
       if (!error.format || !resume) throw error
-      log(`\n[gusta] result rejected: ${error.message} — asking the same session once for corrected JSON\n`)
-      returned = await read(await launch(repairPrompt(error), resume, Math.min(job.timeoutMs ?? REPAIR_MS, REPAIR_MS)), true)
+      log(`\n[gusta] result rejected: ${error.message} — ${error.work ? 'sending the same session back to the task once' : 'asking the same session once for corrected JSON'}\n`)
+      returned = await read(await launch(error.work ? resumePrompt() : repairPrompt(error), resume, error.work ? job.timeoutMs : Math.min(job.timeoutMs ?? REPAIR_MS, REPAIR_MS)), true)
       returned.repaired = error.message
     }
     succeeded = true

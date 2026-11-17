@@ -34,8 +34,10 @@ const named = (pattern) => Object.fromEntries(['tool', 'family', 'model', 'effor
 // agents: SETTINGS agents in fallback order; catalog: { tools, options } from agentCatalog or null.
 // explicit: { tool, model, effort } the user pinned; blocked: [{ tool, family?, model?, effort?, reason? }]
 // options this run must not take (a usage limit, a sign-in failure); worker: the reviewed worker's route.
+// avoid: routes whose units on this task ended it unfinished with nothing to show; unless pinned, an
+// option on another tool at their level or above, or on their tool above it, runs first (source escalated).
 // candidates: every usable option nearest first (chosen first) — the fallback order.
-export function routeAgent({ role = 'worker', recommended = null, recovery = false, agents = null, catalog = null, explicit = {}, blocked = [], worker = null } = {}) {
+export function routeAgent({ role = 'worker', recommended = null, recovery = false, agents = null, catalog = null, explicit = {}, blocked = [], worker = null, avoid = [] } = {}) {
   if (!ROUTE_ROLES.includes(role)) throw new Error(`unknown route role: ${role}`)
   const pin = { tool: explicit.tool ?? null, model: explicit.model ?? null, effort: explicit.effort ?? null }
   const pinned = Boolean(pin.tool || pin.model || pin.effort)
@@ -43,6 +45,16 @@ export function routeAgent({ role = 'worker', recommended = null, recovery = fal
   // A probe, a variant and a scout have no task: one default, so A/B variants stay comparable.
   const rec = ['worker', 'reviewer'].includes(role) ? parsed : null
   const label = rec ? runLabel(rec) : null
+  const escalate = (candidates, source) => {
+    if (pinned || !avoid.length || !candidates.length) return [candidates, source]
+    const avoided = (option) => avoid.some((route) => same(route, option))
+    const level = Math.max(...avoid.map((route) => scoreOf(route) ?? DEFAULT_SCORE)), tools = new Set(avoid.map((route) => route.tool))
+    // A tool at its own setting (no score) counts when it is another tool.
+    const up = (option) => !avoided(option) && (typeof option.score !== 'number' ? !tools.has(option.tool) : tools.has(option.tool) ? option.score > level : option.score >= level)
+    // Nothing above them: the same route again rather than a lower one.
+    const ordered = [...candidates.filter(up), ...candidates.filter((option) => !up(option))]
+    return [ordered, same(ordered[0], candidates[0]) ? source : 'escalated']
+  }
   const result = (chosen, source, candidates, skipped) => ({ role, chosen, source, recommended: label, score: chosen ? scoreOf(chosen) : null, candidates, skipped })
   const blockOf = (option) => blocked.find((pattern) => matches(pattern, option))
   const isBlocked = (option) => Boolean(blockOf(option))
@@ -56,10 +68,11 @@ export function routeAgent({ role = 'worker', recommended = null, recovery = fal
     const all = [...head, ...(pin.tool ? [] : (agents ?? []).filter((tool) => tool !== first).map(withPin))]
     if (!all.length) return result(null, 'none', [], [{ option: {}, reason: 'no-tool' }])
     const skipped = all.filter(isBlocked).map((option) => ({ option, reason: blockOf(option).reason ?? 'blocked' }))
-    const candidates = all.filter((option) => !isBlocked(option)).map((option) => ({ ...option, score: scoreOf(option) }))
-    if (!candidates.length) return result(null, 'none', [], skipped)
+    const open = all.filter((option) => !isBlocked(option)).map((option) => ({ ...option, score: scoreOf(option) }))
+    if (!open.length) return result(null, 'none', [], skipped)
+    const [candidates, source] = escalate(open, pinned ? 'explicit' : own && same(open[0], head[0]) ? 'task' : rec ? 'nearest' : 'default')
     const { score, ...chosen } = candidates[0]
-    return result(chosen, pinned ? 'explicit' : own && same(chosen, head[0]) ? 'task' : rec ? 'nearest' : 'default', candidates, skipped)
+    return result(chosen, source, candidates, skipped)
   }
   const order = (tool) => agents?.includes(tool) ? agents.indexOf(tool) : AGENT_TOOLS.length
   const tools = new Map((catalog.tools ?? []).map((entry) => [entry.tool, entry]))
@@ -115,9 +128,9 @@ export function routeAgent({ role = 'worker', recommended = null, recovery = fal
     if (!candidates.some((entry) => same(entry, next))) candidates.push({ ...next, score: scoreOf(next) })
   }
   if (!candidates.length) return result(null, 'none', [], skipped)
-  const { score, ...chosen } = candidates[0]
-  const source = pinned ? 'explicit' : !rec ? 'default' : available && same(chosen, available) ? 'task' : 'nearest'
-  return result(chosen, source, candidates, skipped)
+  const [chain, source] = escalate(candidates, pinned ? 'explicit' : !rec ? 'default' : available && same(candidates[0], available) ? 'task' : 'nearest')
+  const { score, ...chosen } = chain[0]
+  return result(chosen, source, chain, skipped)
 }
 
 // The route a dispatch record, manifest and job carry: what ran and why.

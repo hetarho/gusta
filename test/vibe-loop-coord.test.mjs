@@ -294,3 +294,23 @@ test('--wait-event returns the next unit-finished line with a cursor, and ended 
   await assert.rejects(vibeLoop({ ...opts(root), waitEvent: 'everything' }), /--wait-event는/)
   assert.equal(result.units, 1)
 })
+
+// A restart of the same tag used to hand back the previous run's stopped/finished first.
+test('--wait-event counts only the current run (or --run): an earlier run of the tag is passed over', async (t) => {
+  const { root } = await fixture(t)
+  const deps = { preflight: passed, check: async () => ({ ok: true }), push: async () => ({ ok: true, pushed: null }), execute: async (options, job) => completeTask(root, job.brief.taskId) }
+  const earlier = await vibeLoop({ ...opts(root), maxUnits: 1 }, deps)
+  const later = await vibeLoop({ ...opts(root), maxUnits: 1 }, deps)
+  assert.notEqual(earlier.runId, later.runId)
+  const unit = await vibeLoop({ ...opts(root), waitEvent: 'unit-finished', after: '0', waitMs: '0' })
+  assert.deepEqual([unit.runId, unit.event.task], [later.runId, 'T002'])
+  const stop = await vibeLoop({ ...opts(root), waitEvent: 'finished', after: '0', waitMs: '0' })
+  assert.deepEqual([stop.runId, stop.event.type, stop.event.reason], [later.runId, 'stopped', 'max-units'])
+  const pinned = await vibeLoop({ ...opts(root), waitEvent: 'unit-finished', after: '0', run: earlier.runId, waitMs: '0' })
+  assert.deepEqual([pinned.runId, pinned.event.task, pinned.running], [earlier.runId, 'T001', false])
+  // Pinned to that run once it has nothing left: ended. A run not started yet is waited for, not ended.
+  const over = await vibeLoop({ ...opts(root), waitEvent: 'unit-finished', after: String(pinned.cursor), run: earlier.runId, waitMs: '0' })
+  assert.equal(over.ended, true)
+  const unborn = await vibeLoop({ ...opts(root), waitEvent: 'unit-finished', after: '0', run: 'not-started', waitMs: '0' })
+  assert.deepEqual([unborn.ended, unborn.timedOut, unborn.event], [undefined, true, null])
+})

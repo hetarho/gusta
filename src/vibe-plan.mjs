@@ -7,7 +7,7 @@ import { vibeSession, fetchBranch, exists, sha, ancestor, advanceBranch } from '
 import { stateMergeArgs } from './git-merge.mjs'
 import { TASK_ID } from './spec-format.mjs'
 import { SkillPackageError } from './errors.mjs'
-import { openIntegration } from './integration-gate.mjs'
+import { openIntegration, gateExpired } from './integration-gate.mjs'
 
 // Planning documents have one home: the SETTINGS plan branch (unset: land, else the repository
 // default branch). Every checkout merges
@@ -148,8 +148,9 @@ export async function vibePlanPush(options = {}) {
       const status = await authority.read()
       if (!status.ok) return pendingPlanning(context, status)
       // This is only an early refusal, not publication authority: the late atomic CAS below
-      // re-evaluates the predicate if a gate claims ownership while commits are prepared.
-      if (status.state.gate?.land === plan) return pendingPlanning(context, { ok: false, waiting: true, reason: 'integration-frozen', gate: status.state.gate })
+      // re-evaluates the predicate if a gate claims ownership while commits are prepared. A failed
+      // gate past its deadline does not freeze land: the publication moves it to history.
+      if (status.state.gate?.land === plan && !gateExpired(status.state.gate)) return pendingPlanning(context, { ok: false, waiting: true, reason: 'integration-frozen', gate: status.state.gate })
     }
     let current = tip.commit, applied = 0
     for (const entry of commits) {

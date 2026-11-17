@@ -113,25 +113,28 @@ test('unit completion -> owned report commit -> configuration acknowledgement ->
   assert.equal(await git(root, 'status', '--porcelain'), '')
 })
 
+// A unit that reported completed yet left changes behind used to stop the run on a dirty tree (and
+// every restart). They are kept aside whatever the outcome: never committed or published, never lost.
 for (const file of ['app.js', 'spec/ssot/ARCH.md', 'spec/tasks/T002.example.md', 'spec/STATE.md', 'owner-notes.txt']) {
-  test(`unknown changes are preserved and prevent publication/next unit: ${file}`, async (t) => {
+  test(`unknown changes after a completed unit are kept as its snapshot, never published, and the run goes on: ${file}`, async (t) => {
     const { root } = await fixture(t)
     let calls = 0, expected
-    const result = await vibeLoop(options(root), { preflight: passed,
+    const pushed = []
+    const result = await vibeLoop(options(root), { preflight: passed, check: async () => ({ ok: true }),
       execute: async () => {
-        calls++; await code(root)
+        if (++calls > 1) return code(root, calls)
+        await code(root)
         expected = (await readFile(path.join(root, file), 'utf8').catch(() => '')) + '\nuser content must survive\n'
         await writeFile(path.join(root, file), expected)
         return structuredClone(receipt)
-      }, push: () => assert.fail('dirty work must not be pushed'),
+      }, push: async () => { pushed.push(await git(root, 'rev-parse', 'HEAD')); return { ok: true, pushed: null } },
     })
-    assert.equal(result.ok, false); assert.equal(calls, 1)
-    const after = await readFile(path.join(root, file), 'utf8')
-    if (file === 'spec/STATE.md') assert.match(after, /user content must survive/)
-    else assert.equal(after, expected)
-    assert.match(await git(root, 'status', '--porcelain'), new RegExp(file.replaceAll('.', '\\.')))
-    const committed = await git(root, 'show', `HEAD:${file}`).catch(() => '')
-    assert.doesNotMatch(committed, /user content must survive/)
+    assert.equal(result.ok, true, result.error); assert.equal(calls, 3)
+    assert.equal(await git(root, 'status', '--porcelain'), '')
+    const [ref] = (await git(root, 'for-each-ref', '--format=%(refname)', 'refs/gusta/units')).split('\n')
+    assert.equal(await git(root, 'show', `${ref}:${file}`), expected.trim())
+    for (const commit of [...pushed, 'HEAD']) assert.doesNotMatch(await git(root, 'show', `${commit}:${file}`).catch(() => ''), /user content must survive/)
+    assert.match(await readFile(path.join(root, result.report), 'utf8'), new RegExp(`uncommitted work kept: ${ref} \\(T001, 1 files\\)`))
   })
 }
 

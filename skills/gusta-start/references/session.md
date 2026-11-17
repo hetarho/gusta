@@ -11,7 +11,7 @@
 
 실행 중에는 `vibe loop --tag <tag> --configure --deadline '<ISO with Z or offset>' --final-reserve-hours <hours> --wait-ms 30000 --json`으로 같은 호스트의 마감·예약을 바꾼다. `--push-each-unit|--no-push-each-unit`는 의도를 설정하되 단위 중 발행을 유예하고 공동 마감으로 모은다. land의 단위별 반영·전체 검수·마감 변경을 대신하지 않는다. applied receipt는 설정 적용만 증명하므로 실제 발행은 push 영수증으로 확인한다. 즉시 취소와 단위 완료 후 정지는 별개다. [실행 중 제어·복구 계약](loop-control.md)을 따른다.
 
-보통 foreground loop를 도구/하네스 완료 대기로 기다리고 종료 영수증을 받아 이어간다. 모델의 sleep→status 반복은 하지 않는다. 진행 보고는 재촉을 기다리지 않는다: loop를 백그라운드로 띄웠으면 `vibe loop --tag <tag> --wait-event unit-finished,needs-judgment,finished --json`을 백그라운드로 걸어 두고, 돌아올 때마다 사건 한 줄(단위·태스크·결과, 판단 필요 항목)을 보고한 뒤 받은 `cursor`로 `--after <cursor>`를 붙여 다시 건다. `ended`·finished면 종료 영수증으로 이어간다. detach는 상위 대화의 실제 후속 실행 연결이 있을 때만 쓴다. 시작 때 알림 연결 여부를 보고하며, 훅 미설정/상위 연결 부재면 자동 채팅 통지가 안 된다고 밝힌다. CLI가 끝나도 회복 가능한 문제가 남으면 새 하위 단위나 일반 스킬로 목표를 이어서 처리한다(원래 마감·총 한도 유지). CLI 결함은 보고서에 남기고 현재 프로젝트에서 패키지를 고치지 않는다.
+보통 foreground loop를 도구/하네스 완료 대기로 기다리고 종료 영수증을 받아 이어간다. 모델의 sleep→status 반복은 하지 않는다. 진행 보고는 재촉을 기다리지 않는다: loop를 백그라운드로 띄웠으면 `vibe loop --tag <tag> --wait-event unit-finished,needs-judgment,finished --json`을 백그라운드로 걸어 두고, 돌아올 때마다 사건 한 줄(단위·태스크·결과, 판단 필요 항목)을 보고한 뒤 받은 `cursor`로 `--after <cursor>`를 붙여 다시 건다(현재 run 사건만 센다; detach면 출력의 `runId`·`cursor`를 `--run`·`--after`로). `ended`·finished면 종료 영수증으로 이어간다. detach는 상위 대화의 실제 후속 실행 연결이 있을 때만 쓴다. 시작 때 알림 연결 여부를 보고하며, 훅 미설정/상위 연결 부재면 자동 채팅 통지가 안 된다고 밝힌다. CLI가 끝나도 회복 가능한 문제가 남으면 새 하위 단위나 일반 스킬로 목표를 이어서 처리한다(원래 마감·총 한도 유지). CLI 결함은 보고서에 남기고 현재 프로젝트에서 패키지를 고치지 않는다.
 
 ## 배포와 선점
 

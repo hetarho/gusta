@@ -27,6 +27,23 @@ const wait = (reason, extra = {}) => ({ ok: false, waiting: true, reason, ...ext
 // What a waiting session (or its owner) does about the sessions it waits for.
 const WAIT_NEXT = `Each listed live session submits from its own worktree with vibe integration ready --tag <tag> (a session doing a task finishes or releases it first). Sessions that ended with work or sent no signal for ${STALE_MINUTES} minutes are already deferred to a later integration (deferred), not waited for. Whose work reached land outside the gate (landed: true) or will never submit is closed by its owner with vibe integration withdraw --participant <id>: its branch stays, and ready rejoins it.`
 const participantKey = ({ owner, tag, branch }) => createHash('sha256').update(`${owner}\n${tag}\n${branch}`).digest('hex').slice(0, 24)
+// The machine a participant registers from (device; host is its display label, which --host may set).
+export const hostName = () => os.hostname().replace(/\.local$/, '').replace(/[|\s]/g, '-')
+// A failed or conflicted gate waits for its owner's repair only until its deadline (repair refuses
+// after it). Then it goes to history as expired — at the next claim, finish, withdraw or plan-push —
+// and a fresh claim can start. A gate still preparing or checking never expires: elapsed time never
+// authorizes replay. History keeps its receipts and the check cache keeps every success.
+const RELEASABLE = new Set(['failed', 'conflict'])
+export const gateExpired = (gate, now = Date.now()) => Boolean(gate && RELEASABLE.has(gate.phase) && gate.deadline && Date.parse(gate.deadline) <= now)
+const retire = (state, phase, reason, at) => {
+  state.history = [{ ...state.gate, phase, from: state.gate.phase, reason, at }, ...state.history].slice(0, 20)
+  state.gate = null
+  return state.history[0]
+}
+const expire = (state, at) => gateExpired(state.gate, Date.parse(at)) ? retire(state, 'expired', 'deadline-passed', at) : null
+// Work land already holds, recorded without the gate: landed outside it, unverified.
+const landOutside = (entry, base, reason, at) => Object.assign(entry, { status: 'landed', landed: base, reconciled: { at, from: entry.status, reason, verified: false }, at })
+const FROZEN_NEXT = 'It is frozen in the current gate until that gate lands, is repaired, or is released: vibe integration abandon --token <token> for a failed gate (finish does it after the deadline).'
 
 // What a session command reports about its participant: never the whole shared record (its gate
 // receipts carry check output), only who it is, where it stands and why not.
@@ -144,11 +161,11 @@ export async function openIntegration(context, injected = {}) {
     if (kind === undefined && context.workspace?.git.gitDir) kind = await readFile(path.join(context.workspace.git.gitDir, 'gusta-session.json'), 'utf8').then((text) => JSON.parse(text).kind).catch(() => null)
     const result = await transaction((state, at) => {
       const previous = state.participants[id]
-      if (previous?.status === 'landed' && previous.head === head) return { id, alreadyLanded: true, landed: previous.landed }
+      if (previous?.status === 'landed' && previous.head === head) return { id, alreadyLanded: true, landed: previous.landed, ...(previous.reconciled ? { reconciled: true } : {}) }
       // A frozen participant cannot quietly replace the input under an existing gate.
       if (state.gate?.cohort.some((entry) => entry.id === id) && previous?.head !== head) return wait('candidate-frozen', { token: state.gate.token })
       if (previous && previous.owner !== owner) return wait('participant-owner-changed')
-      state.participants[id] = { ...previous, id, owner, tag, kind: kind ?? previous?.kind ?? 'implementation', publication: previous?.publication === 'pr' || kind === 'self-improve-remote' || context.branches.via === 'pr' ? 'pr' : 'merge', host: host ?? previous?.host ?? os.hostname().replace(/\.local$/, '').replace(/[|\s]/g, '-'), branch: sessionBranch, head, land: context.branches.land ?? context.branches.landTarget ?? null,
+      state.participants[id] = { ...previous, id, owner, tag, kind: kind ?? previous?.kind ?? 'implementation', publication: previous?.publication === 'pr' || kind === 'self-improve-remote' || context.branches.via === 'pr' ? 'pr' : 'merge', host: host ?? previous?.host ?? hostName(), device: hostName(), branch: sessionBranch, head, land: context.branches.land ?? context.branches.landTarget ?? null,
         status: previous?.status === 'ready' && previous.head === head ? 'ready' : 'working', at: at.now, agentChecks: agentChecks === undefined ? previous?.agentChecks ?? [] : mergeAgentAcceptance(previous?.agentChecks ?? [], agentChecks),
         verificationCommands: [...new Set([...(previous?.verificationCommands ?? []), ...(verificationCommands ?? [])])] }
       return { id }
@@ -213,13 +230,14 @@ export async function openIntegration(context, injected = {}) {
     return transaction(async (state, at) => {
       const entry = state.participants[id]
       if (!entry) return wait('participant-unknown', { participant: id })
-      if (state.gate?.cohort.some((member) => member.id === id)) return wait('candidate-frozen', { token: state.gate.token })
+      const expired = expire(state, at.now)
+      if (state.gate?.cohort.some((member) => member.id === id)) return wait('candidate-frozen', { token: state.gate.token, phase: state.gate.phase, nextAction: FROZEN_NEXT.replace('<token>', state.gate.token) })
       if (terminal.has(entry.status)) return { id, status: entry.status, unchanged: true }
       if (!await sha(entry.head) && shared) await remoteGit(['fetch', '--quiet', '--no-tags', remote, `refs/heads/${entry.branch}`]).catch(() => {})
       const contained = Boolean(base && entry.land === land && await sha(base) && await sha(entry.head) && await ancestor(entry.head, base))
-      const previous = entry.status
-      Object.assign(entry, contained ? { status: 'landed', landed: base, reconciled: { at: at.now, from: previous, reason, verified: false } } : { status: 'withdrawn', reason, withdrawn: { at: at.now, from: previous } }, { at: at.now })
-      return { id, tag: entry.tag, branch: entry.branch, head: entry.head, status: entry.status, contained, rejoin: `vibe integration ready --tag ${entry.tag} (from ${entry.branch})` }
+      if (contained) landOutside(entry, base, reason, at.now)
+      else Object.assign(entry, { status: 'withdrawn', reason, withdrawn: { at: at.now, from: entry.status }, at: at.now })
+      return { id, tag: entry.tag, branch: entry.branch, head: entry.head, status: entry.status, contained, rejoin: `vibe integration ready --tag ${entry.tag} (from ${entry.branch})`, ...(expired ? { expired: expired.token } : {}) }
     })
   }
   async function claim({ tag, active = [], deadline = null } = {}) {
@@ -243,7 +261,28 @@ export async function openIntegration(context, injected = {}) {
       if (base && !await sha(base) && shared) await remoteGit(['fetch', '--quiet', '--no-tags', remote, `refs/heads/${land}`])
     } catch (error) { return wait('coordination-unknown', { error: detail(error) }) }
     if (!base || !await sha(base)) return wait('land-base-unavailable', { land })
-    return transaction(async (state, at) => {
+    // Another session's ready work that land already holds (it reached land outside the gate) needs
+    // no gate: it is recorded landed, unverified, and never joins the cohort, so its commands do not
+    // run here. This and an expired gate's release persist even when the claim below still waits.
+    const self = participantKey({ owner: await ownerId(), tag, branch: context.branch }), contained = []
+    for (const entry of pending) if (entry.id !== self && entry.status === 'ready' && entry.land === land && !unavailable.has(entry.id) && await ancestor(entry.head, base)) contained.push(entry)
+    let tidy = {}
+    if (contained.length || gateExpired(seen.state.gate)) {
+      const tidied = await transaction((state, at) => {
+        const expired = expire(state, at.now), reconciled = []
+        for (const { id, head } of contained) {
+          const entry = state.participants[id]
+          if (entry?.status !== 'ready' || entry.head !== head || state.gate?.cohort.some((member) => member.id === id)) continue
+          landOutside(entry, base, 'head-in-land', at.now)
+          reconciled.push({ id, tag: entry.tag, host: entry.host, head, landed: base })
+        }
+        return { ...(expired ? { expired: { token: expired.token, from: expired.from } } : {}), ...(reconciled.length ? { reconciled } : {}) }
+      })
+      if (!tidied.ok) return tidied
+      tidy = tidied.value ?? {}
+    }
+    const claimed = await transaction(async (state, at) => {
+      expire(state, at.now)
       if (state.gate) return wait('integration-owned', { gate: state.gate, automaticRecheck: false })
       if (state.planning?.phase === 'publishing') return wait('planning-in-progress', { planning: state.planning })
       // Only live sessions are waited for. A session that ended with work (paused), one with no
@@ -284,9 +323,10 @@ export async function openIntegration(context, injected = {}) {
       if (!cohort.length) return wait('no-ready-sessions', away)
       if (cohort.some((entry) => !pending.some((known) => known.id === entry.id && known.head === entry.head))) return wait('participants-changed')
       if (await remoteLand(land) !== base) return wait('land-base-moved', { automaticRecheck: false })
-      state.gate = { token: uuid(), owner: tag, via: context.branches.via === 'pr' || cohort.some((entry) => entry.publication === 'pr') ? 'pr' : 'merge', executor: { host: os.hostname(), pid: process.pid }, phase: 'preparing', land, base, cohort: cohort.map(({ id, tag, branch, head, agentChecks, verificationCommands, publication }) => ({ id, tag, branch, head, agentChecks, verificationCommands, publication })), ...away, at: at.now, deadline, candidate: null, checks: [], agentChecks: [], rounds: [] }
+      state.gate = { token: uuid(), owner: tag, via: context.branches.via === 'pr' || cohort.some((entry) => entry.publication === 'pr') ? 'pr' : 'merge', executor: { host: os.hostname(), pid: process.pid }, phase: 'preparing', land, base, cohort: cohort.map(({ id, tag, host, device, branch, head, agentChecks, verificationCommands, publication }) => ({ id, tag, host, device, branch, head, agentChecks, verificationCommands, publication })), ...away, ...(tidy.reconciled ? { reconciled: tidy.reconciled } : {}), at: at.now, deadline, candidate: null, checks: [], agentChecks: [], rounds: [] }
       return { gate: state.gate }
     })
+    return { ...claimed, ...tidy }
   }
   const mutateGate = (token, change) => transaction((state, at) => {
     const gate = own(state, token)
@@ -317,13 +357,16 @@ export async function openIntegration(context, injected = {}) {
       return wait('integration-conflict', { token, root: directory, error: detail(error), automaticRecheck: false })
     }
   }
-  async function checked(token, receipt, agentChecks = [], { ciCommands = [] } = {}) {
+  // notRun: participant commands this executor could not run (named another device's paths), reported, not failed.
+  async function checked(token, receipt, agentChecks = [], { ciCommands = [], notRun = [] } = {}) {
     return mutateGate(token, (gate) => {
       if (gate.phase !== 'checking') return wait('integration-already-checked', { gate, automaticRecheck: false })
       gate.checks = receipt
       gate.rounds = [...gate.rounds, { candidate: gate.candidate, checks: receipt, at: now() }]
       gate.agentChecks = validateAgentAcceptance(agentChecks)
       gate.ciCommands = ciCommands
+      if (notRun.length) gate.notRun = notRun
+      else delete gate.notRun
       gate.phase = receipt.every((entry) => entry.ok) ? agentChecks.some((entry) => entry.required !== false && (entry.status !== 'pass' || entry.candidate !== gate.candidate)) ? 'waiting-agent' : 'verified' : 'failed'
       return { gate }
     })
@@ -334,11 +377,23 @@ export async function openIntegration(context, injected = {}) {
     if ((await git(checkout, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim() !== common) return wait('repair-workspace-mismatch')
     return mutateGate(token, async (gate) => {
       if (gate.phase !== 'failed') return wait('repair-requires-failed-receipt', { gate })
-      if (gate.deadline && Date.parse(gate.deadline) <= Date.parse(now())) return wait('integration-deadline', { gate })
+      if (gate.deadline && Date.parse(gate.deadline) <= Date.parse(now())) return wait('integration-deadline', { gate, nextAction: `The deadline passed: vibe integration finish moves this gate to history (expired) and claims a fresh candidate, reusing cached successes; vibe integration abandon --token ${gate.token} releases it explicitly.` })
       if (next === gate.candidate || !await ancestor(gate.candidate, next)) return wait('repair-needs-descendant-change', { gate })
       gate.candidate = next; gate.path = checkout; gate.branch = (await git(checkout, ['symbolic-ref', '--short', 'HEAD'])).trim()
       gate.phase = 'checking'; gate.executor = { host: os.hostname(), pid: process.pid }
       return { gate }
+    })
+  }
+  // The owner's explicit release of a failed or conflicted gate whose cause its cohort cannot fix
+  // (another device's command): to history with its receipts, so a fresh claim can start.
+  async function abandon({ token, reason = 'abandoned-by-owner' } = {}) {
+    return transaction((state, at) => {
+      const past = state.history.find((entry) => entry.token === token && ['expired', 'abandoned'].includes(entry.phase))
+      if (past && state.gate?.token !== token) return { gate: past, unchanged: true }
+      const gate = own(state, token)
+      if (gate.ok === false) return gate
+      if (!RELEASABLE.has(gate.phase)) return wait('integration-not-releasable', { phase: gate.phase, automaticRecheck: false })
+      return { gate: retire(state, gateExpired(gate, Date.parse(at.now)) ? 'expired' : 'abandoned', reason, at.now) }
     })
   }
   async function accept({ token, candidate: expected, checks }) {
@@ -433,21 +488,22 @@ export async function openIntegration(context, injected = {}) {
   }
   async function publishPlanning({ land, base, candidate: next }, { localPublish, localOnly = false } = {}) {
     if (!validRef(land) || !validHead(base) || !validHead(next) || !await ancestor(base, next)) return wait('planning-candidate-invalid')
-    const predicate = async (state) => {
+    const predicate = async (state, at) => {
+      expire(state, at.now)
       if (state.gate?.land === land) return wait('integration-frozen', { gate: state.gate, automaticRecheck: false })
       if (state.planning?.phase === 'publishing') return wait('planning-in-progress', { planning: state.planning })
       if ((localOnly ? await sha(`refs/heads/${land}`) : await remoteLand(land)) !== base) return wait('land-base-moved', { automaticRecheck: false })
       return null
     }
     if (shared && !localOnly) return transaction(async (state, at) => {
-      const refused = await predicate(state)
+      const refused = await predicate(state, at)
       if (refused) return refused
       state.lastPlanning = { land, base, candidate: next, at: at.now }
       return { published: next }
     }, { publication: { land, base, candidate: next } })
     const token = uuid()
     const reserved = await transaction(async (state, at) => {
-      const refused = await predicate(state)
+      const refused = await predicate(state, at)
       if (refused) return refused
       state.planning = { token, phase: 'publishing', land, base, candidate: next, at: at.now }
       return { reserved: true }
@@ -476,7 +532,7 @@ export async function openIntegration(context, injected = {}) {
       return { published: next, publication }
     })
   }
-  return { branch, ref, scope: shared ? 'remote' : 'clone', read, transaction, register, ready, close, end, withdraw, claim, candidate, checked, repair, accept, complete, publishHeld, settleMergedPR, publishPlanning, remoteLand }
+  return { branch, ref, scope: shared ? 'remote' : 'clone', read, transaction, register, ready, close, end, withdraw, claim, candidate, checked, repair, abandon, accept, complete, publishHeld, settleMergedPR, publishPlanning, remoteLand }
 }
 
 export async function assertIntegrationCandidate(context, options = {}, injected = {}) {
