@@ -15,7 +15,7 @@ description: >-
 - `npx @haeram/gusta vibe settings --json`으로 `unset`·`legacy`·현재 값을 본다. `legacy`가 있으면(예전 STATE cfg push·plan) 먼저 `npx @haeram/gusta migrate`로 옮기고 다시 본다. `unset`이 비어 있으면 설정은 재질문하지 않고 아래 연결 확인 뒤 원래 일로 돌아간다.
 - 묻기 전에 적용 지침과 브랜치·기획 발행·배포의 기존 운영 규칙을 [프로젝트 규칙 대조](../gusta-update/references/project-rules.md)대로 확인한다. 같은 주제·겹치는 범위의 실제 차이만 현재 프레임워크 절차로 맞추길 권유하고 변경안·영향과 함께 괜찮은지 묻는다. 설정에 없는 프로젝트 제약도 보존하며, 기존에 정한 값을 프리셋으로 덮지 않는다.
 - 원래 작업의 검증도 [프로젝트 규칙 대조](../gusta-update/references/project-rules.md)의 검사별 연결 완료 조건까지 확인한다. 설정이 모두 정해져 있어도 생략하지 않는다. `declared:false`·`partial:true`나 지침에만 있는 명령은 gusta-create-architecture/gusta-update로 연결을 마치고, 남은 미지원·판단은 초기화 미완료 범위와 다음 동작으로 보고한다. 원래 작업에 미연결 전체 스크립트를 대신 실행시키지 않는다. 이 스킬이 검증 정책을 임의로 고치거나 모든 프로젝트에 새 계획 파일을 요구하지 않는다.
-- 최초 제품 단계·지원 범위가 미정이면 [제품 지원 정책](../gusta-create-architecture/references/product-support.md)의 추천·선택을 gusta-sketch/architecture로 연결한다. 이미 승인된 ARCH를 재사용하며 이 스킬은 제품 정책을 SETTINGS나 ARCH에 직접 쓰지 않는다.
+- 최초 제품 단계·지원 범위가 미정이면 [제품 지원 정책](../gusta-create-architecture/references/product-support.md)의 추천·선택을 gusta-plan/architecture로 연결한다. 이미 승인된 ARCH를 재사용하며 이 스킬은 제품 정책을 SETTINGS나 ARCH에 직접 쓰지 않는다.
 - 후보 브랜치는 실제 브랜치(`git branch -a --format='%(refname:short)'`)와 원격 기본 브랜치(`git symbolic-ref --short refs/remotes/origin/HEAD`)에서만 고른다. 브랜치 이름을 지어내지 않는다. 사용자가 새 이름을 말한 경우와 통합 브랜치 후보가 없을 때 추천하는 `develop`은 예외다.
 
 ## 2. 묻기 (한 번에 모아서)

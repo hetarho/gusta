@@ -83,7 +83,7 @@ npx @haeram/gusta agents --json
 # 충돌한 로컬 파일을 패키지 버전으로 명시적으로 교체
 npx @haeram/gusta install --force
 
-# 세션 도구 (gusta-sketch·gusta-start·gusta-design-mode)
+# 세션 도구 (gusta-plan·gusta-sketch·gusta-start·gusta-design-mode)
 npx @haeram/gusta vibe status --tag k3f9        # 다른 세션·기기(브랜치·커밋·push 여부)·남은 일·추천 경로
 npx @haeram/gusta vibe brief T012                # 태스크가 기대는 결정 블록·전역 규칙·flow·constraints·stale base 이후 chg
 npx @haeram/gusta vibe sketch serve tag-filter  # gusta-sketch 시안(.tmp/sketch/tag-filter/)을 127.0.0.1 포트 하나로 — 살아 있으면 재사용, 기본 8시간 뒤 종료

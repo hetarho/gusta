@@ -102,6 +102,7 @@ const rowIndex = (block, id) => block?.body.findIndex((line) => isRow(line) && !
 const TASK_NEXT = /^- gusta-implement-task (T\d{3,}(?: T\d{3,})*)$/
 const GENERATED_NEXT = new Set([
   '- no runnable task: resolve blocked, parked or deps',
+  '- no runnable task: plan next with gusta-plan',
   '- no runnable task: plan next with gusta-sketch',
   '- no runnable task: plan next with ideation or gusta-create-task',
 ])

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gusta Plan"
+  short_description: "요구사항을 한 번에 또는 대화로 받아 spec 문서와 태스크까지 만들어 올리기"
+  default_prompt: "Use $gusta-plan to turn my requirements, given at once or built up in conversation, into spec docs and tasks pushed to the planning branch, ready for $gusta-start; hand off what needs a mockup to $gusta-sketch and what needs coded variants to $gusta-showcase."

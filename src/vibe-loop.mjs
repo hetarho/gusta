@@ -538,7 +538,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     const remainingMs = Math.max(0, deadline - deps.now()), remainingUnits = Math.max(0, maxUnits - count)
     const hardStop = remainingMs === 0 || remainingUnits === 0 || ['max-hours', 'max-units', 'stop-file', 'signal', 'stop-after-unit', 'cancelled'].includes(stopReason ?? reason)
     return { objectiveComplete: false, recoverable: !hardStop, hardStop, reason, remainingMs, remainingUnits, deadline: new Date(deadline).toISOString(),
-      pendingRepairTasks: [...new Set([repairTask, ...specRejected.keys(), recovery?.reason === 'spec-gate' ? recovery.taskId : null].filter(Boolean))], next: hardStop ? 'report stop and preserve remaining work' : reason === 'usage-limit' ? 'rerun after the usage limits reset (hint); do not start units meanwhile' : reason === 'needs-login' ? 'report that the owner signs in to the tools (gusta agents), then rerun' : reason === 'needs-sketch' ? 'report that the owner plans the untasked SSOT deltas, reviews or ideation with /gusta-sketch; do not plan them in this session' : repairTask ? 'delegate the pending repair within the existing session budget, then verify before publication' : 'reconcile the result with the user objective and continue within the existing session budget' }
+      pendingRepairTasks: [...new Set([repairTask, ...specRejected.keys(), recovery?.reason === 'spec-gate' ? recovery.taskId : null].filter(Boolean))], next: hardStop ? 'report stop and preserve remaining work' : reason === 'usage-limit' ? 'rerun after the usage limits reset (hint); do not start units meanwhile' : reason === 'needs-login' ? 'report that the owner signs in to the tools (gusta agents), then rerun' : reason === 'needs-sketch' ? 'report that the owner plans the untasked SSOT deltas, reviews or ideation with /gusta-plan; do not plan them in this session' : repairTask ? 'delegate the pending repair within the existing session budget, then verify before publication' : 'reconcile the result with the user objective and continue within the existing session budget' }
   }
   const snapshot = () => ({ ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
@@ -1064,7 +1064,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       const runnable = (status.runnable ?? []).filter((id) => inScope(id) && !refused.has(id))
       const scoped = scope && !runnable.length ? ((status.remaining ?? []).some((task) => scope.has(task.id)) ? 'scope-blocked' : 'scope-done') : null
       // A unit only executes an existing task: with nothing runnable (and no repair to try below)
-      // the run ends. Untasked SSOT deltas, reviews and ideation are the owner's /gusta-sketch.
+      // the run ends. Untasked SSOT deltas, reviews and ideation are the owner's /gusta-plan.
       const untasked = ['pending', 'reviews', 'ideation'].some((key) => status.sketch?.[key]?.length)
       const idle = !runnable.length && !status.issues?.length
       const finished = scoped ?? (status.parkedOnly ? 'parked-only' : idle ? untasked ? 'needs-sketch' : 'no-work' : null)

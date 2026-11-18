@@ -127,7 +127,7 @@ async function done({ options, board, root, state, id, date, injected, coordinat
   const next = (lines) => {
     const lead = runnable.length ? `- gusta-implement-task ${runnable.slice(0, NEXT_LIMIT).join(' ')}` : remaining ? '- no runnable task: resolve blocked, parked or deps' : null
     const result = updateTaskNext(lines, [id], lead ? [lead] : [])
-    return result.some((line) => line.trim()) ? result : ['- no runnable task: plan next with gusta-sketch']
+    return result.some((line) => line.trim()) ? result : ['- no runnable task: plan next with gusta-plan']
   }
   const log = `- ${date} ${id} done`
   const closed = closeTasks(state, [id], { ...(session ? {} : { log }), next })

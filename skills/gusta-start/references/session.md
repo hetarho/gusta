@@ -1,6 +1,6 @@
 # 실행기 밖 세션
 
-시작 때 묻지 않는다 — 1절의 실행 정보를 보여 주고 바로 시작한다. 결정함은 실행 중에 쌓이고, 사용자는 돌아와 `/gusta-start inbox 정리`로 승인 항목을 지우거나(`vibe inbox resolve --log`) 결정을 바꾸려면 /gusta-sketch로 간다. 열린 보고서는 to를 채운다.
+시작 때 묻지 않는다 — 1절의 실행 정보를 보여 주고 바로 시작한다. 결정함은 실행 중에 쌓이고, 사용자는 돌아와 `/gusta-start inbox 정리`로 승인 항목을 지우거나(`vibe inbox resolve --log`) 결정을 바꾸려면 /gusta-plan으로 간다. 열린 보고서는 to를 채운다.
 
 이 대화가 목표·마감·총 회복 예산을 소유한다. 기획·구현 전 `vibe session open --kind start --tag <tag> --json`으로 받은 전용 worktree의 targetRoot/branch에서 실행한다(같은 kind·tag로 다시 열면 그 세션을 돌려준다). 원래 checkout의 미커밋 변경으로 거절되면 `--from-head`로 열고 결과의 `excluded`(새 worktree에 없는 파일)를 실행 정보에 보여 준다 — 맡김에서 그 파일이 맡길 태스크의 touches와 겹치면 그 태스크는 parked로 두고 나머지를 진행한다. 배정된 hostManaged 단위는 기존 격리 공간을 검증해 잇는다. 직렬 loop가 실제 checkout에서 preflight·active·보고서·절전 방지를 준비하므로 동일 점검을 앞에서 반복하지 않는다. 독립 probe가 필요하면 `vibe preflight --probe-workspace current --probe '<태스크 단계 명령>' --json`으로 실제 실행 공간을 확인한다. 의존성 부재·네트워크 제한·권한 거부를 구분하고, 네트워크 실패만으로 별도 worktree 의존성 설치를 반복하지 않는다. 작업 묶음 조정자는 실제 워커 공간에 맞는 probe를 쓰며 이 세션에서 세션 등록(`vibe beat --tag <tag> --mode autopilot`)·보고서·awake를 준비한다.
 

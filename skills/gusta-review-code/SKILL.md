@@ -5,7 +5,7 @@ description: >-
   (spec/review/)를 만든다. "코드 리뷰해줘 / 리팩토링할 데 찾아줘 / 기술 부채 정리하자 /
   코드 품질 점검 / 구조 개선할 곳 있어?" 일 때, 그리고 태스크를 몇 개 구현한 뒤 정리 시점에 사용.
   finding은 위치·문제·영향을 갖춰 우선순위(P1~P3)로 제안하고 채택은 사용자가 정한다. 코드는 고치지
-  않는다 — 채택된 finding은 /gusta-sketch가 태스크로 만들고 /gusta-start가 구현한다.
+  않는다 — 채택된 finding은 /gusta-plan이 태스크로 만들고 /gusta-start가 구현한다.
 ---
 
 # gusta-review-code — 개발 관점 점검 → 리팩토링 제안
@@ -48,5 +48,5 @@ findings는 전부 `[?]`로 문서에 먼저 적는다(문서 먼저). 그 다�
 
 ## 5. 마감
 - summary 1~3줄(전체 상태·가장 큰 위험) 확정. [o]가 하나라도 있으면 st→`ready@YYMMDD`, 하나도 없으면 바로 `converted@YYMMDD`.
-- STATE: review 행 갱신, next=`gusta-sketch review/<slug>`(채택이 있을 때). `vibe log` 1줄. ssot·tasks 표는 건드리지 않는다 — 태스크는 /gusta-sketch가 gusta-create-task로 만든다.
+- STATE: review 행 갱신, next=`gusta-plan review/<slug>`(채택이 있을 때). `vibe log` 1줄. ssot·tasks 표는 건드리지 않는다 — 태스크는 /gusta-plan이 gusta-create-task로 만든다.
 - 보고는 cfg.level대로 — expert: 채택·기각 목록 / novice: 무엇을 정리하기로 했고 그러면 무엇이 좋아지는지.

@@ -2,7 +2,7 @@
 name: gusta-create-task
 description: >-
   엔지니어 역할로 SSOT 변경분(STATE pending)과 채택된 리팩토링 finding(spec/review/,
-  st:ready)을 구현 태스크(spec/tasks/T###.md)로 분해하는 내부 스킬. gusta-sketch가 기획
+  st:ready)을 구현 태스크(spec/tasks/T###.md)로 분해하는 내부 스킬. gusta-plan·gusta-sketch가 기획
   마지막에, gusta-start가 요청 실행·실행 중 공백을 메울 때 부른다 — 사용자가 직접 부르지 않는다. STATE의
   rev/tasked 차이와 SSOT chg로 무엇이 새로 생겼고 어디가 바뀌었는지 스스로 파악한다. 개발 관점 질문만
   한다(데이터 모델·API·엣지·마이그레이션). 구현은 gusta-implement-task.
@@ -11,7 +11,7 @@ description: >-
 # gusta-create-task — SSOT 델타 → 태스크
 
 **역할: 엔지니어.** SSOT의 기획 결정은 재논의하지 않는다. SSOT가 모호하거나 모순이면 추측으로 메우지
-말고 gusta-update-ssot로 올린다. 단독 맡김이면 추천안을 반영한 뒤 분해를 잇고, 직접 호출(gusta-sketch 등)은 확인을 요청하며 묶음 워커는 기획 공간으로 인계한다.
+말고 gusta-update-ssot로 올린다. 단독 맡김이면 추천안을 반영한 뒤 분해를 잇고, 직접 호출(gusta-plan 등)은 확인을 요청하며 묶음 워커는 기획 공간으로 인계한다.
 
 ## 공통 규칙 (모든 spec 스킬)
 1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 하고, agents 미정이면 맡김을 시작하지 않는다).
@@ -31,7 +31,7 @@ description: >-
 
 ## 2. 개발 인터뷰 (필요한 것만)
 ARCH·SSOT·기존 코드에 답이 있으면 묻지 않는다. 영역: 데이터 모델/스키마, API·인터페이스 계약, 상태·에러·엣지 처리, 기존 데이터 마이그레이션, 성능·보안 요구, 테스트 범위.
-맡김은 level과 무관하게 추천안으로 결정하고 inbox decided에 남긴다. 아래 인터뷰는 직접 호출(gusta-sketch 등)에만 적용한다.
+맡김은 level과 무관하게 추천안으로 결정하고 inbox decided에 남긴다. 아래 인터뷰는 직접 호출(gusta-plan 등)에만 적용한다.
 - **expert**: 설계 초안을 제시하고 세부를 직접 확인. "스키마 이 초안으로? 인덱스는? 소프트 딜리트?"
 - **mid**: 갈림길마다 선택지 + 트레이드오프 1줄.
 - **novice**: 기술 질문 금지. 결과 수준만 확인("기존에 저장된 글은 그대로 보여야 하죠?"). 나머지는 AI가 결정하고 근거를 구현메모에 남긴다.

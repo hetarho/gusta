@@ -307,7 +307,7 @@ test('prune: 이 세션의 wip/<tag>는 미커밋 변경 동안 보존하고, �
 })
 
 // Execution runs only existing tasks; untasked SSOT deltas, adopted reviews and ideation are sketch
-// input (gusta-sketch), reported but never a route of their own.
+// input (gusta-plan or gusta-sketch), reported but never a route of their own.
 test('route: 태스크가 있으면 implementation, 없으면 sketch-first — 미태스크 기획 거리는 sketch에만', async (t) => {
   const plain = STATE.replace('| T001 | first | ARCH | - | todo |\n| T002 | second | ARCH | - | todo |\n', '')
   const ideation = (st) => `## ideation\n| id | st |\n|---|---|\n| tags | ${st} |\n\n## ssot\n`

@@ -1,10 +1,10 @@
 ---
 name: gusta-create-architecture
 description: >-
-  spec 시스템 초기화 + 아키텍처 SSOT(spec/ssot/ARCH.md) 작성. gusta-sketch가 spec/이
+  spec 시스템 초기화 + 아키텍처 SSOT(spec/ssot/ARCH.md) 작성. gusta-plan·gusta-sketch가 spec/이
   없을 때나 스택·구조·검증 명령이 바뀔 때 부르는 내부 기획 스킬이다. 인터뷰로 스택·구조·컨벤션·검증 명령을 결정해 이후
   모든 태스크가 따를 기준을 만든다. 코드 구현은 하지 않는다(그건 gusta-implement-task). 프로젝트를 새로
-  시작하거나 기획하려는 요청은 gusta-sketch로.
+  시작하거나 기획하려는 요청은 gusta-plan으로.
 ---
 
 # gusta-create-architecture — 초기화 + 아키텍처 SSOT

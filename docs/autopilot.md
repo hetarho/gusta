@@ -2,7 +2,7 @@
 
 [README](../README.ko.md) · [개발 흐름](workflow.md) · [브랜치·검증](branching.md) · **오래 맡기기** · [병렬 작업](parallel-work.md) · [자가 개선](self-improve.md) · [CLI](cli.md)
 
-`/gusta-start`가 맡긴 실행의 결정·주차 규칙은 [개발 흐름의 실행하기](workflow.md#실행하기--gusta-start)를, 검증·반영 규칙은 [검증과 push](branching.md#검증과-push)를 따릅니다. 실행은 이미 만든 태스크만 합니다 — 구상과 태스크 만들기는 그 전에 [`/gusta-sketch`](workflow.md#구상하기--gusta-sketch)에서 끝냅니다. `/gusta-start <요청>`은 시작한 대화가 요청을 SSOT·태스크로 먼저 옮긴 뒤 그 태스크만 `--tasks`로 맡깁니다([요청 실행](workflow.md#실행하기--gusta-start)).
+`/gusta-start`가 맡긴 실행의 결정·주차 규칙은 [개발 흐름의 실행하기](workflow.md#실행하기--gusta-start)를, 검증·반영 규칙은 [검증과 push](branching.md#검증과-push)를 따릅니다. 실행은 이미 만든 태스크만 합니다 — 기획과 태스크 만들기는 그 전에 [`/gusta-plan`](workflow.md#기획하기--gusta-plan)에서 끝냅니다(보고 골라야 하면 [`/gusta-sketch`](workflow.md#구상하기--gusta-sketch)). `/gusta-start <요청>`은 시작한 대화가 요청을 SSOT·태스크로 먼저 옮긴 뒤 그 태스크만 `--tasks`로 맡깁니다([요청 실행](workflow.md#실행하기--gusta-start)).
 
 ## 오래 맡기기 — `vibe loop`
 
@@ -24,7 +24,7 @@ npx @haeram/gusta vibe loop --tag k3f9 --stop --json
 
 단위마다 어떤 AI가 도는지는 실행하는 모델이 아니라 CLI가 정합니다. 기획 때 태스크에 적어 둔 `run:<도구>/<모델>@<에포트>`를 SETTINGS `agents`(쓸 도구와 폴백 순서) 안에서 그대로 실행하고, 지금 쓸 수 없으면(목록 밖 도구·로그인 안 됨·없는 모델이나 에포트) 능력 점수(`gusta agents`의 score)가 가장 가까운 조합으로 바꿉니다(같으면 싼 쪽, 그다음 agents 순서). `run:`이 없는 태스크는 `agents` 첫 도구를 그 도구의 기본 설정 그대로(모델·에포트를 넘기지 않음) 돌고, 막힌 태스크를 푸는 단위·쪼개기·관문 수정 단위는 원래 배정보다 낮아지지 않습니다. `--dry-run`의 `routing`이 태스크별 `recommended`·`run`·`source`(task·nearest·default·explicit)를 보여 주고, 실행 중에는 manifest의 dispatch·`unit-route` 이벤트·보고서 done 줄에 실제 조합이 남습니다(추천과 다르면 `추천 → 실제`). Claude는 `--model`·`--effort`와 자식 환경의 `CLAUDE_CODE_EFFORT_LEVEL`(셸에 export한 값보다 우선하게)로, Codex는 `--model`(-m)·`-c model_reasoning_effort`로 받습니다. `agents`가 미정이면 반복기는 시작하지 않고 `needs-init`으로 끝나며 `/gusta-init`을 안내합니다. `--provider`·`--model`·`--effort`는 사람이 실행 전체를 고정할 때만 씁니다.
 
-반복기는 preflight·세션 행(조정 브랜치)·보고서를 한 번 준비한 뒤 태스크 하나마다, 또는 막히거나 끊긴 태스크를 풀고 쪼개는 기획 한 조각(gusta-update-ssot+gusta-create-task)마다 새 세션을 시작합니다. 새 기능은 기획하지 않습니다 — 실행할 태스크가 없고 태스크로 안 쪼갠 SSOT 변경·채택된 review·미룬 구상만 남으면 `needs-sketch`로 멈추고 `/gusta-sketch`로 태스크까지 만든 뒤 다시 실행하라고 안내합니다(아무것도 없으면 `no-work`). 시간 한도의 마지막 구간은 **마감 관문 전용**입니다 — 그 구간에 들어서면 새 단위를 시작하지 않고(`reason: final-window`, 단위의 상한도 이 구간 시작까지라 실행 중이던 단위가 구간을 먹지 않습니다) 모은 코드 전체를 한 번 검증한 뒤 push·CI까지 진행합니다. 관문이 실패하면 근거를 담은 수정 태스크를 만들어 그 구간 안에서 고치고 다시 검증하며, 끝나면 관문 시도·실패·남은 수정 태스크·push 여부를 반환합니다. 구간 길이는 실측입니다: `vibe check --tier batch`·`work finish`가 기록한 전체 검증 시간 + 최근 단위 시간 + (push 브랜치가 있으면) CI 대기 시간. 아직 한 번도 측정되지 않았을 때만 max-hours의 20%를 쓰고, 측정은 단위 경계마다 다시 읽습니다. `--final-reserve-hours`로 직접 정할 수 있습니다.
+반복기는 preflight·세션 행(조정 브랜치)·보고서를 한 번 준비한 뒤 태스크 하나마다, 또는 막히거나 끊긴 태스크를 풀고 쪼개는 기획 한 조각(gusta-update-ssot+gusta-create-task)마다 새 세션을 시작합니다. 새 기능은 기획하지 않습니다 — 실행할 태스크가 없고 태스크로 안 쪼갠 SSOT 변경·채택된 review·미룬 구상만 남으면 `needs-sketch`로 멈추고 `/gusta-plan`으로 태스크까지 만든 뒤 다시 실행하라고 안내합니다(아무것도 없으면 `no-work`). 시간 한도의 마지막 구간은 **마감 관문 전용**입니다 — 그 구간에 들어서면 새 단위를 시작하지 않고(`reason: final-window`, 단위의 상한도 이 구간 시작까지라 실행 중이던 단위가 구간을 먹지 않습니다) 모은 코드 전체를 한 번 검증한 뒤 push·CI까지 진행합니다. 관문이 실패하면 근거를 담은 수정 태스크를 만들어 그 구간 안에서 고치고 다시 검증하며, 끝나면 관문 시도·실패·남은 수정 태스크·push 여부를 반환합니다. 구간 길이는 실측입니다: `vibe check --tier batch`·`work finish`가 기록한 전체 검증 시간 + 최근 단위 시간 + (push 브랜치가 있으면) CI 대기 시간. 아직 한 번도 측정되지 않았을 때만 max-hours의 20%를 쓰고, 측정은 단위 경계마다 다시 읽습니다. `--final-reserve-hours`로 직접 정할 수 있습니다.
 
 ### 단위 상한과 이어가기
 

@@ -103,7 +103,7 @@ test('no-work and max-hours routes terminate, closing report once', async (t) =>
   assert.equal(timed.reason, 'max-hours')
 })
 
-// Planning belongs to the owner's /gusta-sketch: execution never opens a unit without a task.
+// Planning belongs to the owner's /gusta-plan: execution never opens a unit without a task.
 test('untasked SSOT deltas end the loop as needs-sketch without a unit; tasks no unit can take end as no-work', async (t) => {
   const { root, arch } = await fixture(t, 0)
   const stateFile = path.join(root, 'spec/STATE.md')
@@ -114,9 +114,9 @@ test('untasked SSOT deltas end the loop as needs-sketch without a unit; tasks no
   assert.equal(status.route, 'sketch-first'); assert.deepEqual(status.sketch.pending.map((row) => row.id), ['ARCH'])
   const result = await vibeLoop(opts(root), { preflight: passed, execute: () => assert.fail('no planning unit') })
   assert.equal(result.ok, true, result.error); assert.equal(result.units, 0)
-  assert.equal(result.reason, 'needs-sketch'); assert.equal(result.hint, '/gusta-sketch로 태스크까지 만든 뒤 다시 실행하세요')
-  assert.match(result.continuation.next, /\/gusta-sketch/)
-  assert.match(await readFile(path.join(root, result.report), 'utf8'), /^- loop stopped: needs-sketch — \/gusta-sketch로 태스크까지 만든 뒤 다시 실행하세요$/m)
+  assert.equal(result.reason, 'needs-sketch'); assert.equal(result.hint, '/gusta-plan으로 태스크까지 만든 뒤 다시 실행하세요')
+  assert.match(result.continuation.next, /\/gusta-plan/)
+  assert.match(await readFile(path.join(root, result.report), 'utf8'), /^- loop stopped: needs-sketch — \/gusta-plan으로 태스크까지 만든 뒤 다시 실행하세요$/m)
   const manifest = JSON.parse(await readFile(result.manifest, 'utf8'))
   assert.equal(manifest.hint, result.hint)
   const notices = await readdir(path.join(path.dirname(result.manifest), 'notifications'))

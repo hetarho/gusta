@@ -14,7 +14,7 @@ AI now drafts the plan, writes the code and runs the checks. What is left for pe
 ## Why GUSTA?
 
 - **The spec is the first-class document.** Decisions live in the SSOT, progress in STATE, implementation plans in tasks — and they change before the code does. A planning gap found mid-implementation goes back to the spec instead of being settled silently in code.
-- **AI makes, you choose.** `/gusta-sketch` draws your idea as one HTML mockup page, with variants side by side when there is a real choice; you pick and refine, and what you decide becomes spec documents and tasks. `/gusta-start` then runs those tasks without asking: it takes the recommendation at each decision point and leaves the question, with the answer it picked, in a **decision inbox** you review when you are back. Changes to result meaning, public contracts or verification scope are proposed, never applied on their own.
+- **AI makes, you choose.** `/gusta-plan` takes your requirements all at once or builds them up with you in conversation, puts a recommendation on every gap, and turns what you decide into spec documents and tasks. When a choice is easier to see than to describe, `/gusta-sketch` draws it as one HTML mockup page, with variants side by side. `/gusta-start` then runs those tasks without asking: it takes the recommendation at each decision point and leaves the question, with the answer it picked, in a **decision inbox** you review when you are back. Changes to result meaning, public contracts or verification scope are proposed, never applied on their own.
 - **Plan up front, then walk away.** `vibe loop` starts a fresh session for every task, so context never piles up. Each task runs only impacted unit tests and fast checks; the full suite, push and CI run once at a final gate whose length is measured, not guessed.
 - **Choose with your eyes.** Sketch shows the plan on one page and one port, before any code. Design mode edits code as you talk while you watch the screen. `gusta-showcase` builds 2–6 variants in real code in parallel, one port each, merges only the one you pick and updates the docs to match.
 - **Small footprint.** Sessions read a brief of just the decision blocks a task depends on. Works with Claude Code and Codex in any Git project — Python, Flutter, Go, not only Node — and `npx` leaves no `node_modules` behind.
@@ -38,18 +38,21 @@ Otherwise install with `npx -y @haeram/gusta@latest install`, then verify with `
 
 **2. Start a new session** so the agent discovers the installed skills.
 
-**3. Sketch, then start.**
+**3. Plan, then start.**
 
 ```text
-/gusta-sketch let's build a tag feature    ← plan: pick on one HTML page, get spec docs and tasks
+/gusta-plan let's build a tag feature      ← plan: requirements become spec docs and tasks
+/gusta-sketch let's build a tag feature    ← or plan by picking on one HTML mockup page
 /gusta-start                               ← run those tasks unattended
 /gusta-start T012 T013 within 4 hours      ← a task scope and a time limit
 /gusta-start send reminders once a day     ← a change request: update the spec and tasks, then build it
 ```
 
-`/gusta-sketch` draws the idea as one self-contained HTML page under `.tmp/sketch/<slug>/` (untracked) and serves it on one local port. You pick and refine; the decided parts become spec documents (ARCH, SSOT) and tasks, and what you put off ("fine, but let's think about it later") is kept in `spec/ideation/`. It changes no product code, and on a new project it sets up `spec/` and the architecture first.
+`/gusta-plan` takes requirements all at once or builds them up with you in conversation. It shows how it reads each line — decided, a gap with its recommendation, a conflict with an existing decision, sensitive (left `[?]` until you say) — and asks only about those. The decided parts become spec documents (ARCH, SSOT) and tasks, pushed as a spec-only commit to the planning branch, and what you put off ("fine, but let's think about it later") is kept in `spec/ideation/`. It changes no product code, and on a new project it sets up `spec/` and the architecture first. A choice that must be seen goes to `/gusta-sketch`; one that needs variants built in code is left for `/gusta-showcase`.
 
-`/gusta-start` asks nothing. It shows the run — target tasks, order and parallelism, deadline, verification gates, land/push settings, tasks held by other sessions and devices (skipped — work they have not pushed yet shows too) and the inbox count — and starts. It commits per task and lands finished work once at the end, as `spec/SETTINGS.md` says (no push by default). Give it a change request instead and it updates the SSOT and makes the tasks first (what your request states is your decision; gaps get the recommendation and an inbox line), then implements, verifies and lands them the same way. With no request and no runnable tasks it stops and points you to `/gusta-sketch`.
+`/gusta-sketch` draws the idea as one self-contained HTML page under `.tmp/sketch/<slug>/` (untracked) and serves it on one local port. You pick and refine, and the decided parts become spec documents and tasks the same way.
+
+`/gusta-start` asks nothing. It shows the run — target tasks, order and parallelism, deadline, verification gates, land/push settings, tasks held by other sessions and devices (skipped — work they have not pushed yet shows too) and the inbox count — and starts. It commits per task and lands finished work once at the end, as `spec/SETTINGS.md` says (no push by default). Give it a change request instead and it updates the SSOT and makes the tasks first (what your request states is your decision; gaps get the recommendation and an inbox line), then implements, verifies and lands them the same way. With no request and no runnable tasks it stops and points you to `/gusta-plan`.
 
 ## Core Concepts
 
@@ -57,9 +60,10 @@ Otherwise install with `npx -y @haeram/gusta@latest install`, then verify with `
 
 | Step | You | GUSTA |
 | --- | --- | --- |
-| `/gusta-sketch` | Look at the page, pick, refine | Draws HTML mockups on one port, writes ARCH/SSOT and tasks, keeps deferred ideas in `spec/ideation/` |
+| `/gusta-plan` | Say what you want, answer the few open questions | Reads the requirements, writes ARCH/SSOT and tasks, pushes them to the planning branch, keeps deferred ideas in `spec/ideation/` |
+| `/gusta-sketch` | When it must be seen: look at the page, pick, refine | Draws HTML mockups on one port; what you pick becomes ARCH/SSOT and tasks the same way |
 | `/gusta-start` | Nothing — you can leave | Runs the tasks unattended, decides with the recommendation, commits per task, runs the final gate and lands once |
-| Back | Review the decision inbox and report | Confirmed lines are removed (`/gusta-start clean up the inbox`); to change a decision, run `/gusta-sketch` |
+| Back | Review the decision inbox and report | Confirmed lines are removed (`/gusta-start clean up the inbox`); to change a decision, run `/gusta-plan` |
 
 A run never waits for you. It parks only billing, data deletion, privacy and security policy, and anything hard to undo or reaching outside the project (force push, branch deletion, deploy/publish), and moves on to other tasks.
 
@@ -70,7 +74,7 @@ A run never waits for you. It parks only billing, data deletion, privacy and sec
 | `STATE.md` | The control tower: settings, SSOT revisions, task board, next |
 | `FORMAT.md` | Compact notation rules for every spec document |
 | `SETTINGS.md` | Optional package settings (branch strategy and more); missing keys use defaults |
-| `ideation/` | Ideas you deferred during a sketch; `done/` keeps those later converted to SSOT |
+| `ideation/` | Ideas you deferred while planning; `done/` keeps those later converted to SSOT |
 | `ssot/` | Per-domain single source of truth — decisions and reasons only, versioned by `rev` |
 | `tasks/` | Remaining tasks; `done/` archives finished ones as history |
 | `review/` | Optional code and self-improvement findings |
@@ -84,8 +88,9 @@ Spec documents are written in compact English; interviews, questions and reports
 
 | Skill | What it does |
 | --- | --- |
-| `/gusta-sketch` | Planning. Draws the idea as one HTML page on one port, lets you pick and refine, turns the choice into spec documents and tasks, and records deferred ideas in `spec/ideation/` |
-| `/gusta-start` | Execution. Shows the run info, then runs the existing tasks unattended — commits per task, decision inbox and report, final gate. With a change request it plans (SSOT, tasks) and then runs those. Stops and points to `/gusta-sketch` when there is nothing to run |
+| `/gusta-plan` | Planning. Takes requirements all at once or in conversation, recommends for the gaps, turns what you decide into spec documents and tasks pushed to the planning branch, and records deferred ideas in `spec/ideation/` |
+| `/gusta-sketch` | Visual planning. Draws the idea as one HTML page on one port, lets you pick and refine, turns the choice into spec documents and tasks, and records deferred ideas in `spec/ideation/` |
+| `/gusta-start` | Execution. Shows the run info, then runs the existing tasks unattended — commits per task, decision inbox and report, final gate. With a change request it plans (SSOT, tasks) and then runs those. Stops and points to `/gusta-plan` when there is nothing to run |
 | `/gusta-design-mode` | Live design: edits code as you talk while you watch the screen; tests and a single commit only when you say the design is done |
 | `/gusta-showcase` | Builds 2–6 variants in real code in parallel, one port per variant (or benchmarks them), merges only the one you pick and updates the docs too |
 | `/gusta-self-improve` | Your session approves improvement proposals in a dedicated worktree/session branch and submits reviewed changes for shared candidate verification and integration — no PR |
@@ -95,7 +100,7 @@ Spec documents are written in compact English; interviews, questions and reports
 | `/gusta-update` | Checks for a new version, reinstalls the skills, migrates `spec/`, reconciles project rules, lints and commits |
 | `/gusta-send-issue` | At the end of a session, reviews how GUSTA's skills and CLI behaved, shows the anonymized findings and, once you confirm, files them as an issue on [hetarho/gusta](https://github.com/hetarho/gusta/issues) |
 
-The other ten — `gusta-create-architecture`, `gusta-create-ssot`, `gusta-update-ssot`, `gusta-create-task`, `gusta-implement-task`, `gusta-review-code`, `gusta-doc-review`, `gusta-review-task`, `gusta-manage-work`, `gusta-create-narrative` — are internal: `/gusta-sketch` and `/gusta-start` call them. They are not hidden; the reviewers (`gusta-review-code`, `gusta-doc-review`) and `gusta-create-narrative` also answer a plain request such as "review the code for refactoring".
+The other ten — `gusta-create-architecture`, `gusta-create-ssot`, `gusta-update-ssot`, `gusta-create-task`, `gusta-implement-task`, `gusta-review-code`, `gusta-doc-review`, `gusta-review-task`, `gusta-manage-work`, `gusta-create-narrative` — are internal: `/gusta-plan`, `/gusta-sketch` and `/gusta-start` call them. They are not hidden; the reviewers (`gusta-review-code`, `gusta-doc-review`) and `gusta-create-narrative` also answer a plain request such as "review the code for refactoring".
 
 ### CLI essentials
 
@@ -121,7 +126,7 @@ The detailed guides are written in Korean.
 
 | Guide | Covers |
 | --- | --- |
-| [Workflow](docs/workflow.md) | Philosophy, core principles, every skill, the `spec/` layout, sketch, start, design mode, showcase, settings |
+| [Workflow](docs/workflow.md) | Philosophy, core principles, every skill, the `spec/` layout, plan, sketch, start, design mode, showcase, settings |
 | [Branching & verification](docs/branching.md) | `land` · `land-via` · `push` · `deploy` · `plan` · `version`, the coordination branch (`coord`), verification tiers and the final gate |
 | [Autopilot](docs/autopilot.md) | Long unattended runs with `vibe loop`, decision briefs with `vibe brief` |
 | [Parallel work](docs/parallel-work.md) | Work groups, lanes, multiple sessions, workers and reviewers |

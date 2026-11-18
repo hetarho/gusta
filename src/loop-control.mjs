@@ -85,7 +85,7 @@ export const NOTIFY_CAP = 10
 // needs-init: SETTINGS agents is undecided, so the CLI has no AI tool to route units to.
 // usage-limit: every allowed tool is at a usage limit past the work window (the run names tools and
 // reset times in its own hint). needs-login: the tools left failed sign-in.
-export const LOOP_HINTS = { 'needs-sketch': '/gusta-sketch로 태스크까지 만든 뒤 다시 실행하세요', 'needs-init': '/gusta-init으로 쓸 AI 목록(SETTINGS agents)을 정한 뒤 다시 실행하세요',
+export const LOOP_HINTS = { 'needs-sketch': '/gusta-plan으로 태스크까지 만든 뒤 다시 실행하세요', 'needs-init': '/gusta-init으로 쓸 AI 목록(SETTINGS agents)을 정한 뒤 다시 실행하세요',
   'usage-limit': 'AI 도구 사용량 한도 — 리셋 시각 뒤 다시 실행하세요', 'needs-login': 'agents의 도구에 로그인한 뒤(gusta agents로 확인) 다시 실행하세요',
   'land-conflict': '그사이 land에 반영된 변경과 충돌합니다 — 이 세션 worktree에서 landConflict.land를 merge해 충돌을 풀고 커밋한 뒤(rebase 금지) 다시 실행하세요' }
 export const loopHint = (reason) => LOOP_HINTS[reason] ?? null

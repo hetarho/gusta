@@ -628,7 +628,7 @@ export async function vibeStatus(options = {}, injected = {}) {
     resume: local.tasks.filter(ownTag).map((task) => task.id),
     blocked: local.tasks.filter((task) => task.st?.startsWith('blocked@')).map((task) => task.id), explore }
   // Untasked planning input: SSOT deltas (rev > tasked), adopted reviews and legacy open/ready
-  // ideation. Only the user-invoked gusta-sketch turns it into tasks; execution never plans it, so it
+  // ideation. Only the user-invoked gusta-plan or gusta-sketch turns it into tasks; execution never plans it, so it
   // makes no route or unit and only ends a loop as needs-sketch. (Formerly implementation.pending,
   // implementation.reviews and planning.ideation, with the same entries.)
   const sketch = { pending: local.pending, reviews: local.reviews, ideation: local.ideation }
@@ -675,7 +675,7 @@ export async function vibeStatus(options = {}, injected = {}) {
     design,
     // An open design comes first: its edits are uncommitted until the user ends it. A broken st
     // (a hand close) is fixed before anything else is chosen: gusta-implement-task's close, then lint.
-    // Execution only runs existing tasks: with none, planning is the user's /gusta-sketch.
+    // Execution only runs existing tasks: with none, planning is the user's /gusta-plan.
     route: design ? 'design' : issues.length ? 'repair' : executable ? 'implementation' : 'sketch-first' }
 }
 

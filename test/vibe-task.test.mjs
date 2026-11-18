@@ -118,16 +118,16 @@ test('done refuses unchecked acceptance or an empty result, then archives with n
   assert.deepEqual(again, { schemaVersion: 1, task: 'T001', st: 'done', changed: false, files: [] })
 })
 
-test('done of the last task leaves a gusta-sketch next, an explore exit closes it and --force-other takes another tag', async (t) => {
+test('done of the last task leaves a gusta-plan next, an explore exit closes it and --force-other takes another tag', async (t) => {
   const { root } = await fixture(t, 1)
-  // An older generated line is regenerated in the current wording.
-  await edit(root, 'spec/STATE.md', (text) => text.replace('- finish gusta-create-architecture interview', '- no runnable task: plan next with ideation or gusta-create-task'))
+  // Older generated lines are regenerated in the current wording.
+  await edit(root, 'spec/STATE.md', (text) => text.replace('- finish gusta-create-architecture interview', '- no runnable task: plan next with ideation or gusta-create-task\n- no runnable task: plan next with gusta-sketch'))
   await edit(root, 'spec/tasks/T001.example.md', (text) => text.replace('touches:src/', 'touches:src/ | explore:1h')
     .replace('- [ ] Works with a regression test.', '- [ ] Works with a regression test.\n- [v] exit: record the measured values'))
   await run(root, 'start', 'T001', { tag: 'ab12' })
   await edit(root, 'spec/tasks/T001.example.md', (text) => text.replace(/## result\n$/, '## result\n- outcome: measured\n- at: -\n- verified: -\n- limits: target unmet\n'))
   const closed = await run(root, 'done', 'T001', { forceOther: true })
-  assert.deepEqual(closed.next, ['- no runnable task: plan next with gusta-sketch'])
+  assert.deepEqual(closed.next, ['- no runnable task: plan next with gusta-plan'])
   // No --tag: the closing tag is the one that held the task.
   const doc = await sessions(root)
   assert.deepEqual(doc.log, ['- 261020 T001 done'])

@@ -44,9 +44,22 @@ test('메타 스킬 gusta-preference는 공통 규칙 없이 CLI(vibe settings)�
   assert.match(text, /`agent-block`을 바꿨으면 `npx @haeram\/gusta agent-block`\(false로 바꿨으면 `--remove`\)을 실행/)
 })
 
-test('spec 스킬은 gusta-sketch·gusta-self-improve·gusta-showcase를 포함해 16종이고 모두 공통 규칙 5줄을 가진다', async () => {
+test('spec 스킬은 gusta-plan·gusta-sketch·gusta-self-improve·gusta-showcase를 포함해 17종이고 모두 공통 규칙 5줄을 가진다', async () => {
   const rules = await commonRules()
-  assert.deepEqual([...rules.keys()].sort(), ['gusta-create-architecture', 'gusta-create-narrative', 'gusta-create-ssot', 'gusta-create-task', 'gusta-design-mode', 'gusta-doc-review', 'gusta-implement-task', 'gusta-manage-work', 'gusta-review-code', 'gusta-review-task', 'gusta-self-improve', 'gusta-self-improve-remote', 'gusta-showcase', 'gusta-sketch', 'gusta-start', 'gusta-update-ssot'])
+  assert.deepEqual([...rules.keys()].sort(), ['gusta-create-architecture', 'gusta-create-narrative', 'gusta-create-ssot', 'gusta-create-task', 'gusta-design-mode', 'gusta-doc-review', 'gusta-implement-task', 'gusta-manage-work', 'gusta-plan', 'gusta-review-code', 'gusta-review-task', 'gusta-self-improve', 'gusta-self-improve-remote', 'gusta-showcase', 'gusta-sketch', 'gusta-start', 'gusta-update-ssot'])
+})
+
+// gusta-plan is the spoken planning entry: requirements at once or by conversation end as pushed tasks.
+test('gusta-plan: 해석표로 정하고 태스크까지 만들어 plan-push하며, 볼 것은 sketch·비교할 것은 showcase로 넘긴다', async () => {
+  const read = (file) => readFile(new URL(file, skillsRoot), 'utf8')
+  const plan = await read('gusta-plan/SKILL.md')
+  for (const pattern of [/요구사항 묶음[^\n]*2절 해석표를 한 번에[^\n]*3절 대화부터/, /\*\*정함\*\*[^\n]*다시 묻지 않는다/, /\*\*민감\*\*[^\n]*`\[\?\]`/, /요구사항을 조용히 버리지 않는다/,
+    /gusta-create-task로 실행할 태스크까지/, /`vibe plan-push`/, /올라가지 않은 것을 올렸다고 보고하지 않는다/, /코드 반영\(`vibe push`\)은 하지 않는다/,
+    /\*\*볼 것\*\*[^\n]*gusta-sketch 2절/, /\*\*비교할 것\*\*[^\n]*\/gusta-showcase를 제안한다[^\n]*태스크로 만들지 않는다/, /\[미룬 구상 기록\]\(references\/ideation\.md\)/]) assert.match(plan, pattern)
+  // One ideation procedure and template, shared by both planning entries.
+  assert.match(await read('gusta-plan/references/ideation.md'), /\[템플릿\]\(\.\.\/assets\/ideation\.md\)/)
+  assert.match((await read('gusta-plan/assets/ideation.md')).split('\n')[0], /^# IDEATION <slug>$/)
+  assert.match(await read('gusta-sketch/SKILL.md'), /\[미룬 구상 기록\]\(\.\.\/gusta-plan\/references\/ideation\.md\)/)
 })
 
 test('공통 규칙 1번은 미정 설정(settings.unset)을 gusta-init으로 먼저 정하게 하고 맡김은 묻지 않는다(agents 미정이면 시작하지 않음)', async () => {
