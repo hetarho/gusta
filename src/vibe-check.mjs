@@ -71,6 +71,7 @@ export async function runVibeCheck(options = {}, command, injected = {}) {
   await git(root, ['rev-parse', '--verify', `${scope.DIFF_BASE}^{commit}`])
   const timeout = Number(options.timeoutMs ?? 3600000)
   if (!Number.isFinite(timeout) || timeout <= 0) throw new SkillPackageError('--timeout-ms는 양수입니다.')
+  const now = injected.now ?? Date.now, deadline = now() + timeout
   const perform = async () => {
     const commit = (await git(root, ['rev-parse', 'HEAD'])).trim()
     const tree = await workingTree(root)
@@ -108,7 +109,8 @@ export async function runVibeCheck(options = {}, command, injected = {}) {
         results.push({ ...metadata, ok: true, status: 'cached', exitCode: 0, cached: true, log: hit.log ?? null, tail: [], failedTests: [], ms: 0 })
         continue
       }
-      const remaining = timeout - (Date.now() - start)
+      // Waiting for another owned heavy check spends this invocation's time too.
+      const remaining = deadline - now()
       if (remaining <= 0) {
         stopped = 'timeout'
         results.push({ ...metadata, ok: false, status: 'not-run', cached: false, timedOut: true, reason: stopped })
@@ -165,7 +167,7 @@ export async function runVibeCheck(options = {}, command, injected = {}) {
   }
   // Read the tree and cache only after acquiring the lock: a second caller reuses
   // the first caller's receipt instead of queuing a duplicate browser run.
-  const result = final || options.heavy ? await withHeavyLock(runtime, label, perform, { timeoutMs: timeout, signal: options.signal }) : await perform()
+  const result = final || options.heavy ? await (injected.withHeavyLock ?? withHeavyLock)(runtime, label, perform, { timeoutMs: timeout, signal: options.signal }) : await perform()
   // Inside a loop unit the host hands each session its own ledger, so the unit's time
   // breakdown separates check time from model time.
   if (process.env.GUSTA_CHECK_LOG) await appendFile(process.env.GUSTA_CHECK_LOG, `${JSON.stringify({ tier: scope.TIER, command: label, ms: result.ms ?? 0, cached: result.cached, ok: result.ok })}\n`).catch(() => {})

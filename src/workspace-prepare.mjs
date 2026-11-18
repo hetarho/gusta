@@ -16,7 +16,8 @@ export function runCheckCommand(command, { cwd, env, timeout = 0, signal } = {})
     child.stderr.setEncoding('utf8').on('data', keep('stderr'))
     let reason = null, forced = null, settled = false
     const kill = (sig) => { try { process.platform === 'win32' ? child.kill(sig) : process.kill(-child.pid, sig) } catch {} }
-    const stop = (why) => { if (reason) return; reason = why; kill('SIGTERM'); forced = setTimeout(() => kill('SIGKILL'), 2000) }
+    const clean = () => { if (!settled) { kill('SIGTERM'); forced ??= setTimeout(() => kill('SIGKILL'), 2000) } }
+    const stop = (why) => { if (reason) return; reason = why; clean() }
     const onAbort = () => stop('aborted')
     const timer = timeout ? setTimeout(() => stop('timed out'), timeout) : null
     signal?.addEventListener('abort', onAbort, { once: true })
@@ -25,10 +26,12 @@ export function runCheckCommand(command, { cwd, env, timeout = 0, signal } = {})
       if (settled) return
       settled = true
       clearTimeout(timer); clearTimeout(forced); signal?.removeEventListener('abort', onAbort)
-      if (reason) kill('SIGKILL')
+      kill('SIGKILL')
       if (!error && !reason && code === 0) return resolve(out)
-      reject(Object.assign(new Error(error?.message ?? (reason ? `Command ${reason}: ${command}` : `Command failed (exit ${code}): ${command}`)), out))
+      reject(Object.assign(new Error(error?.message ?? (reason ? `Command ${reason}: ${command}` : `Command failed (exit ${code}): ${command}`)), out,
+        { timedOut: reason === 'timed out', cancelled: reason === 'aborted' }))
     }
+    child.on('exit', clean)
     child.on('error', (error) => settle(null, error))
     child.on('close', (code) => settle(code))
   })
@@ -38,7 +41,8 @@ const PREPARE_MS = 20 * 60 * 1000
 
 // commands: the caller's already-read ARCH prepare list; omitted, this worktree's ARCH is read.
 // Never throws for a failing command: the result says which one failed and its last lines.
-export async function prepareWorkspace(root, commands, { timeoutMs = PREPARE_MS, signal, env = process.env } = {}) {
+export async function prepareWorkspace(root, commands, { timeoutMs = PREPARE_MS, deadline = Infinity, signal, env = process.env } = {}, injected = {}) {
+  const now = injected.now ?? Date.now, end = Math.min(now() + timeoutMs, deadline)
   if (commands === undefined) {
     // Loaded on use: vibe-brief reaches the coordination modules that import this one.
     const { readVerification } = await import('./vibe-brief.mjs')
@@ -46,12 +50,18 @@ export async function prepareWorkspace(root, commands, { timeoutMs = PREPARE_MS,
   }
   const steps = []
   for (const command of commands) {
-    const started = Date.now()
+    const started = now(), remaining = end - started
+    if (signal?.aborted || remaining <= 0) {
+      steps.push({ command, ok: false, ms: 0, ...(signal?.aborted ? { cancelled: true, error: 'Workspace preparation cancelled before this command.' }
+        : { timedOut: true, error: 'Workspace preparation deadline elapsed before this command.' }) })
+      return { ok: false, root, steps }
+    }
     try {
-      await runCheckCommand(command, { cwd: root, env: { ...env, GUSTA_TIER: 'prepare' }, timeout: timeoutMs, signal })
-      steps.push({ command, ok: true, ms: Date.now() - started })
+      await (injected.run ?? runCheckCommand)(command, { cwd: root, env: { ...env, GUSTA_TIER: 'prepare' }, timeout: remaining, signal })
+      steps.push({ command, ok: true, ms: now() - started })
     } catch (error) {
-      steps.push({ command, ok: false, ms: Date.now() - started, error: error.message, tail: `${error.stderr ?? ''}\n${error.stdout ?? ''}`.trim().split('\n').slice(-8).join('\n') })
+      steps.push({ command, ok: false, ms: now() - started, ...(error.timedOut ? { timedOut: true } : {}), ...(error.cancelled ? { cancelled: true } : {}),
+        error: error.message, tail: `${error.stderr ?? ''}\n${error.stdout ?? ''}`.trim().split('\n').slice(-8).join('\n') })
       return { ok: false, root, steps }
     }
   }

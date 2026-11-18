@@ -99,6 +99,37 @@ export function upsertActive(text, row, { remove = false, header = ACTIVE_HEADER
 const taskBlock = (blocks) => blocks.find((entry) => entry.name === 'tasks')
 const rowIndex = (block, id) => block?.body.findIndex((line) => isRow(line) && !isSeparator(line) && rowKey(line) === id) ?? -1
 
+const TASK_NEXT = /^- gusta-implement-task (T\d{3,}(?: T\d{3,})*)$/
+const GENERATED_NEXT = new Set([
+  '- no runnable task: resolve blocked, parked or deps',
+  '- no runnable task: plan next with gusta-sketch',
+  '- no runnable task: plan next with ideation or gusta-create-task',
+])
+
+// Only a plain execution list belongs to the lifecycle. Prose (even when it mentions a closed
+// task), nested handoffs and other tasks survive; the short-next guide never truncates them.
+export function updateTaskNext(lines, ids, suggestions = []) {
+  const closed = new Set(ids), listed = new Set(), kept = []
+  for (const [index, line] of lines.entries()) {
+    const tasks = line.match(TASK_NEXT)?.[1].split(' ')
+    const following = lines.slice(index + 1).find((entry) => entry.trim())
+    const nested = /^\s+\S/.test(following ?? '')
+    if (tasks && !nested) {
+      const pending = tasks.filter((id) => !closed.has(id))
+      pending.forEach((id) => listed.add(id))
+      if (pending.length) kept.push(`- gusta-implement-task ${pending.join(' ')}`)
+    } else if (nested || !GENERATED_NEXT.has(line)) kept.push(line)
+  }
+  const added = suggestions.flatMap((line) => {
+    const tasks = line.match(TASK_NEXT)?.[1].split(' ')
+    if (!tasks) return kept.includes(line) ? [] : [line]
+    const pending = tasks.filter((id) => !closed.has(id) && !listed.has(id))
+    pending.forEach((id) => listed.add(id))
+    return pending.length ? [`- gusta-implement-task ${pending.join(' ')}`] : []
+  })
+  return [...added, ...kept]
+}
+
 // One STATE tasks row `id|title|ssot|dep|st`, or null.
 export function taskRow(text, id) {
   const block = taskBlock(parseState(text))
@@ -154,7 +185,7 @@ export function closeTasks(text, ids, { log, next } = {}) {
   }
   if (next) {
     const entry = section('next')
-    entry.body = typeof next === 'function' ? next(entry.body.filter((line) => line.startsWith('- '))) : next
+    entry.body = typeof next === 'function' ? next(entry.body) : next
   }
   if (log) {
     const entry = section('log')

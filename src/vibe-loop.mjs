@@ -18,7 +18,7 @@ import { designOf } from './interactive-state.mjs'
 import { readTimings, recordTiming, timingKey, measured, workingTree, taskCheckRows, taskCheckSummary } from './check-cache.mjs'
 import { inspectWork } from './work-groups.mjs'
 import { approvedTasks } from './work-policy.mjs'
-import { taskRow } from './state-doc.mjs'
+import { taskRow, closeTasks, updateTaskNext } from './state-doc.mjs'
 import { SESSION_TAG, TASK_ID, EFFORTS } from './spec-format.mjs'
 import { sections, tableRows, quoteLine, quoteFields } from './spec-format.mjs'
 import { lintSpec } from './spec-lint.mjs'
@@ -706,7 +706,7 @@ export async function vibeLoop(options = {}, injected = {}) {
     const taskPath = `spec/tasks/${id}.${slug}.md`
     await writeFile(path.join(root, taskPath), `# ${id} ${title}\n> st:todo | ssot:- | base:ARCH@${rev} | dep:-\n\n## goal\n${goal}\n\n## acceptance\n- [ ] The failed checks pass with a regression test where appropriate.\n\n## impl notes\n${notes.map((note) => `- ${note}`).join('\n')}\n\n## result\n`)
     text = text.replace(/(## tasks\n[\s\S]*?)(?=\n## |$)/, (section) => `${section.trimEnd()}\n| ${id} | ${title} | ARCH | - | todo |\n`)
-    text = text.replace(/## next\n[\s\S]*?(?=\n## |$)/, `## next\n- gusta-implement-task ${id}\n`)
+    text = closeTasks(text, [], { next: (lines) => updateTaskNext(lines, [], [`- gusta-implement-task ${id}`]) }).text
     await writeFile(file, text)
     await git(root, ['add', '--', file, taskPath])
     await git(root, ['commit', '--quiet', '--only', '-m', `gusta-create-task ${id}: ${title}`, '--', file, taskPath])

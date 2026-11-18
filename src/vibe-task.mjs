@@ -10,7 +10,7 @@ import path from 'node:path'
 import { readTaskBoard } from './task-board.mjs'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { sections, openChecks, resultLines, yymmdd, SESSION_TAG, TASK_ID } from './spec-format.mjs'
-import { activeRows, upsertActive, taskRow, setTaskSt, closeTasks } from './state-doc.mjs'
+import { activeRows, upsertActive, taskRow, setTaskSt, closeTasks, updateTaskNext } from './state-doc.mjs'
 import { withSt, withResultLine, archiveTaskFile } from './task-doc.mjs'
 import { inboxEntries, readSessions, ClaimError } from './coord-doc.mjs'
 import { vibeSession } from './vibe.mjs'
@@ -21,9 +21,6 @@ import { assertImplementationWorkspace as assertTaskWorkspace } from './session-
 const fail = (message, details = []) => { throw new SkillPackageError(message, details) }
 const STATE = 'spec/STATE.md'
 const NEXT_LIMIT = 3
-// next lines this command writes, replaced on its next run — in any wording it has used (e.g. the
-// older `plan next with ideation or gusta-create-task`), so existing STATE files regenerate cleanly.
-const GENERATED_NEXT = /^- (gusta-implement-task T\d{3,}( T\d{3,})*|no runnable task\b.*)$/
 // result lines still holding the template text (`at` is fine when --at replaces it).
 const UNFILLED = /^- (outcome|at|verified|limits): <[^>]*>$/
 
@@ -128,10 +125,9 @@ async function done({ options, board, root, state, id, date, injected, coordinat
     && entry.waitingOn.every((dep) => dep === id)).map((entry) => entry.id)
   const remaining = board.tasks.length - 1
   const next = (lines) => {
-    const kept = lines.filter((line) => !GENERATED_NEXT.test(line) && !new RegExp(`\\b${id}\\b`).test(line))
     const lead = runnable.length ? `- gusta-implement-task ${runnable.slice(0, NEXT_LIMIT).join(' ')}` : remaining ? '- no runnable task: resolve blocked, parked or deps' : null
-    const result = [lead, ...kept].filter(Boolean).slice(0, NEXT_LIMIT)
-    return result.length ? result : ['- no runnable task: plan next with gusta-sketch']
+    const result = updateTaskNext(lines, [id], lead ? [lead] : [])
+    return result.some((line) => line.trim()) ? result : ['- no runnable task: plan next with gusta-sketch']
   }
   const log = `- ${date} ${id} done`
   const closed = closeTasks(state, [id], { ...(session ? {} : { log }), next })

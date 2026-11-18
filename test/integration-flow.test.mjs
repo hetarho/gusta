@@ -369,6 +369,43 @@ test('a candidate that cannot be prepared fails as the environment, with no chec
   await assert.rejects(readFile(counter), { code: 'ENOENT' })
 })
 
+test('candidate preparation and every later gate command spend the original deadline', async (t) => {
+  const { root } = await project(t)
+  const file = path.join(root, 'spec/ssot/ARCH.md')
+  await writeFile(file, (await readFile(file, 'utf8')).replace('  - batch: `node --version`.\n', '  - batch:\n    - `node --version`\n    - `node --help`\n'))
+  await git(root, 'add', '.'); await git(root, 'commit', '-qm', 'two gate commands')
+  let now = Date.now()
+  const deadline = now + 10000, seen = []
+  const result = await finalizeIntegration({ targetRoot: root, tag: 'budget01', timeoutMs: 10000, deadline: new Date(deadline).toISOString() }, {
+    now: () => now,
+    prepareWorkspace: async (root, commands, options) => {
+      assert.equal(options.deadline, deadline)
+      now += 6000
+      return { ok: true, steps: [] }
+    },
+    check: async (options, command) => { seen.push([command, options.timeoutMs]); now += 5000; return { ok: true } },
+  })
+  assert.equal(result.reason, 'integration-failed')
+  assert.deepEqual(seen, [['node --version', 4000]])
+  assert.equal(result.gate.deadline, new Date(deadline).toISOString())
+  assert.deepEqual(result.gate.checks.map(({ command, status, timedOut }) => [command, status, timedOut]), [
+    ['node --version', undefined, undefined], ['node --help', 'not-run', true],
+  ])
+  assert.match(result.nextAction, /time budget ended.*original deadline/)
+})
+
+for (const stopped of ['cancelled', 'timedOut']) test(`preparation ${stopped} is reported without suggesting an environment repair`, async (t) => {
+  const { root } = await project(t)
+  const result = await finalizeIntegration({ targetRoot: root, tag: 'prepstop' }, {
+    prepareWorkspace: async () => ({ ok: false, steps: [{ command: 'prepare', ok: false, [stopped]: true }] }),
+    check: () => assert.fail('no check starts after preparation stopped'),
+  })
+  assert.equal(result.reason, 'integration-failed')
+  assert.equal(result.gate.checks[0][stopped], true)
+  assert.equal(result.gate.checks[0].environment, false)
+  assert.doesNotMatch(result.nextAction, /fix the environment|empty commit/)
+})
+
 test('landing through the shared gate clears the unlanded rows it carries and removes its own candidate', async (t) => {
   const { root } = await project(t, { count: 1 })
   const { readSessions } = await import('../src/coord-doc.mjs')

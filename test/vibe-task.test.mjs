@@ -135,6 +135,29 @@ test('done of the last task leaves a gusta-sketch next, an explore exit closes i
   assert.doesNotMatch(await read(root, 'spec/STATE.md'), /## log/)
 })
 
+test('done preserves other tasks and free-form next handoffs without truncating them to three lines', async (t) => {
+  const { root } = await fixture(t)
+  const handoffs = [
+    '- compare T001 output before continuing T003',
+    '  - keep the saved reproduction',
+    '- resume T002 after the external answer',
+    '- no runnable task: check the saved instructions for T003',
+    '- revisit supporting docs',
+  ]
+  await edit(root, 'spec/STATE.md', (text) => text.replace(/## next\n[\s\S]*?(?=\n## |$)/,
+    `## next\n- gusta-implement-task T001 T002\n${handoffs.join('\n')}\n`))
+  await run(root, 'start', 'T001', { tag: 'ab12' })
+  await edit(root, 'spec/tasks/T001.example.md', finish)
+  const closed = await run(root, 'done', 'T001', { tag: 'ab12', at: 'HEAD' })
+  assert.deepEqual(closed.next, ['- gusta-implement-task T003', '- gusta-implement-task T002', ...handoffs.filter((line) => line.startsWith('- '))])
+  const state = await read(root, 'spec/STATE.md')
+  assert.ok(state.includes(handoffs.join('\n')))
+  assert.doesNotMatch(state, /^- gusta-implement-task T001\b/m)
+  assert.equal(taskRow(state, 'T001'), null)
+  assert.equal(taskRow(state, 'T002').st, 'todo')
+  assert.equal(taskRow(state, 'T003').st, 'todo')
+})
+
 test('a target without Git keeps the session row and the log in STATE', async (t) => {
   const { root } = await fixture(t, 1)
   await rm(path.join(root, '.git'), { recursive: true, force: true })

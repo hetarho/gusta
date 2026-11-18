@@ -112,6 +112,7 @@ export async function withHeavyLock(runtime, label, run, { timeoutMs = 4 * 60 * 
   let waited = false
   for (;;) {
     if (signal?.aborted) throw new Error('heavy check stopped')
+    if (Date.now() >= deadline) throw new Error('heavy lock wait timed out')
     try {
       await mkdir(lock)
       await writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, host: os.hostname(), label, at: new Date().toISOString() }))
@@ -129,7 +130,7 @@ export async function withHeavyLock(runtime, label, run, { timeoutMs = 4 * 60 * 
       }
       if (Date.now() >= deadline) throw new Error(`heavy lock busy: ${owner?.label ?? 'unknown'} (pid ${owner?.pid ?? '?'})`)
       if (!waited) { waited = true; onWait?.(owner) }
-      await sleep(pollMs)
+      await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())))
     }
   }
   try { return await run() } finally { await rm(lock, { recursive: true, force: true }) }

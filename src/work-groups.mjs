@@ -5,7 +5,7 @@ import os from 'node:os'
 import { inspectWorkspace, git, batchShow, gitOperation } from './workspace.mjs'
 import { readTaskBoard } from './task-board.mjs'
 import { quoteLine, quoteFields, sections, splitRefs, TASK_ID, INBOX_LINE, yymmdd } from './spec-format.mjs'
-import { closeTasks } from './state-doc.mjs'
+import { closeTasks, updateTaskNext } from './state-doc.mjs'
 import { withSt, archiveTaskFile } from './task-doc.mjs'
 import { assembleBrief, commitSource } from './spec-context.mjs'
 import { runtimeRoot, readRuntime, transaction, readLock, unlockRuntime, canonicalDestination, worktreeHome } from './work-runtime.mjs'
@@ -895,7 +895,7 @@ async function archiveTasks(root, tasks, attempt, integration) {
   const ids = tasks.map((task) => task.id)
   const statePath = path.join(root, 'spec', 'STATE.md')
   // The log line is the coordination branch's (recordIntegrated): STATE gets no `## log`.
-  const closed = closeTasks(await readFile(statePath, 'utf8'), ids, { next: ['- inspect work board for remaining tasks'] })
+  const closed = closeTasks(await readFile(statePath, 'utf8'), ids, { next: (lines) => updateTaskNext(lines, ids, ['- inspect work board for remaining tasks']) })
   if (closed.missing.length) fail('STATE에서 완료 처리할 태스크 행을 찾지 못했습니다.', closed.missing)
   await writeFile(statePath, closed.text)
 }

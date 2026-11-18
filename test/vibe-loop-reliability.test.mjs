@@ -22,6 +22,9 @@ const failure = (ids, extra = {}) => ({ ok: false, failedTests: ids, ms: 100, ..
 
 test('a repaired final gate publishes after earlier failed rounds', async (t) => {
   const { root } = await fixture(t, 1); await publishing(root)
+  const stateFile = path.join(root, 'spec/STATE.md'), handoff = '- review the deferred design\n  - preserve its saved notes'
+  await writeFile(stateFile, (await readFile(stateFile, 'utf8')).replace('## next\n', `## next\n${handoff}\n`))
+  await git(root, 'add', 'spec/STATE.md'); await git(root, 'commit', '-qm', 'record unrelated handoff')
   let checks = 0, units = 0, pushes = 0
   const result = await vibeLoop(options(root), { preflight: passed, sync: passed,
     execute: async (config, job) => complete(root, job.brief.taskId, ++units),
@@ -33,6 +36,7 @@ test('a repaired final gate publishes after earlier failed rounds', async (t) =>
   const terminal = JSON.parse(await readFile(result.notification.terminalEvent, 'utf8'))
   assert.equal(terminal.verification.attempts, 3); assert.equal(terminal.push.pushed, true)
   assert.equal(terminal.objectiveComplete, false); assert.equal(terminal.delivery, 'recorded-locally')
+  assert.ok((await readFile(stateFile, 'utf8')).includes(handoff))
 })
 
 test('failed final gates keep queuing repairs past three failures until the candidate passes', async (t) => {

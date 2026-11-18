@@ -45,6 +45,24 @@ test('Orca 없이 start→claim→submit→integrate→cleanup하고 dep은 통�
   await access(group.path)
 })
 
+test('unit integration preserves other task and free-form STATE next handoffs', async (t) => {
+  const setup = await fixture(t)
+  const stateFile = path.join(setup.root, 'spec/STATE.md')
+  const handoff = '- resume T002 after reviewing the T001 result\n  - keep its reproduction\n- inspect supporting docs'
+  await writeFile(stateFile, (await readFile(stateFile, 'utf8')).replace('- gusta-implement-task T001', `- gusta-implement-task T001 T003\n${handoff}`))
+  await commit(setup.root, 'record next handoffs')
+  const group = await startWork({ ...setup, name: 'handoffs' })
+  const attempt = await claimWork({ ...setup, work: group.id, task: 'T001' })
+  await implement(attempt)
+  await submitWork({ ...setup, attempt: attempt.id, verify: checks })
+  await approve(setup, attempt)
+  await integrateWork({ ...setup, attempt: attempt.id, verify: checks })
+  const state = await readFile(path.join(group.path, 'spec/STATE.md'), 'utf8')
+  assert.match(state, /^- gusta-implement-task T003$/m)
+  assert.doesNotMatch(state, /^- gusta-implement-task T001\b/m)
+  assert.ok(state.includes(handoff))
+})
+
 test('auto는 외부 linked worktree를 연결하고 current/new는 선택을 따른다', async (t) => {
   const setup = await fixture(t)
   const { root, temporary } = setup

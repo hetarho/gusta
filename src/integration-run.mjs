@@ -21,9 +21,13 @@ import { prepareWorkspace } from './workspace-prepare.mjs'
 
 const execute = promisify(execFile)
 // A failed gate's next step: an environment failure is fixed in the environment, not in code. A cause
-// the cohort cannot fix releases the gate instead of holding every later integration.
+// the cohort cannot fix releases the gate instead of holding every later integration. A cancelled or
+// timed-out gate keeps its receipts and its original deadline.
 const failedNext = (gate) => {
-  const failed = (gate.checks ?? []).filter((entry) => !entry.ok), environment = failed.some((entry) => entry.environment)
+  const checks = gate.checks ?? []
+  if (checks.some((entry) => entry.cancelled)) return 'Verification was cancelled. Preserve the candidate and receipts, stop its owned processes and apply the latest user instruction before starting any further check.'
+  if (checks.some((entry) => entry.timedOut)) return 'The verification time budget ended. Preserve successful receipts and report failed or not-run coverage and remaining work; further recovery keeps the original deadline instead of restarting the full gate to reset elapsed time.'
+  const failed = checks.filter((entry) => !entry.ok), environment = failed.some((entry) => entry.environment)
   const repair = `then vibe integration repair --token ${gate.token} --target ${gate.path ?? '<candidate worktree>'}. The same deadline and cohort remain.`
   return `${environment ? `The candidate environment failed (ARCH prepare, a command not found, or a missing script/package a command names): fix the environment or the prepare command there — not the implementation — commit (an empty commit when no file changed keeps every cached success), ${repair}${failed.every((entry) => entry.environment) ? '' : ' Repair other failed checks only in failed/affected inputs.'}`
     : `Repair only failed/affected inputs in the candidate worktree, commit, ${repair}`} If this cohort cannot fix it (a participant command that runs only on its own device): vibe integration abandon --token ${gate.token} moves the gate to history (finish does so after the deadline), withdraw that participant, then finish again.`
@@ -115,6 +119,7 @@ async function settle(context, gate, landed) {
 }
 
 export async function finalizeIntegration(options = {}, injected = {}) {
+  const now = injected.now ?? Date.now, invocationDeadline = now() + Number(options.timeoutMs ?? 3600000)
   const context = await vibeSession(options)
   if (await designOf(context.workspace)) throw new SkillPackageError('이 checkout은 디자인 중입니다. 디자인을 마친 뒤 통합하세요.')
   if ((await git(context.root, ['status', '--porcelain', '--untracked-files=all'])).trim()) throw new SkillPackageError('미커밋 변경을 보존합니다. 작업 브랜치의 입력을 커밋한 뒤 통합하세요.')
@@ -137,7 +142,7 @@ export async function finalizeIntegration(options = {}, injected = {}) {
     if (ready.value.alreadyLanded) return { schemaVersion: 1, ok: true, verified: !ready.value.reconciled, alreadyLanded: true, landed: ready.value.landed, scope: ready.scope, pushed: null }
     const peers = await (injected.view ?? coordView)(context, { tag: options.tag })
     if (peers.error || peers.sync?.error || peers.push?.backoff || context.remote && (peers.push?.unpublished || peers.push?.enabled === false)) return pending('coordination-unknown', null, { coordination: peers })
-    const claimed = await store.claim({ tag: options.tag, active: peers.doc?.active ?? peers.active ?? [], deadline: options.deadline ?? new Date(Date.now() + Number(options.timeoutMs ?? 3600000)).toISOString() })
+    const claimed = await store.claim({ tag: options.tag, active: peers.doc?.active ?? peers.active ?? [], deadline: options.deadline ?? new Date(invocationDeadline).toISOString() })
     if (!claimed.ok) return { schemaVersion: 1, ...claimed }
     gate = claimed.value.gate; created = true
   }
@@ -159,10 +164,16 @@ export async function finalizeIntegration(options = {}, injected = {}) {
     const agentChecks = validateAgentAcceptance(gate.cohort.flatMap((entry) => entry.agentChecks ?? []).filter((entry) => (entry.stage ?? 'integration') === 'integration'))
     validateAcceptanceAllocation(agentChecks, verification.plan?.checks.map((entry) => entry.id) ?? [])
     const results = []
+    const deadline = Math.min(invocationDeadline, gate.deadline ? Date.parse(gate.deadline) : Infinity)
     // The candidate is a new worktree: its dependencies first (ARCH prepare). A failure there is the
     // environment's — reported as such, and no check runs against a half-prepared tree.
-    const ready = await (injected.prepareWorkspace ?? prepareWorkspace)(prepared.root, verification.prepare, { signal: options.signal })
-    if (!ready.ok) results.push({ ok: false, command: 'workspace prepare', environment: true, steps: ready.steps, error: 'The candidate worktree could not be prepared (ARCH prepare): an environment or prepare-command failure, not an implementation defect.' })
+    const ready = await (injected.prepareWorkspace ?? prepareWorkspace)(prepared.root, verification.prepare, { signal: options.signal, deadline })
+    if (!ready.ok) {
+      const cancelled = ready.steps.some((entry) => entry.cancelled), timedOut = ready.steps.some((entry) => entry.timedOut)
+      results.push({ ok: false, command: 'workspace prepare', environment: !cancelled && !timedOut, cancelled, timedOut, steps: ready.steps,
+        error: cancelled ? 'Candidate preparation was cancelled.' : timedOut ? 'Candidate preparation reached its time budget.'
+          : 'The candidate worktree could not be prepared (ARCH prepare): an environment or prepare-command failure, not an implementation defect.' })
+    }
     else if ((await git(prepared.root, ['status', '--porcelain', '--untracked-files=all'])).trim()) results.push({ ok: false, command: 'workspace prepare', environment: true, steps: ready.steps, error: 'ARCH prepare changed files the candidate tracks or does not ignore; a prepare command must leave the tree unchanged.' })
     const lint = await (injected.lint ?? lintSpec)({ targetRoot: prepared.root })
     const close = await (injected.closeIssues ?? (async (root) => (await import('./vibe.mjs')).specCloseIssues(root)))(prepared.root)
@@ -184,8 +195,10 @@ export async function finalizeIntegration(options = {}, injected = {}) {
     for (const command of commands) {
       if (results.some((entry) => ['spec close', 'workspace prepare'].includes(entry.command))) break
       if (options.signal?.aborted) { results.push({ ok: false, cancelled: true, reason: 'cancelled', ...command }); break }
+      const remaining = deadline - now()
+      if (remaining <= 0) { results.push({ ok: false, status: 'not-run', timedOut: true, reason: 'integration-deadline', ...command }); break }
       try {
-        const receipt = await check({ ...options, targetRoot: prepared.root, timeoutMs: Math.min(Number(options.timeoutMs ?? 3600000), gate.deadline ? Math.max(1, Date.parse(gate.deadline) - Date.now()) : Infinity), tag: gate.token.replaceAll('-', '').slice(0, 8), tier: 'batch', integrationToken: gate.token, diffBase: gate.base, host: true, ...(command.plan ? { plan: command.plan } : {}) }, command.command)
+        const receipt = await check({ ...options, targetRoot: prepared.root, timeoutMs: remaining, tag: gate.token.replaceAll('-', '').slice(0, 8), tier: 'batch', integrationToken: gate.token, diffBase: gate.base, host: true, ...(command.plan ? { plan: command.plan } : {}) }, command.command)
         // A tool the candidate does not have (the shell's 127) is the environment's: the rest of a
         // long gate would only fail the same way, so it stops here.
         const missing = receipt.exitCode === 127 || (receipt.checks ?? []).some((entry) => entry.exitCode === 127)
