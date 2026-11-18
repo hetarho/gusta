@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.17.7
+
+Released: 2026-11-18.
+
+- New skill `gusta-plan`, now the planning entry point: give requirements all
+  at once or grow them in conversation. Each requirement becomes a row in an
+  interpretation table (decided, gap with a recommendation, conflict with an
+  existing decision, sensitive `[?]`, needs a mockup, needs coded variants,
+  deferred), and the decided table becomes SSOT and tasks pushed to the
+  planning branch with `vibe plan-push`. What must be seen continues in
+  `gusta-sketch`; what must be coded and compared is recorded and pointed to
+  `/gusta-showcase`. `gusta-sketch` is now the visual path, and both share one
+  ideation procedure and template (`gusta-plan/references/ideation.md`).
+- Planning pointers name `/gusta-plan`: `gusta-start` with nothing to run, the
+  loop's `needs-sketch` hint (the reason code is unchanged), the last task's
+  STATE next, changing a provisional decision, adopted code-review findings
+  and the managed agent-instructions block (run `gusta-update` to refresh it).
+- Verification spends one deadline end to end: waiting for the heavy lock,
+  preparing a candidate worktree and every gate command share the original
+  budget. A cancelled or timed-out gate is reported as such, not as an
+  environment failure, keeps its receipts and its deadline, and the prepare
+  command's process group is cleaned up.
+- Closing a task removes only its own IDs from generated STATE next lines and
+  keeps other tasks and free-form handoffs untruncated.
+
 ## 0.17.6
 
 Released: 2026-11-18.
