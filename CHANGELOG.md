@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.17.8
+
+Released: 2026-11-18.
+
+- `gusta-showcase` continues in design mode once the person picks a main:
+  `vibe ab main <slug> --variant <v> --tag <tag>` opens design mode on this
+  checkout (moving to `design/<tag>` off a protected branch) with the main
+  variant's worktree as the edit target. Every server and the hub stay up,
+  the hub marks the main, and the session carries the other variants'
+  strengths into it live. Picking another main commits the previous main's
+  edits to its own branch.
+- When the person says the design is done, `vibe ab pick <slug>` commits the
+  main's pending edits to its branch, brings it into this checkout
+  uncommitted without the mock scaffold, cleans up servers, hub and
+  worktrees, and logs the adoption. The design ending follows: task checks,
+  one commit, SSOT update, then `vibe integration finish` to the configured
+  land branch. `vibe design verify|end` refuse while the main has not been
+  picked, and `vibe ab stop --remove` also ends the showcase design.
+- The design-mode ending updates the SSOT before submitting to the shared
+  integration.
+- `vibe ab add` (remix variants) is removed; refining the main in design
+  mode covers it.
+
 ## 0.17.7
 
 Released: 2026-11-18.
