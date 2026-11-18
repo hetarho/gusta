@@ -3,7 +3,7 @@ import { readFile, access } from 'node:fs/promises'
 import { atomicJSON, processAlive } from './loop-control.mjs'
 
 // The compare hub: one local page with every variant side by side, where the person leaves notes
-// and marks a choice. It only records; adopting a variant stays `vibe ab pick` by the session.
+// and marks a choice. It only records; making a variant the main stays `vibe ab main` by the session.
 
 // The screen a variant opens at: its port plus the URL path its session named (old runs: root).
 export function viewPath(value) {
@@ -47,9 +47,9 @@ export function applyFeedback(feedback, action, body, names, at) {
 // What the page shows for each variant, from the comparison record: its approach stays the title after
 // follow-ups, whose summaries say only what changed.
 export function hubModel(record, feedback, alive = processAlive) {
-  return { slug: record.slug, feedback, variants: Object.entries(record.variants).map(([name, variant]) => {
+  return { slug: record.slug, feedback, main: record.main ?? null, variants: Object.entries(record.variants).map(([name, variant]) => {
     const last = variant.runs?.at(-1)
-    return { name, from: variant.from ?? '', url: urlOf(variant), approach: approachLine(variant.approach), summary: last?.summary ?? '', view: last?.view ?? '',
+    return { name, url: urlOf(variant), approach: approachLine(variant.approach), summary: last?.summary ?? '', view: last?.view ?? '',
       serving: Boolean(variant.server?.pid && alive(variant.server.pid)), exec: variant.exec ?? null }
   }) }
 }
@@ -65,7 +65,7 @@ button[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}a{color
 main{display:grid;grid-template-columns:repeat(var(--n),minmax(320px,1fr));gap:12px;padding:12px 16px;overflow-x:auto}
 .mobile main{grid-template-columns:repeat(var(--n),390px)}
 section{display:flex;flex-direction:column;min-width:0;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-section.chosen{border-color:var(--chosen);box-shadow:0 0 0 1px var(--chosen)}
+section.chosen{border-color:var(--chosen);box-shadow:0 0 0 1px var(--chosen)}section.main{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}.badge{color:var(--accent);font-weight:600}
 .head,.foot{display:flex;flex-direction:column;gap:4px;padding:8px 10px}.head p{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.head .approach{font-weight:600}
 .frame{height:72vh;overflow:hidden;background:#fff;border-block:1px solid var(--line)}iframe{display:block;border:0;transform-origin:0 0}
 textarea{width:100%;min-height:56px;font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:6px;resize:vertical}
@@ -77,7 +77,7 @@ document.querySelectorAll('[data-width]').forEach((button)=>button.onclick=()=>{
 addEventListener('resize',fit);fit()
 const post=(action,body)=>fetch(action,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then((response)=>{if(!response.ok)throw new Error(response.status);return response.json()})
 document.querySelectorAll('textarea').forEach((area)=>{let timer;const state=area.closest('.foot').querySelector('.saved');area.oninput=()=>{clearTimeout(timer);state.textContent='…';timer=setTimeout(()=>post('note',{variant:area.dataset.variant,note:area.value}).then(()=>state.textContent='saved',()=>state.textContent='not saved'),500)}})
-document.querySelectorAll('.choose').forEach((button)=>button.onclick=()=>post('choose',{variant:button.dataset.variant}).then((feedback)=>{const chosen=feedback.chosen.variant;document.querySelectorAll('section').forEach((section)=>section.classList.toggle('chosen',section.dataset.variant===chosen));document.getElementById('chosen').textContent='chosen: '+chosen+' — tell the session to adopt it'},()=>alert('not saved')))`
+document.querySelectorAll('.choose').forEach((button)=>button.onclick=()=>post('choose',{variant:button.dataset.variant}).then((feedback)=>{const chosen=feedback.chosen.variant;document.querySelectorAll('section').forEach((section)=>section.classList.toggle('chosen',section.dataset.variant===chosen));document.getElementById('chosen').textContent='chosen: '+chosen+' — tell the session to make it the main'},()=>alert('not saved')))`
 
 // The latest `vibe ab exec` under a frame: median, exit codes and the last output line, led by the
 // command when the variants' latest measurements ran different commands (their numbers do not compare).
@@ -88,13 +88,15 @@ function measured(exec, mixed) {
 }
 
 // Pure: the hub page. Every text a session wrote is escaped; frames load each variant at its view path.
-export function renderHub({ slug, variants, feedback = EMPTY() }) {
+// The main (vibe ab main) is marked: its frame shows the design edits live while the others stay for reference.
+export function renderHub({ slug, variants, feedback = EMPTY(), main = null }) {
   const chosen = feedback.chosen?.variant
   const mixed = new Set(variants.filter((variant) => variant.exec).map((variant) => variant.exec.command)).size > 1
   const sections = variants.map((variant) => {
     const summary = variant.summary.split('\n')[0]
-    return `<section data-variant="${escape(variant.name)}"${variant.name === chosen ? ' class="chosen"' : ''}>
-<div class="head"><div class="row"><strong>${escape(variant.name)}</strong>${variant.from ? `<span class="muted">from ${escape(variant.from)}</span>` : ''}<a href="${escape(variant.url)}" target="_blank" rel="noopener">open in new tab ↗</a>${variant.serving ? '' : '<span class="muted">not serving</span>'}</div>
+    const classes = [variant.name === chosen && 'chosen', variant.name === main && 'main'].filter(Boolean).join(' ')
+    return `<section data-variant="${escape(variant.name)}"${classes ? ` class="${classes}"` : ''}>
+<div class="head"><div class="row"><strong>${escape(variant.name)}</strong>${variant.name === main ? '<span class="badge">main · designing</span>' : ''}<a href="${escape(variant.url)}" target="_blank" rel="noopener">open in new tab ↗</a>${variant.serving ? '' : '<span class="muted">not serving</span>'}</div>
 ${variant.approach ? `<p class="approach" title="${escape(variant.approach)}">${escape(variant.approach)}</p>` : ''}<p title="${escape(variant.summary)}">${escape(summary) || '<span class="muted">no run yet</span>'}</p>${variant.view ? `<p class="muted" title="${escape(variant.view)}">view: ${escape(variant.view)}</p>` : ''}</div>
 <div class="frame"><iframe src="${escape(variant.url)}" title="variant ${escape(variant.name)}"></iframe></div>
 <div class="foot">${measured(variant.exec, mixed)}<textarea data-variant="${escape(variant.name)}" placeholder="note for ${escape(variant.name)}">${escape(feedback.notes?.[variant.name]?.note ?? '')}</textarea>
@@ -105,7 +107,7 @@ ${variant.approach ? `<p class="approach" title="${escape(variant.approach)}">${
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>A/B ${escape(slug)}</title><style>${STYLE}</style></head>
 <body><header><h1>A/B · ${escape(slug)}</h1><div class="row"><button data-width="1280" aria-pressed="true">desktop</button><button data-width="390" aria-pressed="false">mobile 390</button></div>
 <span class="muted">A blank frame means the app blocks framing: use “open in new tab”.</span>
-<span id="chosen">${chosen ? `chosen: ${escape(chosen)} — tell the session to adopt it` : ''}</span></header>
+<span id="chosen">${chosen && !main ? `chosen: ${escape(chosen)} — tell the session to make it the main` : ''}</span></header>
 <main style="--n:${variants.length}">
 ${sections}
 </main><script>${SCRIPT}</script></body></html>

@@ -3,14 +3,15 @@ name: gusta-showcase
 description: >-
   "/gusta-showcase, A/B로 비교해줘, 두 가지(여러) 방식으로 만들어서 보여줘, 변형 여러 개 띄워줘, 어느
   쪽이 빠른지 비교해줘"일 때 사용한다. 문제 하나를 서로 다른 접근의 변형 2~6개로 코드까지 병렬 구현하고(변형마다
-  브랜치·worktree·하위 세션) 변형마다 포트 하나씩 띄우거나 같은 측정을 나란히 돌려 보여 준다. 사용자가 고른 변형만
-  현재 브랜치에 합치고 문서(SSOT)도 맞춘다. 디자인·UX·UI·기능·성능 비교. 사람이 고르는 스킬이라 맡김에서는 쓰지
+  브랜치·worktree·하위 세션) 변형마다 포트 하나씩 띄우거나 같은 측정을 나란히 돌려 보여 준다. 사용자가 메인으로 고른
+  변형을 디자인 모드로 다듬으며 다른 변형의 장점을 합치고, 끝났다고 하면 디자인 마감대로 검사·커밋·SSOT·land 반영까지
+  한다. 디자인·UX·UI·기능·성능 비교. 사람이 고르는 스킬이라 맡김에서는 쓰지
   않는다. 코드 없이 시안 한 페이지로 보고 문서·태스크만 정하려면 gusta-sketch, 말로 정하려면 gusta-plan.
 ---
 
 # gusta-showcase — 변형 비교 진행자
 
-**역할: 비교 진행자.** 서로 다른 안을 코드까지 실제로 만들어 변형마다 포트 하나씩 띄우고, 사용자는 보고 고른다. 사용자가 직접 부를 때만 쓴다. 변형 구현은 하위 세션이, 브랜치·worktree·커밋·서버·측정·정리는 `vibe ab`가 맡는다. 이 세션은 변형 설계·비교표·채택 기록만 하고 코드를 직접 쓰지 않는다.
+**역할: 비교 진행자.** 서로 다른 안을 코드까지 실제로 만들어 변형마다 포트 하나씩 띄우고, 사용자는 보고 메인을 고른다. 사용자가 직접 부를 때만 쓴다. 변형 구현은 하위 세션이, 브랜치·worktree·커밋·서버·측정·정리는 `vibe ab`가 맡는다. 이 세션은 변형 설계·비교표를 맡고, 메인이 정해지면 디자인 진행자(gusta-design-mode)로 메인만 직접 고친다.
 
 ## 공통 규칙 (모든 spec 스킬)
 1. 먼저 `vibe status --json` 또는 실행기 brief로 필요한 STATE 요약만 본다. 없으면 gusta-create-architecture 실행을 안내한다. `settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 하고, agents 미정이면 맡김을 시작하지 않는다).
@@ -47,13 +48,11 @@ SETTINGS `usage-measurement`가 true인 시작 대화는 [사용량 절차](../g
 - 사용자에게는 hub URL 하나만 준다 — 변형이 나란히 보이고 거기서 메모·choose를 남길 수 있다고 한 줄로. hub가 null이면 serve를 다시 돌린다(서버는 두고 hub만 다시 뜬다). 빈 프레임은 앱이 frame을 막는 것 — 새 탭 링크로.
 - 성능·동작 비교는 `vibe ab exec <slug> --command '<측정 명령>' --repeat 3 --json`: 변형을 번갈아 실행해 중앙값·최소·종료 코드·마지막 줄을 모은다(hub에도 표시). 실행 사이의 흔들림보다 작은 차이는 차이라고 하지 않는다.
 - 비교표 하나로 보여 준다: 변형 | 접근 | 측정값 | 볼 곳(view) | 장단점·위험. 판정은 사용자 몫이고 추천은 근거와 함께 한 줄만.
-- 사용자가 다 봤다고 하면 `vibe ab status <slug> --json`의 feedback(메모·chosen)을 읽는다. chosen은 의사 표시일 뿐 — 확인받고 pick한다.
-- 특정 변형을 고쳐 달라고 하면(말 또는 메모) `vibe ab run <slug> --variant <v> --follow-up-file <요청만>`(접근·지난 요약·메모는 CLI가 붙인다). 이어 `vibe ab serve <slug> --variant <v> --command …`는 살아 있는 서버를 두고 응답만 확인한다(hot reload가 없으면 `--restart`).
-- "A의 X에 B의 Y"처럼 섞자면 `vibe ab add <slug> --from <A>`로 A에서 이어지는 새 변형을 만들고 그것만 run한다(다른 변형은 `git diff`로 읽힌다).
+- 사용자가 다 봤다고 하면 `vibe ab status <slug> --json`의 feedback(메모·chosen)을 읽는다. chosen은 의사 표시일 뿐 — 확인받고 메인으로 정한다(5절).
+- 메인을 정하기 전에 특정 변형을 고쳐 달라고 하면(말 또는 메모) `vibe ab run <slug> --variant <v> --follow-up-file <요청만>`(접근·지난 요약·메모는 CLI가 붙인다). 이어 `vibe ab serve <slug> --variant <v> --command …`는 살아 있는 서버를 두고 응답만 확인한다(hot reload가 없으면 `--restart`).
 
-## 5. 채택과 정리
-- `vibe ab pick <slug> --variant <v> --approach '<영어 한 줄 접근>' --json`: 서버·hub를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리한다. 변형 브랜치는 `prune-branches`(기본 true, `--prune-branches`면 강제)대로 지운다. 충돌이면 현재 브랜치는 그대로 두고 보고한다.
-- pick은 scaffold의 줄·파일만 빼고 합친다(같은 파일의 변형 수정은 남는다). todo(실제 데이터 연결)는 gusta-create-task로.
-- 채택 기록: pick이 채택 log 줄을 남긴다(커밋할 것 없음, `logError`면 `vibe log`로 다시). 채택안이 SSOT 규칙을 바꿨으면 이어서 gusta-update-ssot(대안=고르지 않은 변형, 이유=사용자 선택 근거).
-- 합친 뒤에는 평소대로 영향 검사, push 직전 마감 관문(gusta-start 4절).
-- 고르지 않고 끝내면 `vibe ab stop <slug> --remove`. 나중에 보겠다면 서버·hub를 두고 `vibe ab status <slug>`의 hub URL을 다시 준다.
+## 5. 메인 다듬기와 마감
+- 사용자가 메인을 정하면 세션 tag(영숫자 2-4자)를 정해 `vibe ab main <slug> --variant <v> --tag <tag> --json`: 이 checkout에 디자인 모드를 연다(보호 브랜치면 `design/<tag>`로 전환, 미커밋 변경이 있으면 거절 — 사용자 변경은 임의로 커밋하지 않고 묻는다). 서버·hub는 그대로라 메인은 hub에서 실시간으로 바뀌고 다른 변형은 참고로 남는다. 메인을 바꾸면 다시 `vibe ab main`(이전 메인의 편집은 그 브랜치에 커밋된다).
+- 그다음은 gusta-design-mode 2절 루프다: 사용자가 말하는 대로 메인 worktree(`main.path`)만 바로 고친다. 다른 변형의 장점("b의 헤더")은 `others`의 path에서 읽거나 `git diff <base> ab/<slug>/<x>`로 보고 옮긴다. scaffold의 줄·파일은 고치지 않는다(pick이 그대로 뺀다). 메인 worktree는 프로젝트 밖이다 — 편집 권한 창이 뜨면 그 경로를 작업 폴더로 한 번 추가하게 안내한다(Claude Code는 `/add-dir <path>`).
+- 사용자가 끝났다고 하면 gusta-design-mode 4절 마감을 0번(`vibe ab pick`: 메인을 이 checkout에 미커밋으로 옮기고 정리)부터 한다 — 영향 검사·커밋·SSOT 반영(대안=고르지 않은 변형, 이유=사용자 선택 근거)·공동 통합으로 SETTINGS land에 반영.
+- 고르지 않고 끝내면 `vibe ab stop <slug> --remove`(열린 showcase 디자인도 끝난다. 메인에 미커밋 편집이 있으면 거절되니 버릴지 묻는다). 나중에 보겠다면 서버·hub를 두고 `vibe ab status <slug>`의 hub URL을 다시 준다.

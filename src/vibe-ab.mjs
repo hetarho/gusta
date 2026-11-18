@@ -16,6 +16,8 @@ import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 import { vibeLog } from './vibe-inbox.mjs'
 import { SkillPackageError } from './errors.mjs'
 import { urlOf, readFeedback, approachLine } from './vibe-ab-hub.mjs'
+import { readInteractive, writeInteractive } from './interactive-state.mjs'
+import { openDesign } from './vibe-design.mjs'
 
 // A/B comparison: one problem, 2..6 variants, each on its own branch, sibling worktree and
 // port. Sessions build the variants; this host owns the mechanical parts a model should not
@@ -35,7 +37,7 @@ async function context(options) {
   if (!workspace.git?.head) fail('커밋이 있는 Git checkout이 필요합니다.')
   const main = workspace.git.worktrees.find((tree) => !tree.bare)?.path ?? workspace.git.root
   const identity = `${path.basename(main)}-${createHash('sha256').update(workspace.git.commonDir).digest('hex').slice(0, 8)}`
-  return { root: workspace.git.root, main, identity, runtime: runtimeRoot(workspace) }
+  return { root: workspace.git.root, main, identity, runtime: runtimeRoot(workspace), workspace }
 }
 const recordFile = (ctx, slug) => path.join(ctx.runtime, 'ab', `${slug}.json`)
 const dirOf = (ctx, slug) => path.join(ctx.runtime, 'ab', slug)
@@ -330,8 +332,7 @@ export async function abStart(options = {}, injected = {}) {
   const shared = options.sharedFile ? await readFile(path.resolve(options.sharedFile), 'utf8') : ''
   const brief = options.scaffoldPrompt ? await readFile(path.resolve(options.scaffoldPrompt), 'utf8') : null
   const session = brief ? await sessionOptions(ctx, options, deps) : null
-  // How worktrees get their dependencies is kept: add uses it for a remix unless told otherwise.
-  const record = { schemaVersion: 1, slug, base: origin, createdAt: new Date().toISOString(), variants: {}, prepare: { setup: options.setup ?? null, copy: copies, reuse }, ...(shared.trim() ? { shared } : {}) }
+  const record = { schemaVersion: 1, slug, base: origin, createdAt: new Date().toISOString(), variants: {}, ...(shared.trim() ? { shared } : {}) }
   const prep = { setup: options.setup, timeoutMs: options.timeoutMs, copy: deps.copy }
   // start owns the record until it returns; its writes still take the lock so none interleaves with another command's.
   const store = () => locked(ctx, slug, () => save(ctx, record))
@@ -368,27 +369,6 @@ export async function abStart(options = {}, injected = {}) {
     variants: Object.entries(record.variants).map(([name, variant]) => ({ variant: name, branch: variant.branch, path: variant.path, port: variant.port, url: urlOf(variant) })), ...installed.report }
 }
 
-// A remix ("a's layout with b's colours"): the next variant starts from <from>'s committed work on its own
-// branch, worktree and port. It still descends from the base (and the scaffold), so pick works unchanged.
-export async function abAdd(options = {}, injected = {}) {
-  const deps = { copy: copyTree, ...injected }
-  const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
-  if (!options.from) fail('--from <변형>이 필요합니다(새 변형이 이어받을 변형).')
-  const [from] = pick(record, { variant: options.from })
-  const name = [...NAMES].find((letter) => !record.variants[letter])
-  if (!name) fail(`변형은 최대 ${NAMES.length}개입니다.`)
-  // start's --setup/--copy/--reuse are the defaults; a flag given here replaces that one.
-  const stored = record.prepare ?? {}, setup = options.setup ?? stored.setup ?? null
-  const copies = options.copy ? relative(options.copy, '--copy') : stored.copy ?? []
-  const reuse = options.reuse ? await ignoredDirs(ctx.root, relative(options.reuse, '--reuse')) : stored.reuse ?? []
-  if (await dirty(record.variants[from])) fail(`변형 ${from}에 미커밋 변경이 있습니다 — 실행이 끝난 뒤 다시 하세요.`)
-  const tip = (await git(ctx.root, ['rev-parse', `${record.variants[from].branch}^{commit}`])).trim()
-  const variant = { ...(await addVariant(ctx, record, name, tip, copies, Math.min(...Object.values(record.variants).map((entry) => entry.port)))), from }
-  await update(ctx, slug, (live) => { live.variants[name] = variant })
-  const installed = depsReport({ [name]: await prepare(ctx, slug, { setup, timeoutMs: options.timeoutMs, copy: deps.copy }, { name, ...variant }, await reuseBlockers(ctx.root, reuse, tip)) })
-  return { schemaVersion: 1, ok: installed.ok, slug, variant: name, from, branch: variant.branch, path: variant.path, port: variant.port, url: urlOf(variant), ...installed.report }
-}
-
 // The scaffold rule: read-only paths, editable files with where the scaffold's lines are (not their
 // content), the scaffold session's notes and its data states.
 function scaffoldRule(record, files) {
@@ -404,11 +384,9 @@ function scaffoldRule(record, files) {
 // line is the same for every variant (one cacheable prefix), and a follow-up repeats the first run's
 // prompt before what is new, so a fresh session knows the goal and the approach it continues.
 function variantPrompt(record, name, files, { approach, followUp, note }) {
-  const variant = record.variants[name], last = variant.runs.at(-1), others = Object.keys(record.variants).filter((other) => other !== name)
-  // Worktrees share refs, so a remix can read what the other variants did without leaving its own.
-  const remix = variant.from && `You start from variant ${variant.from}'s work (already on your branch). Other variants' changes: git diff ${record.base} ab/${record.slug}/<x>, x in ${others.join(', ')}.`
+  const variant = record.variants[name], last = variant.runs.at(-1)
   return [scaffoldRule(record, files),
-    record.shared?.trim(), `Variant ${name} of ${record.slug}. $PORT for this variant: ${variant.port}.`, remix, approach,
+    record.shared?.trim(), `Variant ${name} of ${record.slug}. $PORT for this variant: ${variant.port}.`, approach,
     ...(followUp === undefined ? [] : [last && `Your last run's summary: ${last.summary}`, note && `The person's note on this variant: ${note}`,
       `Your branch already contains this work; change only what is asked.\n\nFollow-up request:\n${followUp}`])].filter(Boolean).join('\n\n')
 }
@@ -440,6 +418,7 @@ export async function abRun(options = {}, injected = {}) {
   if (options.promptDir) fail('--prompt-dir는 --all과 함께 씁니다.')
   if (!options.variant) fail('--variant가 필요합니다(모든 변형을 한 번에: --all --prompt-dir <dir>).')
   const [name] = pick(record, options), variant = record.variants[name]
+  if (record.main === name) fail(`메인 ${name}은 디자인 모드에서 직접 고칩니다(worktree: ${variant.path}).`)
   if (Boolean(options.promptFile) === Boolean(options.followUpFile)) fail('--prompt-file(이 변형의 접근) 또는 --follow-up-file(이어 고칠 요청) 중 하나가 필요합니다.')
   if (options.followUpFile && !variant.runs.length) fail(`변형 ${name}은 아직 실행되지 않았습니다. 먼저 --prompt-file로 실행하세요.`)
   const approach = options.promptFile ? await readFile(path.resolve(options.promptFile), 'utf8') : undefined
@@ -608,11 +587,11 @@ export async function abStatus(options = {}) {
   for (const [name, variant] of Object.entries(record.variants)) {
     const ahead = Number((await git(ctx.root, ['rev-list', '--count', `${record.base}..${variant.branch}`]).catch(() => '0')).trim())
     const serving = Boolean(variant.server?.pid && processAlive(variant.server.pid))
-    variants.push({ variant: name, ...(variant.from ? { from: variant.from } : {}), branch: variant.branch, path: variant.path, url: urlOf(variant), serving, commits: ahead, last: variant.runs.at(-1) ? { outcome: variant.runs.at(-1).outcome, summary: variant.runs.at(-1).summary, view: variant.runs.at(-1).view } : null })
+    variants.push({ variant: name, branch: variant.branch, path: variant.path, url: urlOf(variant), serving, commits: ahead, last: variant.runs.at(-1) ? { outcome: variant.runs.at(-1).outcome, summary: variant.runs.at(-1).summary, view: variant.runs.at(-1).view } : null })
   }
   // The hub's notes and choice are what the person said; a choice is intent, adopting stays pick.
   const hub = record.hub?.url && processAlive(record.hub.pid) ? record.hub.url : null
-  return { schemaVersion: 1, ok: true, slug, base: record.base, ...(record.scaffold ? { origin: record.origin, scaffold: record.scaffold } : {}), createdAt: record.createdAt, hub, feedback: await readFeedback(fileOf(ctx, slug, 'feedback.json')), variants }
+  return { schemaVersion: 1, ok: true, slug, base: record.base, ...(record.scaffold ? { origin: record.origin, scaffold: record.scaffold } : {}), createdAt: record.createdAt, main: record.main ?? null, hub, feedback: await readFeedback(fileOf(ctx, slug, 'feedback.json')), variants }
 }
 
 // Every worktree and branch the comparison made: the variants and the branch its scaffold session
@@ -624,7 +603,7 @@ const dirty = async (tree) => Boolean(tree.path) && (await git(tree.path, ['stat
 async function checkClean(trees) {
   const names = []
   for (const [name, tree] of trees) if (name !== BASE && await dirty(tree)) names.push(name)
-  if (names.length) fail(`커밋되지 않은 변경이 있는 변형: ${names.join(', ')}. vibe ab run으로 끝내거나 직접 정리하세요.`)
+  if (names.length) fail(`커밋되지 않은 변경이 있는 변형: ${names.join(', ')}. 메인의 디자인 편집은 vibe ab pick으로 옮기고, 그 밖은 vibe ab run으로 끝내거나 직접 정리하세요.`)
 }
 async function removeWorktrees(ctx, trees) {
   await checkClean(trees)
@@ -652,19 +631,22 @@ async function tidy(ctx, slug, trees, prune) {
   if (prune) await rm(dirOf(ctx, slug), { recursive: true, force: true })
 }
 
+// Dropping the comparison also ends its showcase design here: no main is left to design.
 export async function abStop(options = {}) {
   const ctx = await context(options), slug = slugOf(options), record = await update(ctx, slug, stopAll)
   const trees = made(record)
   const prune = options.remove && await pruning(ctx, options)
-  let discarded = false
+  let discarded = false, designEnded = false
   if (options.remove) {
     discarded = await removeWorktrees(ctx, trees)
     if (prune) await pruneBranches(ctx, trees)
     await rm(recordFile(ctx, slug), { force: true })
     await tidy(ctx, slug, trees, prune)
+    const state = await readInteractive(ctx.workspace)
+    if (state.design?.showcase?.slug === slug) { await writeInteractive(ctx.workspace, { ...state, design: undefined }); designEnded = true }
   }
   return { schemaVersion: 1, ok: true, slug, stopped: Object.keys(record.variants), removed: Boolean(options.remove), branches: prune ? [] : trees.map(([, tree]) => tree.branch),
-    ...(discarded ? { note: '실패한 scaffold 세션이 남긴 미커밋 mock 변경은 버렸습니다.' } : {}) }
+    ...(designEnded ? { designEnded } : {}), ...(discarded ? { note: '실패한 scaffold 세션이 남긴 미커밋 mock 변경은 버렸습니다.' } : {}) }
 }
 
 // git with a private index file, so a tree is built without touching any worktree or the real index.
@@ -802,47 +784,97 @@ async function withoutScaffold(ctx, record, commit, files) {
 }
 
 const STATE = 'spec/STATE.md'
+const commits = async (ctx, record, variant) => Number((await git(ctx.root, ['rev-list', '--count', `${record.base}..${variant.branch}`])).trim())
+// The design's pending edits in a variant's worktree, committed to its branch by the host.
+async function commitPending(variant, message) {
+  if (!(await dirty(variant))) return false
+  await git(variant.path, ['add', '-A'])
+  await git(variant.path, ['commit', '-q', '-m', message])
+  return true
+}
+const others = (record, main) => Object.entries(record.variants).filter(([name]) => name !== main)
+  .map(([name, variant]) => ({ variant: name, branch: variant.branch, path: variant.path, url: urlOf(variant), serving: Boolean(variant.server?.pid && processAlive(variant.server.pid)) }))
 
-// Adoption merges exactly one variant into the checkout that started the comparison and logs it on
-// the coordination branch (vibe log: no file changes, nothing to commit). The merge stands whatever
-// the log says: a log that could not be written is reported (logError). gusta-update-ssot, when the
-// choice changed a rule, stays with the skill.
+// The main variant is the one the person refines. Design mode opens on this checkout (moving to
+// design/<tag> off a protected branch) and edits the main's worktree, whose server keeps reloading next to
+// the other variants in the hub: their strengths are carried into it by hand. Another main takes over a
+// running design; the previous main's pending edits are committed to its branch, so the hub still shows them.
+export async function abMain(options = {}) {
+  const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
+  if (!options.variant) fail('--variant가 필요합니다(메인으로 다듬을 변형).')
+  const [name] = pick(record, options), variant = record.variants[name]
+  if (Object.values(record.variants).some((entry) => entry.path === ctx.root)) fail('변형 worktree가 아니라 비교를 시작한 checkout에서 실행하세요.')
+  if (await commits(ctx, record, variant) === 0) fail(`변형 ${name}에 커밋이 없습니다.`)
+  const state = await readInteractive(ctx.workspace), design = state.design ?? null
+  if (design && design.showcase?.slug !== slug) fail(`이 checkout은 이미 디자인 중입니다(${design.scope}). 그 디자인을 마감한 뒤 메인을 고르세요.`)
+  const showcase = { slug, variant: name, path: variant.path }
+  let opened
+  if (!design) {
+    if ((await git(ctx.root, ['status', '--porcelain'])).trim()) fail('이 checkout에 미커밋 변경이 있습니다. 메인은 pick 때 이 checkout으로 옮겨지므로 사용자 변경을 먼저 정리하세요.')
+    opened = await openDesign(ctx.workspace, state, { tag: options.tag, scope: options.scope?.replace(/\s+/g, ' ').trim() || `showcase ${slug}`, showcase })
+  } else {
+    const previous = design.showcase.variant
+    if (previous !== name && record.variants[previous]) await commitPending(record.variants[previous], `ab ${slug}/${previous}: design edits`)
+    opened = { design: { ...design, showcase } }
+    if (previous !== name) await writeInteractive(ctx.workspace, { ...state, design: opened.design })
+  }
+  const live = await update(ctx, slug, (current) => { current.main = name })
+  const hub = live.hub?.url && processAlive(live.hub.pid) ? live.hub.url : null
+  return { schemaVersion: 1, ok: true, slug, resumed: Boolean(design), base: record.base, ...(record.scaffold ? { scaffold: record.scaffold } : {}), hub,
+    main: { variant: name, branch: variant.branch, path: variant.path, url: urlOf(live.variants[name]), serving: Boolean(live.variants[name].server?.pid && processAlive(live.variants[name].server.pid)) },
+    others: others(live, name), ...opened }
+}
+
+// Pick ends a showcase design: the main, with the design's pending edits committed to its branch, comes
+// into this checkout as uncommitted changes without its mock scaffold, and the comparison is cleaned up.
+// The design stays open here, so its ending (verify → end → one commit) is the adoption's and the scaffold
+// never enters this checkout's history. The adoption is logged on the coordination branch; a log that could
+// not be written is reported (logError). gusta-update-ssot, when the choice changed a rule, stays with the skill.
 export async function abPick(options = {}) {
   const ctx = await context(options), slug = slugOf(options), record = await load(ctx, slug)
-  if (!options.variant) fail('--variant가 필요합니다.')
-  const [name] = pick(record, options), trees = made(record), winner = record.variants[name]
+  const state = await readInteractive(ctx.workspace), design = state.design ?? null
+  if (design?.showcase?.slug !== slug) fail(`메인을 먼저 고르세요: vibe ab main ${slug} --variant <v> --tag <tag>. 디자인 모드로 다듬고 사용자가 끝났다고 하면 pick합니다.`)
+  const name = design.showcase.variant
+  if (options.variant && options.variant !== name) fail(`메인은 ${name}입니다. ${options.variant}을 고르려면 먼저 vibe ab main ${slug} --variant ${options.variant}.`)
+  pick(record, { variant: name })
+  const trees = made(record), winner = record.variants[name]
   if (Object.values(record.variants).some((variant) => variant.path === ctx.root)) fail('변형 worktree가 아니라 비교를 시작한 checkout에서 실행하세요.')
   if ((await git(ctx.root, ['status', '--porcelain'])).trim()) fail('합칠 checkout에 미커밋 변경이 있습니다.')
+  // Every check below sees the design's edits; a refusal keeps them on the main's branch.
+  await commitPending(winner, `ab ${slug}/${name}: design edits`)
   // Predictable refusals come before servers and the hub stop, so the comparison stays on screen.
-  if (Number((await git(ctx.root, ['rev-list', '--count', `${record.base}..${winner.branch}`])).trim()) === 0) fail(`변형 ${name}에 커밋이 없습니다.`)
+  if (await commits(ctx, record, winner) === 0) fail(`변형 ${name}에 커밋이 없습니다.`)
   const tip = (await git(ctx.root, ['rev-parse', `${winner.branch}^{commit}`])).trim(), files = await scaffoldFiles(ctx.root, record)
   const adopted = record.scaffold ? await withoutScaffold(ctx, record, tip, files) : null
-  if (adopted?.conflicts) fail(`변형 ${name}이 scaffold의 줄·파일을 바꿨거나 그 줄에 너무 붙여 고쳐 scaffold를 뺄 수 없습니다 — 되돌리는 follow-up 뒤에 다시 고르세요. 현재 브랜치와 변형 브랜치는 그대로입니다.`, adopted.conflicts)
+  if (adopted?.conflicts) fail(`변형 ${name}이 scaffold의 줄·파일을 바꿨거나 그 줄에 너무 붙여 고쳐 scaffold를 뺄 수 없습니다 — 메인 worktree에서 되돌린 뒤 다시 pick하세요. 현재 브랜치와 변형 브랜치는 그대로입니다.`, adopted.conflicts)
   // --accept-residue is the person's call after seeing the lines: they are adopted and listed in the result.
-  if (adopted?.residue.length && !options.acceptResidue) fail(`변형 ${name}에 scaffold의 mock 줄·경로가 옮겨져 남습니다(합치면 지워진 파일을 가리킴) — 지우는 follow-up 뒤에 다시 고르세요(사용자가 그 줄을 보고 받아들이면 --accept-residue). 현재 브랜치와 변형 브랜치는 그대로입니다.`, adopted.residue.map(({ file, line }) => `${file}: ${line}`))
+  if (adopted?.residue.length && !options.acceptResidue) fail(`변형 ${name}에 scaffold의 mock 줄·경로가 옮겨져 남습니다(합치면 지워진 파일을 가리킴) — 메인 worktree에서 지운 뒤 다시 pick하세요(사용자가 그 줄을 보고 받아들이면 --accept-residue). 현재 브랜치와 변형 브랜치는 그대로입니다.`, adopted.residue.map(({ file, line }) => `${file}: ${line}`))
   if (adopted && adopted.tree === (await git(ctx.root, ['rev-parse', `${record.origin}^{tree}`])).trim()) fail(`변형 ${name}에 scaffold 밖 변경이 없습니다.`)
   await checkClean(trees)
-  // The adopt commit (scaffold removed, on top of origin) is built before anything stops: an unexpected Git
+  // The adopted commit (scaffold removed, on top of origin) is built before anything stops: an unexpected Git
   // failure leaves the comparison running.
   const summary = winner.runs.at(-1)?.summary.split('\n')[0].slice(0, 72) ?? ''
   const head = adopted ? (await git(ctx.root, ['commit-tree', adopted.tree, '-p', record.origin, '-m', `ab ${slug}/${name} without its mock scaffold${summary ? `: ${summary}` : ''}`])).trim() : tip
   await update(ctx, slug, stopAll)
-  try { await git(ctx.root, ['merge', '--no-ff', '-m', `ab ${slug}: adopt ${name}`, head]) } catch (error) {
-    await git(ctx.root, ['merge', '--abort']).catch(() => {})
+  try { await git(ctx.root, ['merge', '--squash', head]) } catch (error) {
+    await git(ctx.root, ['reset', '--quiet', '--merge']).catch(() => {})
     fail(`변형 ${name}을 합치지 못했습니다(충돌). 현재 브랜치는 그대로입니다.`, [String(error.stderr ?? error.message).slice(-2000)])
   }
-  const merged = (await git(ctx.root, ['rev-parse', 'HEAD'])).trim()
+  const changed = fields(await git(ctx.root, ['diff', '--cached', '--name-only', '-z']))
   await removeWorktrees(ctx, trees)
   const prune = await pruning(ctx, options)
   if (prune) await pruneBranches(ctx, trees)
   await rm(recordFile(ctx, slug), { force: true })
+  const { showcase, ...rest } = design
+  await writeInteractive(ctx.workspace, { ...(await readInteractive(ctx.workspace)), design: rest })
   const tracked = await exists(path.join(ctx.root, STATE)), approach = approachLine(options.approach ?? winner.approach ?? winner.runs.at(-1)?.summary)
   const logged = !tracked ? null : await vibeLog({ targetRoot: ctx.root, text: `ab ${slug}: adopt ${name}${approach ? ` — ${approach}` : ''}`.replace(/\s+/g, ' ') }).catch((error) => ({ error: error.message }))
   const logLine = logged?.line ?? null
   await tidy(ctx, slug, trees, prune)
-  return { schemaVersion: 1, ok: true, slug, adopted: name, merged, logLine, ...(logged?.error ? { logError: logged.error } : {}), files: [], summary: winner.runs.at(-1)?.summary ?? null, branches: prune ? [] : trees.map(([, tree]) => tree.branch),
+  return { schemaVersion: 1, ok: true, slug, adopted: name, design: rest, files: changed, logLine, ...(logged?.error ? { logError: logged.error } : {}), summary: winner.runs.at(-1)?.summary ?? null, branches: prune ? [] : trees.map(([, tree]) => tree.branch),
     ...(adopted?.residue.length ? { scaffoldResidue: adopted.residue } : {}),
-    ...(record.scaffold ? { scaffold: record.scaffold, scaffoldFiles: { added: files.added, modified: files.modified }, todo: '채택한 UI는 mock 데이터 위에서 만들어졌습니다(scaffold는 빠짐). 실제 데이터 연결이 남았습니다.' } : {}) }
+    ...(record.scaffold ? { scaffold: record.scaffold, scaffoldFiles: { added: files.added, modified: files.modified }, todo: '채택한 UI는 mock 데이터 위에서 만들어졌습니다(scaffold는 빠짐). 실제 데이터 연결이 남았습니다.' } : {}),
+    next: '메인은 이 checkout에 미커밋으로 들어왔고 디자인은 열려 있다. gusta-design-mode 마감: vibe design verify → 실패 수정 → vibe design end → 커밋 하나 → SSOT 반영 → vibe integration finish.' }
 }
 
-export const AB_STEPS = { start: abStart, add: abAdd, run: abRun, serve: abServe, exec: abExec, status: abStatus, pick: abPick, stop: abStop }
+export const AB_STEPS = { start: abStart, run: abRun, serve: abServe, exec: abExec, status: abStatus, main: abMain, pick: abPick, stop: abStop }

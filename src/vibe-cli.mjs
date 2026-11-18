@@ -138,20 +138,22 @@ const HELP = `세션 도구 (gusta-start·gusta-design-mode가 사용)
                                                 --timeout-ms는 setup(기본 1200000)과 scaffold 세션(기본 3600000)에 함께 쓰인다.
                                                 --reuse: lockfile대로 설치된 git-ignored 의존성 폴더만. 가장 가까운 lockfile 폴더의 lockfile이 모두 기준 커밋과 같으면
                                                 이 checkout의 설치를 복사(CoW, symlink 아님), 아니면 setup. 오래된 설치·절대 symlink·postinstall 부수 효과는 그대로 복사되거나 빠짐
-  vibe ab add <slug> --from <v> [--setup <install command>] [--reuse <dir> ...] [--copy <untracked file> ...]
-                                                <v>의 끝에서 다음 변형(최대 6)을 새 브랜치·worktree·포트로. 그 run은 다른 변형의 git diff를 읽어도 된다고 안내.
-                                                --setup·--copy·--reuse는 주지 않으면 start 값
   vibe ab run <slug> (--variant <a|b|..> (--prompt-file <approach> | --follow-up-file <request>) | --all --prompt-dir <dir>) [--provider auto|claude|codex] [--model <id>] [--allow-tool <rule> ...] [--permission-mode bypass|acceptEdits] [--timeout-ms 3600000]
-                                                follow-up은 공통·처음 접근·지난 요약·새 hub 메모를 붙여 같은 브랜치에서 이어 고친다. scaffold 줄·파일을 고치면 ok:false·scaffoldTouched, mock 줄·경로를 옮겨 쓰면 scaffoldResidue.
+                                                follow-up은 공통·처음 접근·지난 요약·새 hub 메모를 붙여 같은 브랜치에서 이어 고친다(메인은 디자인 모드에서 직접 고친다). scaffold 줄·파일을 고치면 ok:false·scaffoldTouched, mock 줄·경로를 옮겨 쓰면 scaffoldResidue.
                                                 --all: <dir>/<v>.md가 있는 변형을 한 프로세스에서 병렬로, 결과 JSON 하나(한 변형 실패가 나머지를 막지 않음, 파일 없는 변형은 skipped)
   vibe ab serve <slug> --command '<dev server using $PORT>' [--variant <v>] [--restart] [--ready-timeout-ms 120000]
                                                 화면(path)이 HTTP로 응답하면 준비. 살아 있는 서버는 두고(--restart면 새로) 비교 페이지(hub) URL 하나
   vibe ab exec <slug> --command '<measure or check>' [--repeat 1] [--variant <v>]
                                                 변형을 번갈아 실행해 중앙값·종료 코드·마지막 줄. 최근 결과는 hub에도(변형마다 명령이 다르면 명령도)
-  vibe ab status <slug> | pick <slug> --variant <v> [--approach <English line>] [--accept-residue] [--prune-branches] | stop <slug> [--remove] [--prune-branches]
+  vibe ab main <slug> --variant <v> --tag <tag> [--scope <text>]
+                                                메인 지정: 이 checkout에 디자인 모드를 열고(보호 브랜치면 design/<tag>로 전환) 메인 worktree를 편집 대상으로.
+                                                서버·hub는 그대로(다른 변형은 참고용). 디자인 중 다른 변형을 고르면 이전 메인의 편집은 그 브랜치에 커밋
+  vibe ab status <slug> | pick <slug> [--approach <English line>] [--accept-residue] [--prune-branches] | stop <slug> [--remove] [--prune-branches]
                                                 A/B 비교(gusta-showcase): 변형마다 브랜치·형제 worktree·포트. 변형 세션은 그 worktree만 고치고
-                                                커밋·서버·측정·정리는 CLI가 한다. status는 hub URL·메모·choose, pick은 그 변형만 현재 브랜치에 merge하고
-                                                조정 브랜치 log에 채택 줄(접근은 --approach 또는 저장된 접근 첫 줄, 약 100자)을 쓴다(커밋할 것 없음)
+                                                커밋·서버·측정·정리는 CLI가 한다. status는 hub URL·메모·choose·main. pick은 디자인을 마감할 때:
+                                                메인의 편집을 그 브랜치에 커밋하고 scaffold를 뺀 메인을 이 checkout에 미커밋으로 옮긴 뒤 정리,
+                                                조정 브랜치 log에 채택 줄(접근은 --approach 또는 저장된 접근 첫 줄, 약 100자). 디자인은 열린 채(vibe design verify → end → 커밋).
+                                                stop --remove는 그 비교의 showcase 디자인도 끝낸다
   vibe sketch serve <slug> [--port 0] [--ttl-ms 28800000] [--json]
                                                 스케치(gusta-sketch): <checkout>/.tmp/sketch/<slug>/의 정적 파일을 127.0.0.1 포트 하나로(no-store).
                                                 같은 slug의 살아 있는 서버는 재사용(reused). .tmp/는 info/exclude로 무시(.gitignore 안 고침). ttl 뒤 스스로 종료
@@ -176,7 +178,7 @@ const allowed = {
   claim: ['tag', 'task', 'mode', 'host', 'remote'], task: ['tag', 'at', 'count', 'remote'], inbox: ['tag', 'kind', 'ref', 'text', 'file', 'line', 'id', 'log', 'remote'], log: ['tag', 'text', 'file', 'remote'],
   checkpoint: ['tag', 'message', 'remote', 'next'], prune: ['tag', 'work', 'remote'], settings: ['set'], usage: ['tag', 'session', 'marker', 'project-dir'], preflight: ['remote', 'probe', 'provider', 'allow-tool', 'probe-timeout-ms', 'probe-workspace', 'permission-mode'],
   awake: ['hours', 'remote'], check: ['plan', 'tier', 'tag', 'diff-base', 'task', 'timeout-ms'], design: ['tag', 'scope', 'verify', 'timeout-ms'],
-  ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'reuse', 'from', 'shared-file', 'scaffold-prompt', 'scaffold', 'variant', 'approach', 'prompt-file', 'prompt-dir', 'follow-up-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
+  ab: ['variants', 'base', 'base-port', 'setup', 'copy', 'reuse', 'tag', 'scope', 'shared-file', 'scaffold-prompt', 'scaffold', 'variant', 'approach', 'prompt-file', 'prompt-dir', 'follow-up-file', 'provider', 'model', 'timeout-ms', 'allow-tool', 'permission-mode', 'command', 'ready-timeout-ms', 'repeat'],
   sketch: ['port', 'ttl-ms'],
 }
 const flags = { session: ['from-head'], integration: ['no-push'], task: ['force-other'], checkpoint: ['handoff'], loop: ['dry-run', 'detach', 'stop', 'stop-after-unit', 'configure', 'status', 'recover-metadata', 'push-each-unit', 'no-push-each-unit'], push: ['wait-ci'], deploy: ['wait-ci'], status: ['no-fetch'], inbox: ['no-fetch'], log: ['no-fetch'], beat: ['end'], awake: ['stop'], check: ['heavy', 'no-cache', 'allow-final'], brief: ['deep', 'summary'], ab: ['remove', 'prune-branches', 'restart', 'all', 'accept-residue'], sketch: ['all'] }

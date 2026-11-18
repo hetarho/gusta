@@ -43,8 +43,8 @@ GUSTA는 아이디어를 구현 가능한 스펙으로 발전시키고, **요구
 | `gusta-plan` | 기획 진행자 | 요구사항을 한 번에 받거나 대화로 키움 → 해석표(정함·공백+추천안·기존 결정과 충돌·민감 `[?]`·볼 것·비교할 것·미룸)를 보여 주고 충돌·민감·공백만 질문 → 내부 스킬로 ARCH·SSOT·태스크까지 만들고 기획 브랜치에 push. 볼 것은 gusta-sketch로 넘기고 비교할 것은 `/gusta-showcase`를 안내. 미룬 구상은 ideation 문서로. 제품 코드는 고치지 않음 | `spec/ssot/`·`spec/tasks/`·`spec/ideation/`, 기획 브랜치의 spec 커밋 |
 | `gusta-sketch` | 기획 진행자(시안) | 만들 것을 HTML 시안 한 페이지로 그려 로컬 포트 하나에 띄움(갈리는 선택이 있으면 시안을 나란히) → 사용자가 고르고 다듬음 → 내부 스킬로 ARCH·SSOT·태스크까지. 미룬 구상은 ideation 문서로. 제품 코드는 고치지 않음 | `.tmp/sketch/<slug>/`(커밋 안 함), `spec/ssot/`·`spec/tasks/`·`spec/ideation/` |
 | `gusta-start` | 실행자 | 다른 세션·기기 진행 확인 → (변경 요청이 있으면 SSOT·태스크부터) → 실행 정보를 보여 주고 묻지 않고 실행 → 태스크별 커밋 → 마감 관문(전체 검증 뒤 SETTINGS land로 반영 한 번). 실행 중 판단은 결정함·보고서. 태스크가 없으면 `/gusta-plan` 안내 | 조정 브랜치의 세션 행·결정함, `spec/reports/` |
-| `gusta-design-mode` | 디자인 진행자 | 이 checkout만 디자인 중으로 표시하고 말하는 대로 코드만 즉시 수정(테스트·커밋·push 없음) → 디자인 끝이면 영향 검사 후 커밋 하나. 커밋·push 전엔 항상 디자인이 끝났는지 묻는다 | checkout 로컬 디자인 상태, 디자인 커밋 |
-| `gusta-showcase` | 비교 진행자 | 문제 하나를 변형 2~6개로 실제 코드까지 병렬 구현(하위 세션·변형별 worktree, UI는 공용 mock scaffold 위) → 변형마다 포트 하나씩 띄워 비교 페이지(hub)에 나란히, 또는 같은 측정을 번갈아 → 고른 변형만(scaffold 제외) 현재 브랜치에 merge하고 문서도 맞춤 | `ab/<slug>/<v>` 브랜치, 채택 merge·log 한 줄 |
+| `gusta-design-mode` | 디자인 진행자 | 이 checkout만 디자인 중으로 표시하고 말하는 대로 코드만 즉시 수정(테스트·커밋·push 없음, showcase 메인이면 그 변형 worktree) → 디자인 끝이면 영향 검사 후 커밋 하나·SSOT 반영·공동 통합. 커밋·push 전엔 항상 디자인이 끝났는지 묻는다 | checkout 로컬 디자인 상태, 디자인 커밋 |
+| `gusta-showcase` | 비교 진행자 | 문제 하나를 변형 2~6개로 실제 코드까지 병렬 구현(하위 세션·변형별 worktree, UI는 공용 mock scaffold 위) → 변형마다 포트 하나씩 띄워 비교 페이지(hub)에 나란히, 또는 같은 측정을 번갈아 → 메인으로 고른 변형을 디자인 모드로 다듬어 다른 변형의 장점을 합치고, 끝이면 scaffold를 뺀 메인을 디자인 마감으로 반영·문서도 맞춤 | `ab/<slug>/<v>` 브랜치, 채택 log 한 줄, 디자인 커밋 |
 | `gusta-self-improve-remote` | 개선 조정자 | 실행 기록·코드·업무 흐름에서 문제 발견 → 제한된 측정·구현 → 별도 세션 검토 → PR. 큰 변화는 사람 판단 | 기존 review/task/report + 개선 PR |
 | `gusta-self-improve` | 호출 세션이 오케스트레이터 | 하위 탐색의 제안 → 오케스트레이터 승인 → 승인 범위 구현·독립 리뷰 → 현재 브랜치 통합 | 승인 기록 + 로컬 커밋·검증·보고서 |
 | `gusta-init` | 설정 인터뷰 | 브랜치 전략(개발 브랜치를 운영하는지 — land·병합 방식·push·배포 브랜치·기획 브랜치), 자동 버전 관리, CLAUDE.md·AGENTS.md의 gusta 안내 블록 중 미정인 것만 묻고 저장. 다른 스킬도 미정이면 먼저 이리로 보냄 | `spec/SETTINGS.md` |
@@ -165,22 +165,22 @@ SSOT·계약·저장 형식·결정이 바뀌지 않는 작은 버그/문구/스
 /gusta-design-mode 랜딩 페이지 히어로 영역
 ```
 
-화면을 띄워 두고 말하는 대로 바로 코드만 고치는 흐름입니다. 사람이 화면을 봐야 하므로 사용자가 직접 부를 때만 쓰고, `/gusta-start`의 실행 단위·작업 묶음 워커에서는 시작하지 않습니다.
+화면을 띄워 두고 말하는 대로 바로 코드만 고치는 흐름입니다. 사람이 화면을 봐야 하므로 사용자가 직접 부르거나 `/gusta-showcase`에서 메인을 고를 때만 쓰고, `/gusta-start`의 실행 단위·작업 묶음 워커에서는 시작하지 않습니다.
 
 1. `vibe design start`로 이 checkout이 디자인 중임을 표시합니다. land 같은 보호 브랜치에 있으면 미커밋 변경을 가진 채 `design/<tag>`로 옮겨 갑니다. 이 상태는 checkout의 Git 디렉터리에만 저장되고 STATE에는 쓰지 않으므로, 기획 커밋·plan-push를 타고 다른 worktree로 퍼지지 않습니다. 개발 서버(hot reload)를 띄워 두고 결과를 실시간으로 봅니다.
 2. 디자인하는 동안에는 테스트·e2e·typecheck·커밋·push를 하지 않습니다. 그 checkout에서는 `vibe push`가 거절되고, `/gusta-start`의 preflight는 실패하며 `vibe loop`는 멈춥니다. 다른 worktree의 작업은 영향을 받지 않습니다. 중간 저장이 필요하면 `vibe checkpoint`로 `wip/<tag>`에만 스냅샷합니다.
 3. 커밋·push가 필요해지면(직접 요청, 다른 스킬로 전환, 마감) 어떤 스킬이든 먼저 **"디자인 끝났나요?"** 를 묻습니다.
-4. 디자인이 끝나면 `vibe design verify`로 ARCH task의 영향 검사·빠른 검사를 미커밋 작업 트리에서 돌립니다(batch·CI는 디자인 커밋 뒤 공동 통합과 CI로 미룸, 같은 트리는 캐시). 디자인 때문에 바뀐 기대값은 테스트를 고치고, 깨진 기능은 코드를 고칩니다. 검사가 하나도 돌지 않았으면 통과가 아닙니다(`no-task-checks`와 바뀐 파일 목록). 통과하면 `vibe design end` 후 디자인·테스트 수정을 커밋 하나로 남기고 `vibe log`에 `design <area>: <what>` 한 줄을 씁니다. 반영은 `vibe integration finish`로 하고(요청했거나 SETTINGS land·push가 정해 둔 경우), push 없이 병합만 원하면 `--no-push`로 검수 뒤 로컬 land에만 반영합니다 — land에 직접 merge하지 않습니다.
+4. 디자인이 끝나면 `vibe design verify`로 ARCH task의 영향 검사·빠른 검사를 미커밋 작업 트리에서 돌립니다(batch·CI는 디자인 커밋 뒤 공동 통합과 CI로 미룸, 같은 트리는 캐시). 디자인 때문에 바뀐 기대값은 테스트를 고치고, 깨진 기능은 코드를 고칩니다. 검사가 하나도 돌지 않았으면 통과가 아닙니다(`no-task-checks`와 바뀐 파일 목록). 통과하면 `vibe design end` 후 디자인·테스트 수정을 커밋 하나로 남기고 `vibe log`에 `design <area>: <what>` 한 줄을 씁니다. SSOT와 어긋난 변경은 반영 전에 gusta-update-ssot로 문서를 맞춥니다. 반영은 `vibe integration finish`로 하고(요청했거나 SETTINGS land·push가 정해 둔 경우), push 없이 병합만 원하면 `--no-push`로 검수 뒤 로컬 land에만 반영합니다 — land에 직접 merge하지 않습니다.
 
 ## 여러 안을 띄워 고르기 — `/gusta-showcase`
 
-말로 고르기 어려운 것은 만들어 보고 고릅니다. 문제를 말하면 서로 다른 접근의 변형을 2개(최대 6개) 실제 코드로 병렬 구현하고, 변형마다 포트 하나씩 띄워(변형 4개면 포트 4개) 나란히 보여 줍니다. 디자인·UX·UI·기능 비교는 브라우저로, 성능 비교는 같은 측정 명령을 번갈아 돌린 중앙값으로 봅니다. 고른 변형만 합치고 문서도 맞추므로 문서부터 코드까지 한 번에 끝납니다.
+말로 고르기 어려운 것은 만들어 보고 고릅니다. 문제를 말하면 서로 다른 접근의 변형을 2개(최대 6개) 실제 코드로 병렬 구현하고, 변형마다 포트 하나씩 띄워(변형 4개면 포트 4개) 나란히 보여 줍니다. 디자인·UX·UI·기능 비교는 브라우저로, 성능 비교는 같은 측정 명령을 번갈아 돌린 중앙값으로 봅니다. 하나를 메인으로 고르면 그 변형에서 디자인 모드가 열려 다른 변형의 장점을 말로 옮겨 합치고, 끝났다고 하면 디자인 마감처럼 검사·커밋·SSOT 갱신을 거쳐 land에 반영하므로 문서부터 코드까지 한 번에 끝납니다.
 
 | | `/gusta-sketch` | `/gusta-showcase` |
 | --- | --- | --- |
 | 보여 주는 것 | HTML 시안 한 페이지(코드 없음), 시안은 그 페이지에 나란히 | 실제 코드로 구현한 변형 2~6개 |
 | 포트 | 하나 | 변형마다 하나 |
-| 결과 | spec 문서와 태스크(미룬 구상은 ideation 문서) — 구현은 `/gusta-start` | 고른 변형을 현재 브랜치에 merge, SSOT도 갱신 |
+| 결과 | spec 문서와 태스크(미룬 구상은 ideation 문서) — 구현은 `/gusta-start` | 메인을 디자인 모드로 다듬어 land에 반영, SSOT도 갱신 |
 
 ```text
 /gusta-showcase 가격표 페이지를 카드형과 표형 두 가지로 만들어서 띄워줘
@@ -191,10 +191,9 @@ SSOT·계약·저장 형식·결정이 바뀌지 않는 작은 버그/문구/스
    - 백엔드·로그인 없이는 화면이 뜨지 않는 UI 비교면 `--scaffold-prompt <file>`로 세션 하나가 먼저 그 화면을 mock 데이터·인증 stub으로 띄우는 커밋(`ab/<slug>/base`)을 만들고(가능하면 `?mock=empty|error` 상태도) 변형은 모두 그 위에서 시작합니다. 이미 있는 커밋은 `--scaffold <ref>`. 변형은 scaffold를 고치지 않습니다.
 2. 변형마다 새 하위 세션이 자기 worktree만 고칩니다(`vibe ab run --all`이 한 번에 병렬로, 헤드리스 Claude·Codex 또는 에이전트의 하위 세션). 커밋은 CLI가 변형 브랜치에 하고, 진행자에게는 요약과 "어디를 보면 되는지"만 돌아옵니다. 변형이 scaffold 줄을 고쳤으면 결과의 `scaffoldTouched`를 보고 보여 주기 전에 되돌리게 합니다.
 3. `vibe ab serve`가 변형마다 개발 서버를 `$PORT`로 띄우고 볼 화면이 HTTP로 응답하면 비교 페이지(hub) 하나를 엽니다. 사용자는 그 URL 하나에서 변형을 나란히(데스크톱·모바일 폭) 보고 메모를 남기거나 choose를 누릅니다. `vibe ab exec --repeat 3`은 변형을 번갈아 실행해 시간 중앙값·최소값을 모으고 hub에도 보여 줍니다. 진행자는 변형 | 접근 | 측정값 | 볼 곳 | 장단점 비교표 하나로 보여 줍니다.
-   - 한 변형을 고쳐 달라고 하면(말이나 hub 메모) `vibe ab run --variant b --follow-up-file <요청>`이 접근·지난 요약·메모를 붙여 같은 변형을 이어 고치고, `vibe ab serve --variant b`가 떠 있는 서버로 다시 확인합니다.
-   - "A의 레이아웃에 B의 색"처럼 섞고 싶으면 `vibe ab add --from a`가 A에서 이어지는 새 변형을 만들고 그것만 run합니다.
-4. choose는 의사 표시일 뿐입니다 — 진행자가 `vibe ab status`로 읽고 사용자에게 확인한 뒤 `vibe ab pick`이 서버·hub를 끄고 그 변형만 현재 브랜치에 merge 커밋으로 합친 뒤 worktree를 정리합니다(브랜치는 `prune-branches` 설정대로, 기본은 삭제). scaffold는 줄·파일 단위로 빼고 합칩니다. 변형 코드에 scaffold의 mock 줄·경로가 옮겨져 남으면(`scaffoldResidue`) pick이 거절하니 지우는 후속 수정 뒤 다시 고르고, 사용자가 그 줄을 보고 받아들이면 `--accept-residue`입니다. 실제 데이터 연결은 gusta-create-task로 이어집니다.
-5. 채택은 결정이라 pick이 log에 `- YYMMDD ab <slug>: adopt <v> — <approach>` 한 줄을 남기고(접근 문구는 `--approach`), SSOT 규칙이 바뀌었으면 gusta-update-ssot로 이어집니다. 전체 테스트는 합친 뒤 평소 마감 관문에서 한 번입니다.
+   - 메인을 정하기 전에 한 변형을 고쳐 달라고 하면(말이나 hub 메모) `vibe ab run --variant b --follow-up-file <요청>`이 접근·지난 요약·메모를 붙여 같은 변형을 이어 고치고, `vibe ab serve --variant b`가 떠 있는 서버로 다시 확인합니다.
+4. choose는 의사 표시일 뿐입니다 — 진행자가 `vibe ab status`로 읽고 사용자에게 확인한 뒤 `vibe ab main --variant a --tag <tag>`가 이 checkout에 디자인 모드를 엽니다(보호 브랜치면 `design/<tag>`로 전환). 편집 대상은 메인 a의 worktree이고 서버·hub는 그대로라, "b의 헤더를 가져와"처럼 말하면 진행자가 b의 코드를 읽어 a에 바로 옮기고 hub에서 실시간으로 확인합니다. 메인을 바꾸면 다시 `vibe ab main`(이전 메인의 편집은 그 브랜치에 커밋). 디자인 중에는 테스트·커밋·push를 하지 않습니다.
+5. "끝"이라고 하면 디자인 마감입니다. 먼저 `vibe ab pick`이 메인의 편집을 그 브랜치에 커밋하고 scaffold를 줄·파일 단위로 뺀 메인을 이 checkout에 미커밋으로 옮긴 뒤 서버·hub·worktree를 정리합니다(브랜치는 `prune-branches` 설정대로, 기본은 삭제). 메인에 scaffold의 mock 줄·경로가 옮겨져 남으면(`scaffoldResidue`) pick이 거절하니 메인에서 지운 뒤 다시 하고, 사용자가 그 줄을 보고 받아들이면 `--accept-residue`입니다. 채택은 결정이라 pick이 log에 `- YYMMDD ab <slug>: adopt <v> — <approach>` 한 줄을 남깁니다(접근 문구는 `--approach`). 이어서 디자인 마감 그대로 영향 검사 → 커밋 하나 → SSOT 규칙이 바뀌었으면 gusta-update-ssot → 공동 통합이 전체 검수 뒤 SETTINGS land에 반영합니다. 실제 데이터 연결은 gusta-create-task로 이어집니다. 고르지 않고 버리면 `vibe ab stop --remove`가 열린 디자인도 함께 끝냅니다.
 
 변형마다 구현 세션 하나만큼 토큰·시간이 들고, 고를 사람이 있어야 하므로 사용자가 직접 부를 때만 씁니다(`/gusta-start` 실행 중에는 비교 요청을 결정함에 주차합니다). 변형은 spec/을 고치지 않으며 미커밋 변경이 있으면 시작하지 않습니다.
 

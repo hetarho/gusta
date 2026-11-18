@@ -1,3 +1,4 @@
+import { access } from 'node:fs/promises'
 import { inspectWorkspace, git } from './workspace.mjs'
 import { readInteractive, writeInteractive } from './interactive-state.mjs'
 import { SESSION_TAG } from './spec-format.mjs'
@@ -21,8 +22,14 @@ export async function vibeDesign(options = {}) {
   const state = await readInteractive(workspace)
   const design = state.design ?? null
   if (step === 'status') return { schemaVersion: 1, ok: true, design }
-  if (step === 'verify') return verifyDesign(options, root, design)
+  // A showcase design edits the main variant's worktree: its edits reach this checkout only through vibe ab pick.
+  const showcase = design?.showcase && await access(design.showcase.path).then(() => design.showcase, () => null)
+  if (step === 'verify') {
+    if (showcase) fail(`showcase 디자인은 vibe ab pick ${showcase.slug}로 메인 ${showcase.variant}을 이 checkout에 옮긴 뒤 검사합니다.`)
+    return verifyDesign(options, root, design)
+  }
   if (step === 'end') {
+    if (showcase) fail(`showcase 디자인은 vibe ab pick ${showcase.slug}(메인을 옮김) 또는 vibe ab stop ${showcase.slug} --remove(버림) 뒤에 끝냅니다.`)
     if (design) await writeInteractive(workspace, { ...state, design: undefined })
     return { schemaVersion: 1, ok: true, ended: Boolean(design), design }
   }
@@ -34,19 +41,26 @@ export async function vibeDesign(options = {}) {
     if (resumed.scope !== design.scope) await writeInteractive(workspace, { ...state, design: resumed })
     return { schemaVersion: 1, ok: true, resumed: true, design: resumed }
   }
-  // Design edits never sit on land, deploy, plan or the default branch: a checkout there moves to
-  // design/<tag> first (git switch carries the uncommitted edits along; the dev server keeps its path).
+  return { schemaVersion: 1, ok: true, resumed: false, ...(await openDesign(workspace, state, { tag: options.tag, scope })) }
+}
+
+// Opens a design on this checkout. Design edits never sit on land, deploy, plan or the default branch:
+// a checkout there moves to design/<tag> first (git switch carries the uncommitted edits along; the dev
+// server keeps its path). `showcase` names the main variant whose worktree the design edits (vibe ab main).
+export async function openDesign(workspace, state, { tag, scope, showcase }) {
+  if (!SESSION_TAG.test(tag ?? '')) fail('--tag에는 영숫자 2-8자의 세션 tag가 필요합니다.')
+  const root = workspace.git.root
   const policy = await sessionWorkspacePolicy({ targetRoot: root, workspace })
   let switched = null
   if (policy.reason === 'protected-branch') {
-    const branch = `design/${options.tag}`
+    const branch = `design/${tag}`
     if ((await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], [1]))?.trim()) fail(`${branch} 브랜치가 이미 있습니다. 그 브랜치로 전환해 이어 하거나 다른 tag를 쓰세요.`, [workspace.git.branch])
     await git(root, ['switch', '--quiet', '-c', branch])
     switched = { from: workspace.git.branch, to: branch }
   }
-  const entry = { since: minuteNow(), tag: options.tag, scope: scope ?? '-' }
+  const entry = { since: minuteNow(), tag, scope: scope ?? '-', ...(showcase ? { showcase } : {}) }
   await writeInteractive(workspace, { ...state, design: entry })
-  return { schemaVersion: 1, ok: true, resumed: false, design: entry, ...(switched ? { switched } : {}) }
+  return { design: entry, ...(switched ? { switched } : {}) }
 }
 
 // Design edits stay uncommitted here. Only their task checks run locally; final commands

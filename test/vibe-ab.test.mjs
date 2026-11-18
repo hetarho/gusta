@@ -8,7 +8,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fixture, git } from './helpers/vibe-fixture.mjs'
 import { readSessions } from '../src/coord-doc.mjs'
-import { abStart, abAdd, abRun, abServe, abExec, abStatus, abPick, abStop, copyTree, scaffoldWarnings } from '../src/vibe-ab.mjs'
+import { abStart, abRun, abServe, abExec, abStatus, abMain, abPick, abStop, copyTree, scaffoldWarnings } from '../src/vibe-ab.mjs'
+import { vibeDesign } from '../src/vibe-design.mjs'
 import { renderHub, hubModel, viewPath, createHub, readFeedback, hubMain } from '../src/vibe-ab-hub.mjs'
 
 const exists = (file) => access(file).then(() => true, () => false)
@@ -33,6 +34,8 @@ const scaffolding = async ({ job, log }) => {
 }
 const capture = (jobs, fake) => async (input) => { jobs.push(input.job); return fake(input) }
 const noFlags = async () => []
+// The person makes a variant the main (design mode opens on its worktree) and says the design is done: pick moves it here.
+const adopt = async (options) => { await abMain({ tag: 'ab1', ...options }); return abPick(options) }
 // After hooks run in registration order: the stop goes in before the fixture's cleanup removes the
 // record, so a failed assertion cannot leak servers or the hub.
 async function project(t, ...slugs) {
@@ -90,15 +93,31 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   // The hub shows each variant's latest measurement next to its frame.
   const measuredPage = await (await fetch(served.hub)).text()
   for (const entry of measured.variants) assert.ok(measuredPage.includes(`median ${entry.medianMs} ms · exit 0,0 · <code>${entry.tail.at(-1)}</code>`), entry.variant)
-  const before = await git(root, 'rev-parse', 'HEAD'), winner = await git(root, 'rev-parse', 'ab/hero/b')
-  const adopted = await abPick({ targetRoot: root, slug: 'hero', variant: 'b' })
-  assert.equal(adopted.adopted, 'b'); assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "beta"\n')
-  // The adoption is logged on the coordination branch: no file changes, nothing for the session to commit.
-  assert.match(adopted.logLine, /^- \d{6} ab hero: adopt b — Make it beta\.$/); assert.deepEqual(adopted.files, [])
-  assert.equal(await git(root, 'status', '--porcelain'), '')
+  // Pick ends a design: without a main there is none.
+  await assert.rejects(abPick({ targetRoot: root, slug: 'hero' }), /vibe ab main hero/)
+  await assert.rejects(abMain({ targetRoot: root, slug: 'hero', variant: 'b' }), /세션 tag/)
+  // Making b the main opens design mode here (off the protected branch) on b's worktree; every server and the hub stay.
+  const before = await git(root, 'rev-parse', 'HEAD'), b = started.variants[1].path
+  const main = await abMain({ targetRoot: root, slug: 'hero', variant: 'b', tag: 'k3f9' })
+  assert.deepEqual([main.resumed, main.main.variant, main.main.path, main.main.serving, main.hub, main.others.map((entry) => [entry.variant, entry.serving])], [false, 'b', b, true, served.hub, [['a', true]]])
+  assert.deepEqual(main.switched, { from: 'main', to: 'design/k3f9' }); assert.deepEqual(main.design.showcase, { slug: 'hero', variant: 'b', path: b })
+  assert.equal(main.design.scope, 'showcase hero'); assert.equal((await abStatus({ targetRoot: root, slug: 'hero' })).main, 'b')
+  assert.match(await (await fetch(served.hub)).text(), /data-variant="b" class="chosen main">\n<div class="head"><div class="row"><strong>b<\/strong><span class="badge">main · designing<\/span>/)
+  // The design edits the main's worktree by hand; a session no longer runs on it, and the design ends only through pick.
+  await writeFile(path.join(b, 'app.js'), 'module.exports = "beta, with a\'s title"\n')
+  await assert.rejects(abRun({ targetRoot: root, slug: 'hero', variant: 'b', followUpFile: path.join(temporary, 'b.md') }), /디자인 모드에서 직접/)
+  for (const step of ['verify', 'end']) await assert.rejects(vibeDesign({ targetRoot: root, step }), /vibe ab pick hero/)
+  assert.equal((await abMain({ targetRoot: root, slug: 'hero', variant: 'b', tag: 'zz99' })).resumed, true)
+  await assert.rejects(abPick({ targetRoot: root, slug: 'hero', variant: 'a' }), /메인은 b/)
+  const adopted = await abPick({ targetRoot: root, slug: 'hero' })
+  assert.equal(adopted.adopted, 'b'); assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "beta, with a\'s title"\n')
+  // b with its design edits arrives uncommitted; the design stays open for its ending (verify → end → one commit).
+  assert.ok(adopted.files.includes('app.js')); assert.deepEqual(adopted.files, (await git(root, 'diff', '--cached', '--name-only')).split('\n'))
+  assert.equal(await git(root, 'rev-parse', 'HEAD'), before); assert.equal(await git(root, 'branch', '--show-current'), 'design/k3f9')
+  assert.deepEqual(adopted.design, { since: main.design.since, tag: 'k3f9', scope: 'showcase hero' }); assert.deepEqual((await vibeDesign({ targetRoot: root })).design, adopted.design)
+  // The adoption is logged on the coordination branch.
+  assert.match(adopted.logLine, /^- \d{6} ab hero: adopt b — Make it beta\.$/)
   assert.deepEqual(readSessions(await git(root, 'show', 'gusta:SESSIONS.md')).log, [adopted.logLine])
-  assert.match(await git(root, 'log', '-1', '--format=%s'), /ab hero: adopt b/)
-  assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before); assert.equal(await git(root, 'rev-parse', 'HEAD^2'), winner)
   for (const entry of started.variants) assert.equal(await exists(entry.path), false)
   // The emptied sibling worktree folders go; with pruning, so do the comparison's logs, feedback and prompts.
   assert.equal(await exists(path.join(temporary, '.gusta-worktrees')), false)
@@ -110,6 +129,34 @@ test('variants get their own branch, worktree, port and host-made commit, then s
   await assert.rejects(fetch(served.variants[0].url))
   await assert.rejects(fetch(served.hub))
   await assert.rejects(abStatus({ targetRoot: root, slug: 'hero' }), /없습니다/)
+})
+
+test('another main takes over the design and keeps the previous main\'s edits on its branch; stop --remove ends the showcase design', async (t) => {
+  const { root, temporary } = await project(t, 'swap')
+  const started = await abStart({ targetRoot: root, slug: 'swap', variants: 2, basePort: 5101 })
+  const promptDir = path.join(temporary, 'prompts'); await mkdir(promptDir)
+  for (const name of 'ab') await writeFile(path.join(promptDir, `${name}.md`), `Approach ${name}.`)
+  await abRun({ targetRoot: root, slug: 'swap', all: true, promptDir }, { inspect: providers, flags: noFlags, execute: (input) => session(input.job.workspace.slice(-1))(input) })
+  // A design already open here, or the person's own uncommitted change, comes first.
+  await vibeDesign({ targetRoot: root, step: 'start', tag: 'dz1', scope: 'header' })
+  await assert.rejects(abMain({ targetRoot: root, slug: 'swap', variant: 'a', tag: 'sw1' }), /이미 디자인 중입니다\(header\)/)
+  await vibeDesign({ targetRoot: root, step: 'end' })
+  await writeFile(path.join(root, 'notes.txt'), 'mine\n')
+  await assert.rejects(abMain({ targetRoot: root, slug: 'swap', variant: 'a', tag: 'sw1' }), /미커밋/)
+  await rm(path.join(root, 'notes.txt'))
+  const [a, b] = started.variants.map((entry) => entry.path)
+  await abMain({ targetRoot: root, slug: 'swap', variant: 'a', tag: 'sw1' })
+  await writeFile(path.join(a, 'app.js'), 'module.exports = "a, edited"\n')
+  const swapped = await abMain({ targetRoot: root, slug: 'swap', variant: 'b' })
+  assert.deepEqual([swapped.resumed, swapped.design.tag, swapped.design.showcase, swapped.others.map((entry) => entry.variant)], [true, 'sw1', { slug: 'swap', variant: 'b', path: b }, ['a']])
+  assert.equal(await git(a, 'status', '--porcelain'), ''); assert.equal(await git(root, 'log', '-1', '--format=%s', 'ab/swap/a'), 'ab swap/a: design edits')
+  assert.equal(await git(root, 'show', 'ab/swap/a:app.js'), 'module.exports = "a, edited"')
+  // The main's pending edits keep the comparison until the person decides; dropped, the design ends with it.
+  await writeFile(path.join(b, 'app.js'), 'module.exports = "b, edited"\n')
+  await assert.rejects(abStop({ targetRoot: root, slug: 'swap', remove: true }), /메인의 디자인 편집은 vibe ab pick/)
+  await git(b, 'checkout', '--', 'app.js')
+  const stopped = await abStop({ targetRoot: root, slug: 'swap', remove: true })
+  assert.equal(stopped.designEnded, true); assert.equal((await vibeDesign({ targetRoot: root })).design, null)
 })
 
 // A checkout with an ignored install matching the root lockfile at HEAD (the lockfile changed once before).
@@ -199,7 +246,7 @@ test('start refuses uncommitted user changes; stop --remove keeps branches when 
   await writeFile(path.join(started.variants[0].path, 'pending.txt'), 'unfinished')
   await assert.rejects(abStop({ targetRoot: root, slug: 'nav', remove: true }), /커밋되지 않은 변경/)
   await git(started.variants[0].path, 'add', 'pending.txt'); await git(started.variants[0].path, 'commit', '-q', '-m', 'wip')
-  await assert.rejects(abPick({ targetRoot: root, slug: 'nav', variant: 'b' }), /커밋이 없습니다/)
+  await assert.rejects(abMain({ targetRoot: root, slug: 'nav', variant: 'b', tag: 'ab1' }), /커밋이 없습니다/)
   await writeFile(path.join(root, 'spec/SETTINGS.md'), '# SETTINGS\n- prune-branches: false\n'); await git(root, 'add', 'spec/SETTINGS.md'); await git(root, 'commit', '-q', '-m', 'keep branches')
   const logs = path.dirname((await abExec({ targetRoot: root, slug: 'nav', variant: 'a', command: 'node -e 1' })).variants[0].log)
   const stopped = await abStop({ targetRoot: root, slug: 'nav', remove: true })
@@ -326,7 +373,7 @@ test('hub page escapes session text and frames each variant at URL plus view pat
   assert.deepEqual(['', '/', 'settings', '/a/b', 'http://localhost:3000/x?y=1', 'the settings page'].map(viewPath), ['', '', '/settings', '/a/b', '/x?y=1', ''])
   const html = renderHub({ slug: 'hero', feedback: { notes: { a: { note: 'larger <b>', at: 'now' } }, chosen: { variant: 'b', at: 'now' } }, variants: [
     { name: 'a', url: 'http://localhost:4101/settings', approach: 'Cards <first>', summary: 'cards <script>x</script>\nsecond line', view: 'settings tab', serving: true },
-    { name: 'b', from: 'a', url: 'http://localhost:4102', summary: 'list', view: '', serving: false, exec: { command: 'bench', medianMs: 812, exitCodes: [0, 1], last: '<b>done</b>' } }] })
+    { name: 'b', url: 'http://localhost:4102', summary: 'list', view: '', serving: false, exec: { command: 'bench', medianMs: 812, exitCodes: [0, 1], last: '<b>done</b>' } }] })
   assert.ok(html.includes('<p class="measure bad" title="bench">median 812 ms · exit 0,1 · <code>&lt;b&gt;done&lt;/b&gt;</code></p>'))
   // Numbers from different commands do not compare: then each line names its command.
   const exec = (command) => ({ command, medianMs: 5, exitCodes: [0], last: '' })
@@ -342,7 +389,12 @@ test('hub page escapes session text and frames each variant at URL plus view pat
   const model = hubModel({ slug: 'hero', variants: { a: { port: 1, approach: '# Cards first\n\nThree columns.', runs: [{ summary: 'prices are bold now' }] } } }, {}, () => false)
   assert.deepEqual([model.variants[0].approach, model.variants[0].summary], ['Cards first', 'prices are bold now'])
   assert.ok(html.includes('>larger &lt;b&gt;</textarea>')); assert.match(html, /data-variant="b" class="chosen"/)
-  assert.match(html, /target="_blank"/); assert.match(html, /data-width="390"/); assert.match(html, /not serving/); assert.match(html, /blocks framing/); assert.match(html, /<strong>b<\/strong><span class="muted">from a<\/span>/)
+  assert.match(html, /target="_blank"/); assert.match(html, /data-width="390"/); assert.match(html, /not serving/); assert.match(html, /blocks framing/)
+  assert.match(html, /chosen: b — tell the session to make it the main/); assert.ok(!html.includes('main · designing'))
+  // The main is marked while its design runs; the choice that led to it no longer asks for one.
+  const designing = renderHub(hubModel({ slug: 'hero', main: 'a', variants: { a: { port: 1, runs: [] }, b: { port: 2, runs: [] } } }, { notes: {}, chosen: { variant: 'a', at: 'now' } }, () => false))
+  assert.match(designing, /<section data-variant="a" class="chosen main">\n<div class="head"><div class="row"><strong>a<\/strong><span class="badge">main · designing<\/span>/)
+  assert.match(designing, /<section data-variant="b">/); assert.match(designing, /<span id="chosen"><\/span>/)
 })
 
 test('hub records notes and a choice for known variants only, and ends with its comparison', async (t) => {
@@ -424,11 +476,9 @@ test('a scaffold session is the variants\' base, prompts share one prefix, follo
   const next = seen[0].prompt
   assert.ok(next.startsWith(prompts.a), 'follow-up keeps the first run prompt as its prefix')
   for (const part of [/Your last run's summary: alpha variant/, /note on this variant: bigger title/, /already contains this work/, /Make the title bigger\.$/]) assert.match(next, part)
-  // Adoption is one commit on the start base: a's net change with every scaffold path as origin had it.
-  const before = await git(root, 'rev-parse', 'HEAD')
-  const adopted = await abPick({ targetRoot: root, slug: 'mock', variant: 'a' })
-  assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before); assert.equal(await git(root, 'rev-parse', 'HEAD^2^'), origin)
-  assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'app.js')
+  // Adoption is a's net change on the start base, uncommitted, with every scaffold path as origin had it.
+  const adopted = await adopt({ targetRoot: root, slug: 'mock', variant: 'a' })
+  assert.equal(await git(root, 'rev-parse', 'HEAD'), origin); assert.equal(await git(root, 'diff', '--cached', '--name-only'), 'app.js')
   assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "alpha2"\n')
   assert.equal(await readFile(path.join(root, 'data.js'), 'utf8'), "module.exports = fetch('/api/user')\n")
   assert.equal(await exists(path.join(root, 'fixtures.json')), false)
@@ -453,9 +503,9 @@ test('a scaffold that deletes an existing file or turns it into a directory gets
   const promptFile = path.join(temporary, 'a.md'); await writeFile(promptFile, 'Make it kept.')
   await abRun({ targetRoot: root, slug: 'gone', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: session('kept') })
   const before = await git(root, 'rev-parse', 'HEAD')
-  const adopted = await abPick({ targetRoot: root, slug: 'gone', variant: 'a' })
+  const adopted = await adopt({ targetRoot: root, slug: 'gone', variant: 'a' })
   assert.deepEqual(adopted.scaffoldFiles, started.scaffoldFiles)
-  assert.equal(await git(root, 'rev-parse', 'HEAD^1'), before); assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'app.js')
+  assert.equal(await git(root, 'rev-parse', 'HEAD'), before); assert.equal(await git(root, 'diff', '--cached', '--name-only'), 'app.js')
   assert.equal(await readFile(path.join(root, 'middleware.js'), 'utf8'), 'module.exports = redirectToLogin\n')
   assert.equal(await readFile(path.join(root, 'session.js'), 'utf8'), 'module.exports = realSession\n')
 })
@@ -507,14 +557,14 @@ test('the scaffold lock is per line: edits with an unchanged line between adopt;
   for (const name of 'af') assert.equal(result[name].scaffoldResidue, undefined, name)
   assert.match(jobs.find((job) => job.workspace.endsWith('a')).prompt, /Read-only: mocks\/mock\.js\. You may edit index\.html except the scaffold's lines and the lines right around them \(index\.html: 7\)\./)
   const head = await git(root, 'rev-parse', 'HEAD')
-  for (const name of 'bcd') await assert.rejects(abPick({ targetRoot: root, slug: 'lines', variant: name }), (error) => /scaffold의 줄·파일을 바꿨거나 그 줄에 너무 붙여/.test(error.message) && error.details.join() === 'index.html', name)
-  await assert.rejects(abPick({ targetRoot: root, slug: 'lines', variant: 'e' }), (error) => /mock 줄·경로/.test(error.message) && error.details.join('|') === `boot.js: import './mocks/mock.js'|index.html: ${MOCK.trim()}`)
+  for (const name of 'bcd') await assert.rejects(adopt({ targetRoot: root, slug: 'lines', variant: name }), (error) => /scaffold의 줄·파일을 바꿨거나 그 줄에 너무 붙여/.test(error.message) && error.details.join() === 'index.html', name)
+  await assert.rejects(adopt({ targetRoot: root, slug: 'lines', variant: 'e' }), (error) => /mock 줄·경로/.test(error.message) && error.details.join('|') === `boot.js: import './mocks/mock.js'|index.html: ${MOCK.trim()}`)
   // Every refusal came before anything stopped or moved.
   assert.equal(await git(root, 'rev-parse', 'HEAD'), head); assert.equal((await abStatus({ targetRoot: root, slug: 'lines' })).variants.length, 6)
-  await abPick({ targetRoot: root, slug: 'lines', variant: 'a' })
-  assert.equal(await git(root, 'rev-parse', 'HEAD^1'), head); assert.equal(await git(root, 'rev-parse', 'HEAD^2^'), origin)
+  await adopt({ targetRoot: root, slug: 'lines', variant: 'a' })
+  assert.equal(await git(root, 'rev-parse', 'HEAD'), origin)
   assert.equal(await readFile(path.join(root, 'index.html'), 'utf8'), page(AROUND))
-  assert.equal(await exists(path.join(root, 'mocks')), false); assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'index.html')
+  assert.equal(await exists(path.join(root, 'mocks')), false); assert.equal(await git(root, 'diff', '--cached', '--name-only'), 'index.html')
 })
 
 // An app with real modules next to the scaffold's mock ones: residue marks must tell them apart.
@@ -566,10 +616,10 @@ test('residue marks the scaffold\'s wiring and paths, not imports of real module
   for (const mark of ['mocks/handlers', 'mocks/api/client', 'mocks/data/index', 'fixtures', 'mocks']) assert.ok(texts.includes(mark), mark)
   for (const mark of ['api/client', 'data/index', 'data', 'index', 'handlers']) assert.ok(!texts.includes(mark), mark)
   assert.deepEqual(marks.paths.filter((mark) => mark.quoted).map((mark) => mark.text), ['fixtures.json', 'fixtures', 'mocks'])
-  await assert.rejects(abPick({ targetRoot: root, slug: 'marks', variant: 'c' }), /--accept-residue/)
-  await abPick({ targetRoot: root, slug: 'marks', variant: 'a' })
+  await assert.rejects(adopt({ targetRoot: root, slug: 'marks', variant: 'c' }), /--accept-residue/)
+  await adopt({ targetRoot: root, slug: 'marks', variant: 'a' })
   assert.equal(await readFile(path.join(root, 'src/main.js'), 'utf8'), APP['src/main.js']); assert.equal(await exists(path.join(root, 'src/mocks')), false)
-  assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'src/components/Profile.jsx\nsrc/feed.js')
+  assert.equal(await git(root, 'diff', '--cached', '--name-only'), 'src/components/Profile.jsx\nsrc/feed.js')
 })
 
 test('pick --accept-residue adopts a variant despite residue the person accepted and lists it', async (t) => {
@@ -580,8 +630,8 @@ test('pick --accept-residue adopts a variant despite residue the person accepted
   const run = await abRun({ targetRoot: root, slug: 'accept', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: writing({ 'app.js': "module.exports = require('./fixtures.json')\n" }) })
   const residue = [{ file: 'app.js', line: "module.exports = require('./fixtures.json')" }]
   assert.equal(run.ok, false); assert.deepEqual(run.scaffoldResidue, residue)
-  await assert.rejects(abPick({ targetRoot: root, slug: 'accept', variant: 'a' }), (error) => error.details.join() === `app.js: ${residue[0].line}`)
-  const adopted = await abPick({ targetRoot: root, slug: 'accept', variant: 'a', acceptResidue: true })
+  await assert.rejects(adopt({ targetRoot: root, slug: 'accept', variant: 'a' }), (error) => error.details.join() === `app.js: ${residue[0].line}`)
+  const adopted = await adopt({ targetRoot: root, slug: 'accept', variant: 'a', acceptResidue: true })
   assert.deepEqual(adopted.scaffoldResidue, residue); assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), "module.exports = require('./fixtures.json')\n")
   assert.equal(await exists(path.join(root, 'fixtures.json')), false)
 })
@@ -609,10 +659,10 @@ test('a binary scaffold file comes back byte for byte; renaming a scaffold-modif
     return { outcome: 'completed', summary: 'renamed the page', view: 'home', path: '' }
   }
   assert.deepEqual((await abRun({ targetRoot: root, slug: 'bin', variant: 'b', promptFile }, { inspect: providers, flags: noFlags, execute: moved })).scaffoldTouched, ['index.html'])
-  await assert.rejects(abPick({ targetRoot: root, slug: 'bin', variant: 'b' }), (error) => error.details.join() === 'index.html')
-  await abPick({ targetRoot: root, slug: 'bin', variant: 'a' })
+  await assert.rejects(adopt({ targetRoot: root, slug: 'bin', variant: 'b' }), (error) => error.details.join() === 'index.html')
+  await adopt({ targetRoot: root, slug: 'bin', variant: 'a' })
   assert.deepEqual(await readFile(path.join(root, 'logo.png')), logo); assert.equal(await readFile(path.join(root, 'index.html'), 'utf8'), page())
-  assert.equal(await exists(path.join(root, 'mocks')), false); assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'app.js')
+  assert.equal(await exists(path.join(root, 'mocks')), false); assert.equal(await git(root, 'diff', '--cached', '--name-only'), 'app.js')
 })
 
 test('scaffoldWarnings names modified files that look like UI or screen files', () => {
@@ -655,7 +705,7 @@ test('a reused --scaffold skips the session; a scaffold edit is flagged by run a
   const served = await abServe({ targetRoot: root, slug: 'reuse', command: PLAIN, readyTimeoutMs: 20000 })
   assert.equal(served.ok, true, JSON.stringify(served))
   const head = await git(root, 'rev-parse', 'HEAD'), tip = await git(root, 'rev-parse', 'ab/reuse/a')
-  await assert.rejects(abPick({ targetRoot: root, slug: 'reuse', variant: 'a' }), (error) => /scaffold의 줄·파일/.test(error.message) && error.details.includes('fixtures.json'))
+  await assert.rejects(adopt({ targetRoot: root, slug: 'reuse', variant: 'a' }), (error) => /scaffold의 줄·파일/.test(error.message) && error.details.includes('fixtures.json'))
   // The refusal came first: servers and the hub still show the comparison, both branches are as they were.
   const status = await abStatus({ targetRoot: root, slug: 'reuse' })
   assert.equal(status.hub, served.hub); assert.ok(status.variants.every((entry) => entry.serving))
@@ -665,53 +715,6 @@ test('a reused --scaffold skips the session; a scaffold edit is flagged by run a
   await abStop({ targetRoot: root, slug: 'reuse', remove: true })
   assert.equal(await git(root, 'branch', '--list', 'ab/reuse/*'), '')
   assert.equal(await git(root, 'rev-parse', 'mock-data'), mock)
-})
-
-test('add --from remixes a variant on its own branch, worktree and port, up to six, and pick adopts it without the scaffold', async (t) => {
-  const { root, temporary } = await project(t, 'remix')
-  const origin = await git(root, 'rev-parse', 'HEAD'), mock = await mockBranch(root)
-  const started = await abStart({ targetRoot: root, slug: 'remix', variants: 2, basePort: 4971, scaffold: 'mock-data' }, { inspect: never, execute: never })
-  const promptFile = path.join(temporary, 'p.md'); await writeFile(promptFile, 'Build it.')
-  await abRun({ targetRoot: root, slug: 'remix', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: session('alpha') })
-  await assert.rejects(abAdd({ targetRoot: root, slug: 'remix' }), /--from/)
-  await assert.rejects(abAdd({ targetRoot: root, slug: 'remix', from: 'z' }), /변형 z/)
-  const added = await abAdd({ targetRoot: root, slug: 'remix', from: 'a' })
-  assert.equal(added.ok, true); assert.equal(added.variant, 'c'); assert.equal(added.from, 'a')
-  assert.equal(await git(root, 'rev-parse', 'ab/remix/c'), await git(root, 'rev-parse', 'ab/remix/a'))
-  assert.ok(!started.variants.some((entry) => entry.port === added.port))
-  const seen = []
-  await abRun({ targetRoot: root, slug: 'remix', variant: 'c', promptFile }, { inspect: providers, flags: noFlags, execute: capture(seen, session('gamma')) })
-  assert.match(seen[0].prompt, new RegExp(`start from variant a's work.*git diff ${mock} ab/remix/<x>, x in a, b\\.\\n\\nBuild it\\.$`, 's'))
-  for (const name of ['d', 'e', 'f']) assert.equal((await abAdd({ targetRoot: root, slug: 'remix', from: 'b' })).variant, name)
-  await assert.rejects(abAdd({ targetRoot: root, slug: 'remix', from: 'a' }), /최대 6/)
-  const status = await abStatus({ targetRoot: root, slug: 'remix' })
-  assert.equal(new Set(status.variants.map((entry) => entry.url)).size, 6); assert.equal(status.variants[2].from, 'a')
-  const adopted = await abPick({ targetRoot: root, slug: 'remix', variant: 'c' })
-  assert.equal(adopted.adopted, 'c'); assert.equal(await git(root, 'rev-parse', 'HEAD^2^'), origin)
-  assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'app.js')
-  assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "gamma"\n')
-  assert.equal(await exists(path.join(root, 'fixtures.json')), false)
-})
-
-test('add keeps start\'s setup and reuse, checks the lockfile at the remixed tip, and skips a port something else holds', async (t) => {
-  const { root, temporary } = await project(t, 'tip')
-  await installed(root)
-  const started = await abStart({ targetRoot: root, slug: 'tip', variants: 2, basePort: 5011, setup: INSTALL, reuse: ['node_modules'] })
-  assert.ok(started.reuse.a[0].reused && started.reuse.b[0].reused)
-  // Variant a adds a dependency: its lockfile no longer matches this checkout's install.
-  const promptFile = path.join(temporary, 'a.md'); await writeFile(promptFile, 'Add a dependency.')
-  const lock = async ({ job }) => { await writeFile(path.join(job.workspace, 'package-lock.json'), '{"lock":"a"}\n'); return { outcome: 'completed', summary: 'new dependency', view: '', path: '' } }
-  await abRun({ targetRoot: root, slug: 'tip', variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: lock })
-  const ports = started.variants.map((entry) => entry.port), held = Math.max(...ports) + 1
-  const listener = await new Promise((resolve) => { const server = net.createServer().listen(held, '127.0.0.1', () => resolve(server)) })
-  t.after(() => listener.close())
-  const fromA = await abAdd({ targetRoot: root, slug: 'tip', from: 'a' })
-  assert.deepEqual(fromA.reuse.c, [{ dir: 'node_modules', reused: false, reason: 'package-lock.json differs at base' }]); assert.equal(fromA.setup.c.ok, true)
-  assert.ok(await exists(path.join(fromA.path, 'installed'))); assert.equal(await exists(path.join(fromA.path, 'node_modules')), false)
-  assert.ok(![...ports, held].includes(fromA.port), String(fromA.port))
-  const fromB = await abAdd({ targetRoot: root, slug: 'tip', from: 'b' })
-  assert.equal(fromB.reuse.d[0].reused, true); assert.equal(fromB.setup, undefined)
-  assert.equal(await readlink(path.join(fromB.path, 'node_modules/.bin/pkg')), '../pkg/index.js')
 })
 
 test('a scaffold edit reverted by a follow-up adopts cleanly; a merge conflict leaves the current branch and the comparison', async (t) => {
@@ -727,14 +730,13 @@ test('a scaffold edit reverted by a follow-up adopts cleanly; a merge conflict l
   // The current branch moved on and wrote app.js too: the adopt merge conflicts and is undone.
   await writeFile(path.join(root, 'app.js'), 'module.exports = "main"\n'); await git(root, 'add', 'app.js'); await git(root, 'commit', '-q', '-m', 'main app')
   const head = await git(root, 'rev-parse', 'HEAD'), tip = await git(root, 'rev-parse', 'ab/revert/a')
-  await assert.rejects(abPick({ targetRoot: root, slug: 'revert', variant: 'a' }), /충돌/)
+  await assert.rejects(adopt({ targetRoot: root, slug: 'revert', variant: 'a' }), /충돌/)
   assert.equal(await git(root, 'rev-parse', 'HEAD'), head); assert.equal(await git(root, 'status', '--porcelain'), '')
   assert.equal(await git(root, 'rev-parse', 'ab/revert/a'), tip)
   assert.equal((await abStatus({ targetRoot: root, slug: 'revert' })).variants[0].commits, 2)
   await git(root, 'reset', '-q', '--hard', 'HEAD~1')
-  const adopted = await abPick({ targetRoot: root, slug: 'revert', variant: 'a' })
-  assert.equal(await git(root, 'rev-parse', 'HEAD^1'), origin); assert.equal(adopted.merged, await git(root, 'rev-parse', 'HEAD'))
-  assert.equal(await git(root, 'diff', '--name-only', 'HEAD^1', 'HEAD'), 'app.js')
+  await abPick({ targetRoot: root, slug: 'revert' })
+  assert.equal(await git(root, 'rev-parse', 'HEAD'), origin); assert.equal(await git(root, 'diff', '--cached', '--name-only'), 'app.js')
   assert.equal(await readFile(path.join(root, 'app.js'), 'utf8'), 'module.exports = "first"\n')
   assert.equal(await exists(path.join(root, 'fixtures.json')), false)
 })
@@ -792,8 +794,10 @@ test('pick logs the adoption on the coordination branch — a log still in STATE
     await abRun({ targetRoot: root, slug, variant: 'a', promptFile }, { inspect: providers, flags: noFlags, execute: session(slug) })
     if (slug === 'bare') { await git(root, 'rm', '-q', '-r', 'spec'); await git(root, 'commit', '-q', '-m', 'no spec') }
     // An English --approach wins over the stored one and is cut to about 100 characters.
-    const adopted = await abPick({ targetRoot: root, slug, variant: 'a', ...(slug === 'logged' ? { approach: `Cards first, ${'very '.repeat(30)}clear` } : {}) })
-    assert.deepEqual([adopted.files, await git(root, 'status', '--porcelain')], [[], ''])
+    const adopted = await adopt({ targetRoot: root, slug, variant: 'a', tag: `${slug.slice(0, 3)}1`, ...(slug === 'logged' ? { approach: `Cards first, ${'very '.repeat(30)}clear` } : {}) })
+    assert.deepEqual(adopted.files, ['app.js'])
+    // The design's ending commits the adoption.
+    await vibeDesign({ targetRoot: root, step: 'end' }); await git(root, 'commit', '-q', '-m', `design ${slug}`)
     if (slug === 'bare') {
       assert.equal(adopted.logLine, null); assert.equal(await exists(path.join(root, 'spec/STATE.md')), false)
       assert.deepEqual(await logged(), [line])
