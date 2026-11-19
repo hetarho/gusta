@@ -15,6 +15,21 @@ const BUDGET = {
   taskUnitPrompt: 12800, // the prompt of one loop unit with a task (contract + gusta-implement-task)
   unitPrompt: 6000, // the prompt of one loop unit without a task
   claudeMd: 11000, // this repository's CLAUDE.md, loaded in every development session
+  references: 124000, // every skills/*/references/*.md together: each is read on demand, then paid in full
+  verificationRef: 6800, // gusta-start/references/verification.md: linked from gusta-start's close and the implementation skills
+  loopControlRef: 4900, // gusta-start/references/loop-control.md
+  sessionRef: 5300, // gusta-start/references/session.md
+  coordinatorRef: 6700, // gusta-start/references/coordinator.md
+  runnerRef: 8100, // gusta-manage-work/references/runner.md
+  workflowRef: 9100, // gusta-manage-work/references/workflow.md
+  projectRulesRef: 8500, // gusta-update/references/project-rules.md
+}
+// The references each ceiling above names.
+const REFERENCES = {
+  verificationRef: 'gusta-start/references/verification.md', loopControlRef: 'gusta-start/references/loop-control.md',
+  sessionRef: 'gusta-start/references/session.md', coordinatorRef: 'gusta-start/references/coordinator.md',
+  runnerRef: 'gusta-manage-work/references/runner.md', workflowRef: 'gusta-manage-work/references/workflow.md',
+  projectRulesRef: 'gusta-update/references/project-rules.md',
 }
 
 const root = new URL('../', import.meta.url)
@@ -65,4 +80,18 @@ test('loop 단위 프롬프트는 단위 계약만 싣는다: 계약·태스크 
 test('이 저장소 CLAUDE.md의 상한', async () => {
   const text = await readFile(new URL('CLAUDE.md', root), 'utf8')
   assert.ok(bytes(text) <= BUDGET.claudeMd, over('CLAUDE.md', bytes(text), BUDGET.claudeMd))
+})
+
+test('references의 상한: 이름 붙인 파일 하나씩과 skills/*/references/*.md 전체', async () => {
+  for (const [key, file] of Object.entries(REFERENCES)) {
+    const text = await readFile(new URL(`skills/${file}`, root), 'utf8')
+    assert.ok(bytes(text) <= BUDGET[key], over(file, bytes(text), BUDGET[key]))
+  }
+  let total = 0
+  for (const entry of await readdir(new URL('skills/', root), { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const directory = new URL(`skills/${entry.name}/references/`, root)
+    for (const name of await readdir(directory).catch(() => [])) if (name.endsWith('.md')) total += bytes(await readFile(new URL(name, directory), 'utf8'))
+  }
+  assert.ok(total <= BUDGET.references, over('references total', total, BUDGET.references))
 })

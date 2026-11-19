@@ -7,17 +7,17 @@ SKILL.md 2절의 조건일 때만 쓴다. 아래 `work ...`·`vibe ...`는 `npx 
   `work start <slug> --task-verify '<태스크 단계>' --verify '<단위 통합>' [--group-verify '<묶음 완료>'] [--allow-tool '<규칙>' ...] [--review-path <계약 경로> ...] --json`
   - 검증 명령은 ARCH에서 가져와 [검증 절차](verification.md)대로 둔다. 기존 프로젝트 규칙과 다르면 기본 매핑을 권유하고 승인 뒤 활성 묶음까지 맞춘다. 태스크 종료만으로 전체 검사를 실행하지 않는다.
   - `--push <branch>`는 사용자가 통합마다 소유 묶음 브랜치를 발행하라고 요청했을 때만 둔다. land 반영과 전체 검수는 공동 고정 후보 한 번에 모으며, 이 옵션으로 단위마다 반복하지 않는다. 기본은 묶음 브랜치에 커밋으로만 모은다.
-  - `--allow-tool`은 헤드리스 워커가 묻지 않고 실행할 명령 규칙이다(Claude 형식, 예 `Bash(pnpm run *)`). 워커가 도는 새 worktree는 신뢰된 폴더가 아니라서 프로젝트 `.claude/settings.json`의 허용 목록이 적용되지 않는다.
+  - `--allow-tool`은 헤드리스 워커가 묻지 않고 실행할 명령 규칙이다(Claude 형식, 예 `Bash(pnpm run *)`) — 워커의 새 worktree에는 프로젝트 허용 목록이 적용되지 않는다.
   - `--review-path`는 계약·마이그레이션처럼 언제나 리뷰가 필요한 경로다. 기본 `--review risky`: 변경 300줄 초과(`--review-lines`), touches 밖 변경이나 touches 미선언, review-path 변경, 테스트 파일 변경 없음(리뷰 단서이며 새 테스트 의무가 아님), 수정 요청·통합 실패 이력, 이 단위 태스크를 가리키는 inbox `decided` — 하나라도 있으면 리뷰, 없으면 정책 승인 후 통합 검증만 한다. 기존 필수 리뷰 정책과 다르면 같은 규칙 대조·승인 절차를 거친다.
 - preflight에서 `vibe preflight --probe '<태스크 단계 명령>' --allow-tool '<규칙>'`으로 실제 헤드리스 워커가 그 명령을 권한 확인 없이 실행하는지 실측한다. 거부되면 사용자가 떠나기 전 그 규칙을 허용할지 묻는다.
 
 ## 2. 실행
-- `work run --work <slug> --autopilot --json`을 셸 도구의 백그라운드 실행으로 띄운다(dispatch마다 그 태스크의 `run:`을 SETTINGS `agents` 안에서 배정한다 — `--provider`·`--providers`는 사용자가 도구를 고정할 때만, `agents` 미정이면 `needs-init`). 실행기는 배정·같은 세션 resume·통합·검증 캐시/heavy 락·스냅샷·절전 방지를 모델 턴 없이 맡는다(실행기가 실패하거나 예상과 다르게 동작할 때만 [runner.md](../../gusta-manage-work/references/runner.md)를 읽는다):
-  - 보조 실행기를 `--detach`로 띄우더라도 시작 대화가 종료 이벤트와 후속 실행을 받을 실제 연결을 확보하고 목표를 계속 조정한다. 연결이 없으면 foreground 완료 대기를 사용하고 자동 채팅 통지를 약속하지 않는다. 확인은 `work run --work <slug> --status`, 멈춤은 `kill` 대신 `work run --work <slug> --stop`.
-  - 결정 요청만 남으면 모델 호출 없이 결정을 기다린다(기본 15분, `--decision-wait-ms`로 변경). 대기할 attempt와 질문을 stderr·runtime 이력에 남긴다. 통합 실패 후 새로 제출·승인된 제출물은 같은 run에서 다시 통합한다. 같은 제출물의 통합 실패로 승인된 단위가 남으면 결정 대기 없이 `needs-attention`으로 끝낸다.
+- `work run --work <slug> --autopilot --json`을 셸 도구의 백그라운드 실행으로 띄운다. 도구는 CLI가 태스크 `run:`대로 배정하니 `--provider`·`--providers`는 사용자가 도구를 고정할 때만 넘긴다. 실행기가 배정·resume·통합·검증을 모델 턴 없이 맡는다 — 실행기가 실패하거나 예상과 다르게 동작할 때만 [runner.md](../../gusta-manage-work/references/runner.md)를 읽는다.
+  - 확인은 `work run --work <slug> --status`, 멈춤은 `kill` 대신 `work run --work <slug> --stop`.
+  - 결정 요청만 남으면 실행기는 모델 호출 없이 기다린다(`--decision-wait-ms`, 기본 15분). 답은 아래 조정자 루프가 한다.
 
 ## 3. 조정자 루프
-`work next --work <slug> --owner <tag> --coordinator [--autopilot] --wait 3300 --json`을 반복하고 `action`대로 한다. 결정 요청이 생기면 바로 반환한다 — Claude는 셸 백그라운드 실행+완료 알림, Codex는 긴 timeout의 단일 블로킹 호출. 55분은 1시간 프롬프트 캐시가 식기 직전에 돌아와 맥락을 싸게 읽는 길이다: 더 짧으면 깨어날 때마다 모델 턴을 쓰고, 1시간을 넘기면 쌓인 맥락 전체를 2배 값으로 다시 캐시에 쓴다.
+`work next --work <slug> --owner <tag> --coordinator [--autopilot] --wait 3300 --json`을 반복하고 `action`대로 한다. 결정 요청이 생기면 바로 반환한다 — Claude는 셸 백그라운드 실행+완료 알림, Codex는 긴 timeout의 단일 블로킹 호출. 55분은 1시간 프롬프트 캐시가 식기 직전에 돌아오는 길이라 줄이거나 늘리지 않는다.
 - `decide`: 워커가 기획 결정을 요청했다(`attempt.decision`: question·options·recommendation).
   - 추천안으로 gusta-update-ssot를 진행한다(잠정). inbox `decided`(`vibe inbox add`는 참조를 그 checkout에서 검사하니 기획 공간에서)·보고서 decided에 질문·선택·대안을 남긴다. 과금·데이터 삭제·개인정보·보안이면 정하지 않고 inbox `parked`, 그 attempt는 `work release --attempt <id> --reason parked`로 내려놓는다.
   - 기획은 묶음의 기획 공간(`group.path`)에서 하고 커밋한다. 결정을 요청한 태스크는 base를 새 rev로 올리고(내용은 그대로 — gusta-create-task의 todo 갱신 규칙) STATE ssot의 tasked도 rev로 맞춘다: 이 델타는 그 태스크가 소화한다. 기획 커밋 직후 `vibe plan-push`로 SETTINGS plan 브랜치에 올리고 바로 `work update --attempt <id> --status doing --note '<결정·rev·순서 조건>'`으로 재개한다. 선행 통합을 기다리겠다고 재개를 붙잡아 두지 않는다. 실행기가 기획 브랜치를 그 워커 공간에 합치고 같은 세션을 이어 실행한다.

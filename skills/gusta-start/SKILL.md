@@ -27,7 +27,7 @@ CLI는 `npx @haeram/gusta` 뒤에 붙인다.
    - `settings.unset`에 `agents`: gusta-init으로 보낸다.
 4. 쓰기 전에 `vibe session open --kind start --tag <tag> --json`으로 전용 worktree·하위 브랜치를 확보하고 이후 cwd를 반환된 targetRoot로 둔다. 원래 checkout의 미커밋 작업은 건드리지 않는다.
 5. 규칙·동작을 바꾸는 요청이면 [요청 실행](references/request.md)을 읽는다.
-6. 실행 정보를 한 번 보여 주고 답을 기다리지 않고 시작한다: 대상 태스크(ID·제목), dep 순서·병렬(lane), 마감, 검증 단계, 반영 설정(land·land-via·push), 단위별 배정(`vibe loop --dry-run`의 `routing`), 다른 세션·기기의 진행(`others` — `pushed:false`는 "아직 push 안 됨")과 건너뛸 태스크(`held`·`unlanded`), 결정함 미확인 수, 완료 알림 연결 여부, ARCH의 [제품 지원](../gusta-create-architecture/references/product-support.md) 단계(미정이면 최초 기획 연결부터 한다).
+6. 실행 정보를 한 번 보여 주고 답을 기다리지 않고 시작한다: 대상 태스크(ID·제목), dep 순서·병렬(lane), 마감, 검증 단계(`phaseGates` 포함), 반영 설정(land·land-via·push), 단위별 배정(`vibe loop --dry-run`의 `routing`), 다른 세션·기기의 진행(`others` — `pushed:false`는 "아직 push 안 됨")과 건너뛸 태스크(`held`·`unlanded`), 결정함 미확인 수, 완료 알림 연결 여부, ARCH의 [제품 지원](../gusta-create-architecture/references/product-support.md) 단계(미정이면 최초 기획 연결부터 한다).
 7. ARCH 검증 연결에 빠진 실행 범위가 있으면 [검증 절차](references/verification.md)대로 연결한다.
 8. preflight가 사람만 고칠 수 있는 문제(needsUser: 권한 규칙·인증·원격)로 실패하면 목록과 고칠 방법을 한 번 묻는다 — 실행 중 유일한 질문이다. 고쳐지지 않으면 멈춘다.
 

@@ -127,7 +127,8 @@ export async function runVibeCheck(options = {}, command, injected = {}) {
       const ok = ran.code === 0 && !stale && !stepCancelled && !ran.timedOut
       if (plan && ok) observed.set(check.id, identity.key)
       if (ok && sameInputs && (!final || sameTree)) await recordPass(runtime, identity.key, { command: check.command, ...(plan ? { id: check.id, inputs: identity.inputs, inputFingerprint: identity.inputFingerprint, executionFingerprint: identity.executionFingerprint } : {}), tree, scope, log, ms })
-      if ((final || scope.TIER === 'task') && !stepCancelled && !ran.timedOut) await recordTiming(runtime, timingKey(final ? 'final' : 'task', check.command), ms)
+      // A loop's phase gate runs beside units: its samples never size the closing reserve.
+      if ((final || scope.TIER === 'task') && !stepCancelled && !ran.timedOut) await recordTiming(runtime, timingKey(final ? options.phase ? 'phase' : 'final' : 'task', check.command), ms)
       const slow = scope.TIER === 'task' && ms > TASK_SLOW_MS
       results.push({ ...metadata, ok, status: ok ? 'passed' : 'failed', exitCode: stale || stepCancelled ? ran.code || 1 : ran.code, cached: false, timedOut: ran.timedOut, cancelled: stepCancelled, stale, ms, log,
         failedTests: ran.failedTests, tail: ran.tail, cleanup: ran.cleanup,

@@ -32,7 +32,7 @@ brief의 stale-base·history가 델타다. 무관하면 base만 갱신한다. �
 - explore는 시작 시각·timebox를 기록하고 측정값을 result에 쌓다가, 시간이 다 되면 exit대로 끝낸다.
 
 ## 4. 검증
-① 구현·인계 acceptance 확인 ② 바뀐 범위의 작은 결정론적 검사와 빠른 ARCH task 명령을 커밋 직전 한 번 `vibe check --tier task`로(`--diff-base <시작 SHA> --task T### -- <command>`, 실패하면 고친 범위부터, 편집마다 반복하지 않는다) ③ spec lint — 오류·경고는 고치고 reviewHints는 next의 gusta-doc-review나 limits로 ④ 공동 최종 검수·CI는 owner에게 인계([검증 절차](../gusta-start/references/verification.md)). 긴 명령은 완료 알림을 기다린다(sleep→조회 반복 금지).
+① 구현·인계 acceptance 확인 ② 바뀐 범위의 작은 결정론적 검사와 빠른 ARCH task 명령을 커밋 직전 한 번 `vibe check --tier task`로(`--diff-base <시작 SHA> --task T### -- <command>`, 실패하면 고친 범위부터, 편집마다 반복하지 않는다) ③ spec lint — 오류·경고는 고치고 reviewHints는 next의 gusta-doc-review나 limits로 ④ 공동 최종 검수·CI는 owner에게 인계(agent AC는 [기록 형식](../gusta-start/references/agent-checks.md)). 긴 명령은 완료 알림을 기다린다(sleep→조회 반복 금지).
 - 검사 전에 `git diff $GUSTA_DIFF_BASE`를 한 번 훑어 3절 위반·읽히지 않는 설정/export·틀린 주석·반복을 고친다.
 - 결정론적 검사는 기존 증거를 재사용하고 실제 불변식 공백만 작은 fixture로 보완한다. 테스트 분류는 스크립트 이름이 아니라 격리 범위·의존성으로 한다.
 - agent 화면 AC는 실제 computer use로 관찰해 기록한다. 도구가 없거나 owner가 host·stage가 integration이면 not-run·이유·담당자(capable host)로 인계한다 — pass를 꾸미거나 E2E를 덧붙이지 않는다.

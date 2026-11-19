@@ -1,55 +1,53 @@
 # 빠른 구현을 위한 검증 계약
 
-이 절차가 프레임워크 기본이다. 적용되는 프로젝트 지침·활성 문서가 다른 주체·시점·발행을 요구하면 [프로젝트 규칙 대조](../../gusta-update/references/project-rules.md)대로 원문·범위·변경안·영향을 제시하고 기본 절차로 맞춰도 괜찮은지 묻는다. 이미 구체적으로 승인한 변경은 재질문하지 않는다. 오래된 ARCH라는 이유만으로 정책을 바꾸지 않으며, 맡김에서는 미승인 차이를 parked로 남긴다. 다음 절차는 승인된 별도 예외가 없는 범위에 적용한다.
+프레임워크 기본 절차다. 적용되는 프로젝트 지침·활성 문서가 다른 주체·시점·발행을 요구하면 [프로젝트 규칙 대조](../../gusta-update/references/project-rules.md)대로 원문·변경안·영향을 보여 주고 기본 절차로 맞춰도 괜찮은지 묻는다. 이미 구체적으로 승인한 변경은 다시 묻지 않고, 맡김에서는 미승인 차이를 parked로 남긴다.
 
-- **구현 세션·워커**: 항상 하위 브랜치에서 영향 단위 테스트·빠른 정적 검사만 커밋 직전 한 번 실행한다. 기존 행동 증거로 충분하면 새 테스트를 만들지 않는다. gusta-start·두 self-improve 경로는 세션 전용 linked worktree와 브랜치를 사용하며 호출한 checkout·land·deploy·plan·저장소 기본 브랜치를 구현 공간으로 쓰지 않는다. 세션 종료·태스크 done은 공동 통합 완료가 아니다.
-- **공유 마감**: 모든 기기의 참여 세션이 working/ready와 제출 branch/HEAD를 조정 정본에 알린다. 한 통합 묶음의 참여자가 모두 ready이면 한 소유자가 land 기준 SHA·참여자·제출 SHA·최종 후보를 고정해 전체 검수를 한 번 수행한다. 새 참여자는 다음 묶음으로 간다. 원격 불명·미발행·오래된 heartbeat는 idle/완료가 아니며 시간 경과만으로 소유권을 탈취하지 않는다. 모든 참여 기기는 같은 프로토콜로 함께 갱신한다.
-- **고정 후보**: 구현 checkout과 분리해 검수한다. 실패 뒤에는 실패·영향·미실행 범위와 유효한 성공을 잇는다. 밖에서 land가 움직였으면 반영을 보류·재조정하며 자동 병합·전체 검수 초기화를 반복하지 않는다. clone의 heavy 락은 원격 공유 소유권의 대체물이 아니다.
-- **E2E 대체**: 자동 E2E는 위험을 입증하는 최소만 유지하고 지원 브라우저 호환 검사는 선언한 목록으로 CI에서만 한다. 새 웹 프로젝트는 별도 요구가 없으면 Chrome 하나를 추천하며 임의의 4종 행렬을 만들지 않는다. computer-use agent acceptance는 선택한 E2E/명령의 같은 범위를 제거·축소한 뒤 배정한다. 각 AC의 주 검증 방법을 정하고 이중 실행 예외는 다른 위험·근거·추가 비용을 명시한다.
-- **실제 관찰과 보고**: 구현 에이전트가 `scenario | steps | expected | observed | evidence | status`(`pass|fail|not-run`)로 결과를 남기고 최종 보고서의 기존 `## checks`와 채팅에 모은다. 사용자는 누락·잘못된 기대 조건을 검토하며 에이전트의 수동 QA를 대신하지 않는다. 도구 없는 headless 세션은 이유가 있는 not-run으로 도구가 있는 시작/검증 세션에 인계한다. MCP 격리를 몰래 풀거나 E2E를 추가하는 fallback·관찰 없는 pass는 만들지 않는다.
-- **리뷰 세션**: 기존 증거와 필요한 빠른 재현만 확인한다. 중복 전체 검사나 이미 대체한 E2E·agent 검사를 다시 띄우지 않는다. gusta-update는 실제 테스트·스크립트·설정·실측을 감사해 유지/축소/agent 대체/CI 이동/미확인을 구분한다.
+## 단계
 
-제품 단계·지원 환경/버전·제외·다음 검토 시점은 최초 [제품 지원 정책](../../gusta-create-architecture/references/product-support.md)에서 추천·선택해 ARCH에 기록한다. Prototype·Alpha는 주 환경의 최신 안정 기준선부터 시작하며 광범위 호환 행렬을 기본으로 더하지 않는다. 검수 중 기준선을 바꾸지 않고 기존 지원 약속은 보존한다.
+| 단계 | 범위 | 누가·언제 | 작업 묶음 |
+|---|---|---|---|
+| task | 바뀐 범위의 영향 단위 테스트·빠른 정적 검사 | 구현 세션·워커가 하위 브랜치에서 커밋 직전 한 번(`vibe check --tier task`) | `--task-verify` |
+| 단위 통합 | 빠른 통합 검사 | CLI가 단위 통합마다 | `--verify` |
+| batch | 결정론적 전체 검수 | 살아 있는 참여 세션이 모두 ready인 고정 후보에서 한 소유자가 한 번 | `--group-verify` |
+| 단계 검사 | batch 명령 그대로 | 시간 한도 loop에서 태스크 N개마다 CLI가 그 커밋을 백그라운드로(`vibe loop --dry-run`의 `phaseGates`). 두 번 실패하면 fix-gate 태스크가 다음 단위다 — 조기 경보일 뿐 batch를 대신하지 않는다 | — |
+| CI | 위험을 입증하는 최소 자동 브라우저 E2E·선언한 지원 브라우저 호환 검사 | 실제 push마다 원격 CI | — |
 
-## 실행 가능한 검사 계획
+- 기존 행동 증거로 충분하면 새 테스트를 만들지 않는다. 검사 분류는 명령 이름이 아니라 실제 의존성·브라우저 행렬로 한다.
+- 각 AC는 주 검증 방법 하나와 owner·stage를 갖는다. computer-use agent acceptance는 고른 E2E/명령 범위를 제거·축소한 뒤 그 자리를 맡는다 — [기록 형식](agent-checks.md).
+- 리뷰 세션은 기존 증거와 필요한 빠른 재현만 확인한다. 전체 검사나 이미 대체한 E2E·agent 검사를 다시 띄우지 않는다.
+- 기존 활성 묶음도 승인된 매핑으로 `work configure`한다. 세션 종료·태스크 done은 공동 통합 완료가 아니다.
 
-프로젝트 지침과 실제 명령을 대조해 검사별 주체·단계·조건·입력·중복·성공 재사용 조건을 연결한다. 기존 단계별 명령과 캐시로 충분하면 그대로 쓴다. 여러 독립 검사를 한 외부 스크립트에 묶어 부분 성공을 잃는 경우에는 프로젝트 소유 JSON 계획을 ARCH 검증 결정의 `plan:` 하위 줄의 백틱 경로로 연결하거나 `vibe check --plan <경로> --tier task|batch`로 실행한다. 경로는 프로젝트 안에 두며, 스킬이 셸 문자열을 임의로 분해하지 않는다.
+## 검사 계획
 
-계획은 `schemaVersion:1`과 `checks` 배열이며 항목은 고유 `id`, `tier`(`task|batch|ci`), 실행 가능한 `command`, 선택적 `inputs`를 갖는다. `inputs`는 프로젝트 상대 Git 경로 패턴 배열(예: `src/`, `test/**`, `package.json`)이고 생략하면 전체 트리(`['.']`)다. 절대·상위·`.git` 경로와 Git magic/제외 패턴은 쓰지 않는다. 명령이 읽는 코드·테스트·스크립트·설정·의존성·생성 입력을 포함하며 모르면 범위를 좁히지 않는다. `ci`는 원격 인계 정보이고 로컬 실행 대상이 아니다.
+ARCH 단계별 명령으로 충분하면 그대로 쓴다. 독립 검사 여러 개가 한 스크립트에 묶여 부분 성공을 잃으면 프로젝트 안의 JSON 계획을 ARCH 검증 결정의 `plan:` 하위 줄에 백틱 경로로 연결한다(`vibe check --plan <경로> --tier task|batch`로도 실행한다).
 
-기본 입력은 추적 파일과 ignore되지 않은 미추적 파일이다. ignore된 설정 파일도 실제 입력이면 리터럴 경로로 명시한다. 외부/디렉터리 symlink·submodule처럼 입력을 안전하게 식별할 수 없는 범위는 좁은 캐시로 우회하지 않는다. 계획만 선언해도 모든 단계가 정해지며 비어 있는 단계에 명령을 추론해 넣지 않는다. 단계별 명령을 함께 적었으면 계획과 일치시켜 빠진 검사를 숨기지 않는다.
+```json
+{"schemaVersion":1,"checks":[{"id":"unit","tier":"task","command":"npm run test:unit","inputs":["src/","test/**","package.json"]}]}
+```
 
-CLI는 항목별 성공과 입력 식별자를 즉시 보존한다. 다른 항목의 실패가 성공 기록을 지우지 않으며 같은 입력·명령·실행 환경·범위의 성공만 재사용한다. 실패·무효화·미실행 항목을 다시 확인하고 유효한 성공과 합쳐 전체 필수 범위를 입증한다. receipt의 검사 ID·결과를 회복 근거로 쓰며, 미실행·취소·시간 초과를 성공으로 세지 않는다. 선언 누락(`declared:false`·`partial:true`)과 지침에만 남은 명령은 실행 전에 연결하거나 미지원 범위를 명시한다. 설명문에서 명령을 추측하거나 누락을 성공으로 간주하지 않는다.
+- `tier`는 `task|batch|ci`다. `ci`는 원격 인계 정보이고 로컬에서 돌리지 않는다.
+- `inputs`에는 명령이 읽는 코드·테스트·스크립트·설정·의존성·생성 입력을 프로젝트 상대 경로로 적는다. 모르면 생략한다(전체 트리). ignore된 설정 파일이 입력이면 리터럴 경로로 적는다.
+- 계획을 선언하면 모든 단계가 정해진다. 빈 단계에 명령을 추론해 넣거나 설명문에서 명령을 추측하지 않는다. 단계별 명령을 함께 적었으면 계획과 일치시킨다.
+- `declared:false`·`partial:true`나 지침에만 남은 명령은 실행 전에 연결하거나 미지원 범위로 명시한다.
 
-## 시간 예산
+## 공동 마감
 
-시간은 구현에 쓰고 전체 검수는 공동 통합 후보 한 번에 모은다. 시간 한도가 있으면 실측 전체 검수 한 번+수정 단위/영향 검사+CI를 예약한다. `vibe loop`의 마감 구간에는 새 일반 단위를 시작하지 않고 기존 결과를 ready로 제출한다. runtime `timings.json`과 `taskChecks.slow`의 실제 단계별 시간을 쓰며 1분 넘는 태스크 검사는 축소·이동 후보로 감사한다. 명령 이름만으로 단계나 비용을 판단하지 않는다.
+1. 세션 worktree에서 `vibe integration status --tag <tag>`로 공유 상태를 보고 `vibe integration ready --tag <tag>`로 제출한다. 보이지 않는 기기까지 안다고 주장하지 않고, 원격 불명·미발행·stale을 완료로 세지 않는다.
+2. loop·묶음 마감 또는 `vibe integration finish --tag <tag>`가 모두 ready인 참여자로 후보를 고정해 한 번 검수한다. 대기 응답의 세션별 원인과 `nextAction`대로 한다. 관문 밖에서 이미 반영됐거나 다시 제출하지 않을 세션은 소유자가 `vibe integration withdraw --participant <id>`로 닫는다(맡김은 withdraw하지 않는다).
+3. `waiting-agent`면 도구가 있는 시작/검증 세션이 영수증의 정확한 candidate에서 computer use로 관찰하고, token·candidate·checks JSON을 `vibe integration accept --file <JSON>`으로 낸 뒤 `vibe integration finish --tag <tag>`로 잇는다. 끝난 결정론적 검사는 다시 돌리지 않는다.
+4. 검수된 후보만 SETTINGS land·land-via·push대로 반영된다. 원래 checkout을 전환하거나 force push로 동시 변경을 덮지 않는다.
 
-관문 실패는 실패한 것만 고친다: 결과 `next`대로 고친 부분을 `vibe check --tier task --diff-base <관문 커밋>`으로 먼저 확인하고, 같은 계획의 유효한 성공은 재사용하며 실패·영향·미실행 검사를 확인한다. 전체 스크립트를 처음부터 돌리는 것을 기본 회복으로 삼지 않고, 전체 재실행은 실제 입력·정책 변경 등 무효화 근거를 남긴다. 실패 재현용 빌드·e2e는 `--heavy`로 한 번에 하나씩, 다른 검사와 동시에 돌리지 않는다. 범위 밖 문제는 보고서 limits와 inbox(`suggest` 또는 다음 태스크)로 분리한다. 실제 마감·남은 검증/CI 시간·단위 한도를 지킨다. 종료 결과에는 관문 시도·실패·남은 수정·실제 push를 남긴다.
+spec lint 경고는 막힘 사유가 아니라 할 일이다. 기준에 있던 경고는 단위 통합 결과의 `specWarnings`로 온다. 시작 대화는 ready 제출 전에 `gusta lint` 경고 정리를 한 조각(새 하위 세션)에 맡긴다 — 경고가 가리키는 문서의 소유 스킬대로(STATE·태스크 정합은 gusta-implement-task 마감, base<rev는 gusta-create-task, SSOT 참조·pending은 gusta-update-ssot, SSOT 형식은 gusta-doc-review) 고치고, 사람 판단이 필요한 것만 경고 원문과 함께 parked로 남긴다. 예산 안에 못 고친 수는 보고서 checks에 남긴다.
 
-실행기 종료 뒤에도 시작 대화가 남은 일을 판단하고, 수동 복구는 같은 `--tag`·원래 마감을 잇는다. 남은 예산 안에서 필요한 로컬 수정·문서 마감·커밋은 이어받고, 실제 외부 의존성과 한도만 중단 사유로 삼는다. 마지막 보고는 검증된 반영·원격 WIP 보존·미완료 작업을 구분한다.
+## 실패 뒤
 
-## 작업 묶음과 기존 프로젝트
+- 관문 실패는 결과 `next`대로 실패·영향·미실행 범위만 고친다. 고친 부분을 `vibe check --tier task --diff-base <관문 커밋>`으로 먼저 확인하고 같은 계획의 유효한 성공은 재사용한다. 전체 재실행은 실제 입력·정책 변경 같은 무효화 근거가 있을 때만 한다.
+- 실패 재현용 빌드·e2e는 `--heavy`로 한 번에 하나씩, 다른 검사와 동시에 돌리지 않는다.
+- 범위 밖 문제는 보고서 limits와 inbox(`suggest` 또는 다음 태스크)로 분리한다.
+- 밖에서 land가 움직였으면 반영을 보류·재조정하고 자동 병합·전체 검수 초기화를 반복하지 않는다.
+- 실행기가 끝나도 수동 복구는 같은 `--tag`·원래 마감을 잇는다.
+- 미완료를 통과로 바꾸거나 하드 관문·권한을 우회하지 않는다.
 
-기본 매핑은 ARCH task → `--task-verify`, 빠른 통합 검사 → `--verify`, 최종 통합의 결정론적 범위 → `--group-verify`다. 최소 자동 브라우저 E2E와 지원 브라우저 호환 검사는 CI에서만 수행하고, agent로 대체한 시나리오를 로컬/CI 스크립트에 중복으로 남기지 않는다. 기존 활성 묶음도 승인된 정책에 맞춰 `work configure`한다. 일반 `npm test`·`verify`의 실제 의존성·브라우저 행렬을 읽고 이름만으로 분류하지 않는다.
+## CI
 
-기존 규칙과 충돌하면 gusta-create-architecture/gusta-update-ssot가 검증 범위·조건을 보존한 기본 단계 정리를 제안하고 승인 뒤 관련 활성 문서를 함께 맞춘다. 맡김의 기획 조각도 미승인 정책 차이를 추천안+inbox decided로 자동 변경하지 않는다. 구현 워커가 SSOT를 고치지 않는다. 별도 실행을 승인받은 경우는 그 범위만 예외로 두고, 비용·최종 검증 필요 여부와 CLI 지원 한계를 기록한다.
-
-## 최종 관문과 push
-
-1. 전용 세션 worktree에서 `vibe integration status --tag <tag>`로 공유 상태를 확인하고 구현 결과를 `vibe integration ready --tag <tag>`로 제출한다. 등록된 GUSTA 세션들의 working/ready·제출 SHA를 확인하며 보이지 않는 기기까지 안다고 주장하지 않는다. 원격 불명·미발행·stale은 완료가 아니다. 세션 끝의 `vibe beat --end`가 참여도 닫는다(변경 없으면 withdrawn, 있으면 paused). 관문은 살아 있는 세션만 기다린다: 끝난 세션(paused), 90분 동안 신호(beat·checkpoint·등록)가 없는 세션, head를 가져올 수 없는 ready 세션은 `deferred`로 이번 묶음에서 빠질 뿐 철회·반영·선점 이전되지 않고, 돌아와 land를 merge한 뒤 다음 통합에 참여한다. 대기 응답은 세션별 원인과 `nextAction`을 준다. 관문 밖에서 이미 반영됐거나 다시 제출하지 않을 세션은 소유자가 `vibe integration withdraw --participant <id>`로 닫는다(브랜치 보존, ready가 다시 참여시킨다). 맡김은 withdraw하지 않는다.
-2. loop/group finalizer 또는 `vibe integration finish --tag <tag>`가 모두 ready인 참여 집합과 land 기준 SHA를 고정해 한 소유자가 격리 후보를 검수한다. CLI가 만든 새 worktree(세션·묶음·워커·후보)는 검사 전에 ARCH 검증 결정의 `prepare:` 명령(예: frozen·offline 설치)을 한 번 실행한다. 준비 실패와 명령·그 대상 스크립트·패키지가 없는 실패는 구현 결함이 아니라 환경 실패로 보고되며 워커에게 수정 요청으로 돌아가지 않는다. head가 이미 land에 있는 다른 ready 세션은 landed(관문 밖·미검증)로 기록되어 빠진다. 참여 `--verify`는 저장소 기준 상대 경로·설치된 명령만 쓴다(이 기기에만 있는 경로는 거절). 새 세션은 다음 묶음에 대기한다. 전체 검수는 이 후보에서 한 번이며 유효한 검사별 성공을 재사용한다. clone heavy 락은 공유 소유권을 보조할 뿐이다.
-3. 실패 뒤에는 실패·영향·미실행만 고친다. 입력/HEAD 변경 감지는 유지하며 문서도 실제 입력이면 확인한다. 밖에서 land가 움직였으면 반영을 보류·재조정하고 자동 병합·전체 재실행을 반복하지 않는다. 필수 integration-stage AC가 미관찰이면 `waiting-agent`로 고정 후보와 기존 결정론적 성공을 보존한다. 이 cohort로 고칠 수 없는 실패(다른 기기에서만 도는 참여 명령 등)는 `vibe integration abandon --token <token>`으로 기록에 옮기고 그 참여를 withdraw한 뒤 다시 finish한다. 마감이 지난 실패 관문은 다음 finish·withdraw·plan-push가 expired로 옮긴다.
-4. 도구가 있는 시작/검증 세션이 waiting-agent 영수증의 정확한 candidate에서 실제 computer use를 수행한다. 받은 token·candidate·checks를 JSON으로 기록해 `vibe integration accept --file <JSON>`으로 제출하고 `vibe integration finish --tag <tag>`로 이어간다. 이미 끝난 전체 결정론적 검사를 다시 돌리지 않는다. 검증된 고정 후보만 SETTINGS land·land-via·push대로 반영하며 기준 land가 바뀌면 보류한다. 원래 checkout을 전환하거나 force push로 동시 변경을 덮지 않는다.
-
-spec lint 경고는 막힘 사유가 아니라 할 일이다. 단위 통합(`work integrate`·`sync`)은 모든 오류와 그 단위가 더한 경고만 거절해 워커에게 돌려보내고, 기준에 있던 경고는 결과의 `specWarnings` 수로 알린다. 시작 대화는 ready 제출 전에 `gusta lint` 경고를 정리 한 조각(새 하위 세션)에 맡긴다 — 경고가 가리키는 문서의 소유 스킬대로(STATE·태스크 정합은 gusta-implement-task 마감, base<rev는 gusta-create-task, SSOT 참조·pending은 gusta-update-ssot, SSOT 형식은 gusta-doc-review) 고치고, 사람 판단이 필요한 것만 경고 원문과 함께 parked로 남긴다. 예산 안에 못 고친 수는 보고서 checks에 남긴다.
-
-사용자가 실행 중 중단·먼저 반영·원인 보고 등 새 지시를 주면 기본 계획보다 우선한다. 소유한 검사 실행을 취소하고 종료/하위 프로세스 정리 결과를 확인한 뒤, 남은 검사를 자동 재개하지 않고 지시에 맞춰 재계획한다. 검증 예외를 명시적으로 승인받은 반영은 그 범위에서 지원되는 경로로만 수행하고 미완료 검사·실패·실제 반영을 보고한다. 미완료를 통과로 바꾸거나 CLI의 하드 관문·권한을 우회하지 않는다.
-
-위임된 단위 세션에서는 호스트가 선점([세션 절차](session.md))과 공동 마감을 맡는다. agent 결과의 `agentChecks`에는 id·scenario·steps·expected·observed·evidence·status·reason·replaces를 담는다. 대체한 자동 범위는 실행 대상에서 제거·축소하고 duplicationReason만으로 이중 실행을 허용하지 않는다. 기존 명시적 의무와 충돌하면 주 검증 방법을 먼저 승인된 계약에 배정한다. agent AC의 stage는 `unit|integration`(기본 integration), required는 기본 true, owner는 기본 host다. unit-stage AC는 해당 단위에서 확인하고, integration-stage not-run은 이유·담당자와 함께 태스크 result/호스트에 인계한다. 구현+명시적 인계 acceptance가 끝난 태스크를 같은 도구 없는 단위에 반복 배정하지 않으며 UI 관찰을 했다고 체크하지 않는다. 최종 완료에는 실제 candidate SHA에 고정된 필수 integration 증거가 필요하다. candidate가 바뀌면 이전 화면 관찰을 새 SHA의 pass로 복사하지 않는다.
-
-사용자 명시 시 묶음 `--push <branch>`는 소유 작업 브랜치에만 발행한다. loop `--push-each-unit`는 의도를 기록하고 단위 중 발행을 유예해 공동 마감에 제출한다. 설정 적용은 발행 증거가 아니며, 작업 브랜치 발행마다 전체 검수를 돌리지 않는다. land는 공동 고정 후보의 검수가 끝난 뒤에만 반영한다. 워커·리뷰어의 batch/group 실행은 기본 거절되며, 사용자에게 별도 실행을 명시적으로 요청받았을 때만 `--allow-final`로 예외를 표시한다. 로컬 락은 같은 clone만 보호한다. 공유 통합 정본은 등록·갱신된 GUSTA 세션들의 원격 소유권을 확인하며 임의 셸·구버전·미등록 기기를 제어한다고 주장하지 않는다.
-
-## CI 대기
-
-지원 브라우저 호환 검사는 CI에만 둔다. CI는 실제 push당 `vibe ci wait --commit <sha> --diff-base <묶음 시작 SHA> --json` 한 번 또는 push --wait-ci. 같은 SHA에서 이미 통과한 CI/릴리스 증거도 재사용하며 릴리스만을 위해 전체 스위트를 중복하지 않는다. Claude는 셸 백그라운드+하네스 완료 알림, Codex는 긴 timeout의 단일 블로킹 호출. sleep→조회→보고 모델 루프 금지. 긴 e2e·벤치마크도 완료까지 모델을 깨우지 않는다. CI를 읽을 수단이 없으면(gh·토큰 없음, 비공개 저장소, GitHub 원격 아님) CLI가 유예 뒤 `unchecked`(ok)로 돌려준다 — 멈추거나 수정 태스크를 만들지 않고 보고서 next에 `check CI later: <sha> <checkUrl>`로 남긴다. 맡김에서 실패는 근거를 담은 수정 태스크를 만들어 **다음 단위로 우선 실행**한다. 수정 태스크 생성만 하고 종료하지 않는다. 기획 판단은 SKILL.md 3절대로 해소하고, 실제 권한·외부 작업에 막히면 해당 건만 parked 후 다른 태스크로 간다. 시간·단위 한도와 반복 무진행·실행 실패 제한은 유지한다. run 없는 push는 CLI가 skipped로 마친다.
+실제 push마다 `vibe ci wait --commit <sha> --diff-base <묶음 시작 SHA> --json` 한 번(또는 push `--wait-ci`)으로 기다린다 — Claude는 셸 백그라운드+완료 알림, Codex는 긴 timeout의 단일 블로킹 호출이고 sleep→조회 반복은 하지 않는다. 같은 SHA에서 이미 통과한 CI·릴리스 증거는 재사용한다. `unchecked`면 보고서 next에 `check CI later: <sha> <checkUrl>`로 남기고 진행한다. 맡김에서 CI 실패는 근거를 담은 수정 태스크를 만들어 **다음 단위로 우선 실행**한다(만들기만 하고 끝내지 않는다).

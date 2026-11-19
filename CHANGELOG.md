@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- A timed `vibe loop` with a shared integration gate runs that gate once
+  when the closing window opens. It used to repeat the window's flush until
+  the deadline and then skip the gate, ending without a final check; now the
+  window runs only a queued repair and the close runs the gate.
+- Phase gates: every `batchSize` completed tasks (3 by default), a timed loop
+  runs the batch checks on that commit in its own worktree in the background
+  while units go on. A failure that repeats on a second run becomes one
+  fix-gate task that runs next, so failures surface hours before the closing
+  gate. A phase starts only when its measured time ends before the closing
+  window. Its samples do not size the closing reserve, and the run is stopped
+  and its worktree removed before the closing gate. `vibe loop --dry-run`
+  shows `phaseGates`. The final gate and the reserve are unchanged.
+- References shrink from 168KB to 124KB: verification, runner, workflow,
+  loop-control, session and coordinator drop CLI internals and duplicates.
+  The agentChecks format is its own small file, so units and workers no longer
+  point at the whole verification contract. The command-adapter protocol
+  moves to `gusta-manage-work/references/adapter.md`. Group verification no
+  longer claims E2E, which runs in CI only. Reference sizes are capped too.
 - Skills carry far less text for the same behavior. Every SKILL.md together
   drops from 217KB to 127KB: CLI internals, rules the CLI already rejects
   with a message, and restated procedures are gone, and rare branches moved

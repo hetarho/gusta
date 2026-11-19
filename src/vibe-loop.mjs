@@ -32,6 +32,9 @@ import { usageRun, finishUsageRun } from './usage-measurement.mjs'
 import { acquireLoop, releaseLoop, bindLoopDirectory, atomicJSON, readJSON, readRequests, requestPath, requestControl, waitLoopEvent, inspectLoop, loopEvent, finishedEvent, finishedSummary, judgmentItems, judgmentNotice, startLoopMonitor, controlTransaction, processAlive, notificationCapability, loopDeadline, requestedLoopConfig, loopHint } from './loop-control.mjs'
 import { LoopMetadata, recoverLoopMetadata } from './loop-metadata.mjs'
 import { timeBreakdown, timeLine, taskCheckLine } from './loop-time.mjs'
+import { phaseGatePlan, runPhaseGate, phaseFailures, removePhaseWorktree } from './loop-phase.mjs'
+import { canonicalDestination, worktreeHome } from './work-runtime.mjs'
+import { prepareWorkspace } from './workspace-prepare.mjs'
 import { parseFailure, LIMIT_KINDS, BLOCKING, OVERLOAD_RETRY_MS, LIMIT_POLL_MS, readLimits, recordLimit, activeLimits, limitBlocks, earliestReset, limitHint, fallbackNote, limitTarget } from './provider-limits.mjs'
 import { prepareSessionWorkspace } from './session-workspace.mjs'
 import { finalizeIntegration } from './integration-run.mjs'
@@ -285,7 +288,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   if (!control.length && !agents && !options.provider && !options.adapter) return { schemaVersion: 1, ok: false, tag: options.tag, ...(options.dryRun ? { dryRun: true } : {}), reason: 'needs-init', hint: loopHint('needs-init'), unset: ['agents'], modelRequests: 0 }
   const directory = path.join(context.runtime, 'loops', options.tag), stopFile = path.join(directory, 'STOP'), manifest = path.join(directory, 'loop.json')
   const lock = path.join(context.workspace.git.gitDir, 'gusta-vibe-loop.lock')
-  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, syncLand, claim: vibeClaim, beat: vibeBeat, inbox: vibeInbox, view: coordView, push: vibePush, integration: finalizeIntegration, ci: vibeCIWait, check: runVibeCheck, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {},
+  const deps = { status: vibeStatus, preflight: vibePreflight, execute: executeVibeUnit, sync: vibeSync, syncLand, claim: vibeClaim, beat: vibeBeat, inbox: vibeInbox, view: coordView, push: vibePush, integration: finalizeIntegration, ci: vibeCIWait, check: runVibeCheck, phasePrepare: prepareWorkspace, checkpoint: vibeCheckpoint, prune: vibePrune, lint: lintSpec, closeIssues: specCloseIssues, now: Date.now, monitor: startLoopMonitor, fault: async () => {},
     sleep: (ms, signal) => new Promise((resolve) => { const timer = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true }) }),
     catalog: () => agentCatalog({ targetRoot: root, env: { ...process.env, ...options.env } }, { agents: settings.agents }), ...injected }
   // What each installed tool can run, read once per run (no model call) and only when agents is set:
@@ -383,8 +386,10 @@ export async function vibeLoop(options = {}, injected = {}) {
   const estimateReserve = async () => closingReserve({ timings: await readTimings(context.runtime), commands: batchVerify, push: Boolean(context.target), hours, timeoutMs, optionHours })
   let reserve = await estimateReserve()
   if (reserve.ms >= hours * 3600000) throw new SkillPackageError(`마감 관문 실측(전체 검증 1회+영향 범위 수정 1회+CI)이 ${(reserve.ms / 3600000).toFixed(2)}시간이라 max-hours 안에 구현 시간이 없습니다. --max-hours를 늘리거나 --final-reserve-hours를 지정하세요.`)
+  // Phase gates (loop-phase.mjs): the batch suite every batchSize completed tasks, beside units.
+  const phaseGates = async (workMs) => phaseGatePlan({ timings: await readTimings(context.runtime), commands: batchVerify, every: batchSize, workMs })
   const plan = { schemaVersion: 1, controlVersion: 1, tag: options.tag, provider: options.provider ?? (options.adapter ? 'command' : 'route'), agents, ...(options.effort ? { effort: options.effort } : {}), permissionMode: mode, headlessMcp: mcp,
-    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS }, scope: scopeIds, reserve, verify, batchVerify, requiredVerificationTiers,
+    cwd: root, concurrency: state.concurrency, route: state.route, limits: { maxUnits, maxHours: hours, batchSize, timeoutMs, exploreExitMs: EXPLORE_EXIT_MS }, scope: scopeIds, reserve, phaseGates: await phaseGates(deadline - reserve.ms - MIN_UNIT_MS - start), verify, batchVerify, requiredVerificationTiers,
     deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), notification: notificationCapability(directory, options.notifyCommand),
     directory, stopFile, manifest, freshSessionPerUnit: true, pushEachUnit: Boolean(options.pushEachUnit), notifyCommand: options.notifyCommand ?? null }
   // routing: the tool·model·effort each remaining task would run on now, and why (dry-run only:
@@ -464,6 +469,9 @@ export async function vibeLoop(options = {}, injected = {}) {
   let priorityTask = /^T\d+$/.test(previous?.priorityTask ?? '') && inScope(previous.priorityTask) ? previous.priorityTask : null
   // repairTask: the gate/CI repair this run queued. failedGate: the code a gate last failed on.
   let repairTask = null, failedGate = null, gateFailures = 0, gateAttempts = 0, verifiedCommit = null
+  // phaseRun: the phase gate in flight (one at a time). phaseSha: the commit the last one froze.
+  // phaseTree: what its worktree was prepared at, so the next phase prepares only for new dependencies.
+  let phaseRun = null, phaseCount = 0, phaseSha = base, phaseTree = null, phaseDirectory = null
   // One spec-close repair per task survives a restart of the same helper run.
   const specRepairs = new Map(Object.entries(previous?.specRepairs ?? {}).filter(([id, count]) => TASK_ID.test(id) && Number.isSafeInteger(count) && count > 0))
   const specRejected = new Map(Object.entries(previous?.specRejected ?? {}).filter(([id, violations]) => TASK_ID.test(id) && Array.isArray(violations) && violations.every((value) => typeof value === 'string')))
@@ -543,7 +551,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   const snapshot = () => ({ ...plan, verify, batchVerify, requiredVerificationTiers, limits: { ...plan.limits, maxHours: hours }, runId, host: os.hostname(), pid: process.pid, startedAt: new Date(start).toISOString(), deadline: new Date(deadline).toISOString(), workDeadline: new Date(deadline - reserve.ms).toISOString(), reserve, heartbeatAt,
     status: closing ? error || operationalErrors.length || reason === 'session-failures' ? 'failed' : controller.signal.aborted ? 'cancelled' : 'stopped' : phase,
     ...(closing ? { endedAt: new Date().toISOString() } : {}),
-    report, pruned, publication, integration: integrationState, sessionWorkspace, units: count, dispatches, batches, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, stalled: Object.fromEntries(stalled), specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), refused: [...refused].map(([task, held]) => ({ task, ...held })), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, ...(requestDigest ? { request: { digest: requestDigest, planned: requestPlanned } } : {}), snapshots, usageLimits: limitHits, ...(limitWait ? { limitWait } : {}), reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), ...(landConflict ? { landConflict } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
+    report, pruned, publication, integration: integrationState, sessionWorkspace, units: count, dispatches, batches, phaseGates: { ...plan.phaseGates, runs: phaseCount, active: phaseRun && !phaseRun.settled ? { phase: phaseRun.phase, sha: phaseRun.sha } : null }, time: timeBreakdown({ dispatches, batches, totalMs: deps.now() - start }), ...(measurement ? { measurement } : {}), priorityTask, recovery, stalled: Object.fromEntries(stalled), specRepairs: Object.fromEntries(specRepairs), specRejected: Object.fromEntries(specRejected), refused: [...refused].map(([task, held]) => ({ task, ...held })), gate: gateState(), continuation: continuation(), scope: scope ? [...scope] : null, ...(requestDigest ? { request: { digest: requestDigest, planned: requestPlanned } } : {}), snapshots, usageLimits: limitHits, ...(limitWait ? { limitWait } : {}), reason, ...(hintFor(reason) ? { hint: hintFor(reason) } : {}), ...(landConflict ? { landConflict } : {}), stopReason, error, operationalErrors, requestedConfig, appliedConfig, configHistory, supervisor, running: !closing })
   let saving = Promise.resolve()
   const save = () => {
     saving = saving.catch(() => {}).then(async () => {
@@ -603,6 +611,7 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (fresh.length) text = text.replace(`\n## ${next}`, `${fresh.join('\n')}\n\n## ${next}`)
     }
     const checks = batches.map((entry) => entry.ci ? `- CI ${entry.ci.commit ?? '-'}: ${entry.ci.outcome}${entry.ci.outcome === 'unchecked' ? ` (${entry.ci.reason})` : ''} ${entry.ci.runUrl ?? entry.ci.checkUrl ?? ''}`.trimEnd()
+      : entry.phase ? `- ${entry.command}: ${entry.outcome} (${entry.log ?? '-'})`
       : entry.errors ? `- ${entry.command}: fail (${entry.errorCount} errors; first: ${entry.errors[0]})` : `- ${entry.command}: ${entry.cancelled ? 'cancelled' : entry.ok ? 'pass' : 'fail'} (${entry.log ?? '-'})`)
       .filter((line) => !text.includes(line))
     if (checks.length) text = text.replace('\n## next', `${checks.join('\n')}\n\n## next`)
@@ -713,6 +722,51 @@ export async function vibeLoop(options = {}, injected = {}) {
     priorityTask = repairTask = id
     scope?.add(id)
   }
+  // A phase gate starts at a batch boundary when new code waits and it ends before the closing window,
+  // runs beside the next units, and is collected at the next boundary or stopped before the close.
+  const startPhase = async () => {
+    if (phaseRun) return
+    const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
+    if (!await codeChanged(phaseSha, head)) return
+    const windowAt = deadline - reserve.ms - MIN_UNIT_MS, gate = await phaseGates(windowAt - deps.now())
+    if (!gate.enabled) return
+    const run = { phase: ++phaseCount, sha: head, abort: new AbortController(), settled: false }, follow = () => run.abort.abort()
+    controller.signal.addEventListener('abort', follow, { once: true })
+    phaseSha = head; phaseRun = run
+    const started = deps.now(), diffBase = base, planned = batchPlan(), prepare = verify.prepare ?? []
+    const runs = planned ? [{ plan: planned.source }] : batchVerify.map((command) => ({ command }))
+    await event('phase-gate-start', { phase: run.phase, sha: head, estimateMs: gate.estimateMs })
+    run.promise = (async () => {
+      phaseDirectory ??= await canonicalDestination(path.join(worktreeHome(context.workspace, root), `phase-${options.tag}`))
+      return runPhaseGate({ root, directory: phaseDirectory, sha: head, runs, prepare, tree: phaseTree, signal: run.abort.signal, deadline: windowAt, now: deps.now, prepareWorkspace: deps.phasePrepare,
+        check: (extra, command) => deps.check({ tier: 'batch', tag: options.tag, host: true, heavy: true, allowFinal: true, phase: true, diffBase, ...extra }, command) })
+    })().catch((caught) => ({ ok: false, outcome: run.abort.signal.aborted ? 'cancelled' : 'error', error: caught.message, round: [], tree: null }))
+      .then((result) => { run.result = { ...result, ms: deps.now() - started }; run.settled = true; controller.signal.removeEventListener('abort', follow) })
+  }
+  // A failure that repeated becomes one fix-gate task ahead of the queue (none while a repair waits).
+  const harvestPhase = async ({ queue = true } = {}) => {
+    if (!phaseRun?.settled) return
+    const { phase, sha, result } = phaseRun
+    phaseRun = null; phaseTree = result.tree
+    const failed = result.outcome === 'fail' ? phaseFailures(result.round) : []
+    const failedTests = failed.flatMap(({ checked }) => checked.failedTests ?? []).slice(0, 20)
+    batches.push({ phase, command: `phase gate ${phase} ${sha.slice(0, 8)}`, sha, ok: result.ok, outcome: result.outcome, ms: result.ms, log: failed[0]?.checked.log ?? null,
+      ...(failed.length ? { failedCommands: failed.map(({ command, id }) => ({ command, ...(id ? { id } : {}) })), failedTests } : {}), ...(result.error ? { error: result.error } : {}) })
+    let queued = null
+    if (failed.length && queue && !repairTask) {
+      await queueRepair('fix-gate', `Fix phase ${phase} gate failure`, `The batch checks below failed twice on ${sha} (phase gate ${phase}); later commits may have changed that. First run only the named failing tests on HEAD: if they pass, record that in the result and close this task without code changes. Otherwise make them pass; preserve existing contracts.`,
+        [`Phase: ${phase}`, `Candidate: ${sha}`, ...failed.flatMap(({ command, checked }) => [`Command: ${command}`, `Log: ${checked.log ?? '-'}`, `Failed tests: ${JSON.stringify(checked.failedTests ?? [])}`, `Tail: ${JSON.stringify(checked.tail ?? [])}`])])
+      queued = repairTask
+    }
+    await event('phase-gate-result', { phase, sha, outcome: result.outcome, ok: result.ok, ms: result.ms, failedTests, repairTask: queued })
+    await save()
+  }
+  // Lifecycle, not lock policy: the run in flight ends (its checks killed) before the close or a stop.
+  const stopPhase = async () => {
+    if (!phaseRun) return
+    if (!phaseRun.settled) { phaseRun.abort.abort(); await phaseRun.promise }
+    await harvestPhase({ queue: false })
+  }
   // An unfinished unit's uncommitted changes must block neither the next unit nor the gate. They are
   // kept as a commit on a local ref (never on the branch, never pushed; a staged-only version is its
   // second parent), the tree returns to HEAD, and the next fresh unit gets the snapshot to restore.
@@ -810,6 +864,7 @@ export async function vibeLoop(options = {}, injected = {}) {
   // Returns false when the gate failed and a repair was queued (closing throws instead).
   const flush = async (closing = false, publish = closing) => {
     if (publish) await ensureActive()
+    if (closing || (publish && !deps.integration)) await stopPhase()
     await recordReport(closing)
     await metadataCommit(`vibe ${options.tag}: ${closing ? 'close report' : 'batch report'}`)
     await metadata.assertClean()
@@ -1003,6 +1058,8 @@ export async function vibeLoop(options = {}, injected = {}) {
         await event('land-conflict', landConflict)
         reason = 'land-conflict'; break
       } else if (!landed.ok) await event('land-sync-error', { reason: landed.reason, error: landed.error ?? null })
+      // A phase gate that finished meanwhile: its repair joins the status read next.
+      await harvestPhase()
       const status = await deps.status({ ...options, targetRoot: root, tag: options.tag })
       if (status.git?.fetchError) throw new SkillPackageError('원격 판정 실패', [status.git.fetchError])
       // A design opened in this checkout meanwhile: its edits wait for the user, not for units.
@@ -1055,7 +1112,8 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (deps.now() >= deadline - reserve.ms - MIN_UNIT_MS) {
         const head = (await git(root, ['rev-parse', 'HEAD'])).trim()
         const sameFailedGate = failedGate && failedGate.plan === batchIdentity() && (batchPlan() ? failedGate.inputIdentity === await batchInputs() : !(await codeChanged(failedGate.head, head)))
-        if (head !== base && head !== lintBlocked && !sameFailedGate) { await flush(false, true); continue }
+        // The shared gate runs once, at the close (finally); before it the window runs only a queued repair.
+        if (!deps.integration && head !== base && head !== lintBlocked && !sameFailedGate) { await flush(false, true); continue }
         repairMs = deadline - deps.now() - (reserve.gateMs ?? (failedGate?.ms > 0 ? failedGate.ms : 0)) - (reserve.ciMs ?? 0)
         if (!repairTask || refused.has(repairTask) || !status.runnable?.includes(repairTask) || repairMs <= 0) { reason = 'final-window'; break }
       }
@@ -1343,12 +1401,16 @@ export async function vibeLoop(options = {}, injected = {}) {
       if (count >= maxUnits) { reason = 'max-units'; break }
       const completed = pending.filter((entry) => ['task', 'fix'].includes(entry.result?.kind) && entry.result.outcome === 'completed' && entry.specGate?.ok !== false).length
       if (appliedConfig.pushEachUnit || completed >= batchSize || !afterStatus.runnable?.length) await flush(false, Boolean(appliedConfig.pushEachUnit && context.target))
+      if (completed >= batchSize && afterStatus.runnable?.length) await startPhase()
     }
   } catch (caught) {
     if (controller.signal.aborted || stopReason) reason = stopReason ?? 'cancelled'
     else { reason = 'failed'; error = caught.message; await event('failed', { error }) }
   }
   finally {
+    // No phase check outlives the run or holds the heavy lock the closing gate takes.
+    await stopPhase().catch((caught) => event('phase-gate-error', { error: caught.message }))
+    if (phaseDirectory) await removePhaseWorktree(root, phaseDirectory).catch((caught) => event('phase-gate-error', { error: caught.message }))
     if (initialized) {
       try {
         phase = 'finalizing'

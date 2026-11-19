@@ -31,4 +31,4 @@ JSON 하나만 반환한다:
 - kind=task|planning|inbox|fix|none, outcome=completed|continue|parked|blocked|no_work. pushed는 실제 여부다.
 - continue: 일이 남았을 때다. 한 일은 커밋하고 next에 남은 일을 쓴다. 문서 마감·재검사·시간 소진도 continue다.
 - blocked: 외부 의존성이 있을 때만이며 blocker.dependency·resume을 채운다. 그 밖에는 빈 값이다.
-- agentChecks: 실제 agent acceptance 목록([검증 계약](verification.md) 형식), 없으면 `[]`. 호스트·통합 몫 검사는 not-run으로 넘기고 마감한다.
+- agentChecks: 실제 agent acceptance 목록([기록 형식](agent-checks.md)), 없으면 `[]`. 호스트·통합 몫 검사는 not-run으로 넘기고 마감한다.

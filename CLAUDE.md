@@ -9,7 +9,7 @@
 - **구현** — 충돌하면 이 순서로 지키되, 앞의 것을 이유로 뒤의 것을 버리지 않는다:
   1. 문서 먼저: spec이 1급 문서다. 코드보다 SSOT·STATE·태스크가 먼저 바뀐다.
   2. 적은 토큰: 필요한 블록만 읽고(brief·발췌·요약 출력), 단위마다 새 세션을 쓰고, 대기 중에는 모델을 부르지 않는다. 조정자는 탐색·구현·리뷰를 새 세션에 맡기고 결론만 받는다. 스킬 문장도 토큰이다(원칙 14).
-  3. 빠른 구현: 태스크는 변경 영향의 작은 결정론적 검사만 한다. 전체 검수는 살아 있는 참여 세션이 모두 준비된 고정 통합 후보에서 한 번 하고, 실패 뒤에는 실패·영향 범위만 다시 본다.
+  3. 빠른 구현: 태스크는 변경 영향의 작은 결정론적 검사만 한다. 전체 검수는 살아 있는 참여 세션이 모두 준비된 고정 통합 후보에서 한 번 하고, 실패 뒤에는 실패·영향 범위만 다시 본다. 긴 loop는 태스크 몇 개마다 고정 커밋의 전체 검사를 백그라운드로 돌려(단계 검사) 실패를 다음 단계에서 고친다 — 조기 경보일 뿐 최종 관문·시간 예약은 그대로다.
 - **코드**: 낮은 결합·높은 응집. 바깥 세계는 경계에서 주입하고(`deps`·`injected`), 테스트가 무거워지면 테스트가 아니라 구조를 고친다.
 - **지원 범위**: 제품 단계와 지원 환경·버전·제외·재검토 시점을 ARCH의 승인된 결정 하나에 둔다. 정본은 `skills/gusta-create-architecture/references/product-support.md`다.
 - **검증**: 정본은 `skills/gusta-start/references/verification.md`다. 구현은 항상 하위 브랜치에서, gusta-start·두 self-improve는 전용 worktree에서 한다. 실제 수행한 acceptance·증거·미실행만 보고한다.
@@ -27,7 +27,7 @@
 - spec 문서: `spec-format`(참조 문법)·`spec-lint`·`spec-context`(brief 조립기)·`state-doc`·`task-doc`.
 - 설정: `src/settings.mjs` 레지스트리가 SETTINGS 키·기본값·뜻의 정본이다. 브랜치 전략은 `branchPlan`이 해석한다 — 스킬·CLI에 브랜치 이름(`main` 등)을 고정하지 않는다.
 - 세션 조정: `coord-doc`·`coord-branch`·`vibe-coord` — 조정 전용 orphan 브랜치의 SESSIONS.md를 CLI만 쓴다.
-- 실행: `vibe-loop`·`loop-control`·`loop-metadata`·`provider-limits`(loop), `work-*`(작업 묶음), `agent-catalog`·`agent-route`(도구·모델 선택).
+- 실행: `vibe-loop`·`loop-phase`(단계 검사)·`loop-control`·`loop-metadata`·`provider-limits`(loop), `work-*`(작업 묶음), `agent-catalog`·`agent-route`(도구·모델 선택).
 - 그 밖: `agent-block`(대상 CLAUDE.md·AGENTS.md 관리 블록), `migrate`(spec/ 구조 이관 — 구조를 바꾸면 이관 하나를 추가), `prune`, `version-bump`, `verification-plan`, `workspace-prepare`, `vibe-ab*`·`vibe-sketch`·`vibe-design`.
 - 모듈별 설계 결정과 그 이유: [docs/design-notes.md](docs/design-notes.md) — 그 모듈을 바꿀 때만 해당 절을 읽는다.
 
