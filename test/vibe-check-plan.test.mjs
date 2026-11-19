@@ -131,7 +131,9 @@ test('a plan timeout never reports pending checks as successful', async (t) => {
   ])
   const receipt = await runVibeCheck({ targetRoot: root, tier: 'batch', timeoutMs: 100 })
   assert.equal(receipt.timedOut, true); assert.equal(receipt.ok, false)
-  assert.deepEqual(receipt.checks.map(({ status }) => status), ['failed', 'not-run'])
+  // Under load the 100ms budget can end before the slow check starts: failed or not-run, never passed.
+  const [slow, pending] = receipt.checks.map(({ status }) => status)
+  assert.ok(['failed', 'not-run'].includes(slow), slow); assert.equal(pending, 'not-run')
 })
 
 for (const exitCode of [0, 1]) test(`a command's ordinary ${exitCode ? 'failure' : 'success'} cleans background descendants`, { skip: process.platform === 'win32' }, async (t) => {
