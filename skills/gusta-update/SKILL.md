@@ -1,9 +1,7 @@
 ---
 name: gusta-update
 description: >-
-  "/gusta-update, gusta 업데이트, 스킬셋 최신으로 올려줘"에 사용한다. npm에 새 gusta 버전이
-  있으면 설치된 스킬(.claude/skills·.codex/skills)을 갱신한다. spec/ 구조를 이관하고, 모든 프로젝트 소유 문서·범위별 지침과
-  설정·코드·CI의 운영 규칙을 대조한 뒤 검증·커밋한다. 최신이어도 빠진 이관과 규칙 충돌을 확인한다.
+  "/gusta-update, gusta 업데이트, 스킬셋 최신으로 올려줘"에 사용. 설치된 스킬을 갱신하고 spec/ 구조 이관·프로젝트 규칙 대조·검증까지 한다.
 ---
 
 # gusta-update — 스킬셋 업데이트와 이관

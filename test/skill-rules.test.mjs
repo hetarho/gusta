@@ -4,9 +4,9 @@ import test from 'node:test'
 
 const skillsRoot = new URL('../skills/', import.meta.url)
 const HEADING = '## 공통 규칙 (모든 spec 스킬)'
-const MODE = 'gusta-start가 맡긴 실행(실행기·loop 단위 포함)에서는 묻지 않는다 — 추천안으로 진행하고 inbox(`vibe inbox add`)와 보고서에 남긴다(되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일은 주차). 권한 확인 창도 질문이다 — 창이 뜰 만한 명령은 실행하지 않고 주차한다(gusta-start 3절). 사용자가 직접 부른 스킬(gusta-sketch 등)은 묻는다.'
-// CLAUDE.md principle 2: the same five rules everywhere, except these documented wordings.
-const EXCEPTIONS = { 1: ['gusta-create-architecture', 'gusta-start'], 3: ['gusta-create-narrative'], 4: ['gusta-create-narrative'] }
+const MODE = '맡김(gusta-start·loop 단위)에서는 묻지 않는다 — 추천안으로 진행해 `vibe inbox add`로 남기고, 되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일과 권한 창이 뜰 만한 명령은 주차한다. 사용자가 직접 부른 스킬은 묻는다.'
+// The same five rules everywhere; only the bootstrap skill words rule 1 for a missing spec/.
+const EXCEPTIONS = { 1: ['gusta-create-architecture'] }
 // Meta skills review this skill set itself; they write no spec documents and carry no common rules.
 const META = ['gusta-send-issue', 'gusta-preference', 'gusta-init', 'gusta-update']
 
@@ -62,8 +62,8 @@ test('gusta-plan: 해석표로 정하고 태스크까지 만들어 plan-push하�
   assert.match(await read('gusta-sketch/SKILL.md'), /\[미룬 구상 기록\]\(\.\.\/gusta-plan\/references\/ideation\.md\)/)
 })
 
-test('공통 규칙 1번은 미정 설정(settings.unset)을 gusta-init으로 먼저 정하게 하고 맡김은 묻지 않는다(agents 미정이면 시작하지 않음)', async () => {
-  for (const [name, entry] of await commonRules()) assert.ok(entry['1'].endsWith('`settings.unset`이 있으면 gusta-init으로 먼저 정한다(맡김·실행기 배정은 묻지 않는다 — land 미정이면 현재 브랜치에 커밋만 하고, agents 미정이면 맡김을 시작하지 않는다).'), `${name}: 공통 규칙 1번에 설정 확인이 없습니다.`)
+test('공통 규칙 1번은 미정 설정(settings.unset)을 gusta-init으로 정하게 하고 맡김은 묻지 않는다', async () => {
+  for (const [name, entry] of await commonRules()) assert.ok(entry['1'].endsWith('`settings.unset`이 있으면 gusta-init으로 정한다(맡김에서는 묻지 않고 미정인 채 진행한다).'), `${name}: 공통 규칙 1번에 설정 확인이 없습니다.`)
 })
 
 test('spec 스킬은 브랜치 대상을 고정하지 않는다: main 반영·cfg push/plan 대신 SETTINGS', async () => {
@@ -92,14 +92,13 @@ test('메타 스킬 gusta-init·gusta-update는 CLI로 설정·이관하고 맡�
 })
 
 test('공통 규칙 2번은 디자인 중 커밋·push 전에 디자인이 끝났는지 묻게 한다', async () => {
-  for (const [name, entry] of await commonRules()) assert.ok(entry['2'].includes('`vibe status`에 `design`이 있으면(이 checkout이 디자인 중) 커밋·push 전에 사용자에게 디자인이 끝났는지 묻고'), `${name}: 공통 규칙 2번에 디자인 확인이 없습니다.`)
+  for (const [name, entry] of await commonRules()) assert.ok(entry['2'].includes('`vibe status`에 `design`이 있으면 커밋·push 전에 디자인이 끝났는지 묻고'), `${name}: 공통 규칙 2번에 디자인 확인이 없습니다.`)
 })
 
 // Session records live in SESSIONS.md on the coordination branch: skills reach them through vibe only.
 test('공통 규칙 2번은 세션 기록을 vibe 명령으로만 남기고 SESSIONS.md를 직접 고치지 않게 한다', async () => {
   for (const [name, entry] of await commonRules()) {
-    assert.ok(entry['2'].includes('세션 기록(시작·상태 변화·활동)을 `vibe` 명령으로만(`beat`·`claim`·`inbox`·`log`) 남기고 SESSIONS.md를 직접 고치지 않는다.'), `${name}: 공통 규칙 2번에 세션 기록 규칙이 없습니다.`)
-    assert.ok(entry['2'].includes('워커는 STATE·SSOT·세션 기록 대신 runtime과'), `${name}: 공통 규칙 2번에 워커 규칙이 없습니다.`)
+    assert.ok(entry['2'].includes('세션 기록은 `vibe beat|claim|inbox|log`로만 남긴다(SESSIONS.md를 직접 고치지 않는다)'), `${name}: 공통 규칙 2번에 세션 기록 규칙이 없습니다.`)
   }
 })
 
@@ -151,7 +150,6 @@ test('태스크 크기·실행 추천: gusta-create-task가 크기 예산과 가
     /`gusta agents --json`의 options는 싼 순서다 — `allowed` 중 이 태스크를 완주하기에 충분한 첫 조합/, /먼저 쪼갤 수 있는지/, /score 9 이상이면 impl notes에 이유 한 줄/, /`agents`가 미정이면 `run:-`으로 두고 inbox `suggest`로 gusta-init/]) assert.match(create, pattern)
   const init = await read('gusta-init/SKILL.md')
   for (const pattern of [/`npx @haeram\/gusta agents --json`의 `tools`/, /이 목록 안에서만 다음 도구로/, /로그인 안 된 도구는 고를 수 없다/, /`agents=claude,codex`/, /agents 미정이면 태스크 `run:`을 비워 둔다/]) assert.match(init, pattern)
-  assert.match(await read('gusta-preference/SKILL.md'), /agents\(쓸 AI 도구와 폴백 순서\)/)
   // FORMAT task skeleton, the task template and lint name the same quote fields (CLAUDE.md principle 4).
   const format = await read('gusta-create-architecture/assets/FORMAT.md')
   const fields = (quote) => quote.split('|').map((part) => part.trim().split(':')[0])

@@ -1,10 +1,7 @@
 ---
 name: gusta-send-issue
 description: >-
-  이 세션에서 gusta 스킬(gusta-start·gusta-implement-task 등)을 실행한 뒤 "/gusta-send-issue, gusta 스킬 개선점
-  이슈로 보내줘, gusta에 개선점 제보해줘"라고 부를 때만 사용한다. 그 실행에서 드러난 스킬·CLI 동작의 개선 사항을 근거와 함께
-  익명화해 보여 주고, 사용자가 확인하면 gusta 저장소(hetarho/gusta)에 GitHub 이슈로 올린다. 대상 프로젝트가 아니라 gusta 자체의
-  개선 보고이며 대상 프로젝트의 파일은 바꾸지 않는다.
+  gusta 스킬을 쓴 뒤 "/gusta-send-issue, gusta 개선점 이슈로 보내줘"에만 사용. 이 세션에서 드러난 스킬·CLI 개선점을 익명화해 보여 주고, 확인하면 hetarho/gusta에 GitHub 이슈로 올린다.
 ---
 
 # gusta-send-issue — 스킬 동작 개선 이슈 보내기

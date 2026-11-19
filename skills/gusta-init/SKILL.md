@@ -1,9 +1,7 @@
 ---
 name: gusta-init
 description: >-
-  "/gusta-init, gusta 초기 설정, 브랜치 전략 정해줘"에 사용한다. 다른 gusta 스킬이 `vibe status`의 settings.unset을 보고
-  이 스킬로 보낼 때도 쓴다. 이 프로젝트의 브랜치 전략(끝난 작업이 병합될 land, 병합 방식, push, 배포 브랜치, 기획 브랜치), 자동 버전 관리,
-  CLAUDE.md·AGENTS.md에 gusta 안내 블록을 둘지, 쓸 AI 도구(Claude·Codex)와 순서 중 정해지지 않은 것만 물어 spec/SETTINGS.md에 쓰고, 원래 하려던 일로 돌아간다.
+  "/gusta-init, gusta 초기 설정, 브랜치 전략 정해줘"와 `vibe status`의 settings.unset에 사용. 정해지지 않은 설정(브랜치 전략·버전·안내 블록·쓸 AI 도구)만 물어 spec/SETTINGS.md에 쓴다.
 ---
 
 # gusta-init — 정해지지 않은 설정 정하기
