@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.17.9
+
+Released: 2026-11-19.
 
 - A timed `vibe loop` with a shared integration gate runs that gate once
   when the closing window opens. It used to repeat the window's flush until
