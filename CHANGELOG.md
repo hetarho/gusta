@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Skills carry far less text for the same behavior. Every SKILL.md together
+  drops from 217KB to 127KB: CLI internals, rules the CLI already rejects
+  with a message, and restated procedures are gone, and rare branches moved
+  to references.
+- Skill descriptions say only when to call a skill (12.2KB to 4.9KB in all;
+  they ride in every session). The five common rules shrink by half and no
+  longer need per-skill exceptions for gusta-start and gusta-create-narrative.
+- A `vibe loop` unit gets `gusta-start/references/unit.md`, its own contract,
+  instead of the whole gusta-start skill: a task unit's prompt drops from
+  35KB to 12KB, a planning unit's from 26KB to 6KB. gusta-implement-task
+  keeps its own common rules there.
+- `test/context-budget.test.mjs` caps descriptions, SKILL.md files, the unit
+  prompts and the repository CLAUDE.md just above their current sizes.
+- FORMAT names `gusta-self-improve` in the `land` setting.
+
 ## 0.17.8
 
 Released: 2026-11-18.

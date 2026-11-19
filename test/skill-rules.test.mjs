@@ -81,7 +81,7 @@ test('메타 스킬 gusta-init·gusta-update는 CLI로 설정·이관하고 맡�
   for (const pattern of [/gusta outdated/, /gusta install --dry-run/, /gusta migrate --dry-run/, /format\.missing/, /덮어쓰지 않는다/, /gusta-init/]) assert.match(update, pattern)
   // The managed block of CLAUDE.md/AGENTS.md is written by the CLI only, after the owner said yes once.
   for (const pattern of [/agent-block --check --json/, /`npx @haeram\/gusta agent-block`으로 적용/, /직접 편집하지 않는다/, /agent-block 미정이면 지침 파일을 쓰지 않고/]) assert.match(init, pattern)
-  for (const pattern of [/`gusta install`, `gusta agent-block`, `gusta check` 순서/, /broken이면 아무것도 쓰지 않는다/, /승인받아/]) assert.match(update, pattern)
+  for (const pattern of [/`gusta install`, `gusta agent-block`, `gusta check` 순서/, /broken을 보고하면/, /승인받아/]) assert.match(update, pattern)
   // The session sections move to the coordination branch; a taken name is changed, never forced, and every machine upgrades together.
   for (const pattern of [/STATE의 active·inbox·log를 조정 브랜치\(SETTINGS `coord`, 기본 `gusta`\)의 SESSIONS\.md로 옮긴다/, /`vibe settings --set coord=<다른 이름>`/, /모든 기기를 함께 올리라고/]) assert.match(update, pattern)
   // One question decides land·land-via·deploy: is there a development branch? The default branch is never named here.

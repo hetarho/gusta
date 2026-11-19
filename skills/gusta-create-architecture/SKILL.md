@@ -6,7 +6,7 @@ description: >-
 
 # gusta-create-architecture — 초기화 + 아키텍처 SSOT
 
-**역할: 엔지니어.** 기술 결정을 이끈다. 단, 무엇을 만들지(기획)는 정하지 않는다 — 그건 gusta-create-ssot의 기획자 몫.
+**역할: 엔지니어.** 기술 결정을 이끈다. 무엇을 만들지(기획)는 gusta-create-ssot의 몫이다.
 
 ## 공통 규칙 (모든 spec 스킬)
 1. 먼저 `vibe status --json`(실행기 안에서는 brief)으로 필요한 요약만 본다. spec/이 없으면 0단계 부트스트랩부터 한다. `settings.unset`이 있으면 gusta-init으로 정한다(맡김에서는 묻지 않고 미정인 채 진행한다).
@@ -16,44 +16,40 @@ description: >-
 5. **읽기**: `vibe brief <ID> --summary`로 범위를 찾고 필요한 블록만 원문째 읽는다 — 출력의 complete·`next`가 덜 읽은 곳을 알려 준다. STATE·FORMAT·ARCH·큰 코드·tasks/done/을 통째로 읽지 않는다. 긴 출력은 요약·tail만 보고 전체는 파일로 남긴다.
 
 ## 0. 부트스트랩 (spec/ 없을 때만)
-1. `spec/ssot/`, `spec/tasks/` 생성. 이 스킬 폴더의 `assets/STATE.md`, `assets/FORMAT.md`를 `spec/`으로 복사. `vibe log --text 'gusta-create-architecture start (spec init)'` — 이것이 공통 규칙 2의 시작 기록이다.
-2. level 캘리브레이션 — 첫 질문으로 묻는다:
+1. `spec/ssot/`, `spec/tasks/`를 만들고 이 스킬의 `assets/STATE.md`, `assets/FORMAT.md`를 `spec/`으로 복사한다. `vibe log --text 'gusta-create-architecture start (spec init)'`.
+2. 첫 질문으로 level을 묻고 cfg의 `?`를 답으로 바꾼다(level = 답, lang = 대화 언어):
    - a) **expert** — 용어로 빠르게. 세부 기술까지 내가 직접 결정
    - b) **mid** — 선택지와 장단점을 보고 내가 결정
    - c) **novice** — 뭘 만들지만 말하면 기술은 알아서
-   cfg의 `?`를 답으로 교체(level = 답, lang = 대화 언어).
 
-spec/이 이미 있으면 0단계 생략, ARCH 개정 모드 — 진행과 마감 모두 gusta-update-ssot와 동일 규칙(rev+1·chg·STATE pending·[?] 갱신).
+spec/이 있으면 ARCH 개정 모드다: 진행·마감은 gusta-update-ssot 규칙(rev+1·chg·STATE pending·[?] 갱신)을 따르고, 작업 묶음의 활성 attempt에 주는 영향을 보고해 워커가 동기화·재검증하게 한다.
 
-어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 `vibe format --section settings`의 `plan`).
-
-작업 묶음의 ARCH 개정은 공유 보드의 활성 attempt에도 영향을 줄 수 있다. 영향을 보고하고, 변경 후 워커의 동기화·재검증을 요구한다.
+기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`.
 
 ## 1. 컨텍스트
-- ssot/에 기획 SSOT가 있으면 읽는다. 없으면 "무엇을 만드는지 한 줄"만 묻는다 — 상세 기획은 gusta-create-ssot로 미룬다.
-- 기존 코드베이스면 스택을 스캔(package.json, 디렉토리 구조 등). 이미 정해진 것은 묻지 않고 기록만 한다.
-- 최초 단계·지원 범위 또는 그 변경은 [제품 지원 정책](references/product-support.md)대로 실제 사용자·기존 약속을 먼저 확인해 추천·선택한다. 제품 단계와 OS/런타임·앱 클라이언트 지원 창, 제외·검토 시점을 묶어 정한다.
-- 운영 절차를 정하거나 개정할 때는 해당 경로의 지침·활성 운영 문서와 설정·코드·CI를 [프로젝트 규칙 대조](../gusta-update/references/project-rules.md)대로 확인한다. 패키지 실행값은 SETTINGS를 참조하고, 그보다 넓은 프로젝트 제약을 없애거나 복제된 값과 충돌하게 쓰지 않는다.
+- 기획 SSOT가 있으면 읽고, 없으면 "무엇을 만드는지 한 줄"만 묻는다.
+- 기존 코드베이스면 스택을 스캔해(package.json·디렉토리 구조 등) 정해진 것은 묻지 않고 기록한다.
+- 제품 단계·지원 범위를 처음 정하거나 바꾸면 [제품 지원 정책](references/product-support.md)대로 추천하고 고르게 한다.
+- 운영 절차를 정하거나 바꾸면 [프로젝트 규칙 대조](../gusta-update/references/project-rules.md)대로 지침·운영 문서·설정·코드·CI를 확인한다.
 
 ## 2. 아키텍처 인터뷰 (level별)
-결정할 것: 플랫폼(웹/앱/API) · 스택 · 데이터 저장 · 인증 방식 · 폴더 구조와 컨벤션 · 모듈 경계와 의존 방향 · 테스트 정책 · verify 명령(test·lint·format 각각)과 검증 단계 · CI/CD · 배포/인프라.
-- **expert**: 이름만 나열해 묻는다. "스택? Next 15 / Remix / SvelteKit / 기타" "DB? PG / SQLite / Mongo". 인덱스·캐시·모노레포 여부 같은 세부도 직접 묻는다.
-- **mid**: 선택지 + 장단점 각 1줄. "PG(관계·확장에 강함, 서버 필요) vs SQLite(운영 제로, 단일 서버 한정)".
-- **novice**: 기술명으로 묻지 않는다. "사용자가 몇 명쯤 될까요? / 서버 비용을 쓸 수 있나요? / 폰에서도 쓰나요?" 같은 결과 수준 질문 → 답으로 AI가 스택을 결정하고 "데이터는 ○○에 저장할게요 — 무료로 시작 가능해요" 식으로 한 줄씩 보고만.
-
-사용자가 답을 모르면 강요하지 말고 [?]로 등록하고 진행한다.
-맡김(gusta-start 실행): 같은 질문에 추천안으로 답해 ARCH를 쓰고 inbox `decided`에 남긴다. 스택은 되돌리기 비싸므로 사용자가 inbox를 확인하기 전에는 스캐폴딩 태스크를 구현하지 않는다(inbox `parked`).
+결정할 것: 플랫폼(웹/앱/API) · 스택 · 데이터 저장 · 인증 · 폴더 구조와 컨벤션 · 모듈 경계와 의존 방향 · 테스트 정책 · verify 명령(test·lint·format)과 검증 단계 · CI/CD · 배포/인프라.
+- **expert**: 이름만 나열해 묻고("DB? PG / SQLite / Mongo") 인덱스·캐시·모노레포 같은 세부도 묻는다.
+- **mid**: 선택지+장단점 각 1줄("PG(관계·확장에 강함, 서버 필요) vs SQLite(운영 제로, 단일 서버 한정)").
+- **novice**: 기술명 대신 결과로 묻고("사용자가 몇 명쯤 될까요? 서버 비용을 쓸 수 있나요? 폰에서도 쓰나요?") 답으로 스택을 정해 "데이터는 ○○에 저장할게요 — 무료로 시작 가능해요"처럼 한 줄씩 보고만 한다.
+답을 모르면 강요하지 않고 [?]로 둔다. 맡김에서는 추천안으로 ARCH를 쓰고 inbox `decided`에 남기되, 스택은 되돌리기 비싸므로 사용자가 inbox를 확인하기 전에는 스캐폴딩 태스크를 구현하지 않는다(inbox `parked`).
 
 ## 3. ssot/ARCH.md 작성
-gusta-create-ssot 스킬 폴더의 assets/ssot.md 템플릿을 `spec/ssot/ARCH.md`로 복사해 시작한다(r1). ARCH-n 결정으로: 스택 / 폴더 구조(트리 압축) / 데이터 저장·스키마 원칙 / 코드 컨벤션(네이밍·상태관리·에러 처리) / 모듈 경계와 의존 방향 / 테스트 정책 / verify 명령(test·lint·format) / CI/CD / 배포. 근거(←)는 트레이드오프가 있던 결정에만 붙인다. 폴더 구조·컨벤션처럼 항목이 여러 개인 결정은 한 줄로 늘이지 말고 결정 블록(2칸 들여쓴 하위 항목·표)으로 편다. verify 명령은 백틱 코드로, 설명을 섞지 않은 실행 가능한 형태 그대로 적는다.
-- 선택한 제품 단계·지원 정책은 [기록 형식](references/product-support.md#arch-기록)의 ARCH 결정 한 블록으로 쓰고, 실제 검증 버전 기준선을 고정한다. 최신 버전 숫자를 추측하거나 기존 제품의 범위를 초기 추천으로 덮지 않는다.
-- 모듈 경계는 낮은 결합·높은 응집으로 정한다: 모듈마다 한 책임, 의존은 한 방향, 순수 로직과 I/O(DB·네트워크·파일·시간·난수)를 나누고 바깥 세계는 경계에서 주입한다. 목적은 태스크 단계의 단위 테스트가 실제 서비스 없이 빠르게 도는 것이다 — 경계가 없으면 태스크마다 무거운 테스트가 필요해진다.
-- 새 검증의 기본은 task(변경 영향의 작은 결정론적 검사·빠른 정적 검사, 커밋 직전 한 번) / batch(살아 있는 참여 세션이 모두 ready인 고정 통합 후보의 결정론적 전체 검수 한 번) / CI(최소 자동 E2E와 선언한 지원 브라우저 호환 검사)다. 세 단계를 명시하고 전체 스위트·브라우저를 태스크 종료마다 실행하지 않는다. 긴 task 검사는 실제 위험·의존성과 실측으로 축소·이동한다. 마감 예약은 전체 검수 한 번+수정 영향 범위+CI 기준이다.
-- 기존 규칙이 위 단계와 다르면 범위·명령·조건을 보존하며 프레임워크 기본 단계로 맞추는 안을 추천한다. 주체·시점 등 정책이 달라지면 실제 원문·변경안·영향을 보여 주고 괜찮은지 물은 뒤 개정한다(이미 승인한 변경은 재질문하지 않음, 맡김은 해당 차이를 parked). 채택한 단계는 `  - task, before each done commit: ` / `  - batch, before code push or final completion: ` / `  - CI, after code push: ` 뒤에 명령·원격 관문을 쓰고 조건부 검사의 적용 조건·경로 선택법도 보존한다. 미지원 프로젝트 정책은 단계 이동으로 조용히 약화하지 않는다.
-- 지침의 필수 검사와 실제 스크립트를 검사별 주체·단계·조건·입력·중복·재사용 조건으로 대조한다. 독립 검사가 한 스크립트에 묶여 부분 성공을 잃으면 프로젝트 소유 JSON 계획과 `plan:` 하위 줄의 백틱 경로를 연결한다(스키마·입력·실행은 [검증 절차](../gusta-start/references/verification.md)). 기존 단계 명령으로 충분하면 계획 파일을 새로 만들지 않는다. 설명문을 실행 명령으로 추측하지 않는다. 새 worktree에서 검사가 의존성(무시된 설치 폴더·생성 코드)을 필요로 하면 같은 결정에 `prepare:` 하위 줄(lockfile 고정·offline 설치처럼 트리를 바꾸지 않는 명령)을 둔다.
-- `$GUSTA_DIFF_BASE`는 태스크 시작 SHA이며 단독·work 모두 CLI가 전달한다. 검증 주체·단계·공동 통합과 지원 브라우저/agent 대체 계약은 [검증 절차](../gusta-start/references/verification.md)를 따른다. 각 AC의 주 검증 방법·owner/stage를 정하고 computer use로 대체한 E2E는 같은 실행 범위에서 제거·축소한다. 새 웹 프로젝트는 별도 요구가 없으면 Chrome 하나를 추천하며 임의 다중 브라우저 행렬을 만들지 않는다.
-- 승인된 별도 정책이 없으면 단계가 없다는 이유로 태스크에 전체 verify를 붙이지 않는다. acceptance는 관찰 가능한 동작의 검증 근거를 요구하되 기존 테스트로 충분하면 재사용하고, 실제 검증 공백에만 새 테스트를 추가한다. 되돌리기 쉬운 저위험 변경에 새 테스트나 소스 문자열/구현을 따라 하는 테스트를 강제하지 않는다. 프로젝트의 명시적 검증 의무를 없애거나 통합/e2e 인계를 검증 면제로 취급하지 않는다.
+gusta-create-ssot의 assets/ssot.md를 `spec/ssot/ARCH.md`로 복사한다(r1). ARCH-n 결정: 스택 / 폴더 구조(트리 압축) / 데이터 저장·스키마 원칙 / 코드 컨벤션(네이밍·상태관리·에러 처리) / 모듈 경계와 의존 방향 / 테스트 정책 / verify 명령 / CI/CD / 배포. ←는 트레이드오프가 있던 결정에만 붙이고, 항목이 여러 개인 결정은 결정 블록(2칸 들여쓴 하위 항목·표)으로 편다.
+- 제품 단계·지원 정책은 [기록 형식](references/product-support.md#arch-기록)대로 결정 한 블록에 쓴다.
+- 모듈 경계는 낮은 결합·높은 응집으로: 모듈마다 한 책임, 의존은 한 방향, 순수 로직과 I/O(DB·네트워크·파일·시간·난수)를 나누고 바깥 세계는 경계에서 주입한다.
+- 새 검증의 기본은 task(변경 영향의 작은 결정론적 검사·빠른 정적 검사, 커밋 직전 한 번) / batch(살아 있는 참여 세션이 모두 ready인 고정 통합 후보의 결정론적 전체 검수 한 번) / CI(최소 자동 E2E와 선언한 지원 브라우저 호환 검사)다. 채택한 단계는 `  - task, before each done commit: ` / `  - batch, before code push or final completion: ` / `  - CI, after code push: ` 뒤에 설명 없이 실행 가능한 백틱 명령·원격 관문으로 쓰고, 전체 스위트·브라우저는 task에 넣지 않는다. task 명령은 `$GUSTA_DIFF_BASE`(태스크 시작 SHA, CLI가 넘긴다)로 바뀐 범위를 고를 수 있다.
+- 새 worktree의 검사가 무시된 설치 폴더·생성 코드를 필요로 하면 같은 결정에 `prepare:` 하위 줄(lockfile 고정·offline 설치처럼 트리를 바꾸지 않는 명령)을 둔다.
+- AC 검증 주체·단계와 computer use의 E2E 대체는 [검증 절차](../gusta-start/references/verification.md)를 따른다. 새 웹 프로젝트는 별도 요구가 없으면 Chrome 하나를 추천한다.
+- 테스트 정책은 기존 테스트로 충분하면 재사용하고 실제 검증 공백에만 새 테스트를 더한다. 저위험 변경에 새 테스트나 소스 문자열·구현을 따라 하는 테스트를 의무로 두지 않되, 통합/e2e 인계를 검증 면제로 보지 않는다.
+- 프로젝트에 이미 검증 지침·스크립트·CI가 있으면 [기존 검증 대조](references/existing-verification.md)대로 맞춘다.
 
 ## 4. 마감
-- STATE: ssot 행 `ARCH | 1 | 0 | all | <[?] 수>` (스캐폴딩도 태스크로 만들 것이므로 tasked=0), next = 기획 SSOT 없으면 `gusta-create-ssot`, 있으면 `gusta-create-task ARCH`. `vibe log` 1줄. cfg `always`(모든 태스크 brief에 실리는 전역 규칙)는 `ARCH` 전체로 둔다 — ARCH가 커져 일부 태스크만 쓰는 결정이 많아지면 모든 태스크가 지킬 결정(제품 단계·지원 범위·컨벤션·테스트 정책·검증 단계)만 남긴다. ARCH 개정으로 결정을 추가할 때도 always 포함 여부를 정한다.
-- 보고는 cfg.level대로 — novice: 무엇을 결정했고 이제 뭘 할 수 있는지 풀어서 / expert: 결정 목록만.
+- STATE: ssot 행 `ARCH | 1 | 0 | all | <[?] 수>`(스캐폴딩도 태스크라 tasked=0), next = 기획 SSOT가 없으면 `gusta-create-ssot`, 있으면 `gusta-create-task ARCH`. `vibe log` 1줄.
+- cfg `always`(모든 태스크 brief에 실리는 전역 규칙)는 `ARCH` 전체로 둔다. 일부 태스크만 쓰는 결정이 많아지면 모든 태스크가 지킬 결정(제품 단계·지원 범위·컨벤션·테스트 정책·검증 단계)만 남기고, 이후 결정을 더할 때마다 포함 여부를 정한다.
+- 보고는 cfg.level대로 — novice: 무엇을 정했고 이제 뭘 할 수 있는지 풀어서 / expert: 결정 목록만.

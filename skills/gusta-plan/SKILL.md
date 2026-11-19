@@ -6,7 +6,7 @@ description: >-
 
 # gusta-plan — 말로 정하고 태스크로 남긴다
 
-**역할: 기획 진행자.** 요구사항을 한 번에 받아도, 한 줄 구상에서 시작해 대화로 키워도 끝은 같다 — /gusta-start가 묻지 않고 실행할 태스크가 기획 브랜치 원격에 올라간다. AI는 해석·추천안·문서·태스크를 만들고 사람은 고른다. 말로 좁혀지지 않는 갈림만 gusta-sketch(시안)·gusta-showcase(코드 변형)로 넘긴다. 기획·기술 판단은 이 스킬이 부르는 내부 스킬(gusta-create-architecture·gusta-create-ssot·gusta-update-ssot·gusta-create-task)이 자기 역할로 한다 — 그 절차를 여기서 다시 쓰지 않는다. 제품 코드·테스트는 고치지 않는다.
+**역할: 기획 진행자.** 요구사항을 정해 /gusta-start가 묻지 않고 실행할 태스크까지 기획 브랜치에 올린다. 기획·기술 판단은 내부 기획 스킬이 하고, 제품 코드·테스트는 고치지 않는다.
 
 ## 공통 규칙 (모든 spec 스킬)
 1. 먼저 `vibe status --json`(실행기 안에서는 brief)으로 필요한 요약만 본다. spec/이 없으면 /gusta-plan을 안내하고 멈춘다. `settings.unset`이 있으면 gusta-init으로 정한다(맡김에서는 묻지 않고 미정인 채 진행한다).
@@ -15,47 +15,40 @@ description: >-
 4. 질문·보고는 cfg.lang·cfg.level대로, 산출 문서 언어는 FORMAT 언어 규칙대로. 선택지형 질문 도구가 있으면 쓴다. 맡김(gusta-start·loop 단위)에서는 묻지 않는다 — 추천안으로 진행해 `vibe inbox add`로 남기고, 되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일과 권한 창이 뜰 만한 명령은 주차한다. 사용자가 직접 부른 스킬은 묻는다.
 5. **읽기**: `vibe brief <ID> --summary`로 범위를 찾고 필요한 블록만 원문째 읽는다 — 출력의 complete·`next`가 덜 읽은 곳을 알려 준다. STATE·FORMAT·ARCH·큰 코드·tasks/done/을 통째로 읽지 않는다. 긴 출력은 요약·tail만 보고 전체는 파일로 남긴다.
 
-어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 `vibe format --section settings`의 `plan`). CLI는 `npx @haeram/gusta` 뒤에 붙인다.
+기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`. CLI는 `npx @haeram/gusta` 뒤에 붙인다.
 
 ## 1. 시작
-- `vibe status --json`을 본다. spec/이 없거나 스택·구조·검증 명령을 정해야 하면 gusta-create-architecture부터 한다 — 검증 명령이 있어야 /gusta-start가 태스크를 끝까지 검증한다.
-- 최초 기획이나 단계 전환은 [제품 지원 정책](../gusta-create-architecture/references/product-support.md)으로 단계·실제 지원 환경/버전·제외·검토 시점의 추천안을 먼저 보여 주고 선택받는다. 기존 승인 범위는 다시 묻거나 줄이지 않고 architecture에 기록을 넘긴다.
-- 받은 대로 시작한다: 요구사항 묶음(여러 줄·파일·이슈 본문)이면 2절 해석표를 한 번에 채우고, 한두 줄 구상이면 빈 해석표로 3절 대화부터 한다. 같은 주제의 open/ready ideation 문서가 있으면 그 explored·shape·open을 해석표에 올려 이어 간다.
-- 인자가 `review/<slug>`·ideation slug처럼 기획 재료를 가리키면 그것부터 한다. 요청이 없으면 status의 남은 기획 재료를 보여 주고 고르게 한다 — 미룬 구상(open/ready ideation), 태스크로 아직 안 쪼갠 SSOT 변경(pending), 채택된 review, 결정함(`vibe inbox list --kind decided`)의 잠정 결정. pending과 채택된 review는 물을 것이 없으면 바로 4절로 간다. 잠정 결정을 바꾸는 요청은 gusta-update-ssot 뒤 `vibe inbox resolve --id <id> --log '<한 줄>'`.
-- slug=영문 kebab. `vibe log --text 'plan <slug> start'`.
+- spec/이 없거나 스택·구조·검증 명령·제품 단계를 정하거나 바꿔야 하면 gusta-create-architecture부터 한다.
+- 요구사항 묶음(여러 줄·파일·이슈 본문)이면 2절 해석표를 한 번에 채우고, 한두 줄 구상이면 빈 해석표로 3절 대화부터 한다. 같은 주제의 open/ready ideation이 있으면 그 explored·shape·open을 해석표에 올린다.
+- 인자(`review/<slug>`·ideation slug)가 있으면 그것부터, 요청이 없으면 남은 기획 재료(ideation, SSOT pending, 채택된 review, `vibe inbox list --kind decided`)를 보여 고르게 한다. pending·review는 물을 것이 없으면 바로 4절로. 잠정 결정을 바꾸면 gusta-update-ssot 뒤 `vibe inbox resolve --id <id> --log '<한 줄>'`.
+- `vibe log --text 'plan <slug> start'`(slug=영문 kebab).
 
 ## 2. 해석표
-받은 요구사항을 한 줄씩 나눠 대화에 표로 보여 준다(파일로 쓰지 않는다): 요구사항 · 분류 · 대상(도메인·결정 ID@rev, 새 도메인이면 후보 이름) · 추천안 또는 메모. 기존 결정은 `vibe brief <ID> --summary`로 찾아 필요한 블록만 읽는다.
-- **정함**: 사용자가 직접 정한 것. 그대로 문서로 가고 다시 묻지 않는다.
-- **공백**: 정하지 않은 것. 추천안 하나와 이유 한 줄을 붙인다.
-- **충돌**: 기존 결정과 다른 것. 그 결정 ID@rev와 무엇이 바뀌는지 붙인다.
-- **민감**: 과금·데이터 삭제·개인정보·보안. 사용자가 명시하기 전에는 `[?]`로 둔다.
-- **볼 것·비교할 것**: 말로는 갈림이 좁혀지지 않는 것 — 5절.
-- **미룸·안 할 것**: 6절 ideation 또는 v1 경계로.
+요구사항을 한 줄씩 대화에 표로 보여 준다(파일 아님): 요구사항 · 분류 · 대상(도메인·ID@rev 또는 새 도메인 후보) · 추천안/메모.
+- **정함**: 사용자가 정한 것 — 그대로 문서로 가고 다시 묻지 않는다.
+- **공백**: 추천안 하나 + 이유 한 줄. **충돌**: 기존 결정 ID@rev와 바뀌는 점.
+- **민감**: 과금·데이터 삭제·개인정보·보안 — 사용자가 명시하기 전에는 `[?]`.
+- **볼 것·비교할 것**은 5절, **미룸·안 할 것**은 6절 또는 v1 경계.
 요구사항을 조용히 버리지 않는다 — 모든 줄이 문서·태스크·미룸·안 할 것 중 하나로 끝난다.
 
 ## 3. 대화 — 사용자가 끝났다고 할 때까지
-- 한 라운드 = 해석표 갱신 → 짧은 요약과 선택지형 질문 2~4개(충돌·민감·공백 순) → 답 반영. 정함은 다시 묻지 않는다. 공백·충돌·민감이 없으면 묻지 않고 해석표만 보여 준 뒤 4절로 간다.
-- 넓히기(놓친 방향·유사 사례)·좁히기(핵심 하나·안 할 것·v1 경계)·검증(허점·가장 위험한 가정)을 오간다. 결정은 사용자가 한다. 기술 구현 결정은 하지 않는다 — 실현 가능성 우려만 남겨 4절의 gusta-create-task로 넘긴다.
-- level: expert=갈림길만 짧게 / mid=선택지+영향 1줄 / novice=시나리오와 예시로 풀어서.
-- 공백·충돌이 모두 정해지거나 미룸으로 갈리면 문서와 태스크로 옮기자고 제안한다. 더 다듬고 싶다면 계속 돈다. 도중에 멈추면 정한 것을 지금 옮길지 묻고, 나머지는 6절에 남긴다.
+- 라운드마다 해석표 갱신 → 짧은 요약 + 선택지형 질문 2~4개(충돌·민감·공백 순) → 반영. 물을 것이 없으면 4절로.
+- 넓히기(놓친 방향)·좁히기(핵심·안 할 것·v1 경계)·검증(가장 위험한 가정)을 오간다. 기술 구현은 정하지 않고 실현 가능성 우려만 gusta-create-task로 넘긴다.
+- level: expert=갈림길만 / mid=선택지+영향 1줄 / novice=시나리오·예시로.
+- 다 정해지거나 미뤄지면 문서로 옮기자고 제안한다. 도중에 멈추면 정한 것을 지금 옮길지 묻고 나머지는 6절로.
 
 ## 4. 문서·태스크·push
-정한 해석표를 문서로 옮긴다. 대화에만 있는 합의는 없던 것이 된다.
-- 새 도메인은 gusta-create-ssot, 기존 도메인 변경은 gusta-update-ssot를 이 세션에서 이어서 한다. 정함·답한 공백·충돌이 재료이고, 인터뷰는 해석표에서 정하지 못한 공백만 묻는다.
-- 이어서 gusta-create-task로 실행할 태스크까지 만든다(dep·lane·검증 포함). 채택된 review는 SSOT 없이 gusta-create-task로 간다. 개발 질문도 이 세션에서 받는다 — /gusta-start는 묻지 않으므로 여기서 정해 둔다.
-- ideation 문서의 채택 범위를 SSOT로 옮겼으면 그 SSOT 스킬의 [전환 마감 절차](../gusta-create-ssot/references/ideation.md)로 닫는다(남은 미정 줄이 있으면 ready로 둔다).
-- 기획 커밋(spec/만)과 `vibe plan-push`는 각 기획 스킬 절차대로 한다. 원격 기획 브랜치에 올라가야 다른 세션·기기의 /gusta-start가 태스크를 집는다. ID 충돌로 거절되면 다시 채번해 올리고, 그 밖의 실패(원격·인증)는 마감 보고에 그대로 남긴다 — 올라가지 않은 것을 올렸다고 보고하지 않는다. 코드 반영(`vibe push`)은 하지 않는다.
+정한 해석표를 이 세션에서 이어서 문서로 옮긴다.
+- 새 도메인은 gusta-create-ssot, 기존 도메인은 gusta-update-ssot — 해석표에서 못 정한 공백만 묻는다. ideation 채택 범위를 옮겼으면 [전환 마감 절차](../gusta-create-ssot/references/ideation.md)로 닫는다.
+- 이어서 gusta-create-task로 실행할 태스크까지 만든다(채택된 review는 SSOT 없이). 개발 질문도 여기서 받는다.
+- `vibe plan-push` 실패는 보고에 그대로 남긴다 — 올라가지 않은 것을 올렸다고 보고하지 않는다. 코드 반영(`vibe push`)은 하지 않는다.
 
-## 5. 넘기기 — 말로 좁혀지지 않을 때
-- **볼 것**(화면 구성·흐름·상태별 화면처럼 보면 빨리 정해지는 것): 시안으로 보고 고를지 제안한다. 동의하면 그 항목만 gusta-sketch 2절로 시안을 띄워 고르고, 고른 것은 해석표의 정함으로 돌아와 4절로 함께 간다.
-- **비교할 것**(실제 동작감·성능·구현 방식처럼 코드로 만들어 봐야 갈리는 것): /gusta-showcase를 제안한다. 그 스킬이 변형을 코드까지 만들고 채택한 변형의 SSOT를 맞추므로 이 세션에서 태스크로 만들지 않는다 — 비교할 질문을 6절에 남기고 마감 보고에 `/gusta-showcase <비교할 질문>`을 안내한다. 나머지는 4절대로 끝낸다.
-- 스택·구조·검증 명령을 바꿔야 하면 gusta-create-architecture를 이 세션에서 이어서 한다.
+## 5. 넘기기
+- **볼 것**(화면 구성·흐름·상태별 화면): 시안을 제안하고, 동의하면 그 항목만 gusta-sketch 2절로 띄워 고른 뒤 정함으로 돌아와 4절로 간다.
+- **비교할 것**(동작감·성능·구현 방식): /gusta-showcase를 제안한다 — 그 스킬이 구현·SSOT까지 맡으므로 태스크로 만들지 않는다. 질문을 6절에 남기고 보고에 `/gusta-showcase <비교할 질문>`을 안내한다.
 
 ## 6. 미룬 구상
-사용자가 정하지 않고 미룬 것·고르지 않은 방향·남은 질문·비교할 질문은 [미룬 구상 기록](references/ideation.md)대로 ideation 문서에만 남긴다.
+미룬 것·고르지 않은 방향·남은 질문·비교할 질문은 [미룬 구상 기록](references/ideation.md)대로 ideation 문서에만 남긴다.
 
 ## 7. 마감
-- 해석표의 모든 줄이 문서·태스크·미룸·안 할 것 중 하나로 끝났는지 확인한다.
-- 시안을 띄웠으면 `vibe sketch stop <slug>`. `vibe log` 1줄. next는 CLI가 태스크로 갱신한다.
-- cfg.lang으로 요약: 요구사항 → 결정(ID@rev) → 태스크(T###) 대응 / 미뤄 ideation에 남긴 것 / 버린 것(이유) / plan-push 결과(올라간 브랜치, 실패면 이유) / 넘길 곳(`/gusta-showcase` 등) / "이제 /gusta-start로 실행하면 묻지 않고 진행합니다".
+시안을 띄웠으면 `vibe sketch stop <slug>`. `vibe log` 1줄. cfg.lang 요약: 요구사항 → 결정(ID@rev) → 태스크(T###) / 미룬 것 / 버린 것(이유) / plan-push 결과(브랜치, 실패 이유) / 넘길 곳 / "이제 /gusta-start로 실행하면 묻지 않고 진행합니다".

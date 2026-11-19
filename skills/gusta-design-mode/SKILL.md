@@ -6,7 +6,7 @@ description: >-
 
 # gusta-design-mode — 디자인 진행자
 
-**역할: 디자인 진행자.** 사용자가 화면을 보며 말하는 대로 코드를 즉시 고친다. 판단은 사용자가 화면으로 한다 — 되묻기보다 고쳐서 보여 준다. 기획 결정·태스크 작성·리팩토링 제안은 하지 않는다(디자인이 끝난 뒤 해당 스킬로). 사용자가 직접 부르거나 gusta-showcase가 메인을 정할 때만 쓴다: 사람이 화면을 봐야 하므로 맡김·단위 세션(`GUSTA_VIBE_UNIT=1`)·작업 묶음 워커에서는 시작하지 않고 gusta-start로 돌려보낸다.
+**역할: 디자인 진행자.** 사용자가 화면을 보며 말하는 대로 코드를 즉시 고친다. 기획·태스크·리팩토링 제안은 하지 않는다. 사용자가 직접 부르거나 gusta-showcase가 메인을 정할 때만 쓴다 — 맡김·단위 세션(`GUSTA_VIBE_UNIT=1`)·작업 묶음 워커에서는 시작하지 않고 gusta-start로 돌려보낸다.
 
 ## 공통 규칙 (모든 spec 스킬)
 1. 먼저 `vibe status --json`(실행기 안에서는 brief)으로 필요한 요약만 본다. spec/이 없으면 /gusta-plan을 안내하고 멈춘다. `settings.unset`이 있으면 gusta-init으로 정한다(맡김에서는 묻지 않고 미정인 채 진행한다).
@@ -15,32 +15,31 @@ description: >-
 4. 질문·보고는 cfg.lang·cfg.level대로, 산출 문서 언어는 FORMAT 언어 규칙대로. 선택지형 질문 도구가 있으면 쓴다. 맡김(gusta-start·loop 단위)에서는 묻지 않는다 — 추천안으로 진행해 `vibe inbox add`로 남기고, 되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일과 권한 창이 뜰 만한 명령은 주차한다. 사용자가 직접 부른 스킬은 묻는다.
 5. **읽기**: `vibe brief <ID> --summary`로 범위를 찾고 필요한 블록만 원문째 읽는다 — 출력의 complete·`next`가 덜 읽은 곳을 알려 준다. STATE·FORMAT·ARCH·큰 코드·tasks/done/을 통째로 읽지 않는다. 긴 출력은 요약·tail만 보고 전체는 파일로 남긴다.
 
-CLI는 `npx @haeram/gusta` 뒤에 붙인다. 디자인 모드 규칙의 정본은 `vibe format --section state`의 Design mode 항목이다.
+CLI는 `npx @haeram/gusta` 뒤에 붙인다.
 
 ## 1. 시작
-- `vibe status --json`의 `design`이 있으면 그 tag·scope로 이어서 한다 — "디자인 이어서 합니다: <scope>"만 알린다. 없으면 세션 tag(영숫자 2-4자)를 정하고 `vibe design start --tag <tag> --scope "<무엇을 디자인하는지 한 줄>"`로 이 checkout을 디자인 중으로 표시한다(land 같은 보호 브랜치면 미커밋 변경을 가진 채 `design/<tag>`로 전환한다 — 결과 `switched`). 이 상태는 checkout의 Git 디렉터리에만 있다 — STATE에 쓰지 않으므로 기획 커밋·plan-push로 다른 worktree에 퍼지지 않는다.
-- `design.showcase`가 있으면 gusta-showcase 메인(`vibe ab main`이 연다)이다: 편집 대상은 그 path(메인 변형 worktree)이고 화면은 이미 떠 있는 그 변형 서버와 비교 hub다. 다른 변형·base는 `vibe ab status <slug> --json`으로 찾는다. 커밋·서버·scaffold는 건드리지 않는다.
-- 새로 시작할 때 미커밋 변경이 있으면(`git status --porcelain`, STATE 제외) 한 번만 묻는다: 지금 따로 커밋 / 디자인에 포함. 포함하면 마감 검증·커밋에 함께 들어간다.
-- 화면: 개발 서버(hot reload)가 떠 있으면 재사용하고, 없으면 ARCH·package.json의 dev/start 명령을 백그라운드로 한 번 띄워 주소를 알린다. 띄울 수 없으면 사용자가 실행할 명령만 알려 준다. 디자인 중 서버를 다시 시작하지 않는다.
+- `vibe status --json`의 `design`이 있으면 그 tag·scope로 이어 하고 "디자인 이어서 합니다: <scope>"만 알린다. 없으면 세션 tag(영숫자 2-4자)를 정해 `vibe design start --tag <tag> --scope "<무엇을 디자인하는지 한 줄>"`.
+- `design.showcase`가 있으면 gusta-showcase 메인이다: 그 path(메인 변형 worktree)만 고친다. 서버·hub는 이미 떠 있고, 다른 변형은 `vibe ab status <slug> --json`으로 찾는다. 커밋·서버·scaffold는 건드리지 않는다.
+- 새로 시작할 때 미커밋 변경이 있으면(STATE 제외) 한 번만 묻는다: 지금 따로 커밋 / 디자인에 포함(마감 검사·커밋에 함께 들어간다).
+- 화면: 떠 있는 개발 서버(hot reload)를 재사용하고, 없으면 ARCH·package.json의 dev 명령을 백그라운드로 한 번 띄워 주소를 알린다(못 띄우면 명령만 알린다). 디자인 중 서버를 다시 시작하지 않는다.
 
 ## 2. 디자인 루프
 사용자 지시 → 바로 코드 수정 → 바꾼 곳 한두 줄 → 다음 지시를 기다린다. 확인 질문으로 수정을 미루지 않는다.
-- **하지 않는다**: 단위·통합·e2e 테스트, typecheck·lint·build·format 실행, 커밋·push, 태스크 파일·SSOT·STATE 수정, 지시 밖 리팩토링·정리.
-- 예외 하나: 내 수정 때문에 개발 서버가 컴파일·런타임 오류를 내면 그 출력만 보고 바로 고친다 — 검증이 아니라 화면을 되살리는 일이다.
-- 모호한 지시는 가장 그럴듯한 해석으로 고쳐 보여 주고 "다르면 말해 주세요"만 붙인다. 대상(어느 화면·컴포넌트)을 정말 특정할 수 없을 때만 묻는다.
-- 프로젝트의 디자인 토큰·공용 컴포넌트·스타일 방식(ARCH 컨벤션)을 따른다. 토큰이 있으면 값을 여러 파일에 하드코딩하지 않고 토큰을 고친다.
-- 지시가 디자인을 넘어도(동작·데이터·API 변경, SSOT 결정과 어긋남) 막지 않고 말한 대로 고친다. 그런 변경은 기억해 두었다가 마감 보고에 "SSOT 반영 필요"로 올린다.
-- 보고 상세도: expert는 바꾼 파일·위치만, mid는 위치+확인할 화면, novice는 어느 화면 어디를 보면 되는지 쉬운 말로.
-- 길어지면 사용자가 원할 때만 `vibe checkpoint --tag <tag>`로 `wip/<tag>`에 스냅샷한다(테스트 없음, 현재 브랜치·커밋은 그대로).
+- **하지 않는다**: 테스트·typecheck·lint·build·format 실행, 커밋·push, 태스크·SSOT·STATE 수정, 지시 밖 리팩토링. 예외: 내 수정으로 개발 서버가 컴파일·런타임 오류를 내면 그 출력만 보고 바로 고친다.
+- 모호한 지시는 가장 그럴듯한 해석으로 고쳐 보여 주고 "다르면 말해 주세요"만 붙인다. 대상(화면·컴포넌트)을 특정할 수 없을 때만 묻는다.
+- ARCH의 디자인 토큰·공용 컴포넌트·스타일 방식을 따르고, 토큰이 있으면 값을 하드코딩하지 않고 토큰을 고친다.
+- 디자인을 넘는 지시(동작·데이터·API, SSOT 결정과 어긋남)도 말한 대로 고치고, 마감 보고에 "SSOT 반영 필요"로 올린다.
+- 보고: expert는 바꾼 파일·위치만, mid는 위치+확인할 화면, novice는 어느 화면 어디를 보면 되는지 쉬운 말로.
+- 사용자가 원할 때만 `vibe checkpoint --tag <tag>`로 중간 저장한다.
 
 ## 3. 커밋·push 전 확인
-커밋·push가 필요해지는 모든 순간 — 사용자의 "커밋해줘/푸시해줘", 다른 스킬로 넘어가기, 대화 마감 — 먼저 묻는다: **"디자인 끝났나요?"** 선택지: 끝났다(→ 4절 마감) / 아직이다(→ 커밋하지 않고 2절 계속) / 중간 저장만(→ `vibe checkpoint`, 디자인 계속). 사용자가 먼저 "디자인 끝"이라고 말했으면 그것이 답이다 — 다시 묻지 않는다. 디자인 중에는 `vibe push`가 거절된다. 우회하지 않는다.
+커밋·push가 필요해지는 모든 순간(사용자의 "커밋해줘/푸시해줘", 다른 스킬로 넘어가기, 대화 마감) 먼저 묻는다: **"디자인 끝났나요?"** — 끝났다(→ 4절) / 아직이다(→ 커밋하지 않고 2절) / 중간 저장만(→ `vibe checkpoint`, 디자인 계속). 사용자가 먼저 "디자인 끝"이라고 했으면 다시 묻지 않는다.
 
 ## 4. 마감
-0. **showcase 메인 옮기기**: `design.showcase`가 있으면 먼저 `vibe ab pick <slug> --approach '<영어 한 줄 접근>' --json` — 메인의 편집을 그 브랜치에 커밋하고 scaffold를 뺀 메인을 이 checkout에 미커밋으로 옮긴 뒤 서버·hub·worktree를 정리하고 채택 log를 남긴다(`logError`면 `vibe log`로 다시). scaffold 줄·파일을 고쳤거나 mock 줄·경로가 남았다고 거절되면 메인 worktree에서 고치고 다시 pick한다(잔여는 사용자가 그 줄을 보고 받아들이면 `--accept-residue`). 충돌이면 현재 브랜치는 그대로니 보고한다. 아래는 이 checkout에서 같다.
-1. **영향 검사**: `vibe design verify --json`은 미커밋 트리에서 ARCH task의 영향 검사·빠른 검사만 실행한다. batch(`--verify` 포함)·CI는 `deferred`에 남기고 `finalVerified:false`를 반환한다. 로컬 검사가 없으면 ARCH에 필요한 영향 검사를 정한다. package.json의 전체 테스트 fallback도 로컬에서 돌리지 않는다. 전체 검수는 커밋 후 공동 고정 후보에서 한 번 수행한다.
-2. **실패 처리**: 확정된 디자인 때문에 바뀐 기대값(문구·스냅샷·시각 기준·선택자)은 테스트를 디자인에 맞춘다. 기능이 깨졌으면 디자인을 유지한 채 코드를 고친다. 디자인을 바꿔야만 고칠 수 있으면 사용자에게 묻는다. 고친 뒤 ok가 될 때까지 verify를 다시 돌린다(같은 트리의 통과는 캐시로 건너뛴다).
-3. **커밋**: `vibe design end` → 디자인 변경·테스트 수정을 커밋 하나로 → `vibe log --text 'design <area>: <what>'`. verify 통과 뒤 파일이 바뀌었으면 커밋 전에 verify부터 다시 돌린다.
-4. **SSOT**: "SSOT 반영 필요"가 있으면 gusta-update-ssot로 반영한다(기획 커밋은 spec/만 담아 `vibe plan-push`). showcase는 채택안이 바꾼 규칙도 — 대안=고르지 않은 변형, 이유=사용자 선택 근거. pick의 `todo`(실제 데이터 연결)는 gusta-create-task로.
-5. **공동 마감**: 소유 세션의 작업이 모두 끝났으면 `vibe integration finish --tag <tag> --json`으로 제출한다(`--verify`로 선택한 최종 명령은 여기에도 전달). 살아 있는 참여 세션이 모두 준비된 고정 후보에서 전체 검수·필수 agent acceptance·CI를 수행하고 SETTINGS land·land-via·push에 따라 반영한다. 사용자가 push 없이 병합만 원하면 `--no-push`(검수 뒤 로컬 land에만 반영, 다음 finish·push가 발행)를 쓰고, land에 직접 merge하지 않는다. 로컬 task 통과를 전체 검증 커밋으로 주장하지 않는다. 다른 작업·세션이나 도구를 기다리는 상태면 후보·보류 이유를 보고한다.
+0. **showcase 메인 옮기기**: `design.showcase`가 있으면 먼저 `vibe ab pick <slug> --approach '<영어 한 줄 접근>' --json`. scaffold 때문에 거절되면 메시지대로 메인 worktree에서 고쳐 다시 pick하고, 충돌이면 보고한다. `logError`면 `vibe log`로 다시 남긴다. 아래는 이 checkout에서 한다.
+1. **영향 검사**: `vibe design verify --json`(task 검사만, `finalVerified:false`). 결과의 `next`를 따르고 전체 스위트는 로컬에서 돌리지 않는다.
+2. **실패 처리**: 확정된 디자인 때문에 바뀐 기대값(문구·스냅샷·시각 기준·선택자)은 테스트를 디자인에 맞춘다. 기능이 깨졌으면 디자인을 유지한 채 코드를 고친다. 디자인을 바꿔야만 고칠 수 있으면 사용자에게 묻는다. ok가 될 때까지 verify를 다시 돌린다.
+3. **커밋**: `vibe design end` → 디자인 변경·테스트 수정을 커밋 하나로 → `vibe log --text 'design <area>: <what>'`. verify 뒤 파일이 바뀌었으면 커밋 전에 verify부터 다시.
+4. **SSOT**: "SSOT 반영 필요"가 있으면 gusta-update-ssot로 반영한다. showcase는 채택안이 바꾼 규칙도 — 대안=고르지 않은 변형, 이유=사용자 선택 근거. pick의 `todo`(실제 데이터 연결)는 gusta-create-task로.
+5. **공동 마감**: 소유 세션의 작업이 모두 끝났으면 `vibe integration finish --tag <tag> --json`(verify에 준 `--verify`도 넘긴다). push 없이 병합만 원하면 `--no-push` — land에 직접 merge하지 않는다. 로컬 task 통과를 전체 검증으로 주장하지 않고, 기다리는 중이면 후보·보류 이유를 보고한다.
 6. **보고**: 바꾼 것·돌린 검사·커밋 SHA·SSOT 개정·push 여부, 개발 서버를 띄운 채 둔다는 것(showcase는 pick이 변형 서버를 끈다).

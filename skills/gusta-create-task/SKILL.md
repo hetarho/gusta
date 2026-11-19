@@ -6,8 +6,7 @@ description: >-
 
 # gusta-create-task — SSOT 델타 → 태스크
 
-**역할: 엔지니어.** SSOT의 기획 결정은 재논의하지 않는다. SSOT가 모호하거나 모순이면 추측으로 메우지
-말고 gusta-update-ssot로 올린다. 단독 맡김이면 추천안을 반영한 뒤 분해를 잇고, 직접 호출(gusta-plan 등)은 확인을 요청하며 묶음 워커는 기획 공간으로 인계한다.
+**역할: 엔지니어.** SSOT 결정은 재논의하지 않고, 모호·모순은 추측으로 메우지 말고 gusta-update-ssot로 올린다.
 
 ## 공통 규칙 (모든 spec 스킬)
 1. 먼저 `vibe status --json`(실행기 안에서는 brief)으로 필요한 요약만 본다. spec/이 없으면 /gusta-plan을 안내하고 멈춘다. `settings.unset`이 있으면 gusta-init으로 정한다(맡김에서는 묻지 않고 미정인 채 진행한다).
@@ -16,40 +15,34 @@ description: >-
 4. 질문·보고는 cfg.lang·cfg.level대로, 산출 문서 언어는 FORMAT 언어 규칙대로. 선택지형 질문 도구가 있으면 쓴다. 맡김(gusta-start·loop 단위)에서는 묻지 않는다 — 추천안으로 진행해 `vibe inbox add`로 남기고, 되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일과 권한 창이 뜰 만한 명령은 주차한다. 사용자가 직접 부른 스킬은 묻는다.
 5. **읽기**: `vibe brief <ID> --summary`로 범위를 찾고 필요한 블록만 원문째 읽는다 — 출력의 complete·`next`가 덜 읽은 곳을 알려 준다. STATE·FORMAT·ARCH·큰 코드·tasks/done/을 통째로 읽지 않는다. 긴 출력은 요약·tail만 보고 전체는 파일로 남긴다.
 
-어느 checkout에서든 기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`(정본·거절 시 재채번은 `vibe format --section settings`의 `plan`).
+기획 쓰기·채번 전 `vibe plan-sync`, spec/만 담은 기획 커밋 직후 `vibe plan-push`.
 
 ## 1. 스코프와 델타
-입력은 두 종류다 — **SSOT 델타**(기획 변경)와 **리뷰 finding**(사용자가 채택했거나 명시적 위임 범위에서 gusta-self-improve-remote/gusta-self-improve 오케스트레이터가 채택한 개선). 사용자가 지정하지 않으면 둘 다 처리한다. 자율 채택은 review notes의 정책 참조 또는 로컬 호출 위임·승인 범위·동작 보존 근거를 확인하며, 큰 변화나 근거 없는 [o]는 태스크화하지 않고 [?]로 돌려 인계한다.
-- SSOT: 사용자가 지정한 도메인, 없으면 STATE ssot에서 pending 있는(= tasked < rev) 전부. `vibe log --text 'gusta-create-task <IDs> start'`.
-  - 델타 파악: `vibe brief <ID>@<tasked>`가 chg의 tasked+1..rev 줄과 바뀐 결정 원문·필수 의존·flow·constraints를 준다. tasked=0이면 도메인 전체가 신규(`vibe brief <ID>`). ARCH의 관련 결정도 읽는다(태스크가 따를 기준). 태스크 인용줄 ssot에는 구현이 지켜야 하는 결정을 빠짐없이 넣는다 — 같은 도메인의 제약·예외·금지를 담은 결정도. 인용 결정이 `→!`·`→=`로 가리키는 결정은 brief가 함께 싣지만, 연결되지 않은 결정은 cfg brief가 `cited`일 때 brief에 들어가지 않는다.
-  - 델타가 코드에 영향이 없으면(문구 정리, 컨벤션 서술 변경 등) 태스크 없이 소화한다: ssot `tasked=rev`·pending `-`, `vibe log --text '<ID> rN..rM no-op (no code impact)'`. 영향 여부가 확실하지 않으면 태스크를 만든다.
-- 리뷰: spec/review/에서 st:ready인 문서(사용자가 `review/<slug>`를 지정하면 그것만). 대상은 `→T###`가 아직 없는 [o] finding — [x]·[?]는 건드리지 않는다. `vibe log --text 'gusta-create-task review/<slug> start'`.
+입력은 **SSOT 델타**와 **채택된 리뷰 finding**이다(지정이 없으면 둘 다). 리뷰 finding은 [리뷰 태스크](references/review.md)대로 처리한다.
+- SSOT: 지정한 도메인, 없으면 STATE ssot에서 pending 있는(tasked < rev) 전부. `vibe log --text 'gusta-create-task <IDs> start'`.
+- 델타는 `vibe brief <ID>@<tasked>`(tasked=0이면 `vibe brief <ID>`)로 읽고, 태스크가 따를 ARCH 결정도 읽는다. 인용줄 ssot에는 구현이 지킬 결정을 빠짐없이 넣는다 — 같은 도메인의 제약·예외·금지 결정도.
+- 코드 영향이 없는 델타(문구·컨벤션 서술 정리)는 태스크 없이 ssot `tasked=rev`·pending `-`, `vibe log --text '<ID> rN..rM no-op (no code impact)'`. 확실하지 않으면 태스크를 만든다.
 
 ## 2. 개발 인터뷰 (필요한 것만)
-ARCH·SSOT·기존 코드에 답이 있으면 묻지 않는다. 영역: 데이터 모델/스키마, API·인터페이스 계약, 상태·에러·엣지 처리, 기존 데이터 마이그레이션, 성능·보안 요구, 테스트 범위.
-맡김은 level과 무관하게 추천안으로 결정하고 inbox decided에 남긴다. 아래 인터뷰는 직접 호출(gusta-plan 등)에만 적용한다.
-- **expert**: 설계 초안을 제시하고 세부를 직접 확인. "스키마 이 초안으로? 인덱스는? 소프트 딜리트?"
+ARCH·SSOT·코드에 답이 없는 것만 묻는다(스키마·인터페이스 계약·에러/엣지·기존 데이터 마이그레이션·성능/보안·테스트 범위).
+- **expert**: 설계 초안을 내고 세부를 확인("스키마 이 초안으로? 인덱스는? 소프트 딜리트?").
 - **mid**: 갈림길마다 선택지 + 트레이드오프 1줄.
-- **novice**: 기술 질문 금지. 결과 수준만 확인("기존에 저장된 글은 그대로 보여야 하죠?"). 나머지는 AI가 결정하고 근거를 구현메모에 남긴다.
+- **novice**: 기술 질문 없이 결과만 확인("기존에 저장된 글은 그대로 보여야 하죠?")하고, 나머지는 정해 근거를 impl notes에 남긴다.
 
 ## 3. 분해
-- 크기: 태스크 1개 = 구현 세션이 **추가 질문 없이** 처음부터 끝까지 완주할 수 있는 단위. 그러기 위해 필요한 결정은 전부 이 단계에서 끝내 impl notes에 담는다 — 구현 중 질문이 생기면 분해 실패다.
-- 크기 상한은 새 세션 하나에 넉넉히 들어가는 양: 관심사 하나·모듈 경계 하나, 테스트를 뺀 touches 5개 이하, 단위 상한(기본 60분) 안. 쓴 뒤 `vibe brief T### --json`의 `size.budget.over`(태스크가 직접 끄는 brief 40k자(`taskChars`)·touches 기준)가 비어 있지 않으면 도메인·모듈별로 쪼갠다. 모든 태스크가 받는 `contextChars`(always·도메인 범위)는 쪼갤 이유가 아니다 — 그것이 크면 gusta-doc-review로 SSOT를 줄인다. 큰 파일은 impl notes에 읽을 범위(함수·구간)를 적는다. 기준 창은 `gusta agents --json`의 `minContext`다(null이면 창을 모르는 것이니 위 상한만 쓴다).
-- **실행 추천 `run:`**: `gusta agents --json`의 options는 싼 순서다 — `allowed` 중 이 태스크를 완주하기에 충분한 첫 조합을 쓴다. 어려운 설계 판단·여러 모듈 계약은 높은 score, 기계적 변경·문서·작은 수정은 낮은 score. 높은 조합이 필요해 보이면 먼저 쪼갤 수 있는지 보고, score 9 이상이면 impl notes에 이유 한 줄. `agents`가 미정이면 `run:-`으로 두고 inbox `suggest`로 gusta-init을 권한다.
-- **탐색형(explore)**: 보정·튜닝·밸런스처럼 돌려 보고 측정해서 정하는 일은 일반 태스크와 분리해 explore 태스크로 만든다. 인용줄 `explore:<시간>`(예 `explore:2h`)이 시간 제한이고, acceptance에 `- [ ] exit: <시간이 다 되면 무엇을 기록하고 done인지>`를 반드시 넣는다(lint 오류로 강제). 기준 밴드를 "모두 통과"로 완료 조건 삼지 않는다 — 기준은 측정 대상이고 끝은 exit가 정한다. 기준을 못 맞출 때 규칙을 바꿔야 한다면 그건 gusta-update-ssot 거리라고 impl notes에 적는다. explore 태스크와 그 후속은 메인 세션에서 실행되므로 lane에 넣지 않는다.
-- **작업 묶음(lane)**: 단독 진행이면 lane을 쓰지 않는다(`lane:-`). 여러 세션·worktree가 병렬로 진행할 묶음을 설계할 때만 [기반 → 줄기 → 통합](references/lanes.md)을 읽는다.
-- acceptance에는 변경의 관찰 가능한 동작·주 검증 방법·owner/stage를 적는다. 기존 결정론적 증거가 충분하면 새 테스트를 요구하지 않고 실제 불변식 공백만 작게 보완한다. agent AC는 시나리오·기대 결과와 대체할 E2E 범위를 정해 중복 실행을 제거·축소한다. integration-stage 확인은 명시적 인계까지만 task acceptance로 삼고 관찰 pass를 task done 조건처럼 꾸미지 않는다. acceptance·검증 줄에는 태스크 단계 영향 검사만 쓰고, 전체 검수는 공동 고정 후보, 지원 브라우저 호환 검사는 CI에 맡긴다. 저위험 문구·스타일이나 소스 문자열/구현 추종 테스트를 의무로 만들지 않는다. 프로젝트의 더 엄격한 명시적 의무는 승인 전 보존한다.
-- 명령이 실제로 실행하는 스크립트·테스트 범위를 읽는다. 기본 task acceptance는 구현·영향 검사·필요한 인계 완료이며, 뒤에 실행할 전체 스위트의 성공을 done 선행 조건으로 만들지 않는다. 전체 범위·성공 증거는 실제 실행될 ARCH batch/묶음 최종 관문에 등록하고 인계 경로를 남긴다. 기존 "done 전 전체 검사 통과"를 바꾸려면 [규칙 대조](../gusta-update/references/project-rules.md)로 완료 시점·주체 변경을 승인받아 활성 계약과 최종 관문을 함께 맞춘다(진행 중이면 중단·해제 후 재기획). 미승인·미지원이면 해당 변경은 parked이며 미실행 검사를 통과로 쓰지 않는다.
-- **전체 범위 결정**: 결정이 "모든/전체" 화면·라우트·모듈에 적용되면 `rg`·라우트 목록으로 대상 인벤토리를 만들어 마지막 태스크의 impl notes에 두고, 항목마다 어떤 태스크의 touches에 있거나 제외 이유가 적혀 있어야 분해가 끝난다. 제품 코드를 touches에 갖지 않은 감사 태스크는 준수를 체크하지 않고, 빠진 항목을 inbox `suggest`로 후속 태스크화한다.
-- **경계를 따라 나눈다**: 태스크는 ARCH의 모듈 경계 안에서 응집된 변경으로 만든다. 여러 모듈을 가로지르면 계약(타입·인터페이스)을 먼저 만드는 태스크와 모듈별 태스크로 나눈다. 바깥 의존(DB·네트워크·시간 등)을 받는 주입 지점을 impl notes에 적어 acceptance의 단위 테스트가 실제 서비스 없이 돌게 한다.
-- **공용 코드**: 여러 태스크가 쓰는 helper·타입·검증·정규화 같은 공통 판단은 처음 필요한 태스크가 공용 위치(기존 모듈 또는 새 공용 파일)에 만들게 한다 — impl notes에 위치와 이름을 적고 그 파일을 touches에 넣는다. 뒤 태스크의 impl notes는 그 이름으로 가리킨다(예 `normalize from validation.ts`). touches를 태스크 자기 파일로만 좁혀 같은 helper를 파일마다 만들게 두지 않는다. 단독 진행에도 적용한다(작업 묶음의 기반 단계와 같은 원리).
-- **수치**: 조정할 값은 설정 이름으로 적고 숫자는 그 설정을 정의하는 태스크에만 둔다(예 `RETRY_CONFIG.maxAttempts`, `3` 아님). 다른 태스크가 정의한 값을 쓰는 태스크에는 읽을 설정 이름을 적는다 — impl notes의 숫자는 구현에 그대로 박힌다.
-- 리뷰 태스크: finding 하나 = 태스크 하나가 기본. 같은 파일·같은 원인이면 묶고, 한 세션에 못 끝낼 finding은 쪼갠다. 인용줄·impl notes 첫 줄·동작 불변 acceptance는 FORMAT review-sourced tasks대로 쓰고 finding이 요구하는 테스트를 더한다. 기획 결정을 바꾸는 태스크는 만들지 않는다 — 그런 finding은 gusta-update-ssot로 넘기고 [?]로 되돌린다.
-- impl notes의 결정 중 **이후 변경이 계속 지켜야 하는 계약**(공개 API 형태, 저장 포맷, 호환성 규칙)은 태스크에만 두지 않는다 — 그건 기획·기준 문서의 몫이니 gusta-update-ssot(또는 ARCH 개정)를 제안하고, 태스크에는 이번 구현이 따를 형태만 남긴다.
-- dep 그래프와 순서를 정리한다. 자기참조·순환은 금지하고 태스크 인용줄과 STATE의 dep을 일치시킨다. dep은 표의 활성 태스크 또는 `tasks/done/`의 완료 태스크를 가리킬 수 있고, 채번은 `vibe plan-sync` 직후 `vibe task reserve --tag <tag> --count <n>`이 준 번호를 쓴다(손으로 최대 번호를 세지 않는다 — 다른 worktree·기기의 미발행 번호까지 피한다). 완료 태스크는 **파일명 목록만** 본다(내용 정독은 특정 태스크를 조사할 때뿐, FORMAT Reading). 기존 todo 태스크와 겹치면 todo는 수정(base 갱신), doing·done(작업 묶음이면 STATE todo라도 `work board`의 활성 attempt 포함 — 재분해는 작업자 중단·해제 후)은 불변 — 후속 태스크로 만든다.
+- 태스크 1개 = 구현 세션이 **추가 질문 없이** 완주하는 단위다(필요한 결정은 여기서 끝내 impl notes에). 상한: 관심사 하나·모듈 경계 하나, 테스트를 뺀 touches 5개 이하, 단위 상한(기본 60분) 안. 쓴 뒤 `vibe brief T### --json`의 `size.budget.over`가 비어 있지 않으면 도메인·모듈별로 쪼갠다. `contextChars`가 크면 쪼개지 말고 gusta-doc-review로 SSOT를 줄인다. 큰 파일은 impl notes에 읽을 범위를 적는다. 기준 창은 `gusta agents --json`의 `minContext`다(null이면 위 상한만).
+- **실행 추천 `run:`**: `gusta agents --json`의 options는 싼 순서다 — `allowed` 중 이 태스크를 완주하기에 충분한 첫 조합을 쓴다. 설계 판단·여러 모듈 계약은 높은 score, 기계적 변경·문서는 낮은 score. 높은 조합이 필요해 보이면 먼저 쪼갤 수 있는지 보고, score 9 이상이면 impl notes에 이유 한 줄. `agents`가 미정이면 `run:-`으로 두고 inbox `suggest`로 gusta-init을 권한다.
+- **explore**: 측정해서 정하는 일(보정·튜닝·밸런스)은 `explore:<시간>`(예 `2h`) 태스크로 분리하고 acceptance에 `- [ ] exit: <시간이 다 되면 무엇을 기록하고 done인지>`를 둔다 — 끝은 기준 통과가 아니라 exit다. 규칙 변경이 필요하면 gusta-update-ssot 거리로 impl notes에 적고, lane에 넣지 않는다(후속 포함).
+- **lane**: 단독이면 `lane:-`. 여러 세션의 병렬 묶음을 설계할 때만 [기반 → 줄기 → 통합](references/lanes.md)을 읽는다.
+- **acceptance**: 관찰 가능한 동작·주 검증 방법·owner/stage를 템플릿 둘째 줄대로 적는다. acceptance·검증 줄에는 태스크 단계 영향 검사만 쓰고, 전체 검수는 공동 고정 후보, 지원 브라우저 호환 검사는 CI에 맡긴다 — 전체 스위트 성공·integration 관찰 pass는 done 조건이 아니라 ARCH batch/묶음 최종 관문에 둔다(명령이 실제로 돌리는 범위를 확인한다). 저위험 문구·스타일, 소스 문자열/구현 추종 테스트를 의무로 만들지 않는다. 프로젝트가 명시한 더 엄격한 의무는 [규칙 대조](../gusta-update/references/project-rules.md)로 승인받기 전까지 보존한다(미승인·미지원이면 parked).
+- **전체 범위 결정**("모든" 화면·라우트·모듈): `rg`·라우트 목록으로 만든 대상 인벤토리를 마지막 태스크 impl notes에 두고, 항목마다 담당 태스크의 touches나 제외 이유가 있어야 분해가 끝난다. 제품 코드를 touches에 갖지 않은 감사 태스크는 준수를 체크하지 않고 빠진 항목을 inbox `suggest`로 올린다.
+- **경계**: ARCH 모듈 경계 안의 응집된 변경으로 만들고, 여러 모듈을 가로지르면 계약(타입·인터페이스) 태스크를 먼저 둔다. 바깥 의존(DB·네트워크·시간 등)의 주입 지점을 impl notes에 적는다.
+- **공용 코드**: 여러 태스크가 쓰는 helper·타입·검증·정규화는 처음 필요한 태스크가 공용 위치에 만들고(impl notes에 위치·이름, touches에 그 파일), 뒤 태스크는 그 이름으로 가리킨다(예 `normalize from validation.ts`).
+- **수치**: 조정할 값은 설정 이름으로 적고(예 `RETRY_CONFIG.maxAttempts`, `3` 아님) 숫자는 그 설정을 정의하는 태스크에만 둔다.
+- 이후 변경도 지킬 계약(공개 API 형태·저장 포맷·호환성)은 태스크에만 두지 않고 gusta-update-ssot(또는 ARCH 개정)를 제안한다.
+- **dep·채번**: dep(인용줄과 STATE에 같게)은 활성 태스크나 `tasks/done/` 완료 태스크(파일명만 본다)를 가리킨다. 번호는 `vibe plan-sync` 직후 `vibe task reserve --tag <tag> --count <n>`이 준 것을 쓴다. 기존 todo와 겹치면 todo를 고치고(base 갱신), doing·done(묶음이면 `work board`의 활성 attempt 포함)은 두고 후속 태스크로 만든다.
 
 ## 4. 마감
-- 태스크마다 이 스킬 폴더의 assets/task.md를 복사해 `tasks/T###.<slug>.md`로 채운다(`<...>` 전부 교체) → STATE: tasks 행 추가(리뷰 태스크의 ssot 셀은 `ARCH`), next=`gusta-implement-task T###`(dep상 첫 것). `vibe log` 1줄.
+- 태스크마다 이 스킬 폴더의 assets/task.md를 복사해 `tasks/T###.<slug>.md`로 채운다(`<...>` 전부 교체) → STATE: tasks 행 추가, next=`gusta-implement-task T###`(dep상 첫 것). `vibe log` 1줄.
 - SSOT에서 만든 태스크: ssot 행 `tasked=rev`·pending `-`.
-- 리뷰에서 만든 태스크: 문서의 finding 끝에 `→T###`, 모든 [o]가 전환되면 문서 st→`converted@YYMMDD` + STATE review 행 갱신. ssot 행(tasked·pending)은 건드리지 않는다.
-- 보고: 태스크 목록과 순서 — novice에겐 각 태스크가 무엇을 만들어내는지 한 줄씩 설명.
+- 보고: 태스크 목록과 순서 — novice에겐 각 태스크가 무엇을 만들어내는지 한 줄씩.

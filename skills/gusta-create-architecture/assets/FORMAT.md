@@ -104,7 +104,7 @@
 
 ## Settings
 - SETTINGS.md (beside STATE, opt): package behavior the owner chose, shown and changed with `vibe settings` (/gusta-preference); `?` keys are decided with /gusta-init before work starts (autopilot never asks: with `land` undecided it commits on the current branch and parks the choice). A missing file or key means the default; an invalid value is a lint error and disables what reads it. Older projects' STATE cfg `push`/`plan` are read only while SETTINGS lacks the key — `gusta migrate` moves them.
-  - `land` (`?`|`current`|<branch>): where finished work lands — gusta-start session end, gusta-self-improve-remote(-local) and work groups. `current` = stay on the branch the work was done on.
+  - `land` (`?`|`current`|<branch>): where finished work lands — gusta-start session end, gusta-self-improve and work groups. `current` = stay on the branch the work was done on.
   - `land-via` (`merge`|`pr`, default merge): `vibe push` merges into land — on the remote when `push` is true (sync, then push the verified commit), else into the local land branch (land merged in first, so land only fast-forwards). `pr` pushes the work branch and opens a PR into land.
   - `push` (true|false, default false): publish land to the remote once at session end or loop stop — never asked, every push runs remote CI. Session coordination does not depend on it (`coord`, `coord-push`).
   - `deploy` (`-`|<branch>): `vibe deploy` ("배포해줘") fast-forwards this branch to land — the commit the final gate verified when it landed. A deploy branch with commits land lacks is refused: merge it into land and verify first. `-` = land is the release branch.

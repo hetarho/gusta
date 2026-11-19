@@ -6,7 +6,7 @@ description: >-
 
 # gusta-implement-task — 태스크 구현
 
-**역할: 엔지니어.** SSOT와 ARCH가 법이다. 구현 중 기획 공백은 코드로 임의 확정하지 않고 gusta-update-ssot로 올린다. 단독 맡김은 추천안을 기획에 반영하고 gusta-create-task로 재개를 준비한다. 직접 호출은 확인을 요청하고, 묶음 워커는 조정자에게 blocked 결정 요청을 돌려준다.
+**역할: 엔지니어.** SSOT·ARCH대로 구현한다. 기획 공백은 gusta-update-ssot, 기술 결정 누락은 gusta-create-task로 올리고 코드로 정하지 않는다.
 
 ## 공통 규칙 (모든 spec 스킬)
 1. 먼저 `vibe status --json`(실행기 안에서는 brief)으로 필요한 요약만 본다. spec/이 없으면 /gusta-plan을 안내하고 멈춘다. `settings.unset`이 있으면 gusta-init으로 정한다(맡김에서는 묻지 않고 미정인 채 진행한다).
@@ -16,31 +16,31 @@ description: >-
 5. **읽기**: `vibe brief <ID> --summary`로 범위를 찾고 필요한 블록만 원문째 읽는다 — 출력의 complete·`next`가 덜 읽은 곳을 알려 준다. STATE·FORMAT·ARCH·큰 코드·tasks/done/을 통째로 읽지 않는다. 긴 출력은 요약·tail만 보고 전체는 파일로 남긴다.
 
 ## 1. 선택과 브리핑
-`work status --json`이 worker/group/reviewer이거나, 남은 태스크를 맡긴 요청에 활성 묶음 또는 todo `lane:`이 있으면 [작업 묶음 절차](references/work-group.md)만 추가로 읽는다. 단독이면 `vibe status --tag <tag> --json`의 `runnable` 하나를 고른다(다른 세션 몫 `held` 제외). 다른 tag의 doing은 사용자가 지시할 때만 회수한다.
-`vibe brief T###` 또는 실행기의 brief가 읽기 범위다: 태스크, 인용 도메인의 현재 규칙(cfg brief `domain`, 기본) 또는 인용 결정만(`cited`), 필수 의존(`→!`)·정본(`→=`)·인용 결정을 가리키는 결정, 전역 규칙(cfg always), flow·constraints, base 이후 chg, ARCH 검증 단계. issues부터 처리한다 — [x]는 규칙이 아니며 [?]에 기대는 구현은 기획 결정이 먼저다.
-단독은 태스크 시작 HEAD를 `$GUSTA_DIFF_BASE`로 보존하고 모든 검사에 넘긴다(반복기는 이미 설정). 선점은 `vibe task start T### --tag <tag>`(선점과 태스크·STATE의 doing은 CLI가 쓴다, 거절되면 다른 후보), doing은 첫 작업 커밋에 포함한다. 직접 호출이면 먼저 `vibe beat --tag <tag> --mode pair`로 세션을 등록하고 마치면 `--end`. 같은 checkout에서 동시 쓰기를 하지 않는다.
+`work status --json`이 worker/group/reviewer이거나 남은 태스크를 맡긴 요청에 활성 묶음·todo `lane:`이 있으면 [작업 묶음 절차](references/work-group.md)를 따른다. 단독이면 `vibe status --tag <tag> --json`의 `runnable` 하나를 고른다.
+- 직접 호출이면 먼저 `vibe beat --tag <tag> --mode pair`로 세션을 등록하고, 마치면 `--end`.
+- 선점·doing은 `vibe task start T### --tag <tag>`로만 한다(거절되면 다른 후보). 바뀐 doing은 첫 작업 커밋에 담는다. 시작 HEAD를 `$GUSTA_DIFF_BASE`로 둔다(반복기는 이미 설정).
+- brief(`vibe brief T###`, 실행기 안에서는 주어진 것)의 issues부터 처리한다 — `[x]`는 규칙이 아니고, `[?]`에 기대는 구현은 기획 결정이 먼저다.
 
 ## 2. 신선도
-brief의 stale-base와 history(base 이후 chg 줄)가 델타다 — chg를 따로 읽지 않는다. 무관하면 base만 갱신, 영향 있으면 todo 복귀·`vibe log` 후 gusta-create-task로 갱신한다(손으로 todo·blocked로 돌리면 세션 행의 doing도 `vibe beat --tag <tag> --doing -`). 완료 전 관련 rev만 다시 확인한다. 워커는 기획 공간에 인계하며 base를 임의로 바꾸지 않는다.
+brief의 stale-base·history가 델타다. 무관하면 base만 갱신한다. 영향이 있으면 todo로 되돌리고(`vibe beat --tag <tag> --doing -`) `vibe log` 후 gusta-create-task로 갱신한다. 완료 전 관련 rev만 다시 확인한다.
 
 ## 3. 구현
-태스크 완료기준과 인용 결정에 맞춰 구현한다. 코드는 `rg`로 위치를 찾고 필요한 줄 범위만 읽는다. 큰 파일·같은 SSOT 전체를 반복 출력하지 않는다.
-- **결합은 낮게, 응집은 높게**: 한 모듈은 한 책임만 지고, DB·네트워크·파일·시간·난수 같은 바깥 세계는 인자·의존성 주입으로 경계에서 받는다. 새 로직이 단위 테스트로 바로 검증되지 않으면 테스트를 무겁게(실제 서비스·큰 fixture·timeout 상향) 만들지 말고 touches 안에서 순수 로직을 분리한다. touches 밖 구조 문제는 limits에 남긴다.
-- 새 함수·타입·상수를 쓰기 전에 `rg`로 같은 일을 하는 것이 이미 있는지 찾아 재사용한다 — 같은 판단(대상 여부, 검증, 정규화)을 파일마다 다시 정의하지 않는다. impl notes가 가리킨 공용 위치가 있으면 거기에 둔다.
-- 공용으로 옮겨야 할 helper를 찾으면 단독은 touches 밖의 공용 파일로 옮기고 result limits에 적는다. 묶음 워커는 touches 밖을 고치지 않고 있는 것을 재사용하거나 limits에 남긴다(다른 줄기와 충돌한다).
-- 조정 가능한 수치는 정의된 설정을 이름으로 읽는다. impl notes에 숫자로 적혀 있어도 같은 값의 설정이 있으면 그 설정을 쓰고, 새로 만든 설정은 실제로 읽히게 연결한다. 명령 출력은 요약·tail만 보고 전체 로그는 파일 경로로 남긴다. 완료 태스크는 회귀 근거가 필요한 특정 파일만 조회한다.
-기획 공백은 gusta-update-ssot, 기술 결정 누락은 gusta-create-task로 올린다. 맡김은 추천안+inbox decided, 금지 정책·되돌리기 어려운 일은 parked. 새 문맥은 바깥 반복기가 만든다. 단독 구현을 서브에이전트에 분할하지 않는다. 범위 밖 발견은 result limits나 `vibe log` 한 줄로 남기고, 결정이 적용돼야 하는데 어느 태스크에도 없는 대상이면 inbox `suggest`로 올린다(touches 밖이라 고칠 수 없는 준수 항목을 `[v]`로 체크하지 않는다).
-explore는 시작 시각·timebox를 기록하고 측정값을 result에 보존한다. 시간이 다 되면 acceptance의 exit대로 끝낸다(직접 호출은 한 번 확인, 맡김은 inbox decided).
+- **낮은 결합·높은 응집**: 한 모듈 한 책임, 바깥 세계(DB·네트워크·파일·시간·난수)는 경계에서 주입한다. 테스트가 무거워지면(실제 서비스·큰 fixture·timeout 상향) 테스트가 아니라 touches 안의 구조를 고쳐 순수 로직을 분리한다.
+- 새 함수·타입·상수 전에 `rg`로 기존 것을 찾아 재사용한다(impl notes의 공용 위치 우선). 조정 가능한 수치는 정의된 설정을 이름으로 읽고(impl notes에 숫자가 있어도), 새 설정은 실제로 읽히게 연결한다.
+- touches 밖은 고치지 않고 result limits에 남긴다 — 단독의 공용 helper 이동만 예외다(limits에 적는다). 결정을 적용해야 하는데 어느 태스크에도 없는 대상은 inbox `suggest`로 올리고 `[v]`로 체크하지 않는다.
+- 단독 구현을 서브에이전트로 나누지 않는다.
+- explore는 시작 시각·timebox를 기록하고 측정값을 result에 쌓다가, 시간이 다 되면 exit대로 끝낸다.
 
 ## 4. 검증
-① 구현·인계 acceptance를 확인 ② 바뀐 범위의 작은 결정론적 검사와 빠른 ARCH task 명령을 커밋 직전 한 번(`vibe check --tier task`, 유효 성공 재사용) ③ spec lint ④ integration-stage agent AC와 공동 최종 검수·CI는 지정한 owner에게 인계한다([검증 절차](../gusta-start/references/verification.md)). 실패는 고친 범위부터 확인하며 편집마다 반복하지 않는다.
-- acceptance가 최종 스위트 성공을 done 전에 요구하면 그 체크를 미체크로 둔 채 닫지 않고, 인계만 한 검사를 통과로 표시하지 않는다. 기본 절차의 영향 검사+등록된 최종 관문 인계로 바꾸는 안을 조정자/gusta-create-task에 올려 완료 시점 변경을 승인받고 활성 계약을 맞춘다([규칙 대조](../gusta-update/references/project-rules.md)). 이미 승인한 예외는 따르되 지원할 수 없거나 미승인이면 해당 태스크를 parked로 남긴다. 워커가 계약·SSOT를 임의로 고치지 않는다.
-- 커밋 전에 자기 변경(`git diff $GUSTA_DIFF_BASE`)의 hunk만 한 번 훑는다: 다른 파일에 이미 있는 helper·타입의 재정의, 설정이 있는데 숫자로 쓴 값, 정의만 하고 읽히지 않는 설정·export, 동작과 다른 주석, 같은 식의 반복, 바깥 세계와 묶여 단위 테스트로 검증할 수 없는 로직. 고칠 수 있으면 검사 전에 고친다. touches 밖이면 limits에 남긴다.
-- 각 AC의 주 검증 방법과 owner/stage를 따른다. agent가 담당하는 화면 시나리오는 실제 computer use로 관찰하고 id·scenario·steps·expected·observed·evidence·status(pass|fail|not-run), 대체한 E2E 범위를 기록한다. 도구가 없으면 integration-stage not-run·이유·capable host를 명시해 인계하며 관찰 pass를 꾸미거나 새 E2E fallback을 더하지 않는다. 기존 자동 시나리오를 그대로 둔 채 agent 검사를 추가하지 않는다. 결정론적 테스트는 기존 행동 증거를 재사용하고 실제 불변식 공백만 작은 fixture로 보완한다.
-- 테스트 분류는 스크립트 이름이 아닌 격리 범위와 의존성으로 판단한다. 단위 테스트는 필요한 최소 데이터·fixture로 대상 함수·컴포넌트를 독립 검증한다. 통합·e2e 검사를 타임아웃 상향으로 태스크마다 반복하지 않는다.
-- 형식: `vibe check --tier task --diff-base <태스크 시작 SHA> --task T### -- <command>`. `GUSTA_TIER=task`, `GUSTA_DIFF_BASE`와 TASK(S)가 전달된다. 요약의 실패 테스트·마지막 줄만 보고, 필요할 때만 log 경로의 범위를 읽는다. 긴 명령은 완료 알림까지 모델을 깨우지 않는다(sleep→조회 반복 금지).
-- `lint` 오류·경고는 고친다. reviewHints는 의미 검토 후보라 자동 수정하지 않고 next의 gusta-doc-review 또는 result limits로 넘긴다.
+① 구현·인계 acceptance 확인 ② 바뀐 범위의 작은 결정론적 검사와 빠른 ARCH task 명령을 커밋 직전 한 번 `vibe check --tier task`로(`--diff-base <시작 SHA> --task T### -- <command>`, 실패하면 고친 범위부터, 편집마다 반복하지 않는다) ③ spec lint — 오류·경고는 고치고 reviewHints는 next의 gusta-doc-review나 limits로 ④ 공동 최종 검수·CI는 owner에게 인계([검증 절차](../gusta-start/references/verification.md)). 긴 명령은 완료 알림을 기다린다(sleep→조회 반복 금지).
+- 검사 전에 `git diff $GUSTA_DIFF_BASE`를 한 번 훑어 3절 위반·읽히지 않는 설정/export·틀린 주석·반복을 고친다.
+- 결정론적 검사는 기존 증거를 재사용하고 실제 불변식 공백만 작은 fixture로 보완한다. 테스트 분류는 스크립트 이름이 아니라 격리 범위·의존성으로 한다.
+- agent 화면 AC는 실제 computer use로 관찰해 기록한다. 도구가 없거나 owner가 host·stage가 integration이면 not-run·이유·담당자(capable host)로 인계한다 — pass를 꾸미거나 E2E를 덧붙이지 않는다.
+- acceptance가 done 전 전체 스위트 성공을 요구하면 통과로 체크하지 말고, 최종 관문 인계로 바꾸는 안을 gusta-create-task(묶음은 조정자)로 승인받는다 — 승인된 예외는 따르고 미승인·미지원이면 parked.
 
 ## 5. 마감
-단독 태스크는 acceptance 체크(충족은 `[v]`; `[x]`는 SSOT 기각 표기라 쓰지 않는다)와 result `- outcome:` / `- at:` 검증 SHA / `- verified:` 실제 검사 / `- limits:` 한계 또는 `-` 네 줄과 agent acceptance 증거/미실행 인계를 쓰고 `vibe task done T### --tag <tag> [--at <sha>]`로 마감한다(아카이브·STATE·next·log·unlanded는 CLI, 미체크·빈 result·다른 tag는 거절). owner가 host이거나 stage가 integration인 AC는 단위가 끝낼 일이 아니다 — not-run·이유·담당자로 인계하고 마감하며 그것으로 blocked하지 않는다(관찰 pass를 done 조건으로 쓴 acceptance는 맡김이면 gusta-create-task로 인계 기준으로 고치고 inbox decided). 이후에도 지킬 계약은 result에 묻지 말고 gusta-update-ssot로 올린다. 태스크마다 출력 files와 관련 파일만 커밋하며 push·보고서는 gusta-start/호스트의 묶음 경계를 따른다. gusta-start 밖 커밋은 요청받았을 때만 한다.
-작업 묶음 워커는 acceptance 체크·result·코드만 갱신하고 제출한다. STATE·SSOT·st·아카이브는 CLI/기획 공간이 소유한다.
+`vibe task start`로 선점한 단독 태스크는 이 순서로만 닫는다(st·아카이브·STATE를 손으로 고치지 않는다).
+1. 충족한 acceptance는 `[v]`로 체크한다(`[x]` 아님). 인계한 AC로 blocked하지 않고 닫는다. 관찰 pass를 done 조건으로 쓴 acceptance는 gusta-create-task로 인계 기준으로 고친다.
+2. result 네 줄 `- outcome:` / `- at:` 검증 SHA / `- verified:` 실제로 돌린 검사 / `- limits:` 한계 또는 `-`와 `- agent-acceptance:`를 쓴다. 이후에도 지킬 계약은 result에 묻지 말고 gusta-update-ssot로 올린다.
+3. `vibe task done T### --tag <tag> [--at <sha>]`.
+4. 출력 files와 관련 변경만 커밋한다(gusta-start 밖에서는 요청받았을 때만, push는 gusta-start 몫).

@@ -6,8 +6,7 @@ description: >-
 
 # gusta-start — 맡김 실행자
 
-**역할: 진행자.** 이미 구상된 태스크를 사람 없이 끝까지 실행한다 — 실행 순서·커밋·진행 표시·결정함·보고서를 지킨다. 기획 변경 요청을 인자로 받으면 그 요청을 기획 한 조각(SSOT·태스크)으로 옮긴 뒤 같은 방식으로 실행한다. 기획·기술 판단은 하지 않는다 — 고른 스킬이 자기 역할로 한다. 스킬 절차를 여기서 다시 쓰지 않는다.
-**철학**: 미리 잘 구상해 두면(/gusta-plan·/gusta-sketch) 그다음은 자동으로 돈다. AI가 만들고 사람은 고른다 — 실행 중 판단은 추천안으로 정하고 결정함에 남겨 사람이 나중에 고른다. 문서 먼저 · 적은 토큰 · 빠른 구현 — 시간은 구현에 쓰고 무거운 검증은 마감 관문 한 번에 모은다.
+**역할: 진행자.** 이미 구상된 태스크를 사람 없이 끝까지 실행시킨다 — 실행 순서·커밋·진행 표시·결정함·보고서를 지킨다. 기획·기술 판단은 고른 스킬이 한다. 이 대화가 오케스트레이터이고, 구현은 `vibe loop`가 띄우는 단위 세션이 한다. loop 단위 세션(`GUSTA_VIBE_UNIT=1`)은 이 스킬 대신 [단위 계약](references/unit.md)을 따른다.
 
 ## 공통 규칙 (모든 spec 스킬)
 1. 먼저 `vibe status --json`(실행기 안에서는 brief)으로 필요한 요약만 본다. spec/이 없으면 /gusta-plan을 안내하고 멈춘다. `settings.unset`이 있으면 gusta-init으로 정한다(맡김에서는 묻지 않고 미정인 채 진행한다).
@@ -16,70 +15,56 @@ description: >-
 4. 질문·보고는 cfg.lang·cfg.level대로, 산출 문서 언어는 FORMAT 언어 규칙대로. 선택지형 질문 도구가 있으면 쓴다. 맡김(gusta-start·loop 단위)에서는 묻지 않는다 — 추천안으로 진행해 `vibe inbox add`로 남기고, 되돌리기 어렵거나 프로젝트 밖에 영향을 주는 일과 권한 창이 뜰 만한 명령은 주차한다. 사용자가 직접 부른 스킬은 묻는다.
 5. **읽기**: `vibe brief <ID> --summary`로 범위를 찾고 필요한 블록만 원문째 읽는다 — 출력의 complete·`next`가 덜 읽은 곳을 알려 준다. STATE·FORMAT·ARCH·큰 코드·tasks/done/을 통째로 읽지 않는다. 긴 출력은 요약·tail만 보고 전체는 파일로 남긴다.
 
-CLI는 `npx @haeram/gusta` 뒤에 붙인다. 실행기의 cliCommand가 있으면 그 경로를 사용한다.
+CLI는 `npx @haeram/gusta` 뒤에 붙인다.
 
 ## 1. 시작 — 보여 주고 바로 실행
-`vibe status --tag <tag> --json`으로 cfg·다른 세션·inbox 수·runnable·남은 일만 본다. 앞선 원격은 깨끗한 트리에서 sync한다. 실행기 밖 초기화·선점은 필요할 때만 [세션 절차](references/session.md)를 읽는다.
-- SETTINGS `usage-measurement`가 true인 시작 대화는 분기 전에 [사용량 기준선](references/usage.md)을 시작하고 아래 조기 종료에도 5절의 Markdown 보고·채팅 요약/링크를 붙인다(false면 실행하지 않음).
-- 기획 변경 요청 인자 없이 실행할 태스크가 없으면(route `sketch-first`) "실행할 태스크가 없습니다 — /gusta-plan으로 먼저 기획하고 태스크까지 만드세요" 한 줄로 끝낸다. 미룬 구상(open/ready ideation)·태스크로 아직 안 쪼갠 SSOT 변경·채택 review가 있으면 그 목록도 붙인다. 여기서 기획·태스크를 만들지 않는다.
-- route `design`(이 checkout이 디자인 중)이면 디자인 변경을 건드리지 않고 "디자인이 열려 있습니다 — /gusta-design-mode로 마감한 뒤 다시 실행하세요"로 끝낸다.
-- `settings.unset`에 `agents`가 있으면 맡김을 시작하지 않고 gusta-init으로 보낸다(쓸 AI 목록이 없으면 CLI가 단위를 배정하지 못한다 — loop·work run은 `needs-init`으로 멈춘다).
-- 기획·구현 쓰기 전에 `vibe session open --kind start --tag <tag> --json`으로 전용 linked worktree/하위 브랜치를 확보하고 이후 명령·보고서·단위의 cwd를 반환된 targetRoot로 둔다. 배정된 hostManaged/단위 세션은 자기 workspace를 검증해 그대로 잇고 중복 생성하지 않는다. 원래 checkout의 미커밋 작업을 복사·stash·커밋하지 않는다.
-- 실행 전에 한 번 보여 준다 — 질문이 아니므로 답을 기다리지 않고 바로 시작한다: 대상 태스크(ID·제목, 인자로 범위를 줬으면 그 범위), dep 순서와 병렬 여부(작업 묶음이면 lane), 마감·예약 시간, 검증 단계(태스크 단계·최종 관문 명령 요약), 반영 설정(SETTINGS land·land-via·push), 단위별 배정(`vibe loop --dry-run`의 `routing`: 태스크·추천·실제 조합), 다른 세션·기기의 진행(`others` — `pushed:false`는 "아직 push 안 됨")과 건너뛸 태스크(`held`·`unlanded` — 가로채지 않는다), 결정함 미확인 수, 완료 알림 연결 여부.
-- 최초 구현 전에 [제품 지원 정책](../gusta-create-architecture/references/product-support.md)의 승인된 단계·지원 범위·제외·검토 시점을 시작 요약에 담는다. 미정이면 최초 기획 연결을 마친 뒤 구현하며, 맡김에서도 기존 지원을 임의 축소하거나 단계를 추측하지 않는다. 이미 정한 선택은 재질문하지 않는다.
-- init/update가 연결한 ARCH 단계/계획의 `declared`·`partial`과 바뀐 명령·지침·입력만 확인한다. 유효한 연결이 있으면 전체 문서 조사를 반복하지 않는다. 빠진 실행 범위가 있으면 [검증 절차](references/verification.md)대로 연결하고 지원 한계를 밝힌다. 부분 성공을 잃는 외부 스크립트를 새로 만들지 않으며, 기존 단계 명령으로 충분하면 유지한다.
-- 인자로 태스크 ID(`T012 T013`)·시간 한도(`4시간`·마감 시각)·작은 수정 요청·기획 변경 요청을 받는다. 묻지 않는다. 인자가 없으면 STATE·태스크대로 실행한다. 규칙·동작을 바꾸는 요청이면 [요청 실행](references/request.md)을 읽고, 해석을 보여 준 뒤 기획(SSOT·태스크)을 첫 loop 단위에 맡겨 그 범위만 실행한다.
-- preflight가 사람만 고칠 수 있는 문제(needsUser: 헤드리스 권한 규칙·인증·원격 등)로 실패하면 그 목록과 고칠 방법을 한 번 묻는다 — 사용자가 방금 불렀으니 아직 자리에 있다. 실행 중 유일한 질문이며, 고쳐지지 않으면 실행하지 않고 멈춘다.
-단위1·hostManaged가 아니면 **시작한 대화가 오케스트레이터**다. 사용자 목표·마감·총 회복 예산·검증·원격 결과를 끝까지 책임진다. `vibe loop --tag <tag> --json`은 새 단위 세션·active·보고서·관문을 돕는 실행기다(단위의 도구·모델·에포트는 CLI가 태스크 `run:`대로 정한다 — `--provider`를 붙이지 않는다). 도구/하네스의 완료 대기로 종료 결과를 받아 판단하고, CLI 종료를 사용자 작업 완료로 보고하지 않는다. `--detach`는 이 대화로 완료를 돌려 실제 후속 턴을 여는 연결이 있을 때만 쓴다. 연결이 없으면 자동 후속·통지가 안 됨을 밝히고 기다릴 수 있는 실행 방식을 쓴다. 작업 묶음 조건이면 [조정자 절차](references/coordinator.md)를 읽는다.
-loop를 띄우기 전(마감 예약·`--tasks`·단위 상한·권한 모드)과 실행 중 설정 변경·취소·정지는 [세션 절차](references/session.md)의 loop 옵션을 먼저 읽는다.
-`/gusta-start 맡김 단위1` 또는 `GUSTA_VIBE_UNIT=1`이면 시작 질문 없이 배정된 **태스크 1개 done** 또는 그 회복(이어가기·쪼개기)이 요구한 **기획 한 조각**만 끝낸다. 기획 조각은 gusta-update-ssot(필요하면 gusta-create-ssot)+gusta-create-task를 같은 세션에서 끝내고 읽은 결정을 재사용한다. 태스크로 안 쪼갠 SSOT 변경·review·ideation은 기획하지 않는다(사용자의 /gusta-plan이 태스크로 만든다). 그 뒤 구현으로 넘어가지 않는다. 구현을 부하 에이전트에 분할하지 않는다.
-hostManaged 실행기에서는 초기화·active·보고서 생성/종료·묶음 검증·완료 push·CI를 호스트에 맡긴다. 같은 tag·보고서를 잇고 재초기화하지 않는다. 헤드리스 세션 권한은 SETTINGS `permission-mode`(기본 bypass — 권한 창·sandbox 없음)를 따르고 따로 묻지 않는다. acceptEdits면 allow 목록만 쓴다.
+인자로 태스크 ID(`T012 T013`)·시간 한도(`4시간`·마감 시각)·작은 수정 요청·기획 변경 요청을 받는다. 묻지 않는다. 인자가 없으면 STATE·태스크대로 실행한다.
+1. `vibe status --tag <tag> --json`으로 cfg·다른 세션·inbox 수·runnable·남은 일을 본다. 원격이 앞서 있으면 깨끗한 트리에서 sync한다. 실행기 밖 초기화·선점이 필요할 때만 [세션 절차](references/session.md)를 읽는다.
+2. SETTINGS `usage-measurement`가 true인 시작 대화는 분기 전에 [사용량 기준선](references/usage.md)을 시작하고, 아래 조기 종료에도 5절의 Markdown 보고·채팅 요약/링크를 붙인다.
+3. 멈추는 경우 — 한 줄로 끝낸다:
+   - 기획 변경 요청 인자 없이 실행할 태스크가 없으면(route `sketch-first`): "실행할 태스크가 없습니다 — /gusta-plan으로 먼저 기획하고 태스크까지 만드세요". 미룬 구상·태스크로 안 쪼갠 SSOT 변경·채택 review가 있으면 목록을 붙인다.
+   - route `design`: "디자인이 열려 있습니다 — /gusta-design-mode로 마감한 뒤 다시 실행하세요".
+   - `settings.unset`에 `agents`: gusta-init으로 보낸다.
+4. 쓰기 전에 `vibe session open --kind start --tag <tag> --json`으로 전용 worktree·하위 브랜치를 확보하고 이후 cwd를 반환된 targetRoot로 둔다. 원래 checkout의 미커밋 작업은 건드리지 않는다.
+5. 규칙·동작을 바꾸는 요청이면 [요청 실행](references/request.md)을 읽는다.
+6. 실행 정보를 한 번 보여 주고 답을 기다리지 않고 시작한다: 대상 태스크(ID·제목), dep 순서·병렬(lane), 마감, 검증 단계, 반영 설정(land·land-via·push), 단위별 배정(`vibe loop --dry-run`의 `routing`), 다른 세션·기기의 진행(`others` — `pushed:false`는 "아직 push 안 됨")과 건너뛸 태스크(`held`·`unlanded`), 결정함 미확인 수, 완료 알림 연결 여부, ARCH의 [제품 지원](../gusta-create-architecture/references/product-support.md) 단계(미정이면 최초 기획 연결부터 한다).
+7. ARCH 검증 연결에 빠진 실행 범위가 있으면 [검증 절차](references/verification.md)대로 연결한다.
+8. preflight가 사람만 고칠 수 있는 문제(needsUser: 권한 규칙·인증·원격)로 실패하면 목록과 고칠 방법을 한 번 묻는다 — 실행 중 유일한 질문이다. 고쳐지지 않으면 멈춘다.
 
-## 2. 무엇을 실행하나
-인자를 먼저 해석하고 없으면 route·dep을 따른다.
+## 2. 실행 — 이 대화가 오케스트레이터
+- `vibe loop --tag <tag> --json`이 단위마다 새 세션을 띄운다(도구·모델은 CLI가 태스크 `run:`대로 정한다 — `--provider`를 붙이지 않는다). loop 옵션(마감·`--tasks`·단위 상한·권한 모드)과 실행 중 설정 변경·취소·정지는 [세션 절차](references/session.md)를 먼저 읽는다.
+- 완료 대기로 종료 결과를 받아 판단한다. CLI 종료를 작업 완료로 보고하지 않는다. `--detach`는 완료를 이 대화로 돌려주는 연결이 있을 때만 쓴다.
+- 사용자 목표·마감·회복 예산·검증·원격 결과는 이 대화가 끝까지 책임진다. 실행기가 실패해도 남은 일을 대조해 회복할 수 있으면 잇는다 — 이미 쓴 시도·마감·한도는 초기화하지 않는다. CLI 결함은 익명화해 보고서에 남기고 대상 프로젝트 작업에 패키지 수정을 끼워 넣지 않는다.
+- 작업 묶음은 사용자의 병렬 요청, 또는 독립 단위 2개 이상·각 태스크 3개 이상·touches 분리·explore 제외일 때만 [조정자 절차](references/coordinator.md)로 한다.
 
 | 상황 | 다음 |
 |---|---|
-| spec 없음·실행할 태스크 없음(route sketch-first) | 1절 안내로 마감 — /gusta-plan |
-| route design | 1절 안내로 마감 |
-| route repair(issues: FORMAT 밖 st, 손으로 닫은 태스크) | 문서·STATE 상태를 FORMAT에 맞게 복구하고 gusta-implement-task 5절 마감(`vibe task start`→`vibe task done`) 후 lint; 정상 완료 기록은 보존 |
-| dep 충족 todo·자기 doing | vibe brief T### → gusta-implement-task 1개 |
+| dep 충족 todo·자기 doing | `vibe loop` — 단위가 태스크 1개씩 gusta-implement-task로 |
+| 규칙·동작을 바꾸는 요청 | [요청 실행](references/request.md): 해석을 보여 주고 `vibe loop --request-file` |
 | 작은 버그·문구·스타일 수정 요청 | 아래 경량 경로 |
-| 규칙·동작을 바꾸는 요청(시작 대화) | [요청 실행](references/request.md): 해석 → `vibe loop --request-file`(기획 단위 → 그 태스크 실행) |
-| 기획·기술 판단으로 blocked | 추천안으로 기획 한 조각을 끝내고 해당 태스크를 재개 가능하게 복구 |
-| inbox 정리 요청 | `vibe inbox list`의 항목 중 확인받은 것만 `vibe inbox resolve --id <id> --log '<한 줄>'`(결정을 바꾸는 요청은 /gusta-plan) |
-| 원격에서 이어가기·현재 상태 보존만 요청 | `vibe checkpoint --handoff --tag <tag>`; 수정·최종 반영을 시작하지 않고 원격 브랜치·SHA·검증 상태·다음 작업 반환 |
-| 일 없음·parked만 남음 | 미반영 CI 수정·해결 가능한 blocked부터 확인. 일반 조정자 세션에서 활성·기한 도래한 지속 개선 위임이 있으면 gusta-self-improve-remote 한 사이클, 아니면 마감(다음 기획은 /gusta-plan); 위임 없이 새 일을 만들지 않는다 |
+| route repair(FORMAT 밖 st, 손으로 닫은 태스크) | 문서·STATE를 FORMAT에 맞게 복구하고 gusta-implement-task 5절로 마감 후 lint(정상 완료 기록 보존) |
+| inbox 정리 요청 | `vibe inbox list`에서 확인받은 것만 `vibe inbox resolve --id <id> --log '<한 줄>'`(결정을 바꾸는 요청은 /gusta-plan) |
+| 원격에서 이어가기·상태 보존만 | `vibe checkpoint --handoff --tag <tag>` — 수정·반영 없이 원격 브랜치·SHA·검증 상태·다음 작업 반환 |
+| 일 없음·parked만 남음 | 미반영 CI 수정·해결 가능한 blocked부터. ARCH에 활성·기한 도래한 지속 개선 위임이 있으면 gusta-self-improve-remote 한 사이클, 없으면 마감 |
 
-경량 경로는 모두 만족할 때만: SSOT 규칙·계약·저장 형식·마이그레이션 변경 없음, 새 결정 없음, 버그/문구/스타일 수정, 코드+테스트 3파일·추가+삭제 100줄 이하(STATE 제외). 태스크·rev 없이 구현 → 영향 테스트+빠른 검사 → 커밋 하나 → `vibe log --text 'fix <area>: <what>'`. 조건이 깨지거나 결정·기획 공백이 나오면 추천안으로 기획 한 조각(gusta-update-ssot+gusta-create-task)을 끝내고 태스크로 올린다.
-작업 묶음은 단위1에서 만들지 않는다. 사용자의 병렬 요청 또는 독립 단위 2개 이상·각 태스크 3개 이상·touches 분리·explore 제외일 때만 [조정자 절차](references/coordinator.md)를 읽는다.
-지속 개선 자동 진입은 저장된 ARCH 정책과 대상 프로젝트의 에이전트 지침이 연결된 일반 조정자 세션에만 적용한다. hostManaged·단위1은 배정된 한 단위만 끝내며 자체 개선 사이클·리뷰·push를 시작하지 않는다. `vibe loop`의 no-work·needs-sketch 종료는 그대로다. 세션 밖 반복은 gusta-self-improve-remote의 실행기 연결 절차로 설정한다.
+경량 경로는 SSOT 규칙·계약·저장 형식·마이그레이션 변경과 새 결정이 없고, 코드+테스트 3파일·100줄 이하(STATE 제외)일 때만이다: 구현 → 영향 테스트 → 커밋 하나 → `vibe log --text 'fix <area>: <what>'`. 조건이 깨지면 기획 한 조각(gusta-update-ssot+gusta-create-task)으로 태스크를 만들어 실행한다.
 
 ## 3. 맡김 규칙
-실행 중 질문은 0회이며 **되돌릴 수 있는 기획·기술 판단도 위임받은 것**이다. "사용자 의사결정 필요"만으로 blocked·parked·마감하지 않는다. 스킬이 만든 질문은 해당 스킬에서 추천안으로 결정하고 inbox decided에 질문·선택·대안·이유를 남긴다(`vibe inbox add --kind decided|parked --ref <ID> --text '<줄>'` 한 번 호출, 따옴표·`|`가 섞이면 `--file`). SSOT에는 일반 [o]만 쓴다. 공백·모순은 gusta-update-ssot+gusta-create-task 한 조각으로 해소하고 태스크·STATE의 base·dep·st를 맞춰 다음 단위에서 재개한다.
-- 문서 마감·결과 수정·커밋 잔여·재검사·단위 시간 소진은 외부 의존성이 아니다. 단위는 남은 일을 `continue`(next에 남은 일)로 넘기고 호스트가 같은 tag·원래 마감 안에서 이어받는다. `blocked`는 실제 외부 의존성과 재개 조건(`blocker`)이 있을 때만이다. 전체 예산 소진은 그 한도로 보고한다.
-- 사용자가 중단·먼저 반영·보고 등 새 지시를 주면 기본 계획을 재평가한다. [제어 계약](references/loop-control.md)으로 소유한 실행을 취소하고 하위 검사 정리를 확인한 뒤 지시를 처리한다. 남은 검사를 자동 재개하지 않으며, 명시한 검증 예외·미완료 검사를 정확히 보고하고 하드 관문·권한은 우회하지 않는다.
-- 이미 승인된 후속 작업이 CI를 막으면 실제 선행 결과·touches·진행 중 소유권을 확인하고 미착수 태스크의 순서를 조정한다. 태스크와 STATE의 dep을 함께 갱신한다. 완료기준을 낮추거나 검사를 빼서 통과시키지 않는다.
-- 과금·데이터 삭제·개인정보·보안 정책은 [?]+parked. 배포·게시·force push·브랜치 삭제·전역 설정·외부 메시지·공유 데이터 변경 등 되돌리기 어려운 일, 실제 권한·인증 부재도 해당 작업만 parked로 남기고 다른 실행 가능한 태스크로 간다.
-- **권한 창을 만들지 않는다.** 맡김의 권한 확인 창은 질문과 같다 — 사람이 없으니 세션이 멈추고, 그동안 캐시가 식어 토큰이 다시 든다. 위험해서 확인이 필요해 보여도 묻지 않고, 창이 뜰 만한 호출 자체를 하지 않는다:
-  - 셸 호출 하나에 일 하나. `cd`를 `;`·`&&`·파이프로 다른 명령과 섞지 않고 절대 경로·`git -C`를 쓴다. 읽기와 쓰기·삭제를 한 호출에 섞지 않는다.
-  - 쓰기·삭제는 현재 checkout(워커는 배정된 worktree)과 세션 임시 폴더 안에서만. 상위 폴더·다른 worktree·홈·시스템 경로는 건드리지 않는다.
-  - `rm -rf`·`kill`/`pkill`·`sudo`·`chmod`·`curl`/`wget`(다운로드·웹 조회)·전역 설치·`git push --force`/`reset --hard`/`clean`/브랜치 삭제·권한 설정 파일 수정은 하지 않는다(쓰지 않는 브랜치 정리는 `vibe prune`이 설정대로 한다). 프로세스·CI·작업 상태는 `ps`나 웹 조회 대신 `work board`·`vibe ci wait`·백그라운드 완료 알림으로 본다.
-  - 부하 에이전트(Agent 도구)를 띄우지 않는다 — 그 도구 호출의 권한 창도 이 세션을 멈춘다. 병렬은 헤드리스 실행기(`work run`)로만 한다.
-  - 그래도 필요한 일(디스크 정리, 다른 worktree 정리, 권한 추가, 프로세스 종료)은 하지 않고 inbox parked·보고서에 남긴 뒤 다른 일로 간다. 실행 가능한 일이 없으면 마감한다.
+- 실행 중 질문은 0회다. 되돌릴 수 있는 기획·기술 판단은 위임받은 것이다 — 추천안으로 정하고 질문·선택·대안·이유를 `vibe inbox add --kind decided --ref <ID> --text '<줄>'` 한 번으로 남긴다(따옴표·`|`가 섞이면 `--file`). SSOT에는 일반 [o]만 쓴다.
+- 해당 작업만 parked로 두고 다른 일로 간다: 과금·데이터 삭제·개인정보·보안 정책([?]), 되돌리기 어려운 일(배포·게시·force push·브랜치 삭제·전역 설정·외부 메시지·공유 데이터 변경), 실제 권한·인증 부재.
+- 사용자가 중단·먼저 반영·보고 등 새 지시를 주면 [제어 계약](references/loop-control.md)으로 소유한 실행을 취소·정리한 뒤 처리한다. 하드 관문·권한은 우회하지 않는다.
+- **권한 창을 만들지 않는다** — 사람이 없으면 세션이 멈춘다. 셸 호출 하나에 일 하나(`cd`를 섞지 않고 절대 경로·`git -C`), 쓰기는 작업 공간·세션 임시 폴더 안에서만, `rm -rf`·`kill`·`sudo`·`chmod`·`curl`/`wget`·전역 설치·force push·`reset --hard`·`clean`·브랜치 삭제·권한 설정 수정·부하 에이전트는 쓰지 않는다. 병렬은 `work run`으로만 한다. 그래도 필요한 일은 parked로 남긴다.
 
-## 4. 커밋·검증·push
-적용되는 프로젝트 지침·운영 문서가 패키지 기본과 실제로 충돌하면 [규칙 대조](../gusta-update/references/project-rules.md)대로 기본 절차 정리를 권유하고 승인받는다. 실행 중에는 묻지 않으므로 미승인 차이를 parked로 남긴다(정리는 사용자가 /gusta-update로). 이 절차는 그 충돌에만 적용하며 매 태스크마다 전체 문서를 다시 조사하지 않는다.
-- 커밋: 태스크·기획 조각·경량 수정마다 관련 파일만 커밋한다. 실행기 밖에서는 태스크의 doing을 첫 작업 커밋에 포함하고(선점·세션 행은 커밋할 것이 없다) 보고서는 태스크 3개(기본)·기획 조각의 태스크 소진·세션 끝 중 먼저 온 묶음 경계에 갱신한다.
-- 기획 문서는 SETTINGS plan 브랜치(미정이면 land, land도 브랜치가 아니면 저장소 기본 브랜치)에 항상 최신으로 둔다: 기획 조각은 `vibe plan-sync`로 시작하고, 기획 커밋은 spec/만 담아 커밋 직후 `vibe plan-push`한다. 코드 반영 규칙(SETTINGS land·push)과 무관하다. ID 충돌로 거절되면 고른 기획 스킬이 다시 채번해 올린다. 충돌·권한 문제로 실패하면 inbox parked에 남기고 구현으로 넘어가지 않는다(번호가 정본에 없는 태스크를 구현하지 않는다).
-- 끝난 작업은 공유 통합에 ready로 제출한다. 살아 있는 참여 세션의 준비와 고정 후보 증거가 확인된 한 소유자만 SETTINGS `land`·`land-via`·`push`대로 반영한다. 세션이 끝났다는 이유로 각자 전체 검사·push하지 않는다. 밖에서 land가 움직이면 자동 병합·전체 재시도 대신 조정 상태를 보고한다. land 미정이면 전용 작업 브랜치의 커밋과 미반영 사유를 남긴다.
-- "배포해줘"(`vibe deploy`)는 [세션 절차](references/session.md)를 읽고 한다.
-- 검증: 태스크는 영향 결정론적 검사·빠른 정적 검사, 공동 batch는 살아 있는 참여 세션이 모두 ready인 뒤 고정 후보의 전체 검수 한 번이다. 최소 E2E·지원 브라우저 호환은 CI, 대체 agent AC는 실제 도구가 있는 지정 owner가 수행한다. 미관찰 integration AC는 waiting-agent로 남기고 후보·기존 성공을 보존해 이어간다. [검증 절차](references/verification.md)의 공유 조정·도구·보고 계약을 따른다.
-- 실행기 실패·종료 뒤에도 시작 대화가 목표와 남은 일을 대조한다. 회복 가능한 CLI 문제면 새 하위 단위/일반 스킬 절차로 이어서 끝낸다. 이미 쓴 시도·원래 마감·검증·권한은 유지하고, 무진행·총 한도를 재시작으로 초기화하지 않는다. CLI 결함은 익명화해 보고서에 남겨 나중에 패키지에서 고친다; 대상 프로젝트 작업에 패키지 수정을 끼워 넣지 않는다. 실제 권한 부재·마감·회복 한도에 닿으면 미완료 사유와 재개 작업을 명시한다.
-- 1시간마다, 긴 명령 전 `vibe checkpoint --tag <tag>` 유지(push 브랜치가 없으면 로컬 `wip/<tag>`에만 남는다). 무관한 사용자 변경은 커밋하지 않는다.
+## 4. 커밋·검증·반영
+- 태스크·기획 조각·경량 수정마다 관련 파일만 커밋한다. 보고서는 태스크 3개·기획 조각 소진·세션 끝 중 먼저 온 경계에 갱신한다. 무관한 사용자 변경은 커밋하지 않는다.
+- 기획 커밋은 `vibe plan-sync` 뒤 spec/만 담아 커밋 직후 `vibe plan-push`한다. ID 충돌이면 다시 채번하고, 실패하면 parked로 남기고 그 태스크를 구현하지 않는다.
+- 끝난 작업은 공동 통합에 ready로 제출한다. land 반영은 고정 후보를 검수한 한 소유자만 SETTINGS `land`·`land-via`·`push`대로 한다. land 미정이면 작업 브랜치의 커밋과 미반영 사유를 남긴다.
+- 검증 단계·agent acceptance는 [검증 절차](references/verification.md)를 따른다.
+- 1시간마다, 긴 명령 전에 `vibe checkpoint --tag <tag>`.
+- "배포해줘"는 [세션 절차](references/session.md)를 읽고 `vibe deploy`로 한다.
+- 프로젝트 지침이 패키지 기본과 실제로 충돌하면 [규칙 대조](../gusta-update/references/project-rules.md)대로 한다 — 실행 중에는 parked로 남긴다.
 
 ## 5. 마감
-측정을 시작한 최상위 대화는 [사용량 보고](references/usage.md)로 Markdown 파일을 저장하고 최종 **채팅**에 summary·reportFile 링크를 전달한다(할 일 없음·실패·주차도 동일, JSON artifact만으로 끝내지 않음).
-단위1은 다음 단위로 넘어가지 않고 JSON 한 줄(호스트가 요구하면 스키마 결과):
-`{"kind":"task","id":"T001","outcome":"completed","pushed":false,"next":"implementation","blocker":{"dependency":"","resume":""},"agentChecks":[]}`
-kind=task|planning|inbox|fix|none, outcome=completed|continue|parked|blocked|no_work. continue는 다음 단위가 이어받고, blocker는 blocked일 때만 채운다(없으면 호스트가 같은 세션에 되돌린다). agentChecks는 실제 AC 목록이며 없으면 빈 배열이다. stage unit|integration·owner·required·정확한 candidate SHA와 관찰/미실행 근거는 [검증 계약](references/verification.md)을 따른다. pushed는 실제 여부. 시작 대화는 종료 영수증의 agent acceptance를 기존 보고서 checks에 모으고 최종 채팅에 수행/실패/미실행을 요약한다. 기준에서 빠진 시나리오나 잘못된 기대가 있는지 사용자에게 확인을 요청하되 수동 QA를 떠넘기거나 답을 기다리며 맡김을 멈추지 않는다. 종료 영수증을 받아 사용자 목표의 완료 또는 실제 중단 사유를 확인한 뒤 보고한다: 검증 실패/시도 횟수·남은 수정 태스크·push 여부·원격 SHA·보고서. 자동 통지 연결 여부도 실행 전에 밝힌다. 종료 뒤 돌아오는 사용자는 새 대화에서 `/gusta-start`로 이어갈 수 있다 — 상태는 보고서·결정함·loop.json에 남긴다.
+- 측정을 시작한 최상위 대화는 [사용량 보고](references/usage.md)로 Markdown을 저장하고 최종 채팅에 summary·reportFile 링크를 전달한다(할 일 없음·실패·주차도 동일, JSON artifact만으로 끝내지 않는다).
+- 종료 영수증으로 목표 완료나 실제 중단 사유를 확인한 뒤 보고한다: 검증 실패·시도 횟수, 남은 수정 태스크, push 여부·원격 SHA, 보고서, agent acceptance의 수행/실패/미실행. 기준에서 빠진 시나리오가 있는지 사용자에게 확인을 요청하되 답을 기다리지 않는다.
+- 돌아온 사용자는 새 대화에서 `/gusta-start`로 잇는다 — 상태는 보고서·결정함·loop.json에 남아 있다.
