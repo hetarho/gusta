@@ -16,6 +16,14 @@
 - `test/context-budget.test.mjs` caps descriptions, SKILL.md files, the unit
   prompts and the repository CLAUDE.md just above their current sizes.
 - FORMAT names `gusta-self-improve` in the `land` setting.
+- `work next` `complete` in a directly called session names the same path
+  as autopilot: the owning session, then `vibe integration finish` (it said
+  `vibe push --target <landFrom>`, which reached the same shared gate). The
+  unused `landFrom` field is gone.
+- gusta-create-ssot records deferred priorities as `[o]` scope exclusions
+  (ideas to revisit go to ideation) instead of `[x]`, which FORMAT reserves
+  for decisions no longer in force. Session tags are described as 2–8
+  alphanumerics, matching the CLI.
 
 ## 0.17.8
 

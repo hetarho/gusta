@@ -28,4 +28,4 @@
   - validation-baseline: <resolved environment versions and observation date; unresolved until checked>
 ```
 
-사용자 발언이 이미 정한 단계·범위는 결정으로 받아 재질문하지 않는다. `gusta-init`은 이 추천을 sketch/architecture로 연결하며 제품 결정을 직접 쓰지 않는다. `gusta-start`는 승인된 범위로 시작하고 미정 정책을 임의 축소하지 않는다. `gusta-update`는 이 현재 결정과 실제 테스트·CI 행렬을 대조해 범위 밖 비용과 미확인을 보여 준다. 감사 출력의 추천·후보는 승인이나 의미 검토 완료가 아니다.
+사용자 발언이 이미 정한 단계·범위는 결정으로 받아 재질문하지 않는다. `gusta-init`은 이 추천을 gusta-plan·gusta-sketch(→ gusta-create-architecture)로 연결하며 제품 결정을 직접 쓰지 않는다. `gusta-start`는 승인된 범위로 시작하고 미정 정책을 임의 축소하지 않는다. `gusta-update`는 이 현재 결정과 실제 테스트·CI 행렬을 대조해 범위 밖 비용과 미확인을 보여 준다. 감사 출력의 추천·후보는 승인이나 의미 검토 완료가 아니다.

@@ -169,7 +169,8 @@ const INSTRUCTION = {
   blocked: 'attempt.reason을 확인한다. 직접 고칠 수 있으면 고친 뒤 work update --attempt <id> --status doing으로 재개해 다시 submit하고, 기획 판단이 필요하면 사용자에게 보고하고 멈춘다.',
   wait: 'work next를 다시 호출한다. 통합·검증은 CLI가 백그라운드에서 진행한다.',
   'needs-reviewer': '이 세션의 제출물만 남아 있어 독립 리뷰어가 필요하다. 다른 세션을 열어 같은 요청을 하게 하거나, 새 컨텍스트의 서브에이전트에서 다른 owner로 gusta-review-task를 실행한 뒤 work next를 다시 호출한다.',
-  complete: '남은 일이 없다. landFrom에서 vibe push --target <landFrom> --verified-commit <verified.commit>으로 SETTINGS land에 반영하고 묶음 브랜치·검증 커밋·반영 결과를 보고한다. land가 정해지지 않았으면(land-unset) gusta-init으로 먼저 정한다.',
+  // Land moves only from the shared fixed candidate (CLAUDE.md principle 12): a finished group never pushes to land itself.
+  complete: '남은 일이 없다. 중첩 묶음은 소유 세션의 작업 브랜치에 합치고 그 세션의 다른 작업을 잇는다. 소유 세션 전체가 끝났을 때만 vibe integration finish --tag <session tag> --target <session root>로 공유 통합을 요청하고 후보·waiting/AC/CI 상태를 보고한다. land가 정해지지 않았으면(land-unset) gusta-init으로 먼저 정한다.',
   stalled: 'blocked·finishFailure 원인을 사용자에게 보고하고 멈춘다. 해결되면 work next를 다시 호출한다.',
   decide: 'attempt.decision(question·options·recommendation)을 사용자에게 선택지형으로 묻고, 기획 공간에서 gusta-update-ssot로 반영해 커밋한 뒤 work update --attempt <id> --status doing --note <적용한 결정과 SSOT rev>로 재개한다.',
   'main-session': '묶음에서 할 일은 끝났다. 남은 tasks는 explore 태스크와 그 후속이라 메인 세션에서 단독으로(gusta-implement-task) 진행한다.',
@@ -233,7 +234,7 @@ export async function nextWork(options) {
       const group = result.action === 'complete' ? groupOf(await readRuntime(context.root), work) : null
       const integrationTarget = group?.managed === false ? { branch: group.branch, path: group.path } : null
       return { schemaVersion: 1, work, owner: options.owner, ...rest, ...(timedOut && seconds ? { reason: 'timeout', detail: result.reason } : {}),
-        ...(integrationTarget ? { integrationTarget } : {}), ...(group ? { landFrom: group.path } : {}),
+        ...(integrationTarget ? { integrationTarget } : {}),
         instruction: integrationTarget && result.verified?.current ? '지정한 작업 브랜치의 검증 증거가 있다. integrationTarget과 검증 커밋을 보고한다. 이후 공유 통합은 모든 세션이 준비된 고정 후보를 사용하며 SETTINGS land·push를 따른다.' : result.ready ? UNATTENDED.complete : (options.autopilot ? UNATTENDED[key] : null) ?? INSTRUCTION[key] }
     }
     await sleep(Math.min(options.pollMs ?? 5000, deadline - Date.now()))

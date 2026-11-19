@@ -18,7 +18,7 @@ description: >-
 CLI는 `npx @haeram/gusta` 뒤에 붙인다.
 
 ## 1. 시작
-- `vibe status --json`의 `design`이 있으면 그 tag·scope로 이어 하고 "디자인 이어서 합니다: <scope>"만 알린다. 없으면 세션 tag(영숫자 2-4자)를 정해 `vibe design start --tag <tag> --scope "<무엇을 디자인하는지 한 줄>"`.
+- `vibe status --json`의 `design`이 있으면 그 tag·scope로 이어 하고 "디자인 이어서 합니다: <scope>"만 알린다. 없으면 세션 tag(영숫자 2-8자)를 정해 `vibe design start --tag <tag> --scope "<무엇을 디자인하는지 한 줄>"`.
 - `design.showcase`가 있으면 gusta-showcase 메인이다: 그 path(메인 변형 worktree)만 고친다. 서버·hub는 이미 떠 있고, 다른 변형은 `vibe ab status <slug> --json`으로 찾는다. 커밋·서버·scaffold는 건드리지 않는다.
 - 새로 시작할 때 미커밋 변경이 있으면(STATE 제외) 한 번만 묻는다: 지금 따로 커밋 / 디자인에 포함(마감 검사·커밋에 함께 들어간다).
 - 화면: 떠 있는 개발 서버(hot reload)를 재사용하고, 없으면 ARCH·package.json의 dev 명령을 백그라운드로 한 번 띄워 주소를 알린다(못 띄우면 명령만 알린다). 디자인 중 서버를 다시 시작하지 않는다.

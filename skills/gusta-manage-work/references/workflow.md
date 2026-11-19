@@ -31,7 +31,7 @@
 - 세션 루프 밖에서는 조정자가 승인된 제출물에 `work integrate --attempt <id> --json`(저장된 단위 명령, `--verify`로 덮어쓰기 가능). 이 요청은 로컬 후보 생성·검증·상위 작업 브랜치 반영을 수행한다. 후보 worktree에는 의존성 설치나 환경 준비가 없으므로 필요하면 명시적인 검증 명령에 설치/준비도 포함한다. 외부 서비스·공유 DB가 필요한 검증은 프로젝트의 격리 규칙을 따른다.
 - CLI는 별도 후보에서 merge, 단위의 모든 태스크 아카이브, STATE 행 제거, spec 검사, 커밋, 지정 검증을 수행한다. 검증 시간 상한은 명령당 1시간이며 `--verify-timeout-ms`로 바꾼다. 상위 checkout이 clean이고 기준이 그대로일 때만 fast-forward한다. 충돌/실패 후보는 보존하며 실제 원인은 JSON details에서 확인한다.
 - 승인은 제출 커밋에 묶인다. 코드 변경은 재제출·재리뷰가 필요하고, 상위 커밋이 바뀌면 바뀐 파일이 그 단위의 변경·SSOT와 겹칠 때만 재리뷰한다. 승인됐다고 검증을 생략하지 않는다.
-- 통합 후 태스크가 done이고 후속 dep이 열린다. `work finish`의 검증 커밋은 `work board`의 `verified`로 확인한다(`current:false`면 이후 코드가 바뀌었으니 다시 finish). `--push`가 있으면 통합·sync마다 그 브랜치로 push되고 결과는 `group.pushed`에 남는다(거부되면 다음 통합·sync가 원격을 합쳐 다시 push한다). `--push`가 없으면 `work integrate`는 로컬 묶음 브랜치까지만 반영한다. 묶음이 끝나면(`complete`) 응답의 `landFrom`(기획 공간)에서 `vibe push --target <landFrom> --verified-commit <검증 SHA>`로 SETTINGS land에 반영한다. merge·PR·push 방식은 land-via·push가 정한다.
+- 통합 후 태스크가 done이고 후속 dep이 열린다. `work finish`의 검증 커밋은 `work board`의 `verified`로 확인한다(`current:false`면 이후 코드가 바뀌었으니 다시 finish). `--push`가 있으면 통합·sync마다 그 브랜치로 push되고 결과는 `group.pushed`에 남는다(거부되면 다음 통합·sync가 원격을 합쳐 다시 push한다). `--push`가 없으면 `work integrate`는 로컬 묶음 브랜치까지만 반영한다. 묶음이 끝나면(`complete`) 응답의 `instruction`대로 소유 세션의 작업 브랜치에 합치고, 세션 전체가 끝났을 때 `vibe integration finish`로 공유 통합에 제출한다. land 반영 방식은 SETTINGS land-via·push가 정한다.
 - 같은 트리에서 통과한 검사는 다시 돌리지 않는다(검증 기록에 `cached`). 재제출은 고친 커밋부터의 변경만 `GUSTA_DIFF_BASE`로 넘긴다. 단위·묶음 검증은 clone 단위 heavy 락으로 하나씩 실행된다.
 
 ## 4. 정리·복구

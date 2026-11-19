@@ -44,7 +44,7 @@ SETTINGS `usage-measurement`가 true인 시작 대화는 [사용량 절차](../g
 - 메인 전에 특정 변형 수정을 원하면(말 또는 메모) `vibe ab run <slug> --variant <v> --follow-up-file <요청만>` 뒤 `vibe ab serve <slug> --variant <v> --command …`(hot reload가 없으면 `--restart`).
 
 ## 5. 메인 다듬기와 마감
-- 메인이 정해지면 세션 tag(영숫자 2-4자)로 `vibe ab main <slug> --variant <v> --tag <tag> --json`(디자인 모드가 열린다). 메인을 바꾸면 다시 `vibe ab main`.
+- 메인이 정해지면 세션 tag(영숫자 2-8자)로 `vibe ab main <slug> --variant <v> --tag <tag> --json`(디자인 모드가 열린다). 메인을 바꾸면 다시 `vibe ab main`.
 - 그다음은 gusta-design-mode 2절 루프로 메인 worktree(`main.path`)만 고친다. 다른 변형의 장점("b의 헤더")은 `others`의 path나 `git diff <base> ab/<slug>/<x>`로 보고 옮긴다. scaffold의 줄·파일은 고치지 않는다. 메인 worktree는 프로젝트 밖이라 편집 권한 창이 뜨면 그 경로를 작업 폴더로 추가하게 안내한다(Claude Code는 `/add-dir <path>`).
 - 사용자가 끝났다고 하면 gusta-design-mode 4절 마감을 0번(`vibe ab pick`)부터 한다.
 - 고르지 않고 끝내면 `vibe ab stop <slug> --remove`(메인의 미커밋 편집으로 거절되면 버릴지 묻는다). 나중에 보겠다면 서버·hub를 두고 `vibe ab status <slug>`의 hub URL을 다시 준다.
